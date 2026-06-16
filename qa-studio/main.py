@@ -379,6 +379,17 @@ class QAStudio:
         self.page.title = "QA Studio"
         self.page.bgcolor = T.RAIL
         self.page.padding = 0
+        # Window icon (taskbar + title bar) — points to the bundled app.ico
+        try:
+            import os as _os
+            _icon = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "app.ico")
+            if _os.path.exists(_icon):
+                if hasattr(self.page, "window") and self.page.window is not None:
+                    self.page.window.icon = _icon
+                else:
+                    self.page.window_icon = _icon
+        except Exception:
+            pass
         try:
             # Flet >= 0.23 uses page.window.* ; older uses page.window_*
             if hasattr(self.page, "window") and self.page.window is not None:
