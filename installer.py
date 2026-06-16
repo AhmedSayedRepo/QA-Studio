@@ -241,10 +241,56 @@ class Installer:
         self.root.after(400, self.root.destroy)
 
 
+def _acquire_single_instance():
+    """Prevent two installer windows from running at once. Returns a lock handle
+    (kept alive) or None if another instance already holds the lock."""
+    import tempfile
+    lock_path = os.path.join(tempfile.gettempdir(), "qastudio_installer.lock")
+    try:
+        if os.name == "nt":
+            # Exclusive create; fails if the file is held open by another instance
+            try:
+                fh = open(lock_path, "x")
+            except FileExistsError:
+                # Stale lock? try to remove and recreate
+                try:
+                    os.remove(lock_path)
+                    fh = open(lock_path, "x")
+                except Exception:
+                    return None
+            fh.write(str(os.getpid()))
+            fh.flush()
+            return fh
+        else:
+            import fcntl
+            fh = open(lock_path, "w")
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fh
+    except Exception:
+        return None
+
+
 def main():
+    lock = _acquire_single_instance()
+    if lock is None:
+        # Another installer window is already open — don't open a second.
+        return
     root = tk.Tk()
-    Installer(root)
-    root.mainloop()
+    inst = Installer(root)
+
+    def _cleanup():
+        try:
+            import tempfile
+            lock.close()
+            os.remove(os.path.join(tempfile.gettempdir(), "qastudio_installer.lock"))
+        except Exception:
+            pass
+
+    root.protocol("WM_DELETE_WINDOW", lambda: (_cleanup(), root.destroy()))
+    try:
+        root.mainloop()
+    finally:
+        _cleanup()
 
 
 if __name__ == "__main__":
