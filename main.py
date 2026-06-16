@@ -892,7 +892,7 @@ class QAStudio:
             hint_text="— none —", bgcolor=T.CARD_2, color=T.VIOLET_INK,
             tooltip=(f"Test Plan ID: {self.plan_id}" if self.plan_id else None),
             text_size=13, border_color=T.BORDER, border_radius=T.R,
-            content_padding=ft.Padding.symmetric(vertical=12, horizontal=10), width=120)
+            content_padding=ft.Padding.symmetric(vertical=12, horizontal=10), expand=True)
 
         # Story IDs: editable comma field + in-place chip preview (no full re-render)
         self._chip_row = ft.Row([], wrap=True, spacing=6, run_spacing=6)
@@ -979,26 +979,51 @@ class QAStudio:
             content_padding=ft.Padding.symmetric(vertical=12, horizontal=12), text_size=13, expand=True,
             on_change=lambda e: setattr(self, "emails", self.email_field.value))
 
+        # Sprint summary button — green (like Create) when a plan is selected,
+        # grey/disabled when no plan is chosen yet.
+        _sum_enabled = bool(self.plan_id)
+        self._summary_btn = ft.FilledButton(
+            "Selected Sprint Summary report",
+            icon=ft.Icons.SUMMARIZE_OUTLINED, height=46,
+            disabled=not _sum_enabled,
+            on_click=lambda e: self._open_sprint_summary(),
+            style=ft.ButtonStyle(
+                bgcolor={"": (T.GREEN if _sum_enabled else T.CARD_2)},
+                color={"": ("#FFFFFF" if _sum_enabled else T.INK_3)},
+                elevation=0,
+                shape=ft.RoundedRectangleBorder(radius=T.R),
+                side=(None if _sum_enabled else ft.BorderSide(1, T.BORDER)),
+                padding=ft.Padding.symmetric(horizontal=16, vertical=0)))
+        self._summary_btn.expand = True
+        _summary_row = ft.Row([self._summary_btn], spacing=0)
+
         rows = [
             sec_head("3", "Task",
                      ft.Row([ft.Icon(ft.Icons.ARROW_FORWARD, size=13, color=T.INK_3),
                              ft.Text("from your connection", size=11, color=T.INK_3, weight=ft.FontWeight.BOLD)],
                             spacing=4, tight=True)),
             ft.Container(height=12),
+            # Row 1 — Project (full width)
+            field_label("Project", req=True),
+            ft.Container(self.project_dd, padding=ft.Padding.only(top=4, bottom=12)),
+            # Row 2 — Test Plan (40%) · Test Plan ID (30%) · Create (30%)
             ft.Row([
-                ft.Column([field_label("Project", req=True),
-                           ft.Container(self.project_dd, padding=ft.Padding.only(top=4))], expand=True, spacing=0),
                 ft.Column([field_label("Test Plan", req=True),
-                           ft.Container(ft.Row([self.plan_dd,
-                               green_btn("Create", icon=ft.Icons.ADD, height=46,
-                                         on_click=lambda e: self._open_create_plan())],
-                               spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                               padding=ft.Padding.only(top=4))], expand=True, spacing=0),
-            ], spacing=13),
+                           ft.Container(self.plan_dd, padding=ft.Padding.only(top=4))],
+                          expand=4, spacing=0),
+                ft.Column([field_label("Test Plan ID", hint="auto"),
+                           ft.Container(self.plan_id_field, padding=ft.Padding.only(top=4))],
+                          expand=3, spacing=0),
+                ft.Column([ft.Container(height=18),
+                           ft.Container(
+                               green_btn("Create", icon=ft.Icons.ADD, expand=True,
+                                         on_click=lambda e: self._open_create_plan()),
+                               padding=ft.Padding.only(top=4))],
+                          expand=3, spacing=0),
+            ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.START),
             ft.Container(height=12),
-            ft.Row([field_label("Test Plan ID", hint="auto"),
-                    ft.Container(expand=True)]),
-            ft.Container(self.plan_id_field, padding=ft.Padding.only(top=4, bottom=12)),
+            # Row 3 — Sprint summary (full width)
+            ft.Container(_summary_row, padding=ft.Padding.only(bottom=14)),
             field_label("User Story IDs", req=True, hint="comma-separated"),
             ft.Container(story_box, padding=ft.Padding.only(top=4, bottom=12)),
         ]
@@ -1533,6 +1558,207 @@ class QAStudio:
         )
         self._show_dialog(dlg)
         self._bg(load_iters)
+
+    # ── Sprint summary report (read-only, before a run) ────────────────────
+    def _open_sprint_summary(self):
+        if not (self.project and self.plan_id):
+            self._toast("Select a test plan first.")
+            return
+
+        # State → brand color/soft-bg mapping for status chips
+        def _state_kind(state):
+            s = (state or "").lower()
+            if s in ("done", "closed", "completed", "resolved"):
+                return "green"
+            if s in ("active", "in progress", "committed", "doing"):
+                return "violet"
+            if s in ("new", "to do", "proposed", "open"):
+                return "amber"
+            return "grey"
+
+        body_col = ft.Column(
+            [ft.Row([ft.ProgressRing(width=18, height=18, stroke_width=2, color=T.VIOLET),
+                     ft.Text("Loading sprint summary…", size=13, color=T.INK_2,
+                             weight=ft.FontWeight.BOLD)], spacing=10)],
+            spacing=12, tight=True, scroll=ft.ScrollMode.AUTO)
+
+        # email recipients field (asked each time) + status text
+        self._sum_data = None
+        email_field = ft.TextField(
+            hint_text="recipient@example.com, another@example.com",
+            value=(self.emails or ""),
+            border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
+            content_padding=ft.Padding.symmetric(vertical=10, horizontal=12),
+            text_size=12.5, dense=True, expand=True)
+        email_status = ft.Text("", size=11.5, weight=ft.FontWeight.BOLD)
+
+        def do_email(e=None):
+            if not self._sum_data:
+                return
+            if not E.GMAIL_APP_PASS:
+                email_status.value = "Set a Gmail App Password in Setup → Connection first."
+                email_status.color = T.AMBER
+                try: email_status.update()
+                except Exception: self.render()
+                return
+            to = [x.strip() for x in (email_field.value or "").split(",") if x.strip()]
+            if not to:
+                email_status.value = "Enter at least one recipient."
+                email_status.color = T.RED
+                try: email_status.update()
+                except Exception: self.render()
+                return
+            email_status.value = "Sending…"; email_status.color = T.INK_2
+            try: email_status.update()
+            except Exception: self.render()
+
+            def work():
+                html = E.build_sprint_summary_email(self._sum_data)
+                plan = self._sum_data.get("plan_name", "")
+                ok, err = E.send_report(to, f"QA Studio — Sprint Summary — {plan}", html)
+                def show():
+                    if ok:
+                        email_status.value = f"Summary emailed to {', '.join(to)}"
+                        email_status.color = T.GREEN
+                    else:
+                        email_status.value = f"Email failed — {err}"
+                        email_status.color = T.RED
+                    try: email_status.update()
+                    except Exception: self.render()
+                self.ui_safe(show)
+            self._bg(work)
+
+        email_btn = green_btn("Email summary", icon=ft.Icons.MAIL_OUTLINED,
+                              on_click=do_email)
+        close_btn = ghost_btn("Close", on_click=lambda e: self._close_dialog())
+
+        email_bar = ft.Column([
+            ft.Container(height=1, bgcolor=T.BORDER_2),
+            ft.Container(height=8),
+            ft.Text("EMAIL THIS SUMMARY", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
+            ft.Container(height=6),
+            ft.Row([email_field, email_btn], spacing=8,
+                   vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            ft.Container(email_status, padding=ft.Padding.only(top=6)),
+        ], spacing=0, tight=True)
+        email_bar.visible = False  # shown only after data loads
+
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Row([ft.Icon(ft.Icons.SUMMARIZE_OUTLINED, color=T.VIOLET_INK, size=20),
+                          ft.Text("Sprint Summary", weight=ft.FontWeight.BOLD, size=16)],
+                         spacing=8, tight=True),
+            content=ft.Container(
+                ft.Column([ft.Container(body_col, expand=True), email_bar],
+                          spacing=10, tight=False),
+                width=560, height=520),
+            actions=[close_btn],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        self._show_dialog(dlg)
+
+        def load():
+            try:
+                data = E.sprint_summary(self.project, self.plan_id)
+            except Exception as ex:
+                def show_err():
+                    body_col.controls = [ft.Row([
+                        ft.Icon(ft.Icons.ERROR_OUTLINE, color=T.RED, size=20),
+                        ft.Text(f"Could not load summary: {str(ex)[:160]}",
+                                size=12.5, color=T.RED, weight=ft.FontWeight.W_500, expand=True)],
+                        spacing=8)]
+                    try: body_col.update()
+                    except Exception: self.render()
+                self.ui_safe(show_err)
+                return
+
+            def render_summary():
+                self._sum_data = data
+                total = data["total_stories"]
+                by_state = data["by_state"]
+                total_tc = data["total_test_cases"]
+
+                # Header line
+                header = ft.Column([
+                    ft.Text(data["plan_name"], size=15, weight=ft.FontWeight.BOLD, color=T.INK),
+                    ft.Text(data["iteration"] or "—", size=11, color=T.INK_3,
+                            weight=ft.FontWeight.BOLD, font_family=T.F_MONO),
+                ], spacing=2)
+
+                # Stat tiles: total stories + total test cases
+                tiles = ft.Row([
+                    stat_tile("Stories", total, tone="violet"),
+                    stat_tile("Test Cases", total_tc, tone="green"),
+                    stat_tile("Statuses", len(by_state), tone="amber"),
+                ], spacing=10)
+
+                # Status breakdown chips
+                state_chips = []
+                for st, cnt in sorted(by_state.items(), key=lambda x: -x[1]):
+                    state_chips.append(badge(f"{st}: {cnt}", _state_kind(st)))
+                status_row = ft.Row(state_chips, wrap=True, spacing=6, run_spacing=6) \
+                    if state_chips else ft.Text("No stories in this sprint.",
+                                                size=12, color=T.INK_3, weight=ft.FontWeight.W_500)
+
+                # Per-story rows
+                story_rows = []
+                for s in data["stories"]:
+                    rtl = any('\u0600' <= c <= '\u06ff' for c in s["title"])
+                    story_rows.append(ft.Container(
+                        ft.Row([
+                            ft.Column([
+                                ft.Text(s["title"] or "(no title)", size=12.5,
+                                        weight=ft.FontWeight.BOLD, color=T.INK,
+                                        font_family=(T.F_AR if rtl else None),
+                                        text_align=(ft.TextAlign.RIGHT if rtl else ft.TextAlign.LEFT),
+                                        max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
+                                ft.Text(f"#{s['id']}", size=10.5, color=T.INK_3,
+                                        weight=ft.FontWeight.BOLD, font_family=T.F_MONO),
+                            ], spacing=2, expand=True),
+                            badge(f"{s['test_cases']} TC", "grey"),
+                            badge(s["state"], _state_kind(s["state"])),
+                        ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                        padding=ft.Padding.symmetric(vertical=10, horizontal=12),
+                        border=ft.Border.only(bottom=ft.BorderSide(1, T.BORDER_2))))
+                if not story_rows:
+                    story_rows = [ft.Text("No user stories found in this sprint.",
+                                          size=12, color=T.INK_3, weight=ft.FontWeight.W_500)]
+
+                body_col.controls = [
+                    header,
+                    ft.Container(height=4),
+                    tiles,
+                    ft.Container(height=6),
+                    ft.Text("STATUS BREAKDOWN", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
+                    status_row,
+                    ft.Container(height=6),
+                    ft.Text("STORIES", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
+                    ft.Container(ft.Column(story_rows, spacing=0, scroll=ft.ScrollMode.AUTO),
+                                 bgcolor="#FCFCFE", border=ft.Border.all(1, T.BORDER),
+                                 border_radius=T.R, padding=ft.Padding.symmetric(vertical=2, horizontal=4)),
+                ]
+                email_bar.visible = True
+                try:
+                    body_col.update(); email_bar.update()
+                except Exception:
+                    self.render()
+
+            self.ui_safe(render_summary)
+
+        self._bg(load)
+
+    def ui_safe(self, fn):
+        """Run a UI mutation on the page thread; fall back to direct call."""
+        try:
+            ru = getattr(self.page, "run_thread", None)
+            if callable(ru):
+                ru(fn); return
+        except Exception:
+            pass
+        try:
+            fn()
+        except Exception:
+            pass
 
     def _show_dialog(self, dlg):
         self._dialog = dlg
