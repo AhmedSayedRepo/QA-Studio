@@ -1232,8 +1232,9 @@ def build_report_email(tool, summary, stats, action_items=None, skipped_items=No
     cards_row = f"<table style='width:100%;border-collapse:collapse'><tr>{cards}</tr></table>"
 
     def _item_card(a, tone_fg, tone_bg, label):
-        title = a.get("title", "")
-        reason = a.get("reason", "")
+        title = _html.escape(str(a.get("title", "")))
+        reason = _html.escape(str(a.get("reason", "")))
+        item_id = _html.escape(str(a.get("id", "")))
         rtl = "direction:rtl;text-align:right;" if any('\u0600' <= c <= '\u06ff' for c in title) else ""
         return (f"<div style='border:1px solid #E8E7EE;border-radius:10px;padding:12px 14px;"
                 f"margin-bottom:10px;background:#fff'>"
@@ -1241,7 +1242,7 @@ def build_report_email(tool, summary, stats, action_items=None, skipped_items=No
                 f"<span style='background:{tone_bg};color:{tone_fg};font-size:11px;font-weight:700;"
                 f"padding:3px 9px;border-radius:20px'>{label}</span> "
                 f"<span style='font-family:monospace;font-size:12px;color:#A3A1AD;font-weight:700'>"
-                f"#{a.get('id','')}</span></div>"
+                f"#{item_id}</span></div>"
                 f"<div style='font-size:13px;font-weight:700;color:#1B1A22;{rtl}'>{title}</div>"
                 + (f"<div style='font-size:12px;color:#74727E;margin-top:4px;{rtl}'>{reason}</div>" if reason else "")
                 + "</div>")
@@ -1257,10 +1258,10 @@ def build_report_email(tool, summary, stats, action_items=None, skipped_items=No
     if per_story:
         rows = ""
         for sp in per_story:
-            sid = sp.get("id", "")
-            title = sp.get("title", "")
-            total = sp.get("total", 0)
-            ok = sp.get("ok", 0); sk = sp.get("skipped", 0); er = sp.get("err", 0)
+            sid = _html.escape(str(sp.get("id", "")))
+            title = _html.escape(str(sp.get("title", "")))
+            total = int(sp.get("total", 0) or 0)
+            ok = int(sp.get("ok", 0) or 0); sk = int(sp.get("skipped", 0) or 0); er = int(sp.get("err", 0) or 0)
             rtl = "direction:rtl;text-align:right;" if any('\u0600' <= c <= '\u06ff' for c in title) else ""
             chips = ""
             if ok: chips += (f"<span style='background:#E5F6EC;color:#1F9D57;font-size:11px;font-weight:700;"
@@ -1292,14 +1293,16 @@ def build_report_email(tool, summary, stats, action_items=None, skipped_items=No
         skipped_block = (f"<h3 style='color:#74727E;font-size:15px;margin:24px 0 12px'>"
                          f"⏭ Skipped ({len(skipped_items)})</h3>{cards_html}{more}")
 
+    tool_safe = _html.escape(str(tool))
+    summary_safe = _html.escape(str(summary))
     return f"""<html><body style='font-family:Segoe UI,Arial,sans-serif;color:#1B1A22;background:#FBFBFD;
     max-width:640px;margin:auto;padding:0'>
     <div style='background:#5234E0;padding:28px 30px;border-radius:14px 14px 0 0'>
       <h1 style='color:#ffffff;margin:0;font-size:24px;font-weight:800;
       letter-spacing:-0.3px;line-height:1.2'>QA Studio</h1>
-      <div style='color:#ffffff;font-size:15px;font-weight:700;margin-top:2px'>{tool}</div>
+      <div style='color:#ffffff;font-size:15px;font-weight:700;margin-top:2px'>{tool_safe}</div>
       <div style='display:inline-block;margin-top:12px;background:rgba(255,255,255,0.18);
-      color:#ffffff;font-size:13px;font-weight:700;padding:6px 14px;border-radius:20px'>{summary}</div>
+      color:#ffffff;font-size:13px;font-weight:700;padding:6px 14px;border-radius:20px'>{summary_safe}</div>
     </div>
     <div style='background:#fff;padding:24px 28px;border:1px solid #E8E7EE;border-top:none;
     border-radius:0 0 14px 14px'>
