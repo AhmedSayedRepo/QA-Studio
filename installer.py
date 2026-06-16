@@ -47,22 +47,35 @@ class Installer:
         except Exception:
             pass
 
-        W, H = 460, 360
+        W, H = 470, 420
         sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
         self.root.geometry(f"{W}x{H}+{(sw-W)//2}+{(sh-H)//2}")
+        self.root.minsize(W, H)
 
         # ── Header band ────────────────────────────────────────────────────
         header = tk.Frame(self.root, bg=VIOLET, height=92)
-        header.pack(fill="x")
+        header.pack(fill="x", side="top")
         header.pack_propagate(False)
         tk.Label(header, text=f"  {APP_NAME}", bg=VIOLET, fg="white",
                  font=("Segoe UI", 20, "bold"), anchor="w").pack(fill="x", padx=22, pady=(20, 0))
         tk.Label(header, text="  AI-powered Azure DevOps test-case generator",
                  bg=VIOLET, fg="#D8CEFF", font=("Segoe UI", 10), anchor="w").pack(fill="x", padx=22)
 
-        # ── Body ───────────────────────────────────────────────────────────
+        # ── Footer button (packed BEFORE body so it's always pinned bottom) ──
+        footer = tk.Frame(self.root, bg=BG)
+        footer.pack(fill="x", side="bottom", padx=26, pady=(0, 18))
+        self.btn = tk.Button(footer, text="Install", bg=VIOLET, fg="white",
+                             font=("Segoe UI", 11, "bold"), relief="flat",
+                             cursor="hand2", bd=0, pady=11,
+                             activebackground=VIOLET_H, activeforeground="white",
+                             command=self.start_install)
+        self.btn.pack(fill="x")
+        self.btn.bind("<Enter>", lambda e: self.btn.config(bg=VIOLET_H))
+        self.btn.bind("<Leave>", lambda e: self.btn.config(bg=VIOLET))
+
+        # ── Body (fills remaining space between header and footer) ──────────
         body = tk.Frame(self.root, bg=BG)
-        body.pack(fill="both", expand=True, padx=26, pady=20)
+        body.pack(fill="both", expand=True, side="top", padx=26, pady=20)
 
         self.title_lbl = tk.Label(body, text="Ready to install",
                                   bg=BG, fg=INK, font=("Segoe UI", 13, "bold"), anchor="w")
@@ -97,18 +110,6 @@ class Installer:
                            highlightthickness=1, highlightbackground=BORDER,
                            wrap="word", state="disabled", padx=8, pady=6)
         self.log.pack(fill="both", expand=True, pady=(14, 0))
-
-        # ── Footer button ──────────────────────────────────────────────────
-        footer = tk.Frame(self.root, bg=BG)
-        footer.pack(fill="x", padx=26, pady=(0, 18))
-        self.btn = tk.Button(footer, text="Install", bg=VIOLET, fg="white",
-                             font=("Segoe UI", 11, "bold"), relief="flat",
-                             cursor="hand2", bd=0, pady=11,
-                             activebackground=VIOLET_H, activeforeground="white",
-                             command=self.start_install)
-        self.btn.pack(fill="x")
-        self.btn.bind("<Enter>", lambda e: self.btn.config(bg=VIOLET_H))
-        self.btn.bind("<Leave>", lambda e: self.btn.config(bg=VIOLET))
 
     # ── UI helpers (always called on main thread via after) ────────────────
     def _set(self, pct=None, status=None, title=None, desc=None):
