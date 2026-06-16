@@ -216,6 +216,25 @@ class QAStudio:
         self._connecting = False
         self._connect_status = ""
 
+        # ── automation feature state ──
+        self.auto_site_url = ""
+        self.auto_login_url = ""
+        self.auto_login_user = ""
+        self.auto_login_pass = ""
+        self.auto_git_url = self.creds.get("git_url", "")
+        self.auto_git_branch = self.creds.get("git_branch", "") or "main"
+        self.auto_git_token = self.creds.get("git_token", "")
+        self.auto_headless = True
+        self._auto_log = []
+        self._auto_running = False
+        self._auto_out_dir = None
+        self._auto_built = False
+
+        # update-check state
+        self._update_info = None     # set by background check_for_update
+        self._updating = False
+        self._update_dismissed = False
+
         self._build()
 
     # ---- credential helpers ----
@@ -261,7 +280,8 @@ class QAStudio:
             ixcolor = "#A99BFF" if is_active else (T.GREEN if _is_done else "#56535F")
             clickable = (st == "done" or is_active
                          or (n["id"] == "report" and self.last_report is not None)
-                         or (n["id"] == "setup"))
+                         or (n["id"] == "setup")
+                         or (n["id"] == "automation"))
             # active indicator bar on the far left
             indicator = ft.Container(width=3, height=22,
                                      bgcolor=(T.VIOLET if is_active else ft.Colors.TRANSPARENT),
@@ -366,10 +386,18 @@ class QAStudio:
             view = self.setup_screen()
         elif self.active == "run":
             view = self.run_screen()
+        elif self.active == "automation":
+            view = self.automation_screen()
         else:
             view = self.report_screen()
         self.page.controls.clear()
-        self.page.add(view)
+        banner = self._update_banner()
+        if banner is not None:
+            # Stack the banner above the app so it spans full width at the top
+            self.page.add(ft.Column([banner, ft.Container(view, expand=True)],
+                                    spacing=0, expand=True))
+        else:
+            self.page.add(view)
         self.page.update()
         # Restore scroll position on the setup screen so it doesn't jump to top
         if self.active == "setup":
@@ -417,8 +445,118 @@ class QAStudio:
             except Exception:
                 pass
         self.render()
+        # Check for a newer version in the background (never blocks startup)
+        self._kickoff_update_check()
 
-    def _on_window_event(self, e):
+    def _kickoff_update_check(self):
+        def work():
+            info = E.check_for_update()
+            self._update_info = info
+            if info.get("update"):
+                self.ui_safe(self.render)
+        try:
+            self._bg(work)
+        except Exception:
+            pass
+
+    def _update_banner(self):
+        """A slim banner shown at the top when a newer version is available."""
+        info = self._update_info or {}
+        if not info.get("update") or self._update_dismissed:
+            return None
+        remote = info.get("remote", "")
+        local = info.get("local", "")
+        if self._updating:
+            inner = ft.Row([
+                ft.ProgressRing(width=16, height=16, stroke_width=2, color="#FFFFFF"),
+                ft.Text("Updating…", size=12.5, color="#FFFFFF", weight=ft.FontWeight.BOLD),
+            ], spacing=10)
+        else:
+            inner = ft.Row([
+                ft.Icon(ft.Icons.SYSTEM_UPDATE_ALT, size=18, color="#FFFFFF"),
+                ft.Text(f"A new version of QA Studio is available "
+                        f"(v{remote} · you have v{local}).",
+                        size=12.5, color="#FFFFFF", weight=ft.FontWeight.BOLD, expand=True),
+                ft.FilledButton("Update now", icon=ft.Icons.DOWNLOAD,
+                                on_click=lambda e: self._do_update(),
+                                style=ft.ButtonStyle(
+                                    bgcolor={"": "#FFFFFF"}, color={"": T.VIOLET_INK},
+                                    shape=ft.RoundedRectangleBorder(radius=T.R_SM),
+                                    padding=ft.Padding.symmetric(horizontal=14, vertical=6))),
+                ft.IconButton(ft.Icons.CLOSE, icon_size=16, icon_color="#FFFFFF",
+                              tooltip="Dismiss",
+                              on_click=lambda e: self._dismiss_update()),
+            ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+        return ft.Container(inner, bgcolor=T.VIOLET,
+                            padding=ft.Padding.symmetric(horizontal=18, vertical=10))
+
+    def _dismiss_update(self):
+        self._update_dismissed = True
+        self.render()
+
+    def _do_update(self):
+        self._updating = True
+        self.render()
+
+        def work():
+            ok, msg = E.apply_update(cb=lambda m, t="dim": None)
+            def finish():
+                self._updating = False
+                if ok:
+                    self._update_info = {"update": False}
+                    self._update_dismissed = True
+                    self._show_restart_dialog(msg)
+                else:
+                    self.render()
+                    try:
+                        self.page.snack_bar = ft.SnackBar(ft.Text(msg), bgcolor=T.RED, duration=8000)
+                        self.page.snack_bar.open = True
+                        self.page.update()
+                    except Exception:
+                        pass
+            self.ui_safe(finish)
+        self._bg(work)
+
+    def _show_restart_dialog(self, msg):
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Row([ft.Icon(ft.Icons.CHECK_CIRCLE, color=T.GREEN, size=20),
+                          ft.Text("Update complete", weight=ft.FontWeight.BOLD, size=16)],
+                         spacing=8, tight=True),
+            content=ft.Container(
+                ft.Text(msg, size=13, color=T.INK_2, weight=ft.FontWeight.W_500),
+                width=420),
+            actions=[
+                green_btn("Restart now", on_click=lambda e: self._restart_app()),
+                ghost_btn("Later", on_click=lambda e: self._close_dialog()),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        self._show_dialog(dlg)
+
+    def _restart_app(self):
+        """Relaunch the app process, then exit the current one."""
+        self._close_dialog()
+        try:
+            import sys, os, subprocess
+            main_py = os.path.join(os.path.dirname(os.path.abspath(__file__)), "main.py")
+            pyw = sys.executable
+            try:
+                cand = os.path.join(os.path.dirname(pyw), "pythonw.exe")
+                if os.path.exists(cand):
+                    pyw = cand
+            except Exception:
+                pass
+            flags = 0x08000000 if os.name == "nt" else 0
+            subprocess.Popen([pyw, main_py], cwd=os.path.dirname(main_py),
+                             creationflags=flags)
+        except Exception:
+            pass
+        try:
+            import os, signal
+            os.kill(os.getpid(), signal.SIGTERM)
+        except Exception:
+            pass
         et = getattr(e, "type", None) or getattr(e, "data", None) or ""
         if "close" in str(et).lower():
             run_active = (self.active == "run") and not self.stop_flag
@@ -2591,6 +2729,267 @@ class QAStudio:
             self._open_url(url)
         else:
             self._toast("No test plan selected.")
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    #  AUTOMATION SCREEN — Selenium DOM scrape → TestNG/POM project → Git push
+    # ═══════════════════════════════════════════════════════════════════════════
+    def _auto_field(self, label, attr, hint, password=False, req=False):
+        tf = ft.TextField(
+            value=getattr(self, attr, "") or "", hint_text=hint, password=password,
+            can_reveal_password=password,
+            border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
+            content_padding=ft.Padding.symmetric(vertical=11, horizontal=12),
+            text_size=13, expand=True,
+            on_change=lambda e, a=attr: setattr(self, a, e.control.value))
+        return ft.Column([field_label(label, req=req), ft.Container(tf, padding=ft.Padding.only(top=4))],
+                         spacing=0)
+
+    def automation_screen(self):
+        # ── left: config form ──
+        ready = bool(self.story_ids and self.project and self.plan_id)
+        setup_hint = None
+        if not ready:
+            setup_hint = ft.Container(
+                ft.Row([ft.Icon(ft.Icons.INFO_OUTLINE, size=16, color=T.AMBER),
+                        ft.Text("Select a project, test plan, and user stories on the Setup "
+                                "screen first — automation uses the same selection.",
+                                size=12, color=T.AMBER, weight=ft.FontWeight.W_500, expand=True)],
+                       spacing=8),
+                padding=12, bgcolor=T.AMBER_SOFT, border_radius=T.R,
+                border=ft.Border.all(1, "#EAD9A8"), margin=ft.Margin.only(bottom=14))
+
+        site_card = card(ft.Column([
+            sec_head("A", "Target site"),
+            ft.Container(height=10),
+            self._auto_field("Site URL", "auto_site_url",
+                             "https://your-app.example.com/page", req=True),
+            ft.Container(height=12),
+            ft.Text("LOGIN (required to reach the pages)", size=10.5,
+                    weight=ft.FontWeight.BOLD, color=T.INK_3),
+            ft.Container(height=8),
+            self._auto_field("Login page URL", "auto_login_url",
+                             "https://your-app.example.com/login (defaults to site URL)"),
+            ft.Container(height=10),
+            ft.Row([
+                self._auto_field("Username", "auto_login_user", "user@example.com"),
+                self._auto_field("Password", "auto_login_pass", "••••••••", password=True),
+            ], spacing=12),
+        ], spacing=0))
+
+        git_card = card(ft.Column([
+            sec_head("B", "Git destination (IntelliJ syncs this)"),
+            ft.Container(height=10),
+            self._auto_field("Repository URL", "auto_git_url",
+                             "https://github.com/you/automation-tests.git", req=True),
+            ft.Container(height=10),
+            ft.Row([
+                self._auto_field("Branch", "auto_git_branch", "main"),
+                self._auto_field("Access token (PAT)", "auto_git_token",
+                                 "ghp_… or Azure PAT", password=True, req=True),
+            ], spacing=12),
+            ft.Container(height=4),
+            ft.Text("The token is used only to push and is stored locally like your other "
+                    "credentials. It is scrubbed from logs.",
+                    size=11, color=T.INK_3, weight=ft.FontWeight.W_500),
+        ], spacing=0))
+
+        gen_disabled = self._auto_running or not ready
+        gen_btn = primary_btn(
+            "Generate automation scripts" if not self._auto_running else "Working…",
+            icon=ft.Icons.AUTO_AWESOME, expand=True, disabled=gen_disabled,
+            on_click=lambda e: self._start_automation())
+
+        push_disabled = self._auto_running or not self._auto_built
+        push_btn = green_btn("Push to Git", icon=ft.Icons.CLOUD_UPLOAD_OUTLINED,
+                             expand=True, on_click=lambda e: self._push_automation())
+        # grey it out visually when disabled
+        if push_disabled:
+            push_btn = ft.Row([ft.OutlinedButton(
+                "Push to Git", icon=ft.Icons.CLOUD_UPLOAD_OUTLINED, height=42,
+                disabled=True, expand=True,
+                style=ft.ButtonStyle(color=T.INK_3, side=ft.BorderSide(1, T.BORDER),
+                    shape=ft.RoundedRectangleBorder(radius=T.R)))], spacing=0)
+
+        left = ft.Column([
+            *([setup_hint] if setup_hint else []),
+            site_card,
+            git_card,
+            ft.Row([gen_btn], spacing=0),
+            ft.Row([push_btn], spacing=0),
+        ], spacing=14, scroll=ft.ScrollMode.AUTO, expand=True)
+
+        # ── right: live log + info ──
+        log_lines = []
+        for ln in self._auto_log:
+            tone = ln.get("tone", "dim")
+            cmap = {"ok": T.GREEN, "err": T.RED, "warn": T.AMBER, "story": T.VIOLET_INK,
+                    "dim": T.INK_3, "info": T.INK_2}
+            log_lines.append(ft.Text(ln.get("msg", ""), size=12,
+                                     color=cmap.get(tone, T.INK_2),
+                                     weight=ft.FontWeight.W_500,
+                                     font_family=(T.F_MONO if tone in ("dim", "info") else None)))
+        if not log_lines:
+            log_lines = [ft.Text("Configure the site + Git, then Generate. Activity shows here.",
+                                 size=12, color=T.INK_3, weight=ft.FontWeight.W_500)]
+        self._auto_log_col = ft.Column(log_lines, spacing=4, scroll=ft.ScrollMode.AUTO,
+                                       expand=True, auto_scroll=True)
+
+        spinner = (ft.ProgressRing(width=15, height=15, stroke_width=2, color=T.VIOLET)
+                   if self._auto_running else ft.Icon(ft.Icons.TERMINAL, size=15, color=T.INK_3))
+        right = ft.Column([
+            card(ft.Column([
+                ft.Row([spinner, ft.Text("ACTIVITY", size=11, weight=ft.FontWeight.BOLD,
+                                         color=T.INK_3)], spacing=8),
+                ft.Container(height=10),
+                ft.Container(self._auto_log_col, expand=True, bgcolor="#FCFCFE",
+                             border=ft.Border.all(1, T.BORDER), border_radius=T.R, padding=12),
+            ], spacing=0, expand=True), expand=True),
+        ], spacing=14, expand=True)
+
+        body = ft.Row([ft.Container(left, expand=True),
+                       ft.Container(right, width=360)], spacing=22,
+                      vertical_alignment=ft.CrossAxisAlignment.STRETCH, expand=True)
+        sub = (f"{len(self.story_ids)} stories selected" if self.story_ids else "no stories selected")
+        return self.shell("Automation", sub, body)
+
+    def _auto_logmsg(self, msg, tone="dim"):
+        self._auto_log.append({"msg": msg, "tone": tone})
+        def upd():
+            try:
+                if hasattr(self, "_auto_log_col"):
+                    cmap = {"ok": T.GREEN, "err": T.RED, "warn": T.AMBER, "story": T.VIOLET_INK,
+                            "dim": T.INK_3, "info": T.INK_2}
+                    self._auto_log_col.controls.append(
+                        ft.Text(msg, size=12, color=cmap.get(tone, T.INK_2),
+                                weight=ft.FontWeight.W_500,
+                                font_family=(T.F_MONO if tone in ("dim", "info") else None)))
+                    self._auto_log_col.update()
+            except Exception:
+                pass
+        self.ui_safe(upd)
+
+    def _save_git_creds(self):
+        try:
+            self.creds["git_url"] = self.auto_git_url
+            self.creds["git_branch"] = self.auto_git_branch
+            self.creds["git_token"] = self.auto_git_token
+            store.save(self.creds)
+        except Exception:
+            pass
+
+    def _start_automation(self):
+        if not (self.story_ids and self.project and self.plan_id):
+            self._toast("Select stories on Setup first.")
+            return
+        if not self.auto_site_url.strip():
+            self._toast("Enter the site URL.")
+            return
+        self._save_git_creds()
+        self._auto_running = True
+        self._auto_built = False
+        self._auto_log = []
+        self.render()
+
+        def cb(msg, tone="dim"):
+            self._auto_logmsg(msg, tone)
+
+        def work():
+            import tempfile, os as _os
+            try:
+                # 1) connect to Azure + fetch stories with their test cases/steps
+                cb("Connecting to Azure DevOps…", "dim")
+                E.connect_azure_sdk(self.project)
+                smap = E.discover_suites_for_stories(self.project, self.plan_id,
+                                                     set(self.story_ids), create_missing=False)
+                stories = E.fetch_stories(self.story_ids)
+
+                stories_payload = []
+                total_tc = 0
+                total_steps = 0
+                for s in stories:
+                    sid = s.id
+                    title = s.fields.get("System.Title", "")
+                    criteria = s.fields.get("Microsoft.VSTS.Common.AcceptanceCriteria", "")
+                    suite_id = smap.get(sid)
+                    tcs = []
+                    if suite_id:
+                        try:
+                            for tc in E.fetch_test_cases_for_suite(self.project, self.plan_id, suite_id):
+                                wi = tc.get("workItem", {})
+                                tc_id = wi.get("id")
+                                tc_title = wi.get("name", "")
+                                # pull the actual steps written by the Steps script
+                                steps = E.fetch_test_case_steps(tc_id) if tc_id else []
+                                total_steps += len(steps)
+                                tcs.append({"id": tc_id, "title": tc_title, "steps": steps})
+                        except Exception:
+                            pass
+                    total_tc += len(tcs)
+                    stories_payload.append({
+                        "story": {"id": sid, "title": title, "criteria": criteria},
+                        "test_cases": tcs,
+                    })
+                cb(f"Loaded {len(stories_payload)} story/stories · {total_tc} test case(s) · "
+                   f"{total_steps} step(s) from Azure.", "ok")
+
+                # 2) scrape the live DOM
+                login = None
+                if self.auto_login_user.strip() and self.auto_login_pass:
+                    login = {"url": self.auto_login_url.strip() or self.auto_site_url.strip(),
+                             "user": self.auto_login_user.strip(),
+                             "password": self.auto_login_pass}
+                dom = E.scrape_dom(self.auto_site_url.strip(), login=login, cb=cb,
+                                   headless=self.auto_headless)
+
+                # 3) build the Maven project
+                out_dir = tempfile.mkdtemp(prefix="qastudio_automation_")
+                self._auto_out_dir = out_dir
+                cb(f"Generating project at {out_dir}", "dim")
+                E.build_automation_project(out_dir, stories_payload, dom,
+                                           self.auto_site_url.strip(),
+                                           cb=cb, should_stop=lambda: False)
+                self._auto_built = True
+                cb("Done. Review the activity, then Push to Git.", "ok")
+            except Exception as ex:
+                cb(f"Automation failed: {str(ex)[:200]}", "err")
+            finally:
+                self._auto_running = False
+                self.ui_safe(self.render)
+
+        self._bg(work)
+
+    def _push_automation(self):
+        if not (self._auto_built and self._auto_out_dir):
+            self._toast("Generate scripts first.")
+            return
+        if not self.auto_git_url.strip() or not self.auto_git_token.strip():
+            self._toast("Enter the Git repo URL and access token.")
+            return
+        self._save_git_creds()
+        self._auto_running = True
+        self.render()
+
+        def cb(msg, tone="dim"):
+            self._auto_logmsg(msg, tone)
+
+        def work():
+            try:
+                ok, msg = E.push_to_git(self._auto_out_dir, self.auto_git_url.strip(),
+                                        self.auto_git_token.strip(),
+                                        branch=(self.auto_git_branch.strip() or "main"),
+                                        cb=cb)
+                if ok:
+                    cb("Pushed. Open/refresh the repo in IntelliJ to sync.", "ok")
+                else:
+                    cb(f"Push failed — {msg}", "err")
+            except Exception as ex:
+                cb(f"Push error: {str(ex)[:200]}", "err")
+            finally:
+                self._auto_running = False
+                self.ui_safe(self.render)
+
+        self._bg(work)
+
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

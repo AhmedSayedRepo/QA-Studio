@@ -7,3 +7,4 @@ openai>=1.40.0
 azure-devops>=7.1.0b4
 msrest>=0.7.1
 google-generativeai>=0.8.0
+selenium>=4.20.0
