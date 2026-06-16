@@ -229,6 +229,7 @@ class QAStudio:
         self._auto_running = False
         self._auto_out_dir = None
         self._auto_built = False
+        self._run_active = False
 
         # update-check state
         self._update_info = None     # set by background check_for_update
@@ -382,26 +383,49 @@ class QAStudio:
         self.render()
 
     def render(self):
-        if self.active == "setup":
-            view = self.setup_screen()
-        elif self.active == "run":
-            view = self.run_screen()
-        elif self.active == "automation":
-            view = self.automation_screen()
-        else:
-            view = self.report_screen()
-        self.page.controls.clear()
-        banner = self._update_banner()
-        if banner is not None:
-            # Stack the banner above the app so it spans full width at the top
-            self.page.add(ft.Column([banner, ft.Container(view, expand=True)],
-                                    spacing=0, expand=True))
-        else:
-            self.page.add(view)
-        self.page.update()
-        # Restore scroll position on the setup screen so it doesn't jump to top
-        if self.active == "setup":
-            self._restore_scroll()
+        try:
+            if self.active == "setup":
+                view = self.setup_screen()
+            elif self.active == "run":
+                view = self.run_screen()
+            elif self.active == "automation":
+                view = self.automation_screen()
+            else:
+                view = self.report_screen()
+            self.page.controls.clear()
+            banner = None
+            try:
+                banner = self._update_banner()
+            except Exception:
+                banner = None
+            if banner is not None:
+                self.page.add(ft.Column([banner, ft.Container(view, expand=True)],
+                                        spacing=0, expand=True))
+            else:
+                self.page.add(view)
+            self.page.update()
+            if self.active == "setup":
+                self._restore_scroll()
+        except Exception as ex:
+            # Never leave the user on a blank "Working…" screen — show the error.
+            import traceback
+            tb = traceback.format_exc()
+            try:
+                self.page.controls.clear()
+                self.page.add(ft.Container(
+                    ft.Column([
+                        ft.Text("QA Studio hit an error while drawing this screen.",
+                                size=15, weight=ft.FontWeight.BOLD, color="#E0474D"),
+                        ft.Text(str(ex), size=12, color="#1B1A22"),
+                        ft.Container(
+                            ft.Text(tb, size=10, selectable=True,
+                                    font_family="monospace", color="#74727E"),
+                            bgcolor="#F6F5FA", padding=12, border_radius=8),
+                    ], spacing=10, scroll=ft.ScrollMode.AUTO),
+                    padding=24, expand=True, bgcolor="#FFFFFF"))
+                self.page.update()
+            except Exception:
+                pass
 
     def _build(self):
         self.page.title = "QA Studio"
@@ -432,21 +456,113 @@ class QAStudio:
                 self.page.window_min_height = 660
         except Exception:
             pass
-        # Intercept window close → confirm + stop run gracefully (desktop only).
-        # In web mode there is no OS window, so we must NOT set prevent_close
-        # (it would block nothing yet leave the app in a weird state).
+        # Window close handling (desktop only). We do NOT force prevent_close,
+        # because that makes the X button unreliable across Flet versions. The X
+        # closes the app normally. We only attach a listener to (best-effort)
+        # confirm when a run is active; if the listener isn't supported, the
+        # window still closes cleanly.
         import os
         _web = os.environ.get("WEB_MODE", "").strip() in ("1", "true", "yes")
         if not _web:
             try:
                 if hasattr(self.page, "window") and self.page.window is not None:
-                    self.page.window.prevent_close = True
+                    # Only intercept while a run is in progress; otherwise leave
+                    # the default close behavior intact.
+                    self.page.window.prevent_close = False
                     self.page.window.on_event = self._on_window_event
             except Exception:
                 pass
         self.render()
         # Check for a newer version in the background (never blocks startup)
         self._kickoff_update_check()
+
+    def _set_run_active(self, active):
+        """Track whether a run is in progress, and toggle the OS window's
+        prevent_close so the X triggers a confirm dialog only during a run."""
+        self._run_active = bool(active)
+        try:
+            if hasattr(self.page, "window") and self.page.window is not None:
+                self.page.window.prevent_close = bool(active)
+                self.page.update()
+        except Exception:
+            pass
+
+    def _on_window_event(self, e):
+        """Best-effort confirm-on-close while a run is active. If a run is NOT
+        active, we never block the close, so the X button always works."""
+        try:
+            etype = getattr(e, "data", None) or getattr(e, "type", None)
+        except Exception:
+            etype = None
+        if etype != "close":
+            return
+        running = bool(getattr(self, "_run_active", False)
+                       or getattr(self, "_auto_running", False))
+        if not running:
+            # let it close naturally
+            self._force_close()
+            return
+        # A run is in progress — ask before quitting
+        def do_quit(_=None):
+            self._close_dialog()
+            self._force_close()
+        def keep(_=None):
+            self._close_dialog()
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Row([ft.Icon(ft.Icons.WARNING_AMBER, color=T.AMBER, size=20),
+                          ft.Text("A run is in progress", weight=ft.FontWeight.BOLD, size=16)],
+                         spacing=8, tight=True),
+            content=ft.Container(
+                ft.Text("Closing now will stop the current run. Quit anyway?",
+                        size=13, color=T.INK_2, weight=ft.FontWeight.W_500), width=380),
+            actions=[ft.TextButton("Quit", on_click=do_quit,
+                                    style=ft.ButtonStyle(color=T.RED)),
+                     green_btn("Keep running", on_click=keep)],
+            actions_alignment=ft.MainAxisAlignment.END)
+        self._show_dialog(dlg)
+
+    def _force_close(self):
+        """Close the OS window / exit the process, trying every Flet API, and
+        as a final guarantee terminate the flet client window process so it can
+        never be left orphaned on screen."""
+        closed = False
+        # 1) modern Flet: window.destroy()
+        try:
+            if hasattr(self.page, "window") and self.page.window is not None:
+                try:
+                    self.page.window.prevent_close = False
+                except Exception:
+                    pass
+                self.page.window.destroy()
+                closed = True
+        except Exception:
+            pass
+        # 2) older Flet: page.window_destroy()
+        if not closed:
+            try:
+                self.page.window_destroy()
+                closed = True
+            except Exception:
+                pass
+        # 3) Guarantee: terminate this process tree (kills the paired flet.exe
+        #    client window so it can't linger). Done last, slightly delayed so
+        #    the graceful close above can paint first.
+        def _hard_exit():
+            try:
+                import os, signal, time
+                time.sleep(0.4)
+                os.kill(os.getpid(), signal.SIGTERM)
+            except Exception:
+                try:
+                    import sys
+                    sys.exit(0)
+                except Exception:
+                    pass
+        try:
+            threading.Thread(target=_hard_exit, daemon=True).start()
+        except Exception:
+            _hard_exit()
 
     def _kickoff_update_check(self):
         def work():
@@ -2102,6 +2218,7 @@ class QAStudio:
         self._emailed_to = None
         self._run_finished = False
         self._run_started = False
+        self._set_run_active(True)
         self.render()
 
         def cb(ev, payload):
@@ -2205,6 +2322,7 @@ class QAStudio:
             self._report_time = _t.time()
             self._stopping = False
             self._run_finished = True
+            self._set_run_active(False)
             self.nav_state = {"setup": "done", "run": "done", "report": "active"}
             self.active = "report"
             self.render()
@@ -2888,6 +3006,7 @@ class QAStudio:
         self._auto_running = True
         self._auto_built = False
         self._auto_log = []
+        self._set_run_active(True)
         self.render()
 
         def cb(msg, tone="dim"):
@@ -2954,6 +3073,7 @@ class QAStudio:
                 cb(f"Automation failed: {str(ex)[:200]}", "err")
             finally:
                 self._auto_running = False
+                self._set_run_active(False)
                 self.ui_safe(self.render)
 
         self._bg(work)
@@ -2967,6 +3087,7 @@ class QAStudio:
             return
         self._save_git_creds()
         self._auto_running = True
+        self._set_run_active(True)
         self.render()
 
         def cb(msg, tone="dim"):
@@ -2986,6 +3107,7 @@ class QAStudio:
                 cb(f"Push error: {str(ex)[:200]}", "err")
             finally:
                 self._auto_running = False
+                self._set_run_active(False)
                 self.ui_safe(self.render)
 
         self._bg(work)

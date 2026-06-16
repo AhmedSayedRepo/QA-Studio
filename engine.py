@@ -36,7 +36,7 @@ FEATURE_DESCRIPTION = ""   # optional global feature context for step generation
 
 # Email
 GMAIL_SENDER   = "wsstestteam2@gmail.com"
-GMAIL_APP_PASS = "hidlfrswsffjiexu"
+GMAIL_APP_PASS = ""
 
 # Runtime credentials (set by the UI)
 AZURE_PAT = ""

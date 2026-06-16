@@ -42,6 +42,7 @@ NAV = [
     {"id": "setup",  "label": "Setup",  "ix": "01", "icon": "TUNE"},
     {"id": "run",    "label": "Run",    "ix": "02", "icon": "MONITOR_HEART"},
     {"id": "report", "label": "Report", "ix": "03", "icon": "DESCRIPTION_OUTLINED"},
+    {"id": "automation", "label": "Automation", "ix": "04", "icon": "CODE"},
 ]
 
 # Provider smart-casing
