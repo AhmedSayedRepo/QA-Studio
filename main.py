@@ -147,8 +147,9 @@ def progress_ring(pct, color, size=44, label=None):
 def stat_tile(label, num, tone=None, sub=None):
     tone_colors = {"green": T.GREEN, "amber": T.AMBER, "red": T.RED, "violet": T.VIOLET_INK}
     numc = tone_colors.get(tone, T.INK)
-    label_row = [ft.Text(label, size=11, color=T.INK_2, weight=ft.FontWeight.BOLD,
-                         expand=True)]
+    label_row = [ft.Text(label, size=10.5, color=T.INK_2, weight=ft.FontWeight.BOLD,
+                         expand=True, no_wrap=True, overflow=ft.TextOverflow.ELLIPSIS,
+                         tooltip=label)]
     if tone:  # colored status dot (matches design)
         label_row.append(ft.Container(width=8, height=8, bgcolor=numc, border_radius=5))
     children = [
@@ -158,7 +159,7 @@ def stat_tile(label, num, tone=None, sub=None):
             ft.Text(sub or "", size=12, color=T.INK_3, weight=ft.FontWeight.BOLD),
         ], spacing=2, vertical_alignment=ft.CrossAxisAlignment.END),
     ]
-    return ft.Container(ft.Column(children, spacing=3), padding=ft.Padding.symmetric(vertical=14, horizontal=14),
+    return ft.Container(ft.Column(children, spacing=3), padding=ft.Padding.symmetric(vertical=14, horizontal=12),
                         bgcolor=T.CARD, border=ft.Border.all(1, T.BORDER),
                         border_radius=T.R, expand=True)
 
@@ -237,8 +238,10 @@ class QAStudio:
         self.auto_git_branch = self.creds.get("git_branch", "") or "main"
         self.auto_git_token = self.creds.get("git_token", "")
         self.auto_headless = True
+        self.auto_local_path = self.creds.get("auto_local_path", "")
         self._auto_log = []
         self._auto_running = False
+        self._auto_stop = False
         self._auto_out_dir = None
         self._auto_built = False
         self._run_active = False
@@ -973,6 +976,22 @@ class QAStudio:
             ],
             "url": "https://dev.azure.com",
             "url_label": "Open Azure DevOps",
+        },
+        "git_pat": {
+            "title": "Git access token (PAT) for pushing tests",
+            "steps": [
+                "This token lets QA Studio push the generated tests to your repo. Use one "
+                "scoped to just that repository.",
+                "GitHub: Settings → Developer settings → Personal access tokens → "
+                "Fine-grained tokens → Generate. Give it 'Contents: Read and write' on the "
+                "automation-tests repo only. Copy the token (shown once).",
+                "Azure DevOps Repos: User settings → Personal access tokens → New token → "
+                "scope 'Code (Read & Write)'.",
+                "Paste it here. It's stored locally like your other credentials and is "
+                "scrubbed from logs. Keep the repo private.",
+            ],
+            "url": "https://github.com/settings/tokens?type=beta",
+            "url_label": "Open GitHub token settings",
         },
     }
 
@@ -2522,12 +2541,26 @@ class QAStudio:
                     plan_url = (f"https://dev.azure.com/{E.AZURE_ORG}/{self.project}"
                                 f"/_testPlans/define?planId={self.plan_id}")
                 to = [e.strip() for e in self.emails.split(",") if e.strip()]
+                # Build a plain-text log for the email (test-case activity)
+                email_log = []
+                for ln in getattr(self, "_log_lines", []):
+                    msg = ln.get("msg", "")
+                    if not msg:
+                        continue
+                    ico = ln.get("ico", "")
+                    detail = ln.get("detail", "")
+                    prefix = "    " if ln.get("indent") else ""
+                    line = f"{prefix}{ico} {msg}".strip()
+                    if detail:
+                        line += f"  ({detail})"
+                    email_log.append({"text": line, "tone": ln.get("tone", "dim")})
                 html = E.build_report_email(tool_name, rpt.get("summary",""), stats,
                                             rpt.get("action_items",[]),
                                             rpt.get("skipped_items",[]),
                                             per_story=rpt.get("per_story", []),
                                             plan_url=plan_url,
-                                            total_secs=_secs)
+                                            total_secs=_secs,
+                                            log_lines=email_log)
                 ok, err = E.send_report(to, f"QA Studio — {tool_name} report", html)
                 if not ok:
                     self._log_lines.append({"tone":"warn","ico":"✉",
@@ -3093,7 +3126,8 @@ class QAStudio:
     # ═══════════════════════════════════════════════════════════════════════════
     #  AUTOMATION SCREEN — Selenium DOM scrape → TestNG/POM project → Git push
     # ═══════════════════════════════════════════════════════════════════════════
-    def _auto_field(self, label, attr, hint, password=False, req=False):
+    def _auto_field(self, label, attr, hint, password=False, req=False,
+                    info=None, on_info=None):
         tf = ft.TextField(
             value=getattr(self, attr, "") or "", hint_text=hint, password=password,
             can_reveal_password=password,
@@ -3101,7 +3135,8 @@ class QAStudio:
             content_padding=ft.Padding.symmetric(vertical=11, horizontal=12),
             text_size=13, expand=True,
             on_change=lambda e, a=attr: setattr(self, a, e.control.value))
-        return ft.Column([field_label(label, req=req), ft.Container(tf, padding=ft.Padding.only(top=4))],
+        return ft.Column([field_label(label, req=req, info=info, on_info=on_info),
+                          ft.Container(tf, padding=ft.Padding.only(top=4))],
                          spacing=0)
 
     def automation_screen(self):
@@ -3131,9 +3166,9 @@ class QAStudio:
                              "https://your-app.example.com/login (defaults to site URL)"),
             ft.Container(height=10),
             ft.Row([
-                self._auto_field("Username", "auto_login_user", "user@example.com"),
-                self._auto_field("Password", "auto_login_pass", "••••••••", password=True),
-            ], spacing=12),
+                ft.Container(self._auto_field("Username", "auto_login_user", "user@example.com"), expand=1),
+                ft.Container(self._auto_field("Password", "auto_login_pass", "••••••••", password=True), expand=1),
+            ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.START),
         ], spacing=0))
 
         git_card = card(ft.Column([
@@ -3143,21 +3178,43 @@ class QAStudio:
                              "https://github.com/you/automation-tests.git", req=True),
             ft.Container(height=10),
             ft.Row([
-                self._auto_field("Branch", "auto_git_branch", "main"),
-                self._auto_field("Access token (PAT)", "auto_git_token",
-                                 "ghp_… or Azure PAT", password=True, req=True),
-            ], spacing=12),
+                ft.Container(self._auto_field("Branch", "auto_git_branch", "main"), expand=1),
+                ft.Container(self._auto_field("Access token (PAT)", "auto_git_token",
+                                 "ghp_… or Azure PAT", password=True, req=True,
+                                 info="How to create a Git access token (PAT)",
+                                 on_info=lambda e: self._show_help("git_pat")), expand=1),
+            ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.START),
             ft.Container(height=4),
             ft.Text("The token is used only to push and is stored locally like your other "
                     "credentials. It is scrubbed from logs.",
                     size=11, color=T.INK_3, weight=ft.FontWeight.W_500),
         ], spacing=0))
 
+        local_card = card(ft.Column([
+            sec_head("C", "Local copy (optional)"),
+            ft.Container(height=10),
+            self._auto_field("Save project to folder", "auto_local_path",
+                             r"e.g. C:\Users\you\IdeaProjects\automation-tests"),
+            ft.Container(height=4),
+            ft.Text("If set, the generated Maven project is also copied here so you can "
+                    "open it directly in IntelliJ. Leave blank to use a temp folder.",
+                    size=11, color=T.INK_3, weight=ft.FontWeight.W_500),
+        ], spacing=0))
+
         gen_disabled = self._auto_running or not ready
-        gen_btn = primary_btn(
-            "Generate automation scripts" if not self._auto_running else "Working…",
-            icon=ft.Icons.AUTO_AWESOME, expand=True, disabled=gen_disabled,
-            on_click=lambda e: self._start_automation())
+        if self._auto_running:
+            # While running, show a Stop button instead of Generate
+            gen_btn = ft.Row([ft.FilledButton(
+                "Stop", icon=ft.Icons.STOP_CIRCLE_OUTLINED, expand=True,
+                on_click=lambda e: self._stop_automation(),
+                style=ft.ButtonStyle(bgcolor={"": T.RED}, color={"": "#FFFFFF"},
+                    shape=ft.RoundedRectangleBorder(radius=T.R),
+                    padding=ft.Padding.symmetric(vertical=14)))], spacing=0)
+        else:
+            gen_btn = primary_btn(
+                "Generate automation scripts",
+                icon=ft.Icons.AUTO_AWESOME, expand=True, disabled=gen_disabled,
+                on_click=lambda e: self._start_automation())
 
         push_disabled = self._auto_running or not self._auto_built
         push_btn = green_btn("Push to Git", icon=ft.Icons.CLOUD_UPLOAD_OUTLINED,
@@ -3174,6 +3231,7 @@ class QAStudio:
             *([setup_hint] if setup_hint else []),
             site_card,
             git_card,
+            local_card,
             ft.Row([gen_btn], spacing=0),
             ft.Row([push_btn], spacing=0),
         ], spacing=14, scroll=ft.ScrollMode.AUTO, expand=True)
@@ -3201,7 +3259,7 @@ class QAStudio:
                 ft.Row([spinner, ft.Text("ACTIVITY", size=11, weight=ft.FontWeight.BOLD,
                                          color=T.INK_3)], spacing=8),
                 ft.Container(height=10),
-                ft.Container(self._auto_log_col, expand=True, bgcolor="#FCFCFE",
+                ft.Container(ft.SelectionArea(content=self._auto_log_col), expand=True, bgcolor="#FCFCFE",
                              border=ft.Border.all(1, T.BORDER), border_radius=T.R, padding=12),
             ], spacing=0, expand=True), expand=True),
         ], spacing=14, expand=True)
@@ -3237,6 +3295,11 @@ class QAStudio:
         except Exception:
             pass
 
+    def _stop_automation(self):
+        """Request the running automation to stop after the current step."""
+        self._auto_stop = True
+        self._auto_logmsg("Stopping after the current step…", "warn")
+
     def _start_automation(self):
         if not (self.story_ids and self.project and self.plan_id):
             self._toast("Select stories on Setup first.")
@@ -3246,6 +3309,7 @@ class QAStudio:
             return
         self._save_git_creds()
         self._auto_running = True
+        self._auto_stop = False
         self._auto_built = False
         self._auto_log = []
         self._set_run_active(True)
@@ -3255,7 +3319,7 @@ class QAStudio:
             self._auto_logmsg(msg, tone)
 
         def work():
-            import tempfile, os as _os
+            import tempfile, os as _os, shutil
             try:
                 # 1) connect to Azure + fetch stories with their test cases/steps
                 cb("Connecting to Azure DevOps…", "dim")
@@ -3268,6 +3332,8 @@ class QAStudio:
                 total_tc = 0
                 total_steps = 0
                 for s in stories:
+                    if self._auto_stop:
+                        cb("Stopped before scraping.", "warn"); return
                     sid = s.id
                     title = s.fields.get("System.Title", "")
                     criteria = s.fields.get("Microsoft.VSTS.Common.AcceptanceCriteria", "")
@@ -3279,7 +3345,6 @@ class QAStudio:
                                 wi = tc.get("workItem", {})
                                 tc_id = wi.get("id")
                                 tc_title = wi.get("name", "")
-                                # pull the actual steps written by the Steps script
                                 steps = E.fetch_test_case_steps(tc_id) if tc_id else []
                                 total_steps += len(steps)
                                 tcs.append({"id": tc_id, "title": tc_title, "steps": steps})
@@ -3293,6 +3358,9 @@ class QAStudio:
                 cb(f"Loaded {len(stories_payload)} story/stories · {total_tc} test case(s) · "
                    f"{total_steps} step(s) from Azure.", "ok")
 
+                if self._auto_stop:
+                    cb("Stopped before scraping.", "warn"); return
+
                 # 2) scrape the live DOM
                 login = None
                 if self.auto_login_user.strip() and self.auto_login_pass:
@@ -3302,19 +3370,43 @@ class QAStudio:
                 dom = E.scrape_dom(self.auto_site_url.strip(), login=login, cb=cb,
                                    headless=self.auto_headless)
 
+                if self._auto_stop:
+                    cb("Stopped before generation.", "warn"); return
+
                 # 3) build the Maven project
                 out_dir = tempfile.mkdtemp(prefix="qastudio_automation_")
                 self._auto_out_dir = out_dir
                 cb(f"Generating project at {out_dir}", "dim")
                 E.build_automation_project(out_dir, stories_payload, dom,
                                            self.auto_site_url.strip(),
-                                           cb=cb, should_stop=lambda: False)
+                                           cb=cb, should_stop=lambda: self._auto_stop)
+                # 3b) optional copy to a local folder for IntelliJ
+                lp = (self.auto_local_path or "").strip()
+                if lp:
+                    try:
+                        dest = lp
+                        if _os.path.isdir(dest):
+                            dest = _os.path.join(dest, "automation-tests")
+                        if _os.path.exists(dest):
+                            shutil.rmtree(dest, ignore_errors=True)
+                        shutil.copytree(out_dir, dest)
+                        self.creds["auto_local_path"] = lp
+                        try:
+                            store.save(self.creds)
+                        except Exception:
+                            pass
+                        cb(f"Copied project to {dest}", "ok")
+                    except Exception as ce:
+                        cb(f"Could not copy to local folder: {str(ce)[:150]}", "warn")
+                if self._auto_stop:
+                    cb("Stopped.", "warn"); return
                 self._auto_built = True
                 cb("Done. Review the activity, then Push to Git.", "ok")
             except Exception as ex:
                 cb(f"Automation failed: {str(ex)[:200]}", "err")
             finally:
                 self._auto_running = False
+                self._auto_stop = False
                 self._set_run_active(False)
                 self.ui_safe(self.render)
 
