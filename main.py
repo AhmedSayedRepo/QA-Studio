@@ -685,46 +685,76 @@ class QAStudio:
         self._show_dialog(dlg)
 
     def _restart_app(self):
-        """Relaunch the app, then exit this instance. The new process is started
-        in its own process group so tearing down this one cannot kill it."""
+        """Restart via an external relauncher script. The old app writes a tiny
+        helper to a temp file and starts it fully detached; the helper waits for
+        THIS process to fully exit, then launches a fresh app. Because the helper
+        is a separate, detached process, killing this app can't affect it."""
         self._close_dialog()
         try:
-            import sys, os, subprocess
-            main_py = os.path.join(os.path.dirname(os.path.abspath(__file__)), "main.py")
-            pyw = sys.executable
+            import sys, os, subprocess, tempfile, textwrap
+            app_dir = os.path.dirname(os.path.abspath(__file__))
+            main_py = os.path.join(app_dir, "main.py")
+            py = sys.executable
+            pyw = py
             try:
-                cand = os.path.join(os.path.dirname(pyw), "pythonw.exe")
+                cand = os.path.join(os.path.dirname(py), "pythonw.exe")
                 if os.path.exists(cand):
                     pyw = cand
             except Exception:
                 pass
+            my_pid = os.getpid()
+            relauncher = os.path.join(tempfile.gettempdir(), "qastudio_relaunch.py")
+            code = textwrap.dedent(f'''
+                import os, sys, time, subprocess
+                OLD_PID = {my_pid}
+                PYW = {pyw!r}
+                MAIN = {main_py!r}
+                APP_DIR = {app_dir!r}
+                # Wait for the old app to fully exit (up to ~15s).
+                def alive(pid):
+                    try:
+                        if os.name == "nt":
+                            out = subprocess.run(
+                                ["tasklist", "/FI", f"PID eq {{pid}}"],
+                                capture_output=True, text=True).stdout
+                            return str(pid) in out
+                        else:
+                            os.kill(pid, 0); return True
+                    except Exception:
+                        return False
+                for _ in range(150):
+                    if not alive(OLD_PID):
+                        break
+                    time.sleep(0.1)
+                time.sleep(0.5)
+                # Launch a fresh app instance.
+                try:
+                    subprocess.Popen([PYW, MAIN], cwd=APP_DIR)
+                except Exception:
+                    pass
+            ''').strip()
+            with open(relauncher, "w", encoding="utf-8") as f:
+                f.write(code)
+            # Start the relauncher FULLY DETACHED so it survives our death.
             if os.name == "nt":
-                # New process GROUP only (not fully detached — Flet needs its
-                # normal startup). This keeps the new app out of THIS process's
-                # tree so the cleanup below can't take it down with us.
-                NEW_GROUP = 0x00000200         # CREATE_NEW_PROCESS_GROUP
-                subprocess.Popen([pyw, main_py], cwd=os.path.dirname(main_py),
-                                 creationflags=NEW_GROUP)
+                DETACHED = 0x00000008
+                NEW_GROUP = 0x00000200
+                NO_WINDOW = 0x08000000
+                subprocess.Popen([pyw, relauncher],
+                                 creationflags=DETACHED | NEW_GROUP | NO_WINDOW,
+                                 close_fds=True)
             else:
-                subprocess.Popen([pyw, main_py], cwd=os.path.dirname(main_py),
-                                 start_new_session=True)
+                subprocess.Popen([py, relauncher], start_new_session=True)
         except Exception:
             pass
+        # Now tear down THIS instance. The relauncher is watching and will start
+        # the new app once we're gone.
         self._run_active = False
         self._auto_running = False
-        # Close THIS instance after a short delay so the new one is up first.
-        def _close_old():
-            import time
-            time.sleep(1.5)
-            self._restart_close()
-        try:
-            threading.Thread(target=_close_old, daemon=True).start()
-        except Exception:
-            self._restart_close()
+        self._restart_close()
 
     def _restart_close(self):
-        """Close only THIS process tree (old window + its flet client), without
-        touching the newly launched instance (which is in its own group)."""
+        """Close this process tree (old window + its flet client)."""
         try:
             if hasattr(self.page, "window") and self.page.window is not None:
                 try:
@@ -736,12 +766,10 @@ class QAStudio:
             pass
         def _hard():
             import os, time
-            time.sleep(0.5)
+            time.sleep(0.4)
             if os.name == "nt":
                 try:
                     import subprocess
-                    # Tree-kill THIS pid only. The new app is in a different
-                    # process group, so it is unaffected.
                     subprocess.run(["taskkill", "/F", "/T", "/PID", str(os.getpid())],
                                    creationflags=0x08000000, check=False)
                     return
