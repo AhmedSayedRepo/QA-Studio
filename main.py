@@ -3361,14 +3361,23 @@ class QAStudio:
                 if self._auto_stop:
                     cb("Stopped before scraping.", "warn"); return
 
-                # 2) scrape the live DOM
+                # 2) LIVE-WALK: log in (verified) and walk each test case's steps,
+                #    capturing the exact locator for every step from the real page.
                 login = None
                 if self.auto_login_user.strip() and self.auto_login_pass:
                     login = {"url": self.auto_login_url.strip() or self.auto_site_url.strip(),
                              "user": self.auto_login_user.strip(),
                              "password": self.auto_login_pass}
-                dom = E.scrape_dom(self.auto_site_url.strip(), login=login, cb=cb,
-                                   headless=self.auto_headless)
+                cb("Starting live exploration (real browser actions)…", "info")
+                result = E.explore_and_map(stories_payload, login,
+                                           self.auto_site_url.strip(), cb=cb,
+                                           should_stop=lambda: self._auto_stop,
+                                           headless=False)
+                stories_payload = result["stories_payload"]
+                dom = result["dom_snapshot"]
+                _st = result.get("stats", {})
+                cb(f"Locators — {_st.get('live',0)} captured live, "
+                   f"{_st.get('guess',0)} will be guessed.", "ok")
 
                 if self._auto_stop:
                     cb("Stopped before generation.", "warn"); return

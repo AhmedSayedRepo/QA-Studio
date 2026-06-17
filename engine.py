@@ -1679,6 +1679,93 @@ def _safe_class_name(text, fallback="Story"):
     return name or fallback
 
 
+_HARVEST_JS = r"""
+function robustCss(el){
+  if(el.id) return '#'+CSS.escape(el.id);
+  if(el.name) return el.tagName.toLowerCase()+'[name="'+el.name+'"]';
+  let path=[], e=el;
+  while(e && e.nodeType===1 && path.length<5){
+    let sel=e.tagName.toLowerCase();
+    if(e.className && typeof e.className==='string'){
+      let c=e.className.trim().split(/\s+/).filter(Boolean).slice(0,2);
+      if(c.length) sel+='.'+c.map(x=>CSS.escape(x)).join('.');
+    }
+    let p=e.parentNode, idx=1, sib=e;
+    while(sib=sib.previousElementSibling){ if(sib.tagName===e.tagName) idx++; }
+    sel+=':nth-of-type('+idx+')';
+    path.unshift(sel);
+    e=e.parentNode;
+    if(e && e.id){ path.unshift('#'+CSS.escape(e.id)); break; }
+  }
+  return path.join(' > ');
+}
+function xpathOf(el){
+  if(el.id) return '//*[@id="'+el.id+'"]';
+  let parts=[], e=el;
+  while(e && e.nodeType===1){
+    let idx=1, sib=e;
+    while(sib=sib.previousElementSibling){ if(sib.tagName===e.tagName) idx++; }
+    parts.unshift(e.tagName.toLowerCase()+'['+idx+']');
+    e=e.parentNode;
+  }
+  return '/'+parts.join('/');
+}
+const sel='input,button,a,select,textarea,[role=button],[role=link],[role=tab],[contenteditable=true]';
+const els=[...document.querySelectorAll(sel)];
+return els.slice(0,250).map((el,i)=>({
+  idx: i,
+  tag: el.tagName.toLowerCase(),
+  type: el.getAttribute('type')||'',
+  id: el.id||'',
+  name: el.getAttribute('name')||'',
+  text: (el.innerText||el.value||'').trim().slice(0,60),
+  placeholder: el.getAttribute('placeholder')||'',
+  aria: el.getAttribute('aria-label')||'',
+  visible: !!(el.offsetWidth||el.offsetHeight||el.getClientRects().length),
+  css: robustCss(el),
+  xpath: xpathOf(el)
+}));
+"""
+
+
+def _harvest_dom(driver):
+    """Return the list of interactive elements on the current page."""
+    try:
+        return driver.execute_script("return (function(){" + _HARVEST_JS + "})();") or []
+    except Exception:
+        return []
+
+
+def _verify_logged_in(driver, login_url, cb):
+    """Best-effort check that login actually succeeded. Returns (ok, reason)."""
+    import time as _t
+    _t.sleep(1.0)
+    cur = (driver.current_url or "").rstrip("/")
+    base_login = (login_url or "").rstrip("/")
+    moved = cur != base_login
+    still_pw = False
+    try:
+        from selenium.webdriver.common.by import By
+        pw = driver.find_elements(By.CSS_SELECTOR, "input[type=password]")
+        still_pw = any(e.is_displayed() for e in pw)
+    except Exception:
+        pass
+    err = False
+    try:
+        body = (driver.find_element("tag name", "body").text or "").lower()
+        for kw in ("invalid", "incorrect", "failed", "غير صحيح", "خطأ",
+                   "wrong password", "try again", "بيانات غير"):
+            if kw in body:
+                err = True; break
+    except Exception:
+        pass
+    if still_pw and not moved:
+        return False, "still on the login form (login likely failed)"
+    if err and not moved:
+        return False, "an error message is shown on the login page"
+    return True, ("logged in — now at " + cur)
+
+
 def scrape_dom(url, login=None, cb=None, headless=True, wait_secs=4):
     """Open `url` in Selenium Chrome, optionally log in, then harvest interactive
     elements. Returns a list of dicts:
@@ -1788,6 +1875,214 @@ def scrape_dom(url, login=None, cb=None, headless=True, wait_secs=4):
             pass
 
 
+def _match_step_to_element(action, elements, cb):
+    """Ask the AI which real DOM element best matches a step's action.
+    Returns (element_dict_or_None, kind) where kind in
+    {'type','click','select','navigate','none'} and a value to type if relevant."""
+    # Trim elements to the fields the model needs (keep idx for reference)
+    brief = [{"idx": e["idx"], "tag": e["tag"], "type": e["type"], "id": e["id"],
+              "name": e["name"], "text": e["text"], "placeholder": e["placeholder"],
+              "aria": e["aria"], "visible": e["visible"]}
+             for e in elements if e.get("visible", True)][:120]
+    prompt = (
+        "You map a single UI test step to ONE real element on the current page.\n"
+        "The step action may be in Arabic or English. Choose the best matching element.\n\n"
+        f"STEP ACTION: {action}\n\n"
+        f"ELEMENTS (JSON, use the 'idx'):\n{json.dumps(brief, ensure_ascii=False)[:6000]}\n\n"
+        "Reply with ONLY a JSON object, no markdown:\n"
+        '{\"idx\": <element idx or -1 if none fits>, '
+        '\"kind\": \"click|type|select|navigate|none\", '
+        '\"value\": \"<text to type if kind==type/select, else empty>\"}'
+    )
+    try:
+        raw = ai_complete(prompt, max_tokens=300)
+        data = parse_json_robust(raw)
+        if isinstance(data, list) and data:
+            data = data[0]
+        idx = int(data.get("idx", -1))
+        kind = (data.get("kind") or "none").strip().lower()
+        value = data.get("value", "") or ""
+        if idx is None or idx < 0:
+            return None, kind, value
+        match = next((e for e in elements if e.get("idx") == idx), None)
+        return match, kind, value
+    except Exception as e:
+        cb(f"  match error: {str(e)[:80]}", "warn")
+        return None, "none", ""
+
+
+def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
+                    headless=False, wait_secs=3):
+    """LIVE-WALK explorer: logs in (verifying success), then for each test case
+    walks its steps in order — matching each step's action to a real element on
+    the live page, recording the EXACT locator, and performing the action so the
+    page advances to the next step's state.
+
+    Returns the stories_payload enriched so each step gains:
+        step["locator"]      = {"by": "id|name|css|xpath", "value": "..."} or None
+        step["locator_src"]  = "live" | "snapshot" | "guess"
+        step["assert_locator"] (best-effort target for the expected result)
+    Also attaches each story's accumulated DOM snapshots for fallback generation.
+
+    NOTE: this performs REAL clicks/typing on the target site. Use a TEST env.
+    """
+    cb = cb or (lambda *a, **k: None)
+    should_stop = should_stop or (lambda: False)
+    from selenium import webdriver
+    from selenium.webdriver.chrome.options import Options
+    from selenium.webdriver.common.by import By
+    import time as _t
+
+    opts = Options()
+    if headless:
+        opts.add_argument("--headless=new")
+    opts.add_argument("--no-sandbox")
+    opts.add_argument("--disable-dev-shm-usage")
+    opts.add_argument("--window-size=1440,900")
+    opts.add_argument("--disable-gpu")
+
+    cb("Launching Chrome…", "dim")
+    driver = webdriver.Chrome(options=opts)
+    all_snapshots = []   # union of every element seen (for fallback)
+
+    def snapshot(tag=""):
+        els = _harvest_dom(driver)
+        all_snapshots.extend(els)
+        if tag:
+            cb(f"  captured {len(els)} elements ({tag})", "dim")
+        return els
+
+    def to_locator(el):
+        if not el:
+            return None
+        if el.get("id"):
+            return {"by": "id", "value": el["id"]}
+        if el.get("name"):
+            return {"by": "name", "value": el["name"]}
+        if el.get("css"):
+            return {"by": "css", "value": el["css"]}
+        return {"by": "xpath", "value": el.get("xpath", "")}
+
+    def find_live(el):
+        """Locate the actual Selenium element for an harvested element dict."""
+        try:
+            if el.get("id"):
+                return driver.find_element(By.ID, el["id"])
+            if el.get("name"):
+                return driver.find_element(By.NAME, el["name"])
+            if el.get("css"):
+                return driver.find_element(By.CSS_SELECTOR, el["css"])
+            return driver.find_element(By.XPATH, el["xpath"])
+        except Exception:
+            return None
+
+    try:
+        # ── login + verify ──
+        login_url = (login or {}).get("url") or site_url
+        if login and login.get("user") and login.get("password"):
+            cb(f"Opening login page: {login_url}", "dim")
+            driver.get(login_url)
+            _t.sleep(wait_secs)
+            try:
+                u = driver.find_element(By.CSS_SELECTOR,
+                    login.get("user_locator") or "input[type=email],input[type=text],input[name*=user]")
+                u.clear(); u.send_keys(login["user"])
+                p = driver.find_element(By.CSS_SELECTOR,
+                    login.get("pass_locator") or "input[type=password]")
+                p.clear(); p.send_keys(login["password"])
+                btn = login.get("submit_locator") or "button[type=submit],input[type=submit],button"
+                driver.find_element(By.CSS_SELECTOR, btn).click()
+                cb("Submitted login — verifying…", "dim")
+                _t.sleep(wait_secs + 2)
+            except Exception as e:
+                raise RuntimeError(f"Login step failed: {str(e)[:120]}")
+            ok, reason = _verify_logged_in(driver, login_url, cb)
+            if not ok:
+                raise RuntimeError(f"Login could not be verified — {reason}. "
+                                   f"Aborting so locators aren't captured from the wrong page.")
+            cb(f"Login verified — {reason}", "ok")
+        else:
+            cb("No login provided — exploring as anonymous user.", "warn")
+
+        # Navigate to the starting page
+        cb(f"Opening target page: {site_url}", "dim")
+        driver.get(site_url)
+        _t.sleep(wait_secs)
+
+        live_count = snap_count = guess_count = 0
+
+        # ── walk each test case ──
+        for sp in stories_payload:
+            if should_stop():
+                cb("Stopped.", "warn"); break
+            story = sp.get("story", {})
+            cb(f"▸ Story {story.get('id')} — {story.get('title','')}", "story")
+            for tc in sp.get("test_cases", []):
+                if should_stop():
+                    break
+                steps = tc.get("steps", []) or []
+                cb(f"  walking '{tc.get('title','')}' ({len(steps)} steps)", "info")
+                # Return to the start page for each test case for a clean state
+                try:
+                    driver.get(site_url); _t.sleep(wait_secs)
+                except Exception:
+                    pass
+                for st in steps:
+                    if should_stop():
+                        break
+                    action = st.get("action", "") or ""
+                    if not action.strip():
+                        continue
+                    els = snapshot()
+                    match, kind, value = _match_step_to_element(action, els, cb)
+                    if match:
+                        st["locator"] = to_locator(match)
+                        st["locator_src"] = "live"
+                        live_count += 1
+                        # perform the action to advance the page state
+                        live_el = find_live(match)
+                        try:
+                            if live_el is not None:
+                                if kind == "type":
+                                    live_el.clear(); live_el.send_keys(value or "test")
+                                elif kind == "select":
+                                    from selenium.webdriver.support.ui import Select
+                                    try:
+                                        Select(live_el).select_by_visible_text(value)
+                                    except Exception:
+                                        live_el.click()
+                                else:  # click / navigate / default
+                                    live_el.click()
+                                _t.sleep(1.2)  # let the page react
+                        except Exception as ae:
+                            cb(f"    action issue: {str(ae)[:70]}", "warn")
+                        # capture the expected-result target after the action
+                        exp = st.get("expected", "") or ""
+                        if exp.strip():
+                            els2 = snapshot()
+                            m2, _, _ = _match_step_to_element(exp, els2, cb)
+                            st["assert_locator"] = to_locator(m2) if m2 else None
+                    else:
+                        st["locator"] = None
+                        st["locator_src"] = "guess"
+                        guess_count += 1
+        cb(f"Exploration done — {live_count} exact, {guess_count} need a guess.", "ok")
+        # de-dup snapshots
+        seen = set(); uniq = []
+        for e in all_snapshots:
+            key = (e.get("id"), e.get("name"), e.get("css"))
+            if key in seen:
+                continue
+            seen.add(key); uniq.append(e)
+        return {"stories_payload": stories_payload, "dom_snapshot": uniq[:300],
+                "stats": {"live": live_count, "guess": guess_count}}
+    finally:
+        try:
+            driver.quit()
+        except Exception:
+            pass
+
+
 def generate_test_class(story, test_cases, dom_elements, base_package, log=None):
     """AI generates ONE TestNG page-object-style test class for a story.
     `story` = {"id","title","criteria"}
@@ -1812,7 +2107,11 @@ def generate_test_class(story, test_cases, dom_elements, base_package, log=None)
         tc_brief.append({"title": tc.get("title", ""),
                          "steps": [{"action": s.get("action", ""),
                                     "expected": s.get("expected", ""),
-                                    "precondition": s.get("precondition", "")} for s in steps]})
+                                    "precondition": s.get("precondition", ""),
+                                    # exact locator captured by the live-walk explorer
+                                    "locator": s.get("locator"),
+                                    "locator_src": s.get("locator_src", ""),
+                                    "assert_locator": s.get("assert_locator")} for s in steps]})
 
     prompt = f"""
 You are a senior SDET. Generate Selenium + Java + TestNG automation using the Page Object Model.
@@ -1840,10 +2139,16 @@ Requirements:
   Do NOT invent steps that aren't listed; do NOT skip listed steps. Steps may be in Arabic —
   read them and map intent to UI actions. Add a short `// <step n>: <action>` comment above
   each block so the mapping is traceable.
-- Use ONLY locators from the REAL DOM list provided. Pick the most stable: prefer id, then name,
-  then css, then xpath. Define them as `By` fields in the Page Object.
-- If a needed element is NOT in the DOM list, create the By with a best-guess css and add a
-  comment `// TODO verify locator`.
+- LOCATORS — each step may include a "locator" captured live from the real page
+  (an object like {{"by":"id|name|css|xpath","value":"..."}}) and "locator_src":
+    * If "locator" is present and locator_src=="live", you MUST use that exact
+      locator for the step's element — it was verified on the live page. Build the
+      matching By (By.id/By.name/By.cssSelector/By.xpath).
+    * "assert_locator" (when present) is the verified element for the expected
+      result — use it for the assertion.
+    * If "locator" is null, fall back to the REAL DOM list below; pick the most
+      stable (id > name > css > xpath) and add `// TODO verify locator`.
+- Use locators from the REAL DOM list only when a step has no captured locator.
 - The Page Object exposes action methods (e.g. clickAddQuestion(), enterAnswer(String)).
 - Add plain TestNG (no Allure). Include necessary imports. Code must compile.
 - Add a class-level Javadoc with the story id and title.
