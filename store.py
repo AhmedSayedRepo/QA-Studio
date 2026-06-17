@@ -20,6 +20,8 @@ def load():
     d.setdefault("keys", {})
     d.setdefault("pat", "")
     d.setdefault("gmail", "")
+    d.setdefault("gmail_sender", "")
+    d.setdefault("org", "")
     return d
 
 def save(d):

@@ -183,6 +183,16 @@ class QAStudio:
     def __init__(self, page: ft.Page):
         self.page = page
         self.creds = store.load()
+        # Apply saved org / email sender to the engine immediately so they
+        # persist across restarts without needing to reconnect first.
+        try:
+            _saved_org = (self.creds.get("org") or "").strip()
+            _saved_sender = (self.creds.get("gmail_sender") or "").strip()
+            E.set_credentials(org=_saved_org or None,
+                              gmail_sender=_saved_sender or None,
+                              gmail=self.creds.get("gmail") or None)
+        except Exception:
+            pass
         self.connected = False
         self.active = "setup"          # setup | run | report
         self.tool = "steps"            # steps | titles
@@ -212,6 +222,8 @@ class QAStudio:
         self._key_unlocked = False
         self._pat_unlocked = False
         self._gmail_unlocked = False
+        self._org_unlocked = False
+        self._sender_unlocked = False
         # connect loading state
         self._connecting = False
         self._connect_status = ""
@@ -939,10 +951,37 @@ class QAStudio:
             content_padding=ft.Padding.symmetric(vertical=12, horizontal=12), text_size=13, expand=True)
         self.gmail_btn = green_btn("Save", on_click=self._save_gmail) if gmail_editable                     else ghost_btn("Update", on_click=self._unlock_gmail)
 
+        # Azure Organization field (one-time set, preserved, Update to change)
+        org_val = self.creds.get("org", "") or E.AZURE_ORG
+        org_has = bool(self.creds.get("org"))
+        org_editable = (not org_has) or self._org_unlocked
+        self.org_field = ft.TextField(
+            value=org_val, hint_text="Azure DevOps organization name",
+            read_only=not org_editable,
+            bgcolor=(T.CARD if org_editable else T.CARD_2),
+            border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
+            content_padding=ft.Padding.symmetric(vertical=12, horizontal=12), text_size=13, expand=True)
+        self.org_btn = green_btn("Save", on_click=self._save_org) if org_editable                   else ghost_btn("Update", on_click=self._unlock_org)
+
+        # Gmail sender field (one-time set, preserved, Update to change)
+        sender_val = self.creds.get("gmail_sender", "") or E.GMAIL_SENDER
+        sender_has = bool(self.creds.get("gmail_sender"))
+        sender_editable = (not sender_has) or self._sender_unlocked
+        self.sender_field = ft.TextField(
+            value=sender_val, hint_text="Sender Gmail address",
+            read_only=not sender_editable,
+            bgcolor=(T.CARD if sender_editable else T.CARD_2),
+            border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
+            content_padding=ft.Padding.symmetric(vertical=12, horizontal=12), text_size=13, expand=True)
+        self.sender_btn = green_btn("Save", on_click=self._save_sender) if sender_editable                      else ghost_btn("Update", on_click=self._unlock_sender)
+
         return ft.Column([
             field_label("AI Provider", req=True, info="How to make a provider active",
                         on_info=lambda e: self._show_help("provider")),
             ft.Container(self.prov_dd, padding=ft.Padding.only(top=4, bottom=12)),
+            field_label("Azure Organization", req=True),
+            ft.Container(ft.Row([self.org_field, self.org_btn], spacing=8),
+                        padding=ft.Padding.only(top=4, bottom=12)),
             field_label("API Key", req=True, info="How to get your AI provider API key",
                         on_info=lambda e: self._show_help("api_key")),
             ft.Container(ft.Row([self.api_key_field, self.api_btn], spacing=8),
@@ -957,6 +996,9 @@ class QAStudio:
                 ], expand=True, spacing=0),
             ]),
             ft.Container(height=12),
+            field_label("Email Sender", hint="optional"),
+            ft.Container(ft.Row([self.sender_field, self.sender_btn], spacing=8),
+                        padding=ft.Padding.only(top=4, bottom=12)),
             ft.Row([
                 ft.Column([
                     field_label("Gmail App Password", hint="optional", req=False,
@@ -1098,6 +1140,34 @@ class QAStudio:
 
     def _unlock_gmail(self, e=None):
         self._gmail_unlocked = True; self.render()
+
+    def _save_org(self, e=None):
+        val = (self.org_field.value or "").strip()
+        if not val:
+            self._err("Azure Organization is required."); return
+        self.creds["org"] = val; store.save(self.creds)
+        try:
+            E.set_credentials(org=val)
+        except Exception:
+            pass
+        self._org_unlocked = False
+        self._toast("Organization saved."); self.render()
+
+    def _unlock_org(self, e=None):
+        self._org_unlocked = True; self.render()
+
+    def _save_sender(self, e=None):
+        val = (self.sender_field.value or "").strip()
+        self.creds["gmail_sender"] = val; store.save(self.creds)
+        try:
+            E.set_credentials(gmail_sender=val)
+        except Exception:
+            pass
+        self._sender_unlocked = False
+        self._toast("Email sender saved."); self.render()
+
+    def _unlock_sender(self, e=None):
+        self._sender_unlocked = True; self.render()
 
     def _err(self, msg):
         self._err_msg = msg
@@ -1486,9 +1556,14 @@ class QAStudio:
         self.creds["pat"] = pat
         gmail = self._field_or_saved("gmail_field", self.creds.get("gmail", ""))
         self.creds["gmail"] = gmail
+        org = self._field_or_saved("org_field", self.creds.get("org", "")) or E.AZURE_ORG
+        self.creds["org"] = org
+        sender = self._field_or_saved("sender_field", self.creds.get("gmail_sender", "")) or E.GMAIL_SENDER
+        self.creds["gmail_sender"] = sender
         store.save(self.creds)
 
-        E.set_credentials(provider=name, api_key=key, pat=pat, gmail=gmail)
+        E.set_credentials(provider=name, api_key=key, pat=pat, gmail=gmail,
+                          org=org, gmail_sender=sender)
         self._err("")
         self._connecting = True
         self._connect_status = "Validating PAT & loading projects…"

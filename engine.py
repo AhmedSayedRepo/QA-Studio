@@ -35,14 +35,15 @@ AI_CONFIG = {
 FEATURE_DESCRIPTION = ""   # optional global feature context for step generation
 
 # Email
-GMAIL_SENDER   = "wsstestteam2@gmail.com"
-GMAIL_APP_PASS = "hidlfrswsffjiexu"
+GMAIL_SENDER   = ""
+GMAIL_APP_PASS = ""
 
 # Runtime credentials (set by the UI)
 AZURE_PAT = ""
 
-def set_credentials(provider=None, api_key=None, pat=None, gmail=None):
-    global AI_PROVIDER, AZURE_PAT, GMAIL_APP_PASS
+def set_credentials(provider=None, api_key=None, pat=None, gmail=None,
+                    org=None, gmail_sender=None):
+    global AI_PROVIDER, AZURE_PAT, GMAIL_APP_PASS, AZURE_ORG, GMAIL_SENDER
     if provider:
         AI_PROVIDER = provider
     if api_key and AI_PROVIDER in AI_CONFIG:
@@ -51,6 +52,10 @@ def set_credentials(provider=None, api_key=None, pat=None, gmail=None):
         AZURE_PAT = pat
     if gmail is not None:
         GMAIL_APP_PASS = gmail
+    if org:
+        AZURE_ORG = org.strip()
+    if gmail_sender:
+        GMAIL_SENDER = gmail_sender.strip()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
