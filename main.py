@@ -248,6 +248,7 @@ class QAStudio:
 
         # update-check state
         self._update_info = None     # set by background check_for_update
+        self._last_nav_update_check = 0
         self._updating = False
         self._update_dismissed = False
 
@@ -406,6 +407,8 @@ class QAStudio:
     def goto(self, screen):
         self.active = screen
         self.render()
+        # Opportunistically check for a newer version when the user navigates.
+        self._maybe_check_update_on_nav()
 
     def render(self):
         try:
@@ -602,13 +605,44 @@ class QAStudio:
             _hard_exit()
 
     def _kickoff_update_check(self):
+        """Check once at startup, then keep re-checking periodically while the
+        app stays open, so users who never relaunch still get notified."""
+        import time as _t
         def work():
-            info = E.check_for_update()
-            self._update_info = info
-            if info.get("update"):
-                self.ui_safe(self.render)
+            self._run_update_check()
+            while True:
+                try:
+                    _t.sleep(600)   # re-check every 10 minutes
+                except Exception:
+                    break
+                if (self._update_info or {}).get("update") and not self._update_dismissed:
+                    continue
+                self._run_update_check()
         try:
             self._bg(work)
+        except Exception:
+            pass
+
+    def _run_update_check(self):
+        try:
+            info = E.check_for_update()
+            prev = (self._update_info or {}).get("update")
+            self._update_info = info
+            if info.get("update") and not self._update_dismissed and not prev:
+                self.ui_safe(self.render)
+        except Exception:
+            pass
+
+    def _maybe_check_update_on_nav(self):
+        """Throttled check fired on navigation — at most once every 2 minutes."""
+        import time as _t
+        now = _t.time()
+        last = getattr(self, "_last_nav_update_check", 0)
+        if now - last < 120:
+            return
+        self._last_nav_update_check = now
+        try:
+            self._bg(self._run_update_check)
         except Exception:
             pass
 
