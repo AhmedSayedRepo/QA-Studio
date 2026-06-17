@@ -43,7 +43,8 @@ LOG_WARN  = "#E7B450"
 LOG_INK   = "#D7D5E0"
 
 # Weighted install phases for a smooth, believable percentage
-SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+# ASCII-safe spinner (avoids UTF-8 corruption across editors/transfers)
+SPIN = ["|", "/", "-", "\\"]
 
 
 class Installer:
