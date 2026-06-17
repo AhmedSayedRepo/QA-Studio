@@ -1470,8 +1470,8 @@ class QAStudio:
         # grey/disabled when no plan is chosen yet.
         _sum_enabled = bool(self.plan_id)
         self._summary_btn = ft.FilledButton(
-            "Selected Sprint Summary report",
-            icon=ft.Icons.SUMMARIZE_OUTLINED, height=46,
+            "Sprint Summary report",
+            icon=ft.Icons.SUMMARIZE_OUTLINED, height=42,
             disabled=not _sum_enabled,
             on_click=lambda e: self._open_sprint_summary(),
             style=ft.ButtonStyle(
@@ -1493,24 +1493,25 @@ class QAStudio:
             # Row 1 — Project (full width)
             field_label("Project", req=True),
             ft.Container(self.project_dd, padding=ft.Padding.only(top=4, bottom=12)),
-            # Row 2 — Test Plan (40%) · Test Plan ID (30%) · Create (30%)
+            # Row 2 — Test Plan (50%) · Test Plan ID (50%)
             ft.Row([
                 ft.Column([field_label("Test Plan", req=True),
                            ft.Container(self.plan_dd, padding=ft.Padding.only(top=4))],
-                          expand=4, spacing=0),
+                          expand=1, spacing=0),
                 ft.Column([field_label("Test Plan ID", hint="auto"),
                            ft.Container(self.plan_id_field, padding=ft.Padding.only(top=4))],
-                          expand=3, spacing=0),
-                ft.Column([ft.Container(height=18),
-                           ft.Container(
-                               green_btn("Create", icon=ft.Icons.ADD, expand=True,
-                                         on_click=lambda e: self._open_create_plan()),
-                               padding=ft.Padding.only(top=4))],
-                          expand=3, spacing=0),
+                          expand=1, spacing=0),
             ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.START),
             ft.Container(height=12),
-            # Row 3 — Sprint summary (full width)
-            ft.Container(_summary_row, padding=ft.Padding.only(bottom=14)),
+            # Row 3 — Create Plan (50%) · Sprint Summary (50%)
+            ft.Row([
+                ft.Container(
+                    green_btn("Create Plan", icon=ft.Icons.ADD, expand=True,
+                              on_click=lambda e: self._open_create_plan()),
+                    expand=1),
+                ft.Container(_summary_row, expand=1),
+            ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            ft.Container(height=14),
             field_label("User Story IDs", req=True, hint="comma-separated"),
             ft.Container(story_box, padding=ft.Padding.only(top=4, bottom=12)),
         ]
