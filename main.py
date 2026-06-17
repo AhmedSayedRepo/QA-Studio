@@ -688,6 +688,7 @@ class QAStudio:
         """Relaunch the app process, then fully exit the current one
         (including the flet client window) so no orphan taskbar entry remains."""
         self._close_dialog()
+        launched = False
         try:
             import sys, os, subprocess
             main_py = os.path.join(os.path.dirname(os.path.abspath(__file__)), "main.py")
@@ -698,16 +699,37 @@ class QAStudio:
                     pyw = cand
             except Exception:
                 pass
-            flags = 0x08000000 if os.name == "nt" else 0
-            subprocess.Popen([pyw, main_py], cwd=os.path.dirname(main_py),
-                             creationflags=flags)
+            if os.name == "nt":
+                # CRITICAL: launch DETACHED + new process group so the new app is
+                # NOT a child of this process. Otherwise the taskkill /T below
+                # (tree kill) would also kill the freshly launched instance.
+                DETACHED = 0x00000008          # DETACHED_PROCESS
+                NEW_GROUP = 0x00000200         # CREATE_NEW_PROCESS_GROUP
+                NO_WINDOW = 0x08000000         # CREATE_NO_WINDOW
+                subprocess.Popen([pyw, main_py], cwd=os.path.dirname(main_py),
+                                 creationflags=DETACHED | NEW_GROUP | NO_WINDOW,
+                                 close_fds=True)
+            else:
+                subprocess.Popen([pyw, main_py], cwd=os.path.dirname(main_py),
+                                 start_new_session=True)
+            launched = True
         except Exception:
-            pass
-        # Close THIS instance completely (window + python), reusing the robust
-        # close path so the old flet.exe window can't linger in the taskbar.
+            launched = False
+        # Close THIS instance. Give the new process a moment to spin up first so
+        # there's a visible app at all times, then tear down the old one.
         self._run_active = False
         self._auto_running = False
-        self._force_close()
+        def _close_old():
+            try:
+                import time
+                time.sleep(1.2)   # let the new instance start
+            except Exception:
+                pass
+            self._force_close()
+        try:
+            threading.Thread(target=_close_old, daemon=True).start()
+        except Exception:
+            self._force_close()
 
     def _confirm_close(self):
         def do_close(e=None):
