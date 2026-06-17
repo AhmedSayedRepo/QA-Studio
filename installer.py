@@ -70,13 +70,13 @@ class Installer:
         self._running = False
 
         # ── Header band ────────────────────────────────────────────────────
-        header = tk.Frame(self.root, bg=VIOLET, height=96)
+        header = tk.Frame(self.root, bg=VIOLET, height=104)
         header.pack(fill="x", side="top")
         header.pack_propagate(False)
-        tk.Label(header, text=f"  {APP_NAME}", bg=VIOLET, fg="white",
-                 font=("Segoe UI Semibold", 21, "bold"), anchor="w").pack(fill="x", padx=24, pady=(22, 0))
-        tk.Label(header, text="  AI-powered Azure DevOps test-case generator",
-                 bg=VIOLET, fg="#D9CEFF", font=("Segoe UI", 10), anchor="w").pack(fill="x", padx=24)
+        tk.Label(header, text=APP_NAME, bg=VIOLET, fg="white",
+                 font=("Segoe UI Semibold", 22, "bold"), anchor="w").pack(fill="x", padx=28, pady=(26, 0))
+        tk.Label(header, text="AI-powered Azure DevOps test-case generator",
+                 bg=VIOLET, fg="#D9CEFF", font=("Segoe UI", 10), anchor="w").pack(fill="x", padx=28, pady=(2, 0))
 
         # ── Footer button (pinned bottom; packed before body) ───────────────
         footer = tk.Frame(self.root, bg=BG)
@@ -102,7 +102,7 @@ class Installer:
                                   font=("Segoe UI Semibold", 14, "bold"), anchor="w")
         self.title_lbl.pack(side="left")
         self.spin_lbl = tk.Label(trow, text="", bg=BG, fg=VIOLET,
-                                 font=("Consolas", 15, "bold"))
+                                 font=("Consolas", 16, "bold"))
         self.spin_lbl.pack(side="right")
 
         self.desc_lbl = tk.Label(body,

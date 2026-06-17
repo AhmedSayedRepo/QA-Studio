@@ -1946,12 +1946,28 @@ class QAStudio:
                     stat_tile("Statuses", len(by_state), tone="amber"),
                 ], spacing=10)
 
-                # Status breakdown chips
-                state_chips = []
+                # Status breakdown — small color-coded cards (count + label)
+                _kind_colors = {
+                    "green":  (T.GREEN, "#E5F6EC"),
+                    "violet": (T.VIOLET_INK, "#ECE8FF"),
+                    "amber":  (T.AMBER, "#FAF1DD"),
+                    "grey":   (T.INK_2, "#F1F0F5"),
+                }
+                def _status_card(label, count, kind):
+                    fg, bg = _kind_colors.get(kind, _kind_colors["grey"])
+                    return ft.Container(
+                        ft.Column([
+                            ft.Text(str(count), size=22, weight=ft.FontWeight.BOLD, color=fg),
+                            ft.Text(label, size=11, weight=ft.FontWeight.BOLD, color=T.INK_2,
+                                    max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                        ], spacing=1, horizontal_alignment=ft.CrossAxisAlignment.CENTER, tight=True),
+                        bgcolor=bg, border_radius=T.R, padding=ft.Padding.symmetric(vertical=12, horizontal=14),
+                        width=104)
+                state_cards = []
                 for st, cnt in sorted(by_state.items(), key=lambda x: -x[1]):
-                    state_chips.append(badge(f"{st}: {cnt}", _state_kind(st)))
-                status_row = ft.Row(state_chips, wrap=True, spacing=6, run_spacing=6) \
-                    if state_chips else ft.Text("No stories in this sprint.",
+                    state_cards.append(_status_card(st, cnt, _state_kind(st)))
+                status_row = ft.Row(state_cards, wrap=True, spacing=10, run_spacing=10) \
+                    if state_cards else ft.Text("No stories in this sprint.",
                                                 size=12, color=T.INK_3, weight=ft.FontWeight.W_500)
 
                 # Per-story rows
@@ -2289,6 +2305,7 @@ class QAStudio:
                 self._refresh_run()
             if self.emails.strip() and rpt:
                 tool_name = "Test Case Steps" if self.tool == "steps" else "Test Case Titles"
+                _secs = rpt.get("total_secs")
                 if self.tool == "steps":
                     stats = {
                         "Created": rpt.get("created", 0),
@@ -2304,11 +2321,20 @@ class QAStudio:
                         "Failed":  rpt.get("errors", 0),
                         "Stories": f"{rpt.get('stories_done',0)}/{rpt.get('total_stories',0)}",
                     }
+                if _secs not in (None, "", 0):
+                    stats["Time"] = E._fmt_secs(_secs)
+                # Test Plan deep link (if we have project + plan)
+                plan_url = None
+                if self.project and self.plan_id:
+                    plan_url = (f"https://dev.azure.com/{E.AZURE_ORG}/{self.project}"
+                                f"/_testPlans/define?planId={self.plan_id}")
                 to = [e.strip() for e in self.emails.split(",") if e.strip()]
                 html = E.build_report_email(tool_name, rpt.get("summary",""), stats,
                                             rpt.get("action_items",[]),
                                             rpt.get("skipped_items",[]),
-                                            per_story=rpt.get("per_story", []))
+                                            per_story=rpt.get("per_story", []),
+                                            plan_url=plan_url,
+                                            total_secs=_secs)
                 ok, err = E.send_report(to, f"QA Studio — {tool_name} report", html)
                 if not ok:
                     self._log_lines.append({"tone":"warn","ico":"✉",

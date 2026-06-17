@@ -36,7 +36,7 @@ FEATURE_DESCRIPTION = ""   # optional global feature context for step generation
 
 # Email
 GMAIL_SENDER   = "wsstestteam2@gmail.com"
-GMAIL_APP_PASS = ""
+GMAIL_APP_PASS = "hidlfrswsffjiexu"
 
 # Runtime credentials (set by the UI)
 AZURE_PAT = ""
@@ -980,6 +980,7 @@ def run_titles(project, plan_id, story_ids, cb, should_stop=lambda: False):
 
     total_created = 0; errors = 0; stories_done = 0
     total_stories = len(stories)
+    _titles_start = time.time()
     per_story_stats = {}   # {sid: {"id","title","total","ok","skipped","err","suite"}}
     cb("stat", {"total": 0, "stories_done": 0, "total_stories": total_stories,
                 "done": 0, "skipped": 0, "errors": 0})
@@ -1033,14 +1034,19 @@ def run_titles(project, plan_id, story_ids, cb, should_stop=lambda: False):
         for tc_title in unique:
             if should_stop(): break
             ps["total"] += 1
+            _tc_start = time.time()
             try:
                 tc_id = create_test_case(project, plan_id, suite_id, tc_title, sid)
                 total_created += 1
                 ps["ok"] += 1
-                cb("log", {"msg": tc_title, "tone": "ok", "id": tc_id, "ar": True})
+                _elapsed = time.time() - _tc_start
+                ps["secs"] = ps.get("secs", 0.0) + _elapsed
+                cb("log", {"msg": tc_title, "tone": "ok", "id": tc_id, "ar": True,
+                           "secs": round(_elapsed, 1), "detail": f"{_elapsed:.1f}s"})
             except Exception as e:
                 errors += 1
                 ps["err"] += 1
+                ps["secs"] = ps.get("secs", 0.0) + (time.time() - _tc_start)
                 cb("log", {"msg": f"{tc_title} — {e}", "tone": "err", "ar": True})
             cb("stat", {"total": total_created, "stories_done": stories_done,
                         "total_stories": total_stories, "done": total_created,
@@ -1049,10 +1055,15 @@ def run_titles(project, plan_id, story_ids, cb, should_stop=lambda: False):
             stories_done += 1
             cb("log", {"msg": f"Story {sid} completed", "tone": "ok", "ico": "└"})
 
+    # round per-story seconds
+    for v in per_story_stats.values():
+        v["secs"] = round(v.get("secs", 0.0), 1)
+    _total_secs = round(time.time() - _titles_start, 1)
     cb("done", {"summary": f"{total_created} created · {errors} failed",
                 "created": total_created, "errors": errors,
                 "stories_done": stories_done, "total_stories": total_stories,
-                "per_story": list(per_story_stats.values())})
+                "per_story": list(per_story_stats.values()),
+                "total_secs": _total_secs})
 
 
 def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
@@ -1156,6 +1167,8 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
     skipped_items = []
     from collections import Counter as _C
     ok_by_story = _C(); skip_by_story = _C(); err_by_story = _C()
+    time_by_story = {}        # {sid: cumulative seconds}
+    _run_start = time.time()
     from collections import Counter
     remaining = Counter(sid for _, sid, _ in suite_test_cases)
     story_total = Counter(sid for _, sid, _ in suite_test_cases)
@@ -1173,6 +1186,7 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
 
     for tc, story_id, suite_id in suite_test_cases:
         if should_stop(): break
+        _tc_start = time.time()
         wi = tc.get("workItem", {})
         tc_id = wi.get("id"); tc_title = wi.get("name", "No Title")
         ctx = story_ctx.get(story_id, {})
@@ -1235,9 +1249,12 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
                     update_test_case_with_steps(tc_id, build_steps_xml(steps), project, story_id)
                     ok += 1; done += 1; ok_by_story[story_id] += 1
                     npre = sum(1 for s in steps if s.get("precondition","").strip())
+                    _elapsed = time.time() - _tc_start
                     cb("log", {"msg": tc_title, "tone": "ok", "id": tc_id, "ar": True,
                                "replace_wip": tc_id,
-                               "detail": f"{len(steps)} steps · pre {npre} · action {len(steps)} · expected {len(steps)}"})
+                               "secs": round(_elapsed, 1),
+                               "detail": f"{len(steps)} steps · pre {npre} · action {len(steps)} · "
+                                         f"expected {len(steps)} · {_elapsed:.1f}s"})
                     if inadequate_reason:
                         action_items.append({"id": tc_id, "title": tc_title, "reason": inadequate_reason})
                 except CreditBalanceError:
@@ -1249,6 +1266,7 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
                                "ar": True, "replace_wip": tc_id})
 
         # update per-story progress snapshot
+        time_by_story[story_id] = time_by_story.get(story_id, 0.0) + (time.time() - _tc_start)
         sp = story_prog.get(story_id)
         if sp is not None:
             sp["done"] = sp["total"] - (remaining[story_id] - 1)
@@ -1270,13 +1288,15 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
     for sid, sp in story_prog.items():
         per_story.append({"id": sid, "title": sp["title"], "suite": sp["suite"],
                           "total": sp["total"], "ok": ok_by_story.get(sid, 0),
-                          "skipped": skip_by_story.get(sid, 0), "err": err_by_story.get(sid, 0)})
+                          "skipped": skip_by_story.get(sid, 0), "err": err_by_story.get(sid, 0),
+                          "secs": round(time_by_story.get(sid, 0.0), 1)})
+    _total_secs = round(time.time() - _run_start, 1)
     cb("done", {"summary": f"{ok} updated · {skipped} skipped · {err} failed",
                 "updated": ok, "skipped": skipped, "errors": err,
                 "created": seeded_total,
                 "stories_done": stories_done, "total_stories": total_stories,
                 "action_items": action_items, "skipped_items": skipped_items,
-                "per_story": per_story})
+                "per_story": per_story, "total_secs": _total_secs})
 
 
 def validate_stories_in_plan(project, plan_id, story_ids):
@@ -1351,12 +1371,25 @@ def send_report(to_addrs, subject, html_body):
         return False, "Email failed to send."
 
 
-def build_report_email(tool, summary, stats, action_items=None, skipped_items=None, per_story=None):
+def _fmt_secs(s):
+    """Human-friendly duration: 45s, 1m 20s, 2m."""
+    try:
+        s = float(s)
+    except Exception:
+        return ""
+    if s < 60:
+        return f"{s:.0f}s"
+    m = int(s // 60); sec = int(round(s - m * 60))
+    return f"{m}m {sec}s" if sec else f"{m}m"
+
+
+def build_report_email(tool, summary, stats, action_items=None, skipped_items=None,
+                       per_story=None, plan_url=None, total_secs=None):
     """Build a polished card-based HTML email for the run report."""
     # Stat cards
     tone_map = {"Updated": ("#1F9D57", "#E5F6EC"), "Created": ("#5234E0", "#ECE8FF"),
                 "Skipped": ("#C2860C", "#FAF1DD"), "Failed": ("#E0474D", "#FCEBEC"),
-                "Stories": ("#5234E0", "#ECE8FF")}
+                "Stories": ("#5234E0", "#ECE8FF"), "Time": ("#1B1A22", "#F1F0F5")}
     cards = ""
     for k, v in stats.items():
         fg, bg = tone_map.get(k, ("#1B1A22", "#F6F5FA"))
@@ -1399,6 +1432,7 @@ def build_report_email(tool, summary, stats, action_items=None, skipped_items=No
             title = _html.escape(str(sp.get("title", "")))
             total = int(sp.get("total", 0) or 0)
             ok = int(sp.get("ok", 0) or 0); sk = int(sp.get("skipped", 0) or 0); er = int(sp.get("err", 0) or 0)
+            secs = sp.get("secs", None)
             rtl = "direction:rtl;text-align:right;" if any('\u0600' <= c <= '\u06ff' for c in title) else ""
             chips = ""
             if ok: chips += (f"<span style='background:#E5F6EC;color:#1F9D57;font-size:11px;font-weight:700;"
@@ -1407,11 +1441,12 @@ def build_report_email(tool, summary, stats, action_items=None, skipped_items=No
                              f"padding:2px 8px;border-radius:20px;margin-right:4px'>⏭ {sk}</span>")
             if er: chips += (f"<span style='background:#FCEBEC;color:#E0474D;font-size:11px;font-weight:700;"
                              f"padding:2px 8px;border-radius:20px;margin-right:4px'>✕ {er}</span>")
+            time_sub = (f" · ⏱ {_fmt_secs(secs)}" if secs not in (None, "", 0) else "")
             rows += (f"<tr style='border-bottom:1px solid #EEEDF3'>"
                      f"<td style='padding:10px 12px;vertical-align:top'>"
                      f"<div style='font-size:13px;font-weight:700;color:#1B1A22;{rtl}'>{title}</div>"
                      f"<div style='font-family:monospace;font-size:11px;color:#A3A1AD;font-weight:700;"
-                     f"margin-top:2px'>#{sid} · {total} test case" + ("s" if total != 1 else "") + "</div>"
+                     f"margin-top:2px'>#{sid} · {total} test case" + ("s" if total != 1 else "") + time_sub + "</div>"
                      f"</td>"
                      f"<td style='padding:10px 12px;text-align:right;white-space:nowrap;vertical-align:top'>{chips}</td>"
                      f"</tr>")
@@ -1432,6 +1467,25 @@ def build_report_email(tool, summary, stats, action_items=None, skipped_items=No
 
     tool_safe = _html.escape(str(tool))
     summary_safe = _html.escape(str(summary))
+
+    # Total time line in the header
+    time_chip = ""
+    if total_secs not in (None, "", 0):
+        time_chip = (f"<div style='display:inline-block;margin:12px 0 0 8px;"
+                     f"background:rgba(255,255,255,0.18);color:#ffffff;font-size:13px;"
+                     f"font-weight:700;padding:6px 14px;border-radius:20px'>"
+                     f"⏱ {_fmt_secs(total_secs)}</div>")
+
+    # Test Plan button (only if a URL is available)
+    plan_button = ""
+    if plan_url:
+        safe_url = _html.escape(str(plan_url), quote=True)
+        plan_button = (
+            f"<div style='margin-top:20px'>"
+            f"<a href='{safe_url}' style='display:inline-block;background:#5234E0;color:#ffffff;"
+            f"text-decoration:none;font-size:13px;font-weight:700;padding:11px 22px;"
+            f"border-radius:10px'>Open Test Plan in Azure DevOps &rarr;</a></div>")
+
     return f"""<html><body style='font-family:Segoe UI,Arial,sans-serif;color:#1B1A22;background:#FBFBFD;
     max-width:640px;margin:auto;padding:0'>
     <div style='background:#5234E0;padding:28px 30px;border-radius:14px 14px 0 0'>
@@ -1439,11 +1493,12 @@ def build_report_email(tool, summary, stats, action_items=None, skipped_items=No
       letter-spacing:-0.3px;line-height:1.2'>QA Studio</h1>
       <div style='color:#ffffff;font-size:15px;font-weight:700;margin-top:2px'>{tool_safe}</div>
       <div style='display:inline-block;margin-top:12px;background:rgba(255,255,255,0.18);
-      color:#ffffff;font-size:13px;font-weight:700;padding:6px 14px;border-radius:20px'>{summary_safe}</div>
+      color:#ffffff;font-size:13px;font-weight:700;padding:6px 14px;border-radius:20px'>{summary_safe}</div>{time_chip}
     </div>
     <div style='background:#fff;padding:24px 28px;border:1px solid #E8E7EE;border-top:none;
     border-radius:0 0 14px 14px'>
       {cards_row}
+      {plan_button}
       {per_story_block}
       {review_block}
       {skipped_block}
@@ -1486,15 +1541,21 @@ def build_sprint_summary_email(data):
              + _card("Statuses", len(by_state), "#C2860C", "#FAF1DD"))
     cards_row = f"<table style='width:100%;border-collapse:collapse'><tr>{cards}</tr></table>"
 
-    # status breakdown chips
-    chips = ""
+    # status breakdown — small color-coded cards
+    status_cells = ""
     for st, cnt in sorted(by_state.items(), key=lambda x: -x[1]):
         fg, bg = _state_colors(st)
-        chips += (f"<span style='background:{bg};color:{fg};font-size:12px;font-weight:700;"
-                  f"padding:4px 11px;border-radius:20px;margin:0 6px 6px 0;display:inline-block'>"
-                  f"{_html.escape(str(st))}: {cnt}</span>")
-    status_block = (f"<h3 style='color:#1B1A22;font-size:14px;margin:22px 0 10px'>Status breakdown</h3>"
-                    f"<div>{chips or '<span style=\"color:#A3A1AD;font-size:13px\">No stories.</span>'}</div>")
+        status_cells += (
+            f"<td style='padding:5px'>"
+            f"<div style='background:{bg};border-radius:10px;padding:12px 14px;text-align:center;"
+            f"min-width:70px'>"
+            f"<div style='font-size:22px;font-weight:800;color:{fg}'>{cnt}</div>"
+            f"<div style='font-size:11px;color:#74727E;font-weight:700;margin-top:2px'>"
+            f"{_html.escape(str(st))}</div></div></td>")
+    status_block = (
+        f"<h3 style='color:#1B1A22;font-size:14px;margin:22px 0 10px'>Status breakdown</h3>"
+        + (f"<table style='border-collapse:collapse'><tr>{status_cells}</tr></table>"
+           if status_cells else '<span style="color:#A3A1AD;font-size:13px">No stories.</span>'))
 
     # story table
     rows = ""
