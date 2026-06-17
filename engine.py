@@ -35,7 +35,7 @@ AI_CONFIG = {
 FEATURE_DESCRIPTION = ""   # optional global feature context for step generation
 
 # Email
-GMAIL_SENDER   = ""
+GMAIL_SENDER   = "wsstestteam2@gmail.com"
 GMAIL_APP_PASS = ""
 
 # Runtime credentials (set by the UI)
@@ -403,6 +403,8 @@ def sprint_summary(project, plan_id, pat=None):
         "by_state": by_state,
         "stories": stories,
         "total_test_cases": total_tc,
+        "project": project,
+        "org": AZURE_ORG,
     }
 
 def create_requirement_suite(project, plan_id, story_id, root_suite_id=None, pat=None):
@@ -1047,7 +1049,7 @@ def run_titles(project, plan_id, story_ids, cb, should_stop=lambda: False):
                 _elapsed = time.time() - _tc_start
                 ps["secs"] = ps.get("secs", 0.0) + _elapsed
                 cb("log", {"msg": tc_title, "tone": "ok", "id": tc_id, "ar": True,
-                           "secs": round(_elapsed, 1), "detail": f"{_elapsed:.1f}s"})
+                           "secs": round(_elapsed, 1), "detail": f"⏱ {_fmt_mmss(_elapsed)}"})
             except Exception as e:
                 errors += 1
                 ps["err"] += 1
@@ -1259,7 +1261,7 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
                                "replace_wip": tc_id,
                                "secs": round(_elapsed, 1),
                                "detail": f"{len(steps)} steps · pre {npre} · action {len(steps)} · "
-                                         f"expected {len(steps)} · {_elapsed:.1f}s"})
+                                         f"expected {len(steps)} · ⏱ {_fmt_mmss(_elapsed)}"})
                     if inadequate_reason:
                         action_items.append({"id": tc_id, "title": tc_title, "reason": inadequate_reason})
                 except CreditBalanceError:
@@ -1388,6 +1390,18 @@ def _fmt_secs(s):
     return f"{m}m {sec}s" if sec else f"{m}m"
 
 
+def _fmt_mmss(s):
+    """Duration as mm:ss (e.g. 0:45, 1:57, 12:03)."""
+    try:
+        s = float(s)
+    except Exception:
+        return ""
+    m = int(s // 60); sec = int(round(s - m * 60))
+    if sec == 60:
+        m += 1; sec = 0
+    return f"{m}:{sec:02d}"
+
+
 def build_report_email(tool, summary, stats, action_items=None, skipped_items=None,
                        per_story=None, plan_url=None, total_secs=None):
     """Build a polished card-based HTML email for the run report."""
@@ -1446,7 +1460,7 @@ def build_report_email(tool, summary, stats, action_items=None, skipped_items=No
                              f"padding:2px 8px;border-radius:20px;margin-right:4px'>⏭ {sk}</span>")
             if er: chips += (f"<span style='background:#FCEBEC;color:#E0474D;font-size:11px;font-weight:700;"
                              f"padding:2px 8px;border-radius:20px;margin-right:4px'>✕ {er}</span>")
-            time_sub = (f" · ⏱ {_fmt_secs(secs)}" if secs not in (None, "", 0) else "")
+            time_sub = (f" · ⏱ {_fmt_mmss(secs)}" if secs not in (None, "", 0) else "")
             rows += (f"<tr style='border-bottom:1px solid #EEEDF3'>"
                      f"<td style='padding:10px 12px;vertical-align:top'>"
                      f"<div style='font-size:13px;font-weight:700;color:#1B1A22;{rtl}'>{title}</div>"
@@ -1546,23 +1560,25 @@ def build_sprint_summary_email(data):
              + _card("Statuses", len(by_state), "#C2860C", "#FAF1DD"))
     cards_row = f"<table style='width:100%;border-collapse:collapse'><tr>{cards}</tr></table>"
 
-    # status breakdown — small color-coded cards
+    # status breakdown — small color-coded cards (equal width, top-aligned)
     status_cells = ""
     for st, cnt in sorted(by_state.items(), key=lambda x: -x[1]):
         fg, bg = _state_colors(st)
         status_cells += (
-            f"<td style='padding:5px'>"
-            f"<div style='background:{bg};border-radius:10px;padding:12px 14px;text-align:center;"
-            f"min-width:70px'>"
+            f"<td style='padding:5px;vertical-align:top'>"
+            f"<div style='background:{bg};border-radius:10px;padding:12px 10px;text-align:center;"
+            f"width:92px'>"
             f"<div style='font-size:22px;font-weight:800;color:{fg}'>{cnt}</div>"
-            f"<div style='font-size:11px;color:#74727E;font-weight:700;margin-top:2px'>"
-            f"{_html.escape(str(st))}</div></div></td>")
+            f"<div style='font-size:11px;color:#74727E;font-weight:700;margin-top:3px;"
+            f"line-height:1.3'>{_html.escape(str(st))}</div></div></td>")
     status_block = (
         f"<h3 style='color:#1B1A22;font-size:14px;margin:22px 0 10px'>Status breakdown</h3>"
         + (f"<table style='border-collapse:collapse'><tr>{status_cells}</tr></table>"
            if status_cells else '<span style="color:#A3A1AD;font-size:13px">No stories.</span>'))
 
     # story table
+    _proj = data.get("project", "")
+    _org = data.get("org", AZURE_ORG)
     rows = ""
     for s in stories:
         title = _html.escape(str(s.get("title", "")))
@@ -1571,16 +1587,26 @@ def build_sprint_summary_email(data):
         tc = int(s.get("test_cases", 0) or 0)
         fg, bg = _state_colors(state)
         rtl = "direction:rtl;text-align:right;" if any('\u0600' <= c <= '\u06ff' for c in title) else ""
+        wi_url = (f"https://dev.azure.com/{_org}/{_proj}/_workitems/edit/{s.get('id','')}"
+                  if _proj and s.get("id") else "")
+        title_html = (f"<a href='{_html.escape(wi_url, quote=True)}' "
+                      f"style='color:#1B1A22;text-decoration:none'>{title}</a>"
+                      if wi_url else title)
+        id_html = (f"<a href='{_html.escape(wi_url, quote=True)}' "
+                   f"style='color:#5234E0;text-decoration:none'>#{sid} &nbsp;&rarr;</a>"
+                   if wi_url else f"#{sid}")
         rows += (f"<tr style='border-bottom:1px solid #EEEDF3'>"
-                 f"<td style='padding:10px 12px;vertical-align:top'>"
-                 f"<div style='font-size:13px;font-weight:700;color:#1B1A22;{rtl}'>{title}</div>"
+                 f"<td style='padding:10px 12px;vertical-align:middle'>"
+                 f"<div style='font-size:13px;font-weight:700;color:#1B1A22;{rtl}'>{title_html}</div>"
                  f"<div style='font-family:monospace;font-size:11px;color:#A3A1AD;font-weight:700;"
-                 f"margin-top:2px'>#{sid}</div></td>"
-                 f"<td style='padding:10px 12px;text-align:center;white-space:nowrap;vertical-align:top'>"
+                 f"margin-top:2px'>{id_html}</div></td>"
+                 f"<td style='padding:10px 12px;text-align:center;white-space:nowrap;vertical-align:middle;"
+                 f"width:70px'>"
                  f"<span style='font-family:monospace;font-size:12px;color:#74727E;font-weight:700'>{tc} TC</span></td>"
-                 f"<td style='padding:10px 12px;text-align:right;white-space:nowrap;vertical-align:top'>"
+                 f"<td style='padding:10px 12px;text-align:right;white-space:nowrap;vertical-align:middle;"
+                 f"width:130px'>"
                  f"<span style='background:{bg};color:{fg};font-size:11px;font-weight:700;"
-                 f"padding:3px 10px;border-radius:20px'>{_html.escape(state)}</span></td>"
+                 f"padding:3px 10px;border-radius:20px;display:inline-block'>{_html.escape(state)}</span></td>"
                  f"</tr>")
     story_block = (f"<h3 style='color:#1B1A22;font-size:14px;margin:22px 0 10px'>"
                    f"Stories ({len(stories)})</h3>"

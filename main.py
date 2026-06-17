@@ -869,6 +869,17 @@ class QAStudio:
             "url": "https://myaccount.google.com/apppasswords",
             "url_label": "Open Google App Passwords",
         },
+        "org": {
+            "title": "Azure DevOps Organization name",
+            "steps": [
+                "It's the first path segment after dev.azure.com in your Azure URL.",
+                "Example: https://dev.azure.com/myCompany → the org is 'myCompany'.",
+                "Open Azure DevOps in your browser and read it from the address bar.",
+                "Type just the name here (not the full URL). It's used to build all API calls.",
+            ],
+            "url": "https://dev.azure.com",
+            "url_label": "Open Azure DevOps",
+        },
     }
 
     def _show_help(self, key):
@@ -982,7 +993,9 @@ class QAStudio:
             field_label("AI Provider", req=True, info="How to make a provider active",
                         on_info=lambda e: self._show_help("provider")),
             ft.Container(self.prov_dd, padding=ft.Padding.only(top=4, bottom=12)),
-            field_label("Azure Organization", req=True),
+            field_label("Azure Organization", req=True,
+                        info="How to find your Azure organization name",
+                        on_info=lambda e: self._show_help("org")),
             ft.Container(ft.Row([self.org_field, self.org_btn], spacing=8),
                         padding=ft.Padding.only(top=4, bottom=12)),
             field_label("API Key", req=True, info="How to get your AI provider API key",
@@ -1967,12 +1980,12 @@ class QAStudio:
 
         email_bar = ft.Column([
             ft.Container(height=1, bgcolor=T.BORDER_2),
-            ft.Container(height=8),
-            ft.Text("EMAIL THIS SUMMARY", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
             ft.Container(height=6),
+            ft.Text("EMAIL THIS SUMMARY", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
+            ft.Container(height=5),
             ft.Row([email_field, email_btn], spacing=8,
                    vertical_alignment=ft.CrossAxisAlignment.CENTER),
-            ft.Container(email_status, padding=ft.Padding.only(top=6)),
+            ft.Container(email_status, padding=ft.Padding.only(top=4)),
         ], spacing=0, tight=True)
         email_bar.visible = False  # shown only after data loads
 
@@ -1983,8 +1996,8 @@ class QAStudio:
                          spacing=8, tight=True),
             content=ft.Container(
                 ft.Column([ft.Container(body_col, expand=True), email_bar],
-                          spacing=10, tight=False),
-                width=560, height=520),
+                          spacing=6, tight=False),
+                width=560, height=540),
             actions=[close_btn],
             actions_alignment=ft.MainAxisAlignment.END,
         )
@@ -2041,7 +2054,7 @@ class QAStudio:
                                     max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
                         ], spacing=1, horizontal_alignment=ft.CrossAxisAlignment.CENTER, tight=True),
                         bgcolor=bg, border_radius=T.R, padding=ft.Padding.symmetric(vertical=12, horizontal=14),
-                        width=104)
+                        width=104, tooltip=f"{label}: {count}")
                 state_cards = []
                 for st, cnt in sorted(by_state.items(), key=lambda x: -x[1]):
                     state_cards.append(_status_card(st, cnt, _state_kind(st)))
@@ -2053,6 +2066,8 @@ class QAStudio:
                 story_rows = []
                 for s in data["stories"]:
                     rtl = any('\u0600' <= c <= '\u06ff' for c in s["title"])
+                    _wi_url = (f"https://dev.azure.com/{E.AZURE_ORG}/{self.project}"
+                               f"/_workitems/edit/{s['id']}")
                     story_rows.append(ft.Container(
                         ft.Row([
                             ft.Column([
@@ -2066,9 +2081,13 @@ class QAStudio:
                             ], spacing=2, expand=True),
                             badge(f"{s['test_cases']} TC", "grey"),
                             badge(s["state"], _state_kind(s["state"])),
+                            ft.Icon(ft.Icons.OPEN_IN_NEW, size=14, color=T.INK_3),
                         ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                         padding=ft.Padding.symmetric(vertical=10, horizontal=12),
-                        border=ft.Border.only(bottom=ft.BorderSide(1, T.BORDER_2))))
+                        border=ft.Border.only(bottom=ft.BorderSide(1, T.BORDER_2)),
+                        tooltip=f"{s['title']}  ·  open #{s['id']} in Azure DevOps",
+                        on_click=lambda e, u=_wi_url: self._open_url(u),
+                        ink=True))
                 if not story_rows:
                     story_rows = [ft.Text("No user stories found in this sprint.",
                                           size=12, color=T.INK_3, weight=ft.FontWeight.W_500)]
@@ -2084,7 +2103,8 @@ class QAStudio:
                     ft.Text("STORIES", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
                     ft.Container(ft.Column(story_rows, spacing=0, scroll=ft.ScrollMode.AUTO),
                                  bgcolor="#FCFCFE", border=ft.Border.all(1, T.BORDER),
-                                 border_radius=T.R, padding=ft.Padding.symmetric(vertical=2, horizontal=4)),
+                                 border_radius=T.R, padding=ft.Padding.symmetric(vertical=2, horizontal=4),
+                                 height=200),
                 ]
                 email_bar.visible = True
                 try:
@@ -2583,9 +2603,12 @@ class QAStudio:
         self._log_col = ft.Column(log_lines, spacing=2,
                                   scroll=ft.ScrollMode.AUTO, expand=True, auto_scroll=True)
         log_card = card(ft.Column([
-            ft.Text("RECENT ACTIVITY", size=11, weight=ft.FontWeight.BOLD, color=T.INK_3),
+            ft.Row([ft.Text("RECENT ACTIVITY", size=11, weight=ft.FontWeight.BOLD, color=T.INK_3),
+                    ft.Container(expand=True),
+                    ft.Text("select to copy", size=10, color=T.INK_3,
+                            weight=ft.FontWeight.W_500)]),
             ft.Container(height=8),
-            ft.Container(self._log_col, height=230, bgcolor="#FCFCFE",
+            ft.Container(ft.SelectionArea(content=self._log_col), height=230, bgcolor="#FCFCFE",
                          border=ft.Border.all(1, T.BORDER), border_radius=T.R, padding=12),
         ], spacing=0))
 
@@ -2659,6 +2682,11 @@ class QAStudio:
 
     def _refresh_run(self):
         def _apply():
+            # Only manipulate run-screen controls while the Run screen is shown.
+            # Otherwise those controls are detached and updating them can leave a
+            # ghost (e.g. the progress spinner) painted on the current screen.
+            if self.active != "run":
+                return
             try:
                 if hasattr(self, "_stats_row"):
                     s = self._stats
@@ -2801,6 +2829,9 @@ class QAStudio:
             if ok: chips.append(badge(f"✓ {ok}", "green"))
             if skipped: chips.append(badge(f"⏭ {skipped}", "amber"))
             if err: chips.append(badge(f"✕ {err}", "red"))
+            _sid = sp.get('id', '')
+            _su = (f"https://dev.azure.com/{E.AZURE_ORG}/{self.project}"
+                   f"/_workitems/edit/{_sid}") if _sid else None
             story_rows.append(ft.Container(
                 ft.Row([
                     progress_ring(pct, ring_c, size=46, label=pct),
@@ -2814,7 +2845,10 @@ class QAStudio:
                     ft.Row(chips, spacing=5, tight=True),
                 ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                 padding=ft.Padding.symmetric(vertical=12, horizontal=14),
-                border=ft.Border.only(bottom=ft.BorderSide(1, T.BORDER_2))))
+                border=ft.Border.only(bottom=ft.BorderSide(1, T.BORDER_2)),
+                tooltip=(f"{sp.get('title','')}  ·  open #{_sid}" if sp.get('title') else None),
+                on_click=(lambda e, u=_su: self._open_url(u)) if _su else None,
+                ink=bool(_su)))
         if not story_rows:
             story_rows = [ft.Text("No per-story data.", size=12, color=T.INK_3,
                                   weight=ft.FontWeight.W_500)]
@@ -2837,7 +2871,8 @@ class QAStudio:
                             color=T.INK_3, weight=ft.FontWeight.BOLD)]),
             ft.Container(height=8),
             ft.Container(
-                ft.Column(log_lines, spacing=2, scroll=ft.ScrollMode.AUTO, expand=True),
+                ft.SelectionArea(content=ft.Column(log_lines, spacing=2,
+                                                    scroll=ft.ScrollMode.AUTO, expand=True)),
                 height=240, bgcolor="#FCFCFE", border=ft.Border.all(1, T.BORDER),
                 border_radius=T.R, padding=12),
         ], spacing=0))
@@ -2847,17 +2882,25 @@ class QAStudio:
         # right: needs review + buttons
         review_items = []
         for a in action_items:
+            _tc_id = a.get("id")
+            _tc_url = (f"https://dev.azure.com/{E.AZURE_ORG}/{self.project}"
+                       f"/_workitems/edit/{_tc_id}") if _tc_id else None
             review_items.append(ft.Container(
                 ft.Column([
                     ft.Row([badge("Review", "amber", ft.Icons.WARNING_AMBER_ROUNDED),
                             ft.Text(f"#{a['id']}", size=11, color=T.INK_3, weight=ft.FontWeight.BOLD,
-                                    font_family=T.F_MONO)], spacing=7),
+                                    font_family=T.F_MONO),
+                            ft.Container(expand=True),
+                            ft.Icon(ft.Icons.OPEN_IN_NEW, size=13, color=T.INK_3)], spacing=7),
                     ft.Text(a.get("title", ""), size=12.5, weight=ft.FontWeight.BOLD, color=T.INK,
                             font_family=T.F_AR, text_align=ft.TextAlign.RIGHT),
                     ft.Text(a.get("reason", ""), size=11, color=T.INK_2, weight=ft.FontWeight.W_500),
                 ], spacing=4),
                 padding=ft.Padding.symmetric(vertical=12, horizontal=11), border=ft.Border.all(1, T.BORDER),
-                border_radius=T.R, bgcolor=T.CARD_2, margin=ft.Margin.only(bottom=9)))
+                border_radius=T.R, bgcolor=T.CARD_2, margin=ft.Margin.only(bottom=9),
+                tooltip=(f"Open test case #{_tc_id} in Azure DevOps" if _tc_url else None),
+                on_click=(lambda e, u=_tc_url: self._open_url(u)) if _tc_url else None,
+                ink=bool(_tc_url)))
         if not review_items:
             review_items = [ft.Text("Nothing flagged — all good.", size=12, color=T.INK_3,
                                     weight=ft.FontWeight.W_500)]
