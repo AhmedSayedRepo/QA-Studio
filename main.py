@@ -685,10 +685,9 @@ class QAStudio:
         self._show_dialog(dlg)
 
     def _restart_app(self):
-        """Relaunch the app process, then fully exit the current one
-        (including the flet client window) so no orphan taskbar entry remains."""
+        """Relaunch the app, then exit this instance. The new process is started
+        in its own process group so tearing down this one cannot kill it."""
         self._close_dialog()
-        launched = False
         try:
             import sys, os, subprocess
             main_py = os.path.join(os.path.dirname(os.path.abspath(__file__)), "main.py")
@@ -700,36 +699,66 @@ class QAStudio:
             except Exception:
                 pass
             if os.name == "nt":
-                # CRITICAL: launch DETACHED + new process group so the new app is
-                # NOT a child of this process. Otherwise the taskkill /T below
-                # (tree kill) would also kill the freshly launched instance.
-                DETACHED = 0x00000008          # DETACHED_PROCESS
+                # New process GROUP only (not fully detached — Flet needs its
+                # normal startup). This keeps the new app out of THIS process's
+                # tree so the cleanup below can't take it down with us.
                 NEW_GROUP = 0x00000200         # CREATE_NEW_PROCESS_GROUP
-                NO_WINDOW = 0x08000000         # CREATE_NO_WINDOW
                 subprocess.Popen([pyw, main_py], cwd=os.path.dirname(main_py),
-                                 creationflags=DETACHED | NEW_GROUP | NO_WINDOW,
-                                 close_fds=True)
+                                 creationflags=NEW_GROUP)
             else:
                 subprocess.Popen([pyw, main_py], cwd=os.path.dirname(main_py),
                                  start_new_session=True)
-            launched = True
         except Exception:
-            launched = False
-        # Close THIS instance. Give the new process a moment to spin up first so
-        # there's a visible app at all times, then tear down the old one.
+            pass
         self._run_active = False
         self._auto_running = False
+        # Close THIS instance after a short delay so the new one is up first.
         def _close_old():
-            try:
-                import time
-                time.sleep(1.2)   # let the new instance start
-            except Exception:
-                pass
-            self._force_close()
+            import time
+            time.sleep(1.5)
+            self._restart_close()
         try:
             threading.Thread(target=_close_old, daemon=True).start()
         except Exception:
-            self._force_close()
+            self._restart_close()
+
+    def _restart_close(self):
+        """Close only THIS process tree (old window + its flet client), without
+        touching the newly launched instance (which is in its own group)."""
+        try:
+            if hasattr(self.page, "window") and self.page.window is not None:
+                try:
+                    self.page.window.prevent_close = False
+                except Exception:
+                    pass
+                self.page.window.destroy()
+        except Exception:
+            pass
+        def _hard():
+            import os, time
+            time.sleep(0.5)
+            if os.name == "nt":
+                try:
+                    import subprocess
+                    # Tree-kill THIS pid only. The new app is in a different
+                    # process group, so it is unaffected.
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(os.getpid())],
+                                   creationflags=0x08000000, check=False)
+                    return
+                except Exception:
+                    pass
+            try:
+                import signal
+                os.kill(os.getpid(), signal.SIGTERM)
+            except Exception:
+                try:
+                    import sys; sys.exit(0)
+                except Exception:
+                    pass
+        try:
+            threading.Thread(target=_hard, daemon=True).start()
+        except Exception:
+            _hard()
 
     def _confirm_close(self):
         def do_close(e=None):
