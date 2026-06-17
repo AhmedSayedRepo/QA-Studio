@@ -2145,11 +2145,17 @@ def check_for_update(timeout=6):
     Returns dict: {"update": bool, "local": str, "remote": str, "error": str|None}.
     Network failures are swallowed (update=False) so startup is never blocked.
     """
+    import time as _t
     local = local_version()
+    # Cache-bust: raw.githubusercontent.com is served via a CDN that ignores
+    # request headers and can cache the file for minutes. A unique query string
+    # forces a fresh copy so updates are detected right after a push.
+    bust = int(_t.time())
     raw = (f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_REPO}/"
-           f"{GITHUB_BRANCH}/VERSION")
+           f"{GITHUB_BRANCH}/VERSION?cb={bust}")
     try:
-        r = requests.get(raw, timeout=timeout, headers={"Cache-Control": "no-cache"})
+        r = requests.get(raw, timeout=timeout,
+                         headers={"Cache-Control": "no-cache", "Pragma": "no-cache"})
         if r.status_code != 200:
             return {"update": False, "local": local, "remote": None,
                     "error": f"HTTP {r.status_code}"}
