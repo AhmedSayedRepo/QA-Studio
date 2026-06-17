@@ -252,11 +252,17 @@ class QAStudio:
 
     # ---- credential helpers ----
     def _provider_options(self):
+        names = list(E.AI_CONFIG.keys())
+        def _is_active(n):
+            return (n in E.active_providers()) or bool(self.creds["keys"].get(n))
+        # active providers first (stable order within each group)
+        names.sort(key=lambda n: (not _is_active(n), names.index(n)))
         opts = []
-        for name in E.AI_CONFIG.keys():
-            active = (name in E.active_providers()) or bool(self.creds["keys"].get(name))
+        for name in names:
+            active = _is_active(name)
             dot = "●" if active else "○"
-            opts.append(ft.DropdownOption(key=name, text=f"{dot}  {T.disp_name(name)}  ({'active' if active else 'inactive'})"))
+            opts.append(ft.DropdownOption(key=name,
+                text=f"{dot}  {T.disp_name(name)}  ({'active' if active else 'inactive'})"))
         return opts
 
     def _saved_key(self, name):
@@ -294,7 +300,10 @@ class QAStudio:
             clickable = (st == "done" or is_active
                          or (n["id"] == "report" and self.last_report is not None)
                          or (n["id"] == "setup")
-                         or (n["id"] == "automation"))
+                         or (n["id"] == "automation")
+                         or (n["id"] == "run" and (getattr(self, "_run_active", False)
+                                                   or st == "active"
+                                                   or self.last_report is not None)))
             # active indicator bar on the far left
             indicator = ft.Container(width=3, height=22,
                                      bgcolor=(T.VIOLET if is_active else ft.Colors.TRANSPARENT),
@@ -515,6 +524,8 @@ class QAStudio:
             self._force_close()
             return
         # A run is in progress — ask before quitting
+        _is_auto = bool(getattr(self, "_auto_running", False))
+        _what = "automation task" if _is_auto else "run"
         def do_quit(_=None):
             self._close_dialog()
             self._force_close()
@@ -523,10 +534,10 @@ class QAStudio:
         dlg = ft.AlertDialog(
             modal=True,
             title=ft.Row([ft.Icon(ft.Icons.WARNING_AMBER, color=T.AMBER, size=20),
-                          ft.Text("A run is in progress", weight=ft.FontWeight.BOLD, size=16)],
+                          ft.Text(f"A {_what} is in progress", weight=ft.FontWeight.BOLD, size=16)],
                          spacing=8, tight=True),
             content=ft.Container(
-                ft.Text("Closing now will stop the current run. Quit anyway?",
+                ft.Text(f"Closing now will stop the current {_what}. Quit anyway?",
                         size=13, color=T.INK_2, weight=ft.FontWeight.W_500), width=380),
             actions=[ft.TextButton("Quit", on_click=do_quit,
                                     style=ft.ButtonStyle(color=T.RED)),
@@ -1916,6 +1927,7 @@ class QAStudio:
         email_field = ft.TextField(
             hint_text="recipient@example.com, another@example.com",
             value=(self.emails or ""),
+            bgcolor=T.CARD, filled=True,
             border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
             content_padding=ft.Padding.symmetric(vertical=10, horizontal=12),
             text_size=12.5, dense=True, expand=True)
