@@ -253,10 +253,11 @@ class QAStudio:
     # ---- credential helpers ----
     def _provider_options(self):
         names = list(E.AI_CONFIG.keys())
+        orig_index = {n: i for i, n in enumerate(names)}   # stable order captured first
         def _is_active(n):
             return (n in E.active_providers()) or bool(self.creds["keys"].get(n))
-        # active providers first (stable order within each group)
-        names.sort(key=lambda n: (not _is_active(n), names.index(n)))
+        # active providers first, preserving original order within each group
+        names.sort(key=lambda n: (not _is_active(n), orig_index[n]))
         opts = []
         for name in names:
             active = _is_active(name)
@@ -572,14 +573,24 @@ class QAStudio:
         #    client window so it can't linger). Done last, slightly delayed so
         #    the graceful close above can paint first.
         def _hard_exit():
+            import os, time
+            time.sleep(0.4)
+            if os.name == "nt":
+                # Kill this process AND its children (the flet.exe window client)
+                # so no orphan taskbar entry remains.
+                try:
+                    import subprocess
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(os.getpid())],
+                                   creationflags=0x08000000, check=False)
+                    return
+                except Exception:
+                    pass
             try:
-                import os, signal, time
-                time.sleep(0.4)
+                import signal
                 os.kill(os.getpid(), signal.SIGTERM)
             except Exception:
                 try:
-                    import sys
-                    sys.exit(0)
+                    import sys; sys.exit(0)
                 except Exception:
                     pass
         try:
@@ -674,7 +685,8 @@ class QAStudio:
         self._show_dialog(dlg)
 
     def _restart_app(self):
-        """Relaunch the app process, then exit the current one."""
+        """Relaunch the app process, then fully exit the current one
+        (including the flet client window) so no orphan taskbar entry remains."""
         self._close_dialog()
         try:
             import sys, os, subprocess
@@ -691,31 +703,11 @@ class QAStudio:
                              creationflags=flags)
         except Exception:
             pass
-        try:
-            import os, signal
-            os.kill(os.getpid(), signal.SIGTERM)
-        except Exception:
-            pass
-        et = getattr(e, "type", None) or getattr(e, "data", None) or ""
-        if "close" in str(et).lower():
-            run_active = (self.active == "run") and not self.stop_flag
-            if run_active:
-                self._confirm_close()
-            else:
-                # No run in progress — close immediately
-                try:
-                    self.page.window.prevent_close = False
-                    self.page.update()
-                except Exception:
-                    pass
-                try:
-                    rt = getattr(self.page, "run_task", None)
-                    if callable(rt) and hasattr(self.page.window, "destroy"):
-                        rt(self.page.window.destroy)
-                    else:
-                        import os, signal; os.kill(os.getpid(), signal.SIGTERM)
-                except Exception:
-                    import os, signal; os.kill(os.getpid(), signal.SIGTERM)
+        # Close THIS instance completely (window + python), reusing the robust
+        # close path so the old flet.exe window can't linger in the taskbar.
+        self._run_active = False
+        self._auto_running = False
+        self._force_close()
 
     def _confirm_close(self):
         def do_close(e=None):
