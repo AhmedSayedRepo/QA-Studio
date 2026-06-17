@@ -674,15 +674,30 @@ class QAStudio:
                           ft.Text("Update complete", weight=ft.FontWeight.BOLD, size=16)],
                          spacing=8, tight=True),
             content=ft.Container(
-                ft.Text(msg, size=13, color=T.INK_2, weight=ft.FontWeight.W_500),
-                width=420),
+                ft.Column([
+                    ft.Text("QA Studio has been updated to the latest version.",
+                            size=13, color=T.INK, weight=ft.FontWeight.BOLD),
+                    ft.Container(height=4),
+                    ft.Text("Close the app and open it again from your Desktop "
+                            "shortcut to start using the new version.",
+                            size=12.5, color=T.INK_2, weight=ft.FontWeight.W_500),
+                ], spacing=2, tight=True),
+                width=430),
             actions=[
-                green_btn("Restart now", on_click=lambda e: self._restart_app()),
-                ghost_btn("Later", on_click=lambda e: self._close_dialog()),
+                green_btn("Close QA Studio", on_click=lambda e: self._quit_after_update()),
+                ghost_btn("Keep using old version", on_click=lambda e: self._close_dialog()),
             ],
             actions_alignment=ft.MainAxisAlignment.END,
         )
         self._show_dialog(dlg)
+
+    def _quit_after_update(self):
+        """Simply close the app cleanly so the user can reopen the updated version.
+        No auto-relaunch (that proved unreliable across Flet/Windows builds)."""
+        self._close_dialog()
+        self._run_active = False
+        self._auto_running = False
+        self._restart_close()
 
     def _restart_app(self):
         """Restart via an external relauncher script. The old app writes a tiny
