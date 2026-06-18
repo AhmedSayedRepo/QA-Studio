@@ -2084,7 +2084,7 @@ class QAStudio:
             border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
             content_padding=ft.Padding.symmetric(vertical=10, horizontal=12),
             text_size=12.5, dense=True, expand=True)
-        email_status = ft.Text("", size=11.5, weight=ft.FontWeight.BOLD)
+        email_status = ft.Text("", size=11.5, weight=ft.FontWeight.BOLD, visible=False)
 
         def do_email(e=None):
             if not self._sum_data:
@@ -2092,6 +2092,7 @@ class QAStudio:
             if not E.GMAIL_APP_PASS:
                 email_status.value = "Set a Gmail App Password in Setup → Connection first."
                 email_status.color = T.AMBER
+                email_status.visible = True
                 try: email_status.update()
                 except Exception: self.render()
                 return
@@ -2099,10 +2100,12 @@ class QAStudio:
             if not to:
                 email_status.value = "Enter at least one recipient."
                 email_status.color = T.RED
+                email_status.visible = True
                 try: email_status.update()
                 except Exception: self.render()
                 return
             email_status.value = "Sending…"; email_status.color = T.INK_2
+            email_status.visible = True
             try: email_status.update()
             except Exception: self.render()
 
@@ -2117,6 +2120,7 @@ class QAStudio:
                     else:
                         email_status.value = f"Email failed — {err}"
                         email_status.color = T.RED
+                    email_status.visible = True
                     try: email_status.update()
                     except Exception: self.render()
                 self.ui_safe(show)
@@ -2133,7 +2137,7 @@ class QAStudio:
             ft.Container(height=5),
             ft.Row([email_field, email_btn], spacing=8,
                    vertical_alignment=ft.CrossAxisAlignment.CENTER),
-            ft.Container(email_status, padding=ft.Padding.only(top=4)),
+            email_status,
         ], spacing=0, tight=True)
         email_bar.visible = False  # shown only after data loads
 
@@ -2144,7 +2148,7 @@ class QAStudio:
                          spacing=8, tight=True),
             content=ft.Container(
                 ft.Column([ft.Container(body_col, expand=True), email_bar],
-                          spacing=6, tight=False),
+                          spacing=4, tight=False),
                 width=560, height=540),
             actions=[close_btn],
             actions_alignment=ft.MainAxisAlignment.END,
@@ -2252,7 +2256,7 @@ class QAStudio:
                     ft.Container(ft.Column(story_rows, spacing=0, scroll=ft.ScrollMode.AUTO),
                                  bgcolor="#FCFCFE", border=ft.Border.all(1, T.BORDER),
                                  border_radius=T.R, padding=ft.Padding.symmetric(vertical=2, horizontal=4),
-                                 height=200),
+                                 height=240),
                 ]
                 email_bar.visible = True
                 try:

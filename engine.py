@@ -1581,20 +1581,21 @@ def build_sprint_summary_email(data):
              + _card("Statuses", len(by_state), "#C2860C", "#FAF1DD"))
     cards_row = f"<table style='width:100%;border-collapse:collapse'><tr>{cards}</tr></table>"
 
-    # status breakdown — small color-coded cards (equal width, top-aligned)
+    # status breakdown — small color-coded cards that WRAP to the next line
+    # (inline-block, not a single table row) so they never overflow the frame.
     status_cells = ""
     for st, cnt in sorted(by_state.items(), key=lambda x: -x[1]):
         fg, bg = _state_colors(st)
         status_cells += (
-            f"<td style='padding:5px;vertical-align:top'>"
-            f"<div style='background:{bg};border-radius:10px;padding:12px 10px;text-align:center;"
-            f"width:92px'>"
+            f"<div style='display:inline-block;vertical-align:top;background:{bg};"
+            f"border-radius:10px;padding:12px 8px;text-align:center;width:96px;"
+            f"margin:0 6px 8px 0;box-sizing:border-box'>"
             f"<div style='font-size:22px;font-weight:800;color:{fg}'>{cnt}</div>"
             f"<div style='font-size:11px;color:#74727E;font-weight:700;margin-top:3px;"
-            f"line-height:1.3'>{_html.escape(str(st))}</div></div></td>")
+            f"line-height:1.3'>{_html.escape(str(st))}</div></div>")
     status_block = (
         f"<h3 style='color:#1B1A22;font-size:14px;margin:22px 0 10px'>Status breakdown</h3>"
-        + (f"<table style='border-collapse:collapse'><tr>{status_cells}</tr></table>"
+        + (f"<div style='font-size:0'>{status_cells}</div>"
            if status_cells else '<span style="color:#A3A1AD;font-size:13px">No stories.</span>'))
 
     # story table
@@ -1931,6 +1932,8 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
     from selenium import webdriver
     from selenium.webdriver.chrome.options import Options
     from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
     import time as _t
 
     opts = Options()
@@ -1943,7 +1946,35 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
 
     cb("Launching Chrome…", "dim")
     driver = webdriver.Chrome(options=opts)
+    driver.set_page_load_timeout(45)
+    wait = WebDriverWait(driver, 20)
     all_snapshots = []   # union of every element seen (for fallback)
+
+    def wait_dom_ready():
+        """Wait until document.readyState is complete (page loaded)."""
+        try:
+            WebDriverWait(driver, 25).until(
+                lambda d: d.execute_script("return document.readyState") == "complete")
+        except Exception:
+            pass
+
+    def find_first(selectors, timeout=20):
+        """Wait for and return the first element matching any CSS selector in the
+        comma-or-list group. Tries each selector; returns None if none appear."""
+        if isinstance(selectors, str):
+            selectors = [s.strip() for s in selectors.split(",") if s.strip()]
+        end = _t.time() + timeout
+        while _t.time() < end:
+            for sel in selectors:
+                try:
+                    els = driver.find_elements(By.CSS_SELECTOR, sel)
+                    for e in els:
+                        if e.is_displayed() and e.is_enabled():
+                            return e
+                except Exception:
+                    pass
+            _t.sleep(0.4)
+        return None
 
     def snapshot(tag=""):
         els = _harvest_dom(driver)
@@ -1980,22 +2011,53 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
         # ── login + verify ──
         login_url = (login or {}).get("url") or site_url
         if login and login.get("user") and login.get("password"):
-            cb(f"Opening login page: {login_url}", "dim")
+            cb(f"Opening login page…", "dim")
             driver.get(login_url)
-            _t.sleep(wait_secs)
+            wait_dom_ready()
             try:
-                u = driver.find_element(By.CSS_SELECTOR,
-                    login.get("user_locator") or "input[type=email],input[type=text],input[name*=user]")
+                # Username/email — wait for it to actually appear. Covers Keycloak
+                # (#username), generic email/text inputs, and common name patterns.
+                user_sel = login.get("user_locator") or (
+                    "#username,input[type=email],input[name=email],input[name=username],"
+                    "input[name*=user i],input[id*=user i],input[type=text]")
+                cb("Waiting for the username field…", "dim")
+                u = find_first(user_sel, timeout=25)
+                if u is None:
+                    raise RuntimeError("username/email field did not appear")
                 u.clear(); u.send_keys(login["user"])
-                p = driver.find_element(By.CSS_SELECTOR,
-                    login.get("pass_locator") or "input[type=password]")
+
+                # Password — may be on the same page or a second step. Wait for it.
+                pass_sel = login.get("pass_locator") or "#password,input[type=password]"
+                p = find_first(pass_sel, timeout=10)
+                if p is None:
+                    # Two-step login: click Next/Continue first, then wait for password
+                    nxt = find_first("button[type=submit],#kc-login,button,input[type=submit]", timeout=5)
+                    if nxt is not None:
+                        nxt.click(); wait_dom_ready()
+                    p = find_first(pass_sel, timeout=15)
+                if p is None:
+                    raise RuntimeError("password field did not appear")
                 p.clear(); p.send_keys(login["password"])
-                btn = login.get("submit_locator") or "button[type=submit],input[type=submit],button"
-                driver.find_element(By.CSS_SELECTOR, btn).click()
+
+                # Submit
+                submit_sel = login.get("submit_locator") or (
+                    "#kc-login,button[type=submit],input[type=submit],button")
+                btn = find_first(submit_sel, timeout=10)
+                if btn is None:
+                    p.submit()
+                else:
+                    btn.click()
                 cb("Submitted login — verifying…", "dim")
-                _t.sleep(wait_secs + 2)
+                # wait for navigation away from the login form
+                try:
+                    WebDriverWait(driver, 20).until(
+                        lambda d: (d.current_url or "").rstrip("/") != login_url.rstrip("/")
+                                  or not d.find_elements(By.CSS_SELECTOR, "input[type=password]"))
+                except Exception:
+                    pass
+                wait_dom_ready()
             except Exception as e:
-                raise RuntimeError(f"Login step failed: {str(e)[:120]}")
+                raise RuntimeError(f"Login step failed: {str(e)[:160]}")
             ok, reason = _verify_logged_in(driver, login_url, cb)
             if not ok:
                 raise RuntimeError(f"Login could not be verified — {reason}. "
@@ -2005,9 +2067,10 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
             cb("No login provided — exploring as anonymous user.", "warn")
 
         # Navigate to the starting page
-        cb(f"Opening target page: {site_url}", "dim")
+        cb(f"Opening target page…", "dim")
         driver.get(site_url)
-        _t.sleep(wait_secs)
+        wait_dom_ready()
+        _t.sleep(1.0)
 
         live_count = snap_count = guess_count = 0
 
