@@ -694,6 +694,17 @@ def generate_steps(tc_title, acceptance_criteria, ui_description="", log=None):
         أعد فقط مصفوفة JSON — بدون أي نص إضافي أو markdown.
         مهم: لا تستخدم علامات الاقتباس المزدوجة داخل قيم النصوص.
 
+        قواعد صارمة لمنع الخطوات المكررة أو الزائدة:
+        - كل خطوة = إجراء واحد فقط يقوم به المستخدم، مع نتيجته المتوقعة في حقل expected.
+        - لا تنشئ خطوة منفصلة لمجرد إعادة وصف إجراء سابق أو نتيجته. مثال خاطئ يجب تجنّبه:
+          أربع خطوات كلها تقول «تم النقر على أيقونة تغيير اللغة وظهرت القائمة» — هذا تكرار،
+          اجعلها خطوة واحدة (النقر) ونتيجتها في expected (ظهور القائمة).
+        - الشروط البيئية أو شروط الحالة (يوجد اتصال إنترنت، فتح المتصفح، المستخدم على صفحة
+          تسجيل الدخول) تُكتب فقط في حقل precondition لأول خطوة مرتبطة، وليست خطوة إجراء مستقلة.
+        - التحقق من نتيجة يوضع في حقل expected، لا كخطوة إجراء جديدة.
+        - استخدم أقل عدد من الخطوات يغطي السيناريو بالكامل (عادة 2 إلى 6 خطوات).
+        - لا تكرر نفس الإجراء عبر خطوات متعددة.
+
         عنوان حالة الاختبار: {tc_title}
         معايير القبول: {acceptance_criteria}
         وصف الميزة: {FEATURE_DESCRIPTION}{ui_block}
@@ -708,6 +719,19 @@ def generate_steps(tc_title, acceptance_criteria, ui_description="", log=None):
         Write ALL steps in English only.
         Return ONLY a JSON array — no extra text or markdown.
         Important: do not use double quotes inside the string values.
+
+        Strict rules to prevent repeated / redundant steps:
+        - Each step = exactly ONE concrete user action, with its expected result in 'expected'.
+        - Do NOT create a separate step that merely restates a previous action or its outcome.
+          Bad example to avoid: four steps that all say "clicked the language icon and the menu
+          appeared" — that is duplication; make it ONE step (the click) with the menu appearing
+          in 'expected'.
+        - Environmental / state preconditions (internet is available, browser opened, user is on
+          the login page) go ONLY in the 'precondition' field of the first related step — never
+          as their own action step.
+        - Verifying an outcome goes in 'expected', not as a new action step.
+        - Use the FEWEST steps that fully cover the scenario (usually 2-6).
+        - Never repeat the same action across multiple steps.
 
         Test case title: {tc_title}
         Acceptance criteria: {acceptance_criteria}
@@ -748,6 +772,10 @@ def evaluate_existing_steps(tc_title, criteria, existing_steps_xml):
         prompt = f"""
         أنت مهندس ضمان جودة خبير. لديك حالة اختبار بخطواتها الحالية، ومعايير القبول الخاصة بها.
         مهمتك: قرر هل الخطوات الحالية كافية وتغطي معايير القبول بشكل صحيح أم لا.
+        اعتبر الخطوات غير كافية (adequate=false) إذا وُجد أي مما يلي:
+        - خطوات مكررة تعيد وصف نفس الإجراء أو نتيجته أكثر من مرة.
+        - شروط بيئية مكتوبة كخطوات إجراء مستقلة (اتصال إنترنت، فتح المتصفح، المستخدم على الصفحة).
+        - نتيجة متوقعة مكتوبة كخطوات إجراء متعددة بدلاً من حقل النتيجة.
         عنوان حالة الاختبار: {tc_title}
         معايير القبول: {criteria}
         الخطوات الحالية: {plain}
@@ -759,6 +787,11 @@ def evaluate_existing_steps(tc_title, criteria, existing_steps_xml):
         You are an expert QA engineer. You have a test case with its current steps and its
         acceptance criteria. Your task: decide whether the current steps are adequate and
         correctly cover the acceptance criteria or not.
+        Consider the steps INADEQUATE (adequate=false) if any of these are present:
+        - repeated steps that restate the same action or its outcome more than once;
+        - environmental preconditions written as their own action steps (internet available,
+          browser opened, user is on the page);
+        - an expected outcome written as several action steps instead of an 'expected' result.
         Test case title: {tc_title}
         Acceptance criteria: {criteria}
         Current steps: {plain}
@@ -2032,17 +2065,32 @@ function xpathOf(el){
   }
   return '/'+parts.join('/');
 }
-const sel='input,button,a,select,textarea,[role=button],[role=link],[role=tab],[contenteditable=true]';
+const sel='input,button,a,select,textarea,[role=button],[role=link],[role=tab],[role=menuitem],[role=option],[role=checkbox],[role=switch],[contenteditable=true]';
+function anameOf(el){
+  // best-effort accessible name: aria-label, associated <label>, title, alt, text
+  let n = el.getAttribute('aria-label') || '';
+  if(!n && el.id){
+    try{ var lab=document.querySelector('label[for="'+CSS.escape(el.id)+'"]');
+         if(lab) n=(lab.innerText||'').trim(); }catch(e){}
+  }
+  if(!n){ var pl=el.closest('label'); if(pl) n=(pl.innerText||'').trim(); }
+  if(!n) n = el.getAttribute('title') || el.getAttribute('alt') || '';
+  return (n||'').trim().slice(0,80);
+}
 const els=[...document.querySelectorAll(sel)];
 return els.slice(0,250).map((el,i)=>({
   idx: i,
   tag: el.tagName.toLowerCase(),
   type: el.getAttribute('type')||'',
+  role: el.getAttribute('role')||'',
   id: el.id||'',
   name: el.getAttribute('name')||'',
+  testid: el.getAttribute('data-testid')||el.getAttribute('data-test')||el.getAttribute('data-cy')||'',
   text: (el.innerText||el.value||'').trim().slice(0,60),
   placeholder: el.getAttribute('placeholder')||'',
   aria: el.getAttribute('aria-label')||'',
+  aname: anameOf(el),
+  disabled: !!(el.disabled||el.getAttribute('aria-disabled')==='true'),
   visible: !!(el.offsetWidth||el.offsetHeight||el.getClientRects().length),
   css: robustCss(el),
   xpath: xpathOf(el)
@@ -2050,10 +2098,78 @@ return els.slice(0,250).map((el,i)=>({
 """
 
 
+# Error / validation message nodes — these are usually spans/divs/[role=alert]
+# and are invisible to the interactive harvest above. Captured separately so the
+# DOM-diff assertion binder (and negative-login error capture) can find them.
+_ERROR_HARVEST_JS = r"""
+function robustCss(el){
+  if(el.id) return '#'+CSS.escape(el.id);
+  if(el.name) return el.tagName.toLowerCase()+'[name="'+el.name+'"]';
+  let path=[], e=el;
+  while(e && e.nodeType===1 && path.length<5){
+    let sel=e.tagName.toLowerCase();
+    if(e.className && typeof e.className==='string'){
+      let c=e.className.trim().split(/\s+/).filter(Boolean).slice(0,2);
+      if(c.length) sel+='.'+c.map(x=>CSS.escape(x)).join('.');
+    }
+    let p=e.parentNode, idx=1, sib=e;
+    while(sib=sib.previousElementSibling){ if(sib.tagName===e.tagName) idx++; }
+    sel+=':nth-of-type('+idx+')';
+    path.unshift(sel);
+    e=e.parentNode;
+    if(e && e.id){ path.unshift('#'+CSS.escape(e.id)); break; }
+  }
+  return path.join(' > ');
+}
+function xpathOf(el){
+  if(el.id) return '//*[@id="'+el.id+'"]';
+  let parts=[], e=el;
+  while(e && e.nodeType===1){
+    let idx=1, sib=e;
+    while(sib=sib.previousElementSibling){ if(sib.tagName===e.tagName) idx++; }
+    parts.unshift(e.tagName.toLowerCase()+'['+idx+']');
+    e=e.parentNode;
+  }
+  return '/'+parts.join('/');
+}
+const sel="[role=alert],[role=status],[aria-live],.alert,.alert-error,.alert-danger,"+
+  ".error,.has-error,.invalid-feedback,.help-block,.field-error,.form-error,.toast,"+
+  ".kc-feedback-text,.pf-c-form__helper-text,#input-error,.message,.notification,"+
+  "[id*=error i],[class*=error i],[class*=invalid i],[class*=feedback i],[class*=danger i],[class*=toast i]";
+const out=[]; const seen=new Set();
+[...document.querySelectorAll(sel)].forEach(el=>{
+  const txt=(el.innerText||el.textContent||'').trim();
+  if(!txt) return;
+  if(txt.length>220) return;
+  const key=robustCss(el);
+  if(seen.has(key)) return; seen.add(key);
+  out.push({
+    tag: el.tagName.toLowerCase(), type:'', role: el.getAttribute('role')||'',
+    id: el.id||'', name: el.getAttribute('name')||'', testid:'',
+    text: txt.slice(0,120), placeholder:'',
+    aria: el.getAttribute('aria-label')||'', aname:'',
+    disabled:false,
+    visible: !!(el.offsetWidth||el.offsetHeight||el.getClientRects().length),
+    css: key, xpath: xpathOf(el), is_error: true
+  });
+});
+return out.slice(0,80);
+"""
+
+
 def _harvest_dom(driver):
     """Return the list of interactive elements on the current page."""
     try:
         return driver.execute_script("return (function(){" + _HARVEST_JS + "})();") or []
+    except Exception:
+        return []
+
+
+def _harvest_errors(driver):
+    """Return visible error/validation/notification message nodes."""
+    try:
+        return driver.execute_script(
+            "return (function(){" + _ERROR_HARVEST_JS + "})();") or []
     except Exception:
         return []
 
@@ -2197,6 +2313,284 @@ def scrape_dom(url, login=None, cb=None, headless=True, wait_secs=4):
             pass
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  INTENT-DRIVEN EXPLORER  (compile → deterministic execute → AI tie-break)
+#  Replaces the old "ask the AI to pick 1 of 120 elements per step" approach,
+#  which produced repeated clicks (assertions/restated steps treated as actions)
+#  and false guesses (preconditions treated as actions). Now:
+#    1. compile_test_case()  — LLM turns messy steps into typed intents ONCE per
+#       case (precondition / action / assertion), with page-language keywords.
+#    2. _rank_candidates()   — deterministic locator binding against the live DOM.
+#    3. AI is used only to break ties among a short candidate list, never to
+#       invent locators. Assertions bind by DOM-diff (what newly appeared).
+# ═══════════════════════════════════════════════════════════════════════════════
+import unicodedata as _ud
+
+_AR_DIACRITICS = "".join(chr(c) for c in list(range(0x0610, 0x061B)) +
+                         list(range(0x064B, 0x0660)) + [0x0670, 0x0640])  # +tatweel
+
+def _norm(s):
+    """Normalize text for language-agnostic matching: lowercase, strip Arabic
+    diacritics/tatweel, unify alef/ya/ta-marbuta, collapse whitespace."""
+    s = (s or "").strip().lower()
+    s = "".join(ch for ch in s if ch not in _AR_DIACRITICS)
+    s = (s.replace("\u0623", "\u0627").replace("\u0625", "\u0627").replace("\u0622", "\u0627")
+           .replace("\u0649", "\u064a").replace("\u0629", "\u0647"))
+    s = _ud.normalize("NFKC", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+_LOGIN_CTX_KWS = ("login", "log in", "logon", "sign in", "signin", "authenticat",
+                  "تسجيل الدخول", "تسجيل دخول", "الدخول", "كلمة المرور", "كلمة مرور",
+                  "اسم المستخدم", "اسم مستخدم")
+_NEG_LOGIN_KWS = ("invalid", "wrong", "incorrect", "fail", "empty", "blank", "without",
+                  "locked", "lockout", "bad credentials", "required",
+                  "خاطئ", "خاطئة", "غير صحيح", "غير صحيحة", "بيانات غير", "فارغ",
+                  "بدون", "فشل", "خطأ", "مطلوب")
+_PRESENCE_KWS = ("التحقق من وجود", "من وجود", "وجود", "موجود", "ظهور",
+                 "verify the existence", "existence of", "presence of", "exists",
+                 "is displayed", "is visible", "is present")
+_EMPTY_FIELD_KWS = ("empty", "blank", "without", "leave it", "leave the", "do not enter",
+                    "don't enter", "no password", "no username", "missing",
+                    "فارغ", "بدون", "اترك", "دون إدخال", "لا تدخل")
+
+
+def _tc_blob(tc):
+    blob = (tc.get("title", "") or "")
+    for s in (tc.get("steps") or []):
+        blob += " " + (s.get("action", "") or "") + " " + \
+                (s.get("expected", "") or "") + " " + (s.get("precondition", "") or "")
+    return blob.lower()
+
+
+def _is_negative_login_tc(tc):
+    """A negative/validation LOGIN case — must run on a fresh login page so the
+    bad submit surfaces real error-state locators."""
+    low = _tc_blob(tc)
+    return (any(k in low for k in _LOGIN_CTX_KWS) and
+            any(k.lower() in low for k in _NEG_LOGIN_KWS))
+
+
+def _classify_case(tc):
+    """Return 'negative_login' | 'presence' | 'interaction'."""
+    if _is_negative_login_tc(tc):
+        return "negative_login"
+    # presence is a property of the case's INTENT (its title), not of an "appears"
+    # word that may show up in any interaction case's expected result.
+    title = _norm(tc.get("title", ""))
+    if any(_norm(k) in title for k in _PRESENCE_KWS):
+        return "presence"
+    return "interaction"
+
+
+def _wants_empty_field(text):
+    t = (text or "").lower()
+    return any(k in t for k in _EMPTY_FIELD_KWS)
+
+
+def compile_test_case(tc, story=None, log=None):
+    """STAGE 1 — turn a test case's raw steps into a normalized, deduplicated list
+    of typed INTENTS. The LLM reads the (often messy, Arabic) steps and returns
+    JSON; it never sees locators, so it cannot hallucinate them.
+
+    Each intent:
+      {"role":"precondition"|"action"|"assertion",
+       "verb":"navigate|click|type|select|hover|wait",   # action only
+       "target":"<human description>",
+       "keywords":["visible text / aria tokens in the PAGE language", ...],
+       "kind":"button|link|input|select|checkbox|menuitem|text|any",
+       "value":"<text to type/select, '' for empty-field cases>",
+       "check":"visible|hidden|text_contains|url_contains|enabled|disabled|count",
+       "expected":"<expected value for the check>",
+       "from_steps":[1-based original step indices this intent came from]}
+
+    Returns a list of intents, or [] on failure (caller falls back to raw steps).
+    """
+    log = log or (lambda *a, **k: None)
+    steps = tc.get("steps") or []
+    raw = []
+    for i, s in enumerate(steps, 1):
+        raw.append({"n": i, "precondition": (s.get("precondition", "") or "").strip(),
+                    "action": (s.get("action", "") or "").strip(),
+                    "expected": (s.get("expected", "") or "").strip()})
+    lang = "Arabic" if _is_arabic_out() else "English"
+    prompt = (
+        "You convert ONE UI test case into an ordered list of atomic INTENTS for a "
+        "Selenium walker. The steps may be in Arabic or English and are often noisy: "
+        "preconditions written as steps, the same action restated across several "
+        "steps, or an action and its expected result merged together.\n\n"
+        "RULES:\n"
+        "- Output ONLY a JSON array, no markdown, no commentary.\n"
+        "- role='precondition' for environmental/state setup with NO UI action "
+        "(internet available, browser open, user is on page X). Do NOT invent a click for these.\n"
+        "- role='action' for ONE real UI operation: verb in "
+        "[navigate,click,type,select,hover,wait]. Collapse repeated/restated steps "
+        "that describe the SAME operation into a SINGLE action. Never emit the same "
+        "action twice in a row.\n"
+        "- role='assertion' for a verification/expected outcome (a menu appeared, an "
+        "error is shown, text changed). Give 'check' and 'expected'. An assertion is "
+        "NOT an action — do not click for it.\n"
+        "- 'keywords' = the literal visible text / aria-label / placeholder tokens the "
+        f"element most likely has, in the page language ({lang}); include both the "
+        "Arabic and an English guess when unsure. Keep 1-5 short tokens.\n"
+        "- 'kind' = the element type you expect.\n"
+        "- For empty-field validation steps (leave a field blank), emit a type action "
+        "with value='' so the walker leaves it empty.\n"
+        "- 'from_steps' MUST list the original step number(s) each intent came from.\n\n"
+        f"TEST CASE TITLE: {tc.get('title','')}\n"
+        f"ACCEPTANCE CRITERIA: {((story or {}).get('criteria') or '')[:800]}\n"
+        f"RAW STEPS (JSON): {json.dumps(raw, ensure_ascii=False)[:5000]}\n\n"
+        'Example item: {"role":"action","verb":"click","target":"language switcher",'
+        '"keywords":["اللغة","language","lang"],"kind":"button","value":"",'
+        '"check":"","expected":"","from_steps":[4,5,6]}'
+    )
+    try:
+        out = parse_json_robust(ai_complete(prompt, max_tokens=2048, timeout=90))
+        if isinstance(out, dict):
+            out = out.get("intents") or out.get("items") or [out]
+        if not isinstance(out, list) or not out:
+            return []
+        clean = []
+        for it in out:
+            if not isinstance(it, dict):
+                continue
+            role = (it.get("role") or "action").strip().lower()
+            if role not in ("precondition", "action", "assertion"):
+                role = "action"
+            fs = it.get("from_steps") or []
+            if isinstance(fs, int):
+                fs = [fs]
+            clean.append({
+                "role": role,
+                "verb": (it.get("verb") or ("navigate" if role == "action" else "")).strip().lower(),
+                "target": (it.get("target") or "").strip(),
+                "keywords": [str(k) for k in (it.get("keywords") or []) if str(k).strip()][:6],
+                "kind": (it.get("kind") or "any").strip().lower(),
+                "value": str(it.get("value") or ""),
+                "check": (it.get("check") or "").strip().lower(),
+                "expected": str(it.get("expected") or ""),
+                "from_steps": [int(x) for x in fs if str(x).strip().lstrip("-").isdigit()],
+            })
+        return clean
+    except CreditBalanceError:
+        raise
+    except Exception as e:
+        log(f"    compile failed ({str(e)[:60]}) — using raw steps", "warn")
+        return []
+
+
+def _intents_from_raw_steps(tc):
+    """Fallback when the compiler is unavailable: derive simple intents from the
+    raw steps so the walk never regresses below the old behavior."""
+    intents = []
+    for i, s in enumerate(tc.get("steps") or [], 1):
+        action = (s.get("action", "") or "").strip()
+        exp = (s.get("expected", "") or "").strip()
+        disp = action
+        for pfx in ("الشرط المسبق:", "الإجراء:", "Precondition:", "Action:"):
+            disp = disp.replace(pfx, " ")
+        disp = disp.strip()
+        if not disp and not exp:
+            intents.append({"role": "precondition", "verb": "", "target": "",
+                            "keywords": [], "kind": "any", "value": "", "check": "",
+                            "expected": "", "from_steps": [i]})
+            continue
+        if disp:
+            low = _norm(disp)
+            verb = ("type" if any(k in low for k in ("type", "enter", "ادخل", "أدخل", "اكتب", "كتابة"))
+                    else "select" if any(k in low for k in ("select", "اختر", "اختيار"))
+                    else "click")
+            intents.append({"role": "action", "verb": verb, "target": disp,
+                            "keywords": [w for w in re.split(r"[\s,.:؛،]+", disp) if len(w) > 2][:6],
+                            "kind": "input" if verb == "type" else "any",
+                            "value": "" if _wants_empty_field(disp) else "",
+                            "check": "", "expected": "", "from_steps": [i]})
+        if exp:
+            intents.append({"role": "assertion", "verb": "", "target": exp,
+                            "keywords": [w for w in re.split(r"[\s,.:؛،]+", exp) if len(w) > 2][:6],
+                            "kind": "any", "value": "", "check": "visible",
+                            "expected": "", "from_steps": [i]})
+    return intents
+
+
+def _el_haystack(el):
+    return _norm(" ".join(str(el.get(k, "")) for k in
+                          ("text", "aname", "aria", "placeholder", "name", "id",
+                           "role", "testid", "type")))
+
+
+def _kind_matches(kind, el):
+    if not kind or kind == "any":
+        return False
+    tag = (el.get("tag") or "").lower(); typ = (el.get("type") or "").lower()
+    role = (el.get("role") or "").lower()
+    m = {"button": tag == "button" or typ in ("button", "submit") or role == "button",
+         "link": tag == "a" or role == "link",
+         "input": tag in ("input", "textarea") and typ not in ("button", "submit", "checkbox"),
+         "select": tag == "select" or role in ("combobox", "listbox"),
+         "checkbox": typ == "checkbox" or role in ("checkbox", "switch"),
+         "menuitem": role in ("menuitem", "option", "tab")}
+    return bool(m.get(kind, False))
+
+
+def _rank_candidates(intent, elements):
+    """STAGE 2 — deterministic scoring of live elements against an intent.
+    Returns a list of (score, element) sorted high→low. No LLM involved."""
+    kws = [_norm(k) for k in (intent.get("keywords") or []) if _norm(k)]
+    tgt = _norm(intent.get("target", ""))
+    kind = intent.get("kind", "any")
+    verb = intent.get("verb", "")
+    ranked = []
+    for el in elements:
+        if not el.get("visible", True):
+            continue
+        hay = _el_haystack(el)
+        score = 0.0
+        for k in kws:
+            if k and k in hay:
+                score += 2.0
+                if hay == k or (el.get("text") and _norm(el["text"]) == k):
+                    score += 1.0           # exact label match
+        # token overlap with the target description
+        for tok in (t for t in tgt.split(" ") if len(t) > 2):
+            if tok in hay:
+                score += 0.5
+        if _kind_matches(kind, el):
+            score += 1.0
+        if verb == "type" and el.get("tag") in ("input", "textarea"):
+            score += 0.5
+        if score > 0:
+            ranked.append((score, el))
+    ranked.sort(key=lambda t: t[0], reverse=True)
+    return ranked
+
+
+def _tiebreak_with_ai(intent, shortlist, cb):
+    """The ONLY place the LLM picks an element — and only among a short list of
+    real candidates (never the full DOM). Returns the chosen element or None."""
+    brief = [{"idx": e["idx"], "tag": e.get("tag"), "type": e.get("type"),
+              "text": e.get("text"), "aname": e.get("aname"), "aria": e.get("aria"),
+              "placeholder": e.get("placeholder"), "id": e.get("id")}
+             for e in shortlist]
+    prompt = (
+        "Pick the ONE element that best matches the intent. Reply ONLY JSON.\n"
+        f"INTENT: {json.dumps({k: intent.get(k) for k in ('role','verb','target','keywords','kind')}, ensure_ascii=False)}\n"
+        f"CANDIDATES: {json.dumps(brief, ensure_ascii=False)[:3000]}\n"
+        '{"idx": <chosen idx or -1>}'
+    )
+    try:
+        data = parse_json_robust(ai_complete(prompt, max_tokens=256, timeout=45))
+        if isinstance(data, list) and data:
+            data = data[0]
+        idx = int(data.get("idx", -1))
+        return next((e for e in shortlist if e.get("idx") == idx), None) if idx >= 0 else None
+    except CreditBalanceError:
+        raise
+    except Exception as e:
+        cb(f"    tiebreak error: {str(e)[:60]}", "warn")
+        return None
+
+
 def _match_step_to_element(action, elements, cb):
     """Ask the AI which real DOM element best matches a step's action.
     Returns (element_dict_or_None, kind) where kind in
@@ -2304,12 +2698,23 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
             _t.sleep(0.4)
         return None
 
-    def snapshot(tag=""):
+    def snapshot(tag="", with_errors=False):
         els = _harvest_dom(driver)
+        if with_errors:
+            errs = _harvest_errors(driver)
+            base = len(els)
+            for j, e in enumerate(errs):
+                e2 = dict(e); e2["idx"] = base + j
+                els.append(e2)
+            if errs and tag:
+                cb(f"  + {len(errs)} message/error element(s)", "dim")
         all_snapshots.extend(els)
         if tag:
             cb(f"  captured {len(els)} elements ({tag})", "dim")
         return els
+
+    def _el_key(e):
+        return (e.get("id"), e.get("name"), e.get("css"), e.get("xpath"))
 
     def to_locator(el):
         if not el:
@@ -2390,6 +2795,122 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
         except Exception:
             pass
 
+    def _settle(timeout=8):
+        """Wait for the page to stop being busy: readyState complete, no
+        aria-busy, and common spinner/loader overlays gone."""
+        wait_dom_ready()
+        end = _t.time() + timeout
+        while _t.time() < end:
+            try:
+                busy = driver.execute_script(
+                    "var b=document.querySelector('[aria-busy=true]');"
+                    "var s=document.querySelector("
+                    "  '.spinner,.loading,.loader,.MuiBackdrop-root,[class*=spinner i],[class*=loading i]');"
+                    "function vis(e){return e&&(e.offsetWidth||e.offsetHeight||e.getClientRects().length);}"
+                    "return !!(vis(b)||vis(s));")
+            except Exception:
+                busy = False
+            if not busy:
+                return
+            _t.sleep(0.25)
+
+    def _dismiss_overlays():
+        """Best-effort dismissal of cookie/consent banners and stray modals that
+        would intercept clicks. Only clicks clearly-dismissive controls."""
+        labels = ["accept", "accept all", "agree", "i agree", "got it", "ok", "close",
+                  "dismiss", "no thanks", "موافق", "قبول", "أوافق", "إغلاق", "تم", "حسنا"]
+        try:
+            btns = _harvest_dom(driver)
+            for el in btns:
+                txt = _norm(el.get("text") or el.get("aname") or el.get("aria"))
+                if not txt:
+                    continue
+                if any(_norm(l) == txt or _norm(l) in txt for l in labels):
+                    live = find_live(el)
+                    if live is not None and live.is_displayed():
+                        try:
+                            driver.execute_script("arguments[0].click();", live)
+                            _t.sleep(0.4)
+                            return True
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+        return False
+
+    def _topmost_ok(live_el):
+        """True if the element is the topmost hit at its center (not covered by an
+        overlay). Used to decide whether to dismiss an overlay before clicking."""
+        try:
+            return driver.execute_script(
+                "var e=arguments[0];var r=e.getBoundingClientRect();"
+                "if(!r.width||!r.height)return false;"
+                "var x=r.left+r.width/2,y=r.top+r.height/2;"
+                "var t=document.elementFromPoint(x,y);"
+                "return !!t&&(t===e||e.contains(t)||t.contains(e));", live_el)
+        except Exception:
+            return True
+
+    def _act(el_dict, verb, value, empty_ok=False):
+        """STAGE 3 — perform an action so it survives overlays and timing.
+        Re-finds the element, scrolls to center, waits to settle, clears overlays
+        if it's covered, then runs a retry ladder (native → JS → ActionChains).
+        Returns the live element acted on (or None)."""
+        live = find_live(el_dict)
+        if live is None:
+            return None
+        _flash(live)
+        try:
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", live)
+        except Exception:
+            pass
+        _settle(timeout=4)
+        # type / select don't need topmost; clicks do
+        if verb == "type":
+            try:
+                if empty_ok:
+                    live.clear()
+                else:
+                    live.clear(); live.send_keys(value or "test")
+                return live
+            except Exception as e:
+                cb(f"      type failed: {str(e)[:50]}", "warn"); return live
+        if verb == "select":
+            from selenium.webdriver.support.ui import Select
+            try:
+                Select(live).select_by_visible_text(value)
+            except Exception:
+                try:
+                    Select(live).select_by_value(value)
+                except Exception:
+                    return _act(el_dict, "click", "", empty_ok)  # fall back to clicking it open
+            return live
+        # click / hover / navigate(default) — make it interception-proof
+        if not _topmost_ok(live):
+            if _dismiss_overlays():
+                live = find_live(el_dict) or live
+        try:
+            WebDriverWait(driver, 6).until(EC.element_to_be_clickable(live))
+        except Exception:
+            pass
+        # retry ladder
+        for attempt in range(3):
+            try:
+                live.click(); return live
+            except Exception:
+                live = find_live(el_dict) or live      # handle staleness
+                try:
+                    from selenium.webdriver.common.action_chains import ActionChains
+                    ActionChains(driver).move_to_element(live).pause(0.1).click().perform()
+                    return live
+                except Exception:
+                    try:
+                        driver.execute_script("arguments[0].click();", live); return live
+                    except Exception:
+                        _dismiss_overlays(); _t.sleep(0.3)
+        cb("      could not click after retries", "warn")
+        return live
+
     try:
         # ── login + verify ──
         login_url = (login or {}).get("url") or site_url
@@ -2416,59 +2937,64 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
         except Exception:
             pass
         if login and login.get("user") and login.get("password"):
-            cb("Opening login page…", "dim")
-            driver.get(login_url)
-            wait_dom_ready()
-            try:
-                # Username/email — wait for it to actually appear. Covers Keycloak
-                # (#username), generic email/text inputs, and common name patterns.
-                user_sel = login.get("user_locator") or (
-                    "#username,input[type=email],input[name=email],input[name=username],"
-                    "input[name*=user i],input[id*=user i],input[type=text]")
-                cb("Waiting for the username field…", "dim")
-                u = find_first(user_sel, timeout=25)
-                if u is None:
-                    raise RuntimeError("username/email field did not appear")
-                u.clear(); u.send_keys(login["user"])
-
-                # Password — may be on the same page or a second step. Wait for it.
-                pass_sel = login.get("pass_locator") or "#password,input[type=password]"
-                p = find_first(pass_sel, timeout=10)
-                if p is None:
-                    # Two-step login: click Next/Continue first, then wait for password
-                    nxt = find_first("button[type=submit],#kc-login,button,input[type=submit]", timeout=5)
-                    if nxt is not None:
-                        nxt.click(); wait_dom_ready()
-                    p = find_first(pass_sel, timeout=15)
-                if p is None:
-                    raise RuntimeError("password field did not appear")
-                p.clear(); p.send_keys(login["password"])
-
-                # Submit
-                submit_sel = login.get("submit_locator") or (
-                    "#kc-login,button[type=submit],input[type=submit],button")
-                btn = find_first(submit_sel, timeout=10)
-                if btn is None:
-                    p.submit()
-                else:
-                    btn.click()
-                cb("Submitted login — verifying…", "dim")
-                # wait for navigation away from the login form
-                try:
-                    WebDriverWait(driver, 20).until(
-                        lambda d: (d.current_url or "").rstrip("/") != login_url.rstrip("/")
-                                  or not d.find_elements(By.CSS_SELECTOR, "input[type=password]"))
-                except Exception:
-                    pass
+            def do_login(fresh=False):
+                """Run the login flow on a clean login page. fresh=True clears the
+                session first (used to re-establish auth after a negative-login
+                case). Returns (ok, reason)."""
+                if fresh:
+                    try:
+                        driver.delete_all_cookies()
+                    except Exception:
+                        pass
+                cb("Opening login page\u2026", "dim")
+                driver.get(login_url)
                 wait_dom_ready()
-            except Exception as e:
-                raise RuntimeError(f"Login step failed: {str(e)[:160]}")
-            ok, reason = _verify_logged_in(driver, login_url, cb)
+                try:
+                    user_sel = login.get("user_locator") or (
+                        "#username,input[type=email],input[name=email],input[name=username],"
+                        "input[name*=user i],input[id*=user i],input[type=text]")
+                    cb("Waiting for the username field\u2026", "dim")
+                    u = find_first(user_sel, timeout=25)
+                    if u is None:
+                        raise RuntimeError("username/email field did not appear")
+                    u.clear(); u.send_keys(login["user"])
+                    pass_sel = login.get("pass_locator") or "#password,input[type=password]"
+                    p = find_first(pass_sel, timeout=10)
+                    if p is None:
+                        nxt = find_first("button[type=submit],#kc-login,button,input[type=submit]", timeout=5)
+                        if nxt is not None:
+                            nxt.click(); wait_dom_ready()
+                        p = find_first(pass_sel, timeout=15)
+                    if p is None:
+                        raise RuntimeError("password field did not appear")
+                    p.clear(); p.send_keys(login["password"])
+                    submit_sel = login.get("submit_locator") or (
+                        "#kc-login,button[type=submit],input[type=submit],button")
+                    btn = find_first(submit_sel, timeout=10)
+                    if btn is None:
+                        p.submit()
+                    else:
+                        btn.click()
+                    cb("Submitted login \u2014 verifying\u2026", "dim")
+                    try:
+                        WebDriverWait(driver, 20).until(
+                            lambda d: (d.current_url or "").rstrip("/") != login_url.rstrip("/")
+                                      or not d.find_elements(By.CSS_SELECTOR, "input[type=password]"))
+                    except Exception:
+                        pass
+                    wait_dom_ready()
+                except Exception as e:
+                    raise RuntimeError(f"Login step failed: {str(e)[:160]}")
+                return _verify_logged_in(driver, login_url, cb)
+
+            have_creds = True
+            ok, reason = do_login()
             if not ok:
                 raise RuntimeError(f"Login could not be verified — {reason}. "
                                    f"Aborting so locators aren't captured from the wrong page.")
             cb(f"Login verified — {reason}", "ok")
         else:
+            have_creds = False
             cb("No login provided — exploring as anonymous user.", "warn")
 
         # Navigate to the starting page
@@ -2483,20 +3009,63 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
         CREDIT_STOP = 5
         abort_credit = False
 
-        def try_match(a, els):
-            """Run the AI matcher, but treat repeated credit-limit errors as a
-            signal to stop the whole walk instead of hammering the API."""
+        def _credit_guard(fn, *a, **k):
+            """Run an AI-calling fn; count credit errors and trip abort_credit."""
             nonlocal credit_hits, abort_credit
             try:
-                return _match_step_to_element(a, els, cb)
+                return fn(*a, **k)
             except CreditBalanceError:
                 credit_hits += 1
                 cb(f"AI credit limit hit ({credit_hits}/{CREDIT_STOP}).", "err")
                 if credit_hits >= CREDIT_STOP:
                     abort_credit = True
-                return None, "none", ""
+                return None
 
-        # walk each test case
+        def bind_target(intent, pool):
+            """Deterministic-first binding of an intent to a live element.
+            Returns (element_or_None, source) with source in
+            {'live','snapshot','guess'}. The AI is used ONLY to break ties among a
+            short candidate list — never to invent a locator."""
+            ranked = _rank_candidates(intent, pool)
+            if ranked:
+                top = ranked[0][0]
+                second = ranked[1][0] if len(ranked) > 1 else 0.0
+                if len(ranked) == 1 or (top >= 2 and (top - second) >= 1):
+                    return ranked[0][1], "live"          # confident — no AI call
+                shortlist = [e for _, e in ranked[:5]]
+                chosen = _credit_guard(_tiebreak_with_ai, intent, shortlist, cb)
+                return (chosen or ranked[0][1]), "live"  # AI tie-break, else best deterministic
+            # nothing matched on this page → try the union of everything seen so far
+            union = _dedup_reindex(all_snapshots)
+            if union:
+                q = intent.get("target") or " ".join(intent.get("keywords") or [])
+                r = _credit_guard(_match_step_to_element, q, union, cb)
+                if r and r[0]:
+                    return r[0], "snapshot"
+            return None, "guess"
+
+        def assign(step_idxs, locator, src, as_assert=False):
+            """Write a captured locator back onto the ORIGINAL step(s) the intent
+            came from, so the generated Java still mirrors the authored test case."""
+            nonlocal live_count, snap_count, guess_count
+            for n in step_idxs:
+                if 1 <= n <= len(steps):
+                    if as_assert:
+                        steps[n - 1]["assert_locator"] = locator
+                    else:
+                        steps[n - 1]["locator"] = locator
+                        steps[n - 1]["locator_src"] = src
+            if not as_assert:
+                if src == "live":      live_count += 1
+                elif src == "snapshot": snap_count += 1
+                elif src == "guess":    guess_count += 1
+
+        def _todo(story, tc, idxs, target, kind):
+            for n in idxs:
+                todos.append({"s": story.get("id"), "tc": tc.get("title", ""),
+                              "n": n, "a": (target or "")[:32], "kind": kind})
+
+        # walk each test case (intent-driven)
         for sp in stories_payload:
             if should_stop() or abort_credit:
                 break
@@ -2506,83 +3075,115 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                 if should_stop() or abort_credit:
                     break
                 steps = tc.get("steps", []) or []
-                cb(f"  walking '{tc.get('title','')}' ({len(steps)} steps)", "info")
-                try:
-                    cb("    loading start page\u2026", "dim")
-                    driver.get(site_url); _t.sleep(wait_secs)
-                except Exception:
-                    pass
-                for si, st in enumerate(steps, 1):
+                ctype = _classify_case(tc)
+                is_neg = (ctype == "negative_login")
+                cb(f"  walking '{tc.get('title','')}'  [{ctype}]  ({len(steps)} steps)", "info")
+
+                # STAGE 1 — compile messy steps into typed intents (collapses
+                # restated/duplicate steps, routes preconditions away from clicks)
+                intents = _credit_guard(compile_test_case, tc, story, cb) or []
+                if not intents:
+                    intents = _intents_from_raw_steps(tc)
+                n_act = sum(1 for it in intents if it["role"] == "action")
+                n_ass = sum(1 for it in intents if it["role"] == "assertion")
+                cb(f"    compiled \u2192 {n_act} action(s), {n_ass} assertion(s), "
+                   f"{len(intents) - n_act - n_ass} precondition(s)", "dim")
+
+                # start page — a fresh login page for negative-login cases
+                if is_neg:
+                    cb("    \u21b3 negative-login case \u2014 walking on a fresh login page "
+                       "to capture error-state locators", "info")
+                    if have_creds:
+                        try:
+                            driver.delete_all_cookies()
+                        except Exception:
+                            pass
+                    try:
+                        driver.get(login_url); wait_dom_ready(); _t.sleep(wait_secs)
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        cb("    loading start page\u2026", "dim")
+                        driver.get(site_url); _t.sleep(wait_secs)
+                    except Exception:
+                        pass
+
+                last_before = None   # snapshot keys just before the latest action
+                for it in intents:
                     if should_stop() or abort_credit:
                         break
-                    action = st.get("action", "") or ""
-                    if not action.strip():
+                    role = it["role"]; fs = it.get("from_steps") or []
+
+                    if role == "precondition":
+                        cb(f"    \u2022 precondition (no UI action): "
+                           f"{(it.get('target') or '')[:40]}", "dim")
+                        for n in fs:
+                            if 1 <= n <= len(steps):
+                                steps[n - 1].setdefault("locator", None)
+                                steps[n - 1]["locator_src"] = "precondition"
                         continue
-                    disp = action.strip()
-                    for _pfx in ("\u0627\u0644\u0634\u0631\u0637 \u0627\u0644\u0645\u0633\u0628\u0642:", "Precondition:", "precondition:"):
-                        if disp.startswith(_pfx):
-                            disp = disp[len(_pfx):].strip(); break
-                    cb(f"  {si}/{len(steps)}  {disp[:45]}", "dim")
-                    els = snapshot()
-                    match, kind, value = try_match(action, els)
+
+                    if role == "assertion":
+                        # STAGE 2 (assert) — bind by DOM-diff: prefer elements that
+                        # newly appeared/changed since the last action (the menu that
+                        # opened, the error that showed). Same mechanism powers
+                        # negative-login error capture.
+                        _settle(timeout=4)
+                        after = snapshot(with_errors=True)
+                        new_pool = ([e for e in after if _el_key(e) not in last_before]
+                                    if last_before is not None else after)
+                        el, src = bind_target(it, new_pool or after)
+                        assign(fs, to_locator(el) if el else None, src, as_assert=True)
+                        if el:
+                            tag = " (new)" if (last_before is not None and
+                                               _el_key(el) not in last_before) else ""
+                            cb(f"    \u2713 assertion \u2192 {_describe(el)}{tag}", "ok")
+                        else:
+                            cb("    ? assertion target not found on page", "warn")
+                        continue
+
+                    # role == 'action'
+                    verb = it.get("verb") or "click"
+                    cb(f"    \u2192 {verb}: {(it.get('target') or '')[:40]}", "dim")
+                    cur = snapshot(with_errors=is_neg)
+                    last_before = set(_el_key(e) for e in cur)
+                    el, src = bind_target(it, cur)
                     if abort_credit:
                         break
-                    if match:
-                        st["locator"] = to_locator(match)
-                        st["locator_src"] = "live"
-                        live_count += 1
-                        live_el = find_live(match)
-                        if live_el is not None:
-                            _flash(live_el)  # outline it in the browser
-                            try:
-                                if kind == "type":
-                                    live_el.clear(); live_el.send_keys(value or "test")
-                                    cb(f"      typed into {_describe(match)}", "ok")
-                                elif kind == "select":
-                                    from selenium.webdriver.support.ui import Select
-                                    try:
-                                        Select(live_el).select_by_visible_text(value)
-                                    except Exception:
-                                        _safe_click(live_el)
-                                    cb(f"      selected on {_describe(match)}", "ok")
-                                else:  # click / navigate / default
-                                    _safe_click(live_el)
-                                    cb(f"      clicked {_describe(match)}", "ok")
-                                _t.sleep(1.2)  # let the page react
-                            except Exception as ae:
-                                cb(f"      couldn't act on {_describe(match)}: {str(ae)[:50]}", "warn")
-                        else:
-                            cb(f"      matched {_describe(match)} but it left the page", "warn")
-                        exp = st.get("expected", "") or ""
-                        if exp.strip():
-                            els2 = snapshot()
-                            m2, _, _ = try_match(exp, els2)
-                            st["assert_locator"] = to_locator(m2) if m2 else None
-                    else:
-                        union = _dedup_reindex(all_snapshots)
-                        m2, _k2, _v2 = (try_match(action, union) if union else (None, "none", ""))
-                        if abort_credit:
-                            break
-                        if m2:
-                            st["locator"] = to_locator(m2)
-                            st["locator_src"] = "snapshot"
-                            snap_count += 1
-                            cb(f"      SNAPSHOT: using {_describe(m2)} from an earlier page "
-                               f"\u2014 will be marked // TODO verify (from snapshot)", "warn")
-                            todos.append({"s": story.get("id"), "tc": tc.get("title", ""),
-                                          "n": si, "a": disp, "kind": "snapshot"})
-                            exp = st.get("expected", "") or ""
-                            if exp.strip():
-                                ma, _, _ = try_match(exp, union)
-                                st["assert_locator"] = to_locator(ma) if ma else None
-                        else:
-                            st["locator"] = None
-                            st["locator_src"] = "guess"
-                            guess_count += 1
-                            cb("      GUESS: no element matched \u2014 step will be marked "
-                               "// TODO verify locator", "warn")
-                            todos.append({"s": story.get("id"), "tc": tc.get("title", ""),
-                                          "n": si, "a": disp, "kind": "guess"})
+                    if el is None:
+                        assign(fs, None, "guess")
+                        cb("      GUESS: no element matched \u2014 // TODO verify locator", "warn")
+                        _todo(story, tc, fs, it.get("target"), "guess")
+                        continue
+                    assign(fs, to_locator(el), src)
+                    if src == "snapshot":
+                        cb(f"      SNAPSHOT: using {_describe(el)} from an earlier page "
+                           f"\u2014 // TODO verify (from snapshot)", "warn")
+                        _todo(story, tc, fs, it.get("target"), "snapshot")
+                        continue
+                    if verb == "navigate":
+                        cb("      (navigate) \u2014 already on the target page", "dim")
+                        continue
+                    # STAGE 3 — interception-proof action
+                    empty_ok = (verb == "type" and not (it.get("value") or "").strip()
+                                and _wants_empty_field((it.get("target", "") + " " +
+                                                        " ".join(it.get("keywords") or []))))
+                    _act(el, verb, it.get("value", ""), empty_ok=empty_ok)
+                    cb(f"      {verb} {_describe(el)}"
+                       f"{' (left empty)' if empty_ok else ''}", "ok")
+                    _settle(timeout=4); _t.sleep(0.6)
+
+                # restore the authenticated session after a negative-login case so
+                # later cases don't capture locators from the login page
+                if is_neg and have_creds and not (should_stop() or abort_credit):
+                    cb("    \u21b3 re-establishing login after negative-login case\u2026", "dim")
+                    try:
+                        ok2, reason2 = do_login(fresh=True)
+                        cb(f"    \u21b3 re-login {'verified' if ok2 else 'NOT verified'} "
+                           f"\u2014 {reason2}", "ok" if ok2 else "warn")
+                    except Exception as e:
+                        cb(f"    \u21b3 re-login failed: {str(e)[:80]}", "warn")
 
         if abort_credit:
             cb(f"Stopped automatically \u2014 the AI credit limit was hit {credit_hits} "
