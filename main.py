@@ -2896,6 +2896,7 @@ class QAStudio:
         # design log colors: ok=green, err=red, warn=amber, dim=ink-3,
         # story=story-violet (bold), info=violet-ink
         tone_color = {"ok": T.GREEN, "err": T.RED, "warn": T.AMBER, "info": T.VIOLET_INK,
+                      "skip": T.INK_3, "review": T.AMBER,
                       "dim": T.INK_3, "story": T.STORY}
         tone = ln.get("tone", "dim")
         color = tone_color.get(tone, T.INK_2)
@@ -3496,8 +3497,8 @@ class QAStudio:
                 stories_payload = result["stories_payload"]
                 dom = result["dom_snapshot"]
                 _st = result.get("stats", {})
-                cb(f"Locators — {_st.get('live',0)} captured live, "
-                   f"{_st.get('guess',0)} will be guessed.", "ok")
+                cb(f"Locators — {_st.get('live',0)} live · {_st.get('snapshot',0)} from "
+                   f"snapshots · {_st.get('guess',0)} guessed.", "ok")
 
                 if self._auto_stop:
                     cb("Stopped before generation.", "warn"); return
