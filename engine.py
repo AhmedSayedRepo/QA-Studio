@@ -907,6 +907,111 @@ def _norm_title(t):
     return re.sub(r"\s+", " ", t).strip().lower()
 
 
+def delete_test_case(project, plan_id, suite_id, tc_id):
+    """Remove a test case from the suite and delete the work item."""
+    # 1) remove from suite (best-effort)
+    try:
+        _test_client.remove_test_cases_from_suite_url(
+            project=project, plan_id=plan_id, suite_id=suite_id, test_case_ids=str(tc_id))
+    except Exception:
+        try:
+            url = (f"https://dev.azure.com/{AZURE_ORG}/{project}/_apis/test/Plans/"
+                   f"{plan_id}/Suites/{suite_id}/testcases/{tc_id}?api-version=7.0")
+            requests.delete(url, auth=("", AZURE_PAT), timeout=30)
+        except Exception:
+            pass
+    # 2) delete the work item itself
+    try:
+        _wit_client.delete_work_item(id=tc_id, project=project, destroy=False)
+        return True
+    except Exception:
+        try:
+            url = (f"https://dev.azure.com/{AZURE_ORG}/{project}/_apis/wit/"
+                   f"workitems/{tc_id}?api-version=7.0")
+            r = requests.delete(url, auth=("", AZURE_PAT), timeout=30)
+            return r.status_code in (200, 204)
+        except Exception:
+            return False
+
+
+def dedupe_existing_suite(project, plan_id, suite_id, cb=None, do_delete=True):
+    """Find duplicate test cases ALREADY in a suite and remove the less complete
+    one of each duplicate group, keeping the most accurate (most steps, then
+    oldest id). Duplicates are matched by semantic key (meaning), so
+    'لا يقبل أقل من 2 حرف' and 'لا يقبل أقل من حرفين' are treated as the same.
+
+    Returns {"removed": [ {id,title,kept_id} ], "groups": n}.
+    """
+    cb = cb or (lambda *a, **k: None)
+    try:
+        cases = fetch_test_cases_for_suite(project, plan_id, suite_id)
+    except Exception as e:
+        cb("log", {"msg": f"Could not read suite for dedup: {str(e)[:80]}", "tone": "warn"})
+        return {"removed": [], "groups": 0}
+
+    # Build records: {id, title, step_count}
+    recs = []
+    for c in cases:
+        wi = c.get("workItem", {})
+        tc_id = wi.get("id")
+        title = wi.get("name", "")
+        if not tc_id:
+            continue
+        try:
+            steps = fetch_test_case_steps(tc_id)
+            sc = len(steps)
+        except Exception:
+            sc = 0
+        recs.append({"id": int(tc_id), "title": title, "steps": sc,
+                     "key": _semantic_key(title), "norm": _norm_title(title)})
+
+    # Group by semantic key (and exact-norm), then within each group decide keeper
+    groups = {}
+    for r in recs:
+        # find an existing group whose key is a near-duplicate
+        placed = False
+        for gk in list(groups.keys()):
+            if r["norm"] and any(r["norm"] == x["norm"] for x in groups[gk]):
+                groups[gk].append(r); placed = True; break
+            if _is_near_duplicate(r["key"], {gk}):
+                groups[gk].append(r); placed = True; break
+        if not placed:
+            groups[r["key"]] = [r]
+
+    removed = []
+    dup_groups = 0
+    for gk, members in groups.items():
+        if len(members) < 2:
+            continue
+        dup_groups += 1
+        # keeper = most steps (more complete/accurate), tie-break = smallest id (oldest)
+        members.sort(key=lambda m: (-m["steps"], m["id"]))
+        keeper = members[0]
+        cb("log", {"msg": f"Duplicate group ({len(members)}) — keeping #{keeper['id']} "
+                          f"({keeper['steps']} steps)", "tone": "info", "ar": True,
+                   "id": keeper["id"], "detail": keeper["title"]})
+        for victim in members[1:]:
+            if do_delete:
+                ok = delete_test_case(project, plan_id, suite_id, victim["id"])
+                tone = "skip" if ok else "err"
+                verb = "deleted" if ok else "delete FAILED"
+            else:
+                tone = "warn"; verb = "duplicate (not deleted)"
+            cb("log", {"msg": f"{victim['title']}", "tone": tone, "ar": True,
+                       "id": victim["id"],
+                       "detail": f"{verb} · {victim['steps']} steps · dup of #{keeper['id']}"})
+            removed.append({"id": victim["id"], "title": victim["title"],
+                            "kept_id": keeper["id"], "deleted": (do_delete and ok)})
+    if dup_groups:
+        cb("log", {"msg": f"Removed {len(removed)} duplicate test case"
+                          + ("s" if len(removed) != 1 else "")
+                          + f" across {dup_groups} group" + ("s" if dup_groups != 1 else ""),
+                   "tone": "ok"})
+    else:
+        cb("log", {"msg": "No duplicate test cases found in the suite.", "tone": "dim"})
+    return {"removed": removed, "groups": dup_groups}
+
+
 # Arabic filler/stop words that don't change a test's meaning — removed before
 # comparing two titles for semantic equivalence.
 _AR_STOP = {
@@ -935,6 +1040,17 @@ _AR_SYN = {
     "إجباري": "required", "اجباري": "required", "الزامي": "required",
     "إلزامي": "required", "مطلوب": "required",
     "فارغ": "empty", "فارغاً": "empty", "فارغا": "empty", "تركه": "empty",
+    # field-name tokens
+    "الاسم": "name", "الإسم": "name", "اسم": "name", "إسم": "name",
+    "البريد": "email", "الايميل": "email", "الإيميل": "email", "الالكتروني": "email",
+    "الإلكتروني": "email", "الهاتف": "phone", "الجوال": "phone", "الموبايل": "phone",
+    "رقم": "number", "الرقم": "number",
+    # number words → digits so "حرفين" ~ "2 حرف", "ثلاثة" ~ "3"
+    "حرفين": "minlen", "حرفان": "minlen",
+    "واحد": "1", "واحده": "1", "واحدة": "1", "اثنين": "2", "اثنان": "2",
+    "ثلاثة": "3", "ثلاثه": "3", "اربعة": "4", "أربعة": "4", "اربعه": "4",
+    "خمسة": "5", "خمسه": "5", "ستة": "6", "سته": "6",
+    "٣": "3", "٤": "4", "٥": "5", "٦": "6", "٧": "7", "٨": "8", "٩": "9", "١": "1",
 }
 
 def _semantic_key(title):
@@ -1004,6 +1120,12 @@ def run_titles(project, plan_id, story_ids, cb, should_stop=lambda: False):
             continue
         ps = per_story_stats.setdefault(sid, {"id": sid, "title": title, "total": 0,
                                               "ok": 0, "skipped": 0, "err": 0, "suite": suite_id})
+        # Remove pre-existing duplicate test cases in this suite first, keeping the
+        # most complete one of each group (catches dupes from prior runs / manual entry).
+        try:
+            dedupe_existing_suite(project, plan_id, suite_id, cb=cb, do_delete=True)
+        except Exception as de:
+            cb("log", {"msg": f"Dedup skipped: {str(de)[:80]}", "tone": "warn"})
         # existing titles
         existing_titles = []
         try:
@@ -1074,8 +1196,9 @@ def run_titles(project, plan_id, story_ids, cb, should_stop=lambda: False):
 
 
 def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
-              existing_mode="skip"):
-    """existing_mode: 'skip' or 'evaluate'."""
+              existing_mode="skip", dedupe_existing=True):
+    """existing_mode: 'skip' or 'evaluate'. dedupe_existing: remove pre-existing
+    duplicate test cases in each suite before processing."""
     wit, test = connect_azure_sdk(project)
     cb("log", {"msg": "Discovering suites for stories…", "tone": "dim"})
     story_suite_map = discover_suites_for_stories(project, plan_id, set(story_ids))
@@ -1097,6 +1220,19 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
         else:
             cb("log", {"msg": f"Story {sid} — no suite found/created, skipped",
                        "tone": "warn", "ico": "⚠"})
+    # ── Remove pre-existing duplicate test cases in each suite ──
+    # Catches duplicates already sitting in Azure (from prior runs or manual
+    # entry), keeping the most complete one of each group and deleting the rest.
+    if dedupe_existing:
+        cb("log", {"msg": "Checking suites for duplicate test cases…", "tone": "dim"})
+        for sid, suite_id in story_suite_map.items():
+            if should_stop(): break
+            if suite_id:
+                try:
+                    dedupe_existing_suite(project, plan_id, suite_id, cb=cb, do_delete=True)
+                except Exception as de:
+                    cb("log", {"msg": f"Dedup skipped for suite {suite_id}: {str(de)[:80]}",
+                               "tone": "warn"})
     # ── Seed titles for empty suites ──
     # If a story's suite has NO test cases yet, generate titles first (same dedup
     # as the titles tool) and create the test cases, so the steps run can proceed
@@ -1222,7 +1358,7 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
             _el = round(time.time() - _tc_start, 1)
             skipped_items.append({"id": tc_id, "title": tc_title,
                                   "reason": "Already had steps", "secs": _el})
-            cb("log", {"msg": tc_title + " — already has steps, skipped", "tone": "warn",
+            cb("log", {"msg": tc_title + " — already has steps, skipped", "tone": "skip",
                        "id": tc_id, "ico": "⏭", "ar": True, "secs": _el,
                        "detail": f"skipped · ⏱ {_fmt_mmss(_el)}"})
         else:
@@ -1271,7 +1407,9 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
                                "detail": f"{len(steps)} steps · pre {npre} · action {len(steps)} · "
                                          f"expected {len(steps)} · ⏱ {_fmt_mmss(_elapsed)}"})
                     if inadequate_reason:
-                        action_items.append({"id": tc_id, "title": tc_title, "reason": inadequate_reason})
+                        action_items.append({"id": tc_id, "title": tc_title,
+                                             "reason": inadequate_reason,
+                                             "secs": round(_elapsed, 1)})
                 except CreditBalanceError:
                     cb("done", {"summary": "Stopped — out of AI credits", "reason": "credit",
                                 "action_items": action_items}); return
@@ -1513,48 +1651,55 @@ def build_report_email(tool, summary, stats, action_items=None, skipped_items=No
         skipped_block = (f"<h3 style='color:#74727E;font-size:15px;margin:24px 0 12px'>"
                          f"⏭ Skipped ({len(skipped_items)})</h3>{cards_html}{more}")
 
-    # Activity log — scrollable block with the test-case lines
+    # Activity log — table layout so RTL Arabic + LTR ids/icons align cleanly.
+    # (No scrollable container: email clients like Outlook ignore overflow.)
     log_block = ""
     if log_lines:
         tone_color = {"ok": "#1F9D57", "err": "#E0474D", "warn": "#C2860C",
+                      "skip": "#74727E", "review": "#C2860C",
                       "story": "#5234E0", "dim": "#A3A1AD", "info": "#5234E0"}
-        default_ico = {"ok": "✓", "err": "✕", "warn": "⏭", "story": "▸", "info": "●"}
+        default_ico = {"ok": "✓", "err": "✕", "warn": "⏭", "skip": "⏭",
+                       "review": "⚠", "story": "▸", "info": "●"}
         rows_html = ""
         for ln in log_lines[:500]:
             tone = ln.get("tone", "dim")
             col = tone_color.get(tone, "#1B1A22")
-            ico = ln.get("ico") or default_ico.get(tone, "")
+            ico = ln.get("ico") or default_ico.get(tone, "•")
             msg = _html.escape(str(ln.get("msg", "")))
             item_id = _html.escape(str(ln.get("id", "")))
             detail = _html.escape(str(ln.get("detail", "")))
             indent = ln.get("indent")
-            is_ar = ln.get("ar") or any('\u0600' <= c <= '\u06ff' for c in str(ln.get("msg","")))
-            rtl = "direction:rtl;text-align:right;" if is_ar else ""
-            pad_left = "padding-left:22px;" if indent else ""
-            # main line: icon + [id] + title
-            id_badge = (f"<span style='font-family:monospace;font-size:11px;color:#A3A1AD;"
-                        f"font-weight:700;margin:0 6px'>[{item_id}]</span>" if item_id else "")
+            is_ar = ln.get("ar") or any('\u0600' <= c <= '\u06ff' for c in str(ln.get("msg", "")))
+            is_story = (tone == "story")
             _u = _wi_url(ln.get("id"))
             title_html = (f"<a href='{_html.escape(_u, quote=True)}' "
                           f"style='color:#1B1A22;text-decoration:none'>{msg}</a>"
                           if _u else msg)
+            id_html = (f"<span style='font-family:monospace;font-size:11px;color:#A3A1AD;"
+                       f"font-weight:700'>[{item_id}]</span> " if item_id else "")
+            text_dir = "rtl" if is_ar else "ltr"
+            text_align = "right" if is_ar else "left"
+            indent_pad = "padding-left:24px;" if indent else ""
+            title_color = col if is_story else "#1B1A22"
+            detail_html = (f"<div style='font-size:11px;color:#A3A1AD;font-weight:600;"
+                           f"margin-top:2px;direction:{text_dir};text-align:{text_align}'>"
+                           f"{detail}</div>" if detail else "")
             rows_html += (
-                f"<div style='padding:5px 0;border-bottom:1px solid #F1F0F5;{pad_left}'>"
-                f"<div style='{rtl}'>"
-                f"<span style='color:{col};font-weight:700;font-size:13px'>{ico}</span>"
-                f"{id_badge}"
-                f"<span style='font-size:13px;font-weight:700;color:#1B1A22'>{title_html}</span>"
-                f"</div>"
-                + (f"<div style='font-size:11.5px;color:#A3A1AD;font-weight:600;margin-top:2px;"
-                   f"padding-left:20px;{rtl}'>{detail}</div>" if detail else "")
-                + "</div>")
+                f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0' "
+                f"style='border-bottom:1px solid #F1F0F5;{indent_pad}'><tr>"
+                f"<td valign='top' width='20' style='padding:6px 0;color:{col};"
+                f"font-weight:700;font-size:13px;font-family:monospace'>{ico}</td>"
+                f"<td valign='top' style='padding:6px 0 6px 6px;direction:{text_dir};"
+                f"text-align:{text_align}'>"
+                f"<div style='font-size:13px;font-weight:700;color:{title_color}'>"
+                f"{id_html}{title_html}</div>{detail_html}</td></tr></table>")
         more = (f"<div style='color:#A3A1AD;font-size:12px;margin-top:6px'>"
                 f"…and {len(log_lines)-500} more lines</div>" if len(log_lines) > 500 else "")
         log_block = (
             f"<h3 style='color:#1B1A22;font-size:15px;margin:24px 0 10px'>"
             f"Run activity log ({len(log_lines)} lines)</h3>"
-            f"<div style='max-height:360px;overflow-y:auto;background:#fff;border-radius:10px;"
-            f"padding:6px 14px;border:1px solid #E8E7EE'>{rows_html}{more}</div>")
+            f"<div style='background:#fff;border-radius:10px;padding:4px 14px;"
+            f"border:1px solid #E8E7EE'>{rows_html}{more}</div>")
 
     tool_safe = _html.escape(str(tool))
     summary_safe = _html.escape(str(summary))
