@@ -30,6 +30,23 @@ AI_CONFIG = {
     "ollama":       {"api_key": "", "base_url": "http://localhost:11434", "model": "llama3.1", "vision": False},
     "nvidia":       {"api_key": "nvapi-your-nvidia-key-here", "base_url": "https://integrate.api.nvidia.com/v1",
                      "model": "qwen/qwen3.5-397b-a17b", "vision": True},
+    # DeepSeek — OpenAI-compatible API (base_url https://api.deepseek.com).
+    # New accounts get a one-time free token grant, then cheap pay-as-you-go.
+    # "deepseek-chat" is the current alias for V4-Flash (non-thinking). NOTE: the
+    # deepseek-chat / deepseek-reasoner aliases are scheduled for deprecation on
+    # 2026-07-24 — after that switch model to "deepseek-v4-flash" (fast/cheap) or
+    # "deepseek-v4-pro" (stronger reasoning). deepseek-chat is text-only.
+    "deepseek":     {"api_key": "your-deepseek-key-here", "base_url": "https://api.deepseek.com",
+                     "model": "deepseek-chat", "vision": False},
+    # Qwen (Alibaba DashScope / Model Studio) — OpenAI-compatible. Default base_url
+    # is the INTERNATIONAL (Singapore) endpoint, correct for accounts outside
+    # mainland China (e.g. Egypt). For a Beijing-region key use
+    # https://dashscope.aliyuncs.com/compatible-mode/v1 ; US: dashscope-us...
+    # "qwen-plus" is a solid text default; for image input switch to "qwen-vl-max"
+    # and set vision: True. New Model Studio accounts get limited trial credits.
+    "qwen":         {"api_key": "your-qwen-key-here",
+                     "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+                     "model": "qwen-plus", "vision": False},
 }
 
 FEATURE_DESCRIPTION = ""   # optional global feature context for step generation
@@ -99,7 +116,7 @@ def ai_complete(prompt_text, images=None, max_tokens=4096, timeout=None):
                 messages=[{"role": "user", "content": content}])
             return resp.content[0].text
 
-        elif provider in ("openai", "nvidia"):
+        elif provider in ("openai", "nvidia", "deepseek", "qwen"):
             from openai import OpenAI
             client = OpenAI(api_key=cfg["api_key"], base_url=cfg.get("base_url")) if cfg.get("base_url") \
                      else OpenAI(api_key=cfg["api_key"])
