@@ -2010,8 +2010,30 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
     try:
         # ── login + verify ──
         login_url = (login or {}).get("url") or site_url
+        # Keycloak (and similar) login URLs often carry one-time session params
+        # (execution, tab_id, session_code, code, client_data). Hitting that exact
+        # URL later yields "Cookie not found" because the session is gone. Strip
+        # those so the IdP issues a FRESH login page + cookie.
+        try:
+            from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
+            parts = urlsplit(login_url)
+            if parts.query:
+                stale = {"execution", "tab_id", "session_code", "code",
+                         "client_data", "auth_session_id", "kc_locale"}
+                kept = [(k, v) for k, v in parse_qsl(parts.query)
+                        if k.lower() not in stale]
+                login_url = urlunsplit((parts.scheme, parts.netloc, parts.path,
+                                        urlencode(kept), ""))
+            # If the path points at the one-time login-actions endpoint, drop back
+            # to the site URL so Keycloak starts a clean auth flow.
+            if "login-actions/authenticate" in parts.path:
+                cb("Login URL had one-time session params — using the site URL "
+                   "to start a fresh login.", "warn")
+                login_url = site_url
+        except Exception:
+            pass
         if login and login.get("user") and login.get("password"):
-            cb(f"Opening login page…", "dim")
+            cb("Opening login page…", "dim")
             driver.get(login_url)
             wait_dom_ready()
             try:

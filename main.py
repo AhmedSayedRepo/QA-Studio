@@ -230,10 +230,10 @@ class QAStudio:
         self._connect_status = ""
 
         # ── automation feature state ──
-        self.auto_site_url = ""
-        self.auto_login_url = ""
-        self.auto_login_user = ""
-        self.auto_login_pass = ""
+        self.auto_site_url = self.creds.get("auto_site_url", "")
+        self.auto_login_url = self.creds.get("auto_login_url", "")
+        self.auto_login_user = self.creds.get("auto_login_user", "")
+        self.auto_login_pass = self.creds.get("auto_login_pass", "")
         self.auto_git_url = self.creds.get("git_url", "")
         self.auto_git_branch = self.creds.get("git_branch", "") or "main"
         self.auto_git_token = self.creds.get("git_token", "")
@@ -405,6 +405,13 @@ class QAStudio:
 
     # ---- navigation ----
     def goto(self, screen):
+        # Persist automation inputs when leaving the Automation screen so they
+        # are preserved until the user changes them.
+        if self.active == "automation" and screen != "automation":
+            try:
+                self._save_git_creds()
+            except Exception:
+                pass
         self.active = screen
         self.render()
         # Opportunistically check for a newer version when the user navigates.
@@ -3393,6 +3400,13 @@ class QAStudio:
             self.creds["git_url"] = self.auto_git_url
             self.creds["git_branch"] = self.auto_git_branch
             self.creds["git_token"] = self.auto_git_token
+            # Persist the Target site + login fields too, so the Automation
+            # screen keeps everything until the user changes it.
+            self.creds["auto_site_url"] = self.auto_site_url
+            self.creds["auto_login_url"] = self.auto_login_url
+            self.creds["auto_login_user"] = self.auto_login_user
+            self.creds["auto_login_pass"] = self.auto_login_pass
+            self.creds["auto_local_path"] = self.auto_local_path
             store.save(self.creds)
         except Exception:
             pass
