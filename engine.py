@@ -1219,8 +1219,12 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
 
         if has_existing and existing_mode == "skip":
             skipped += 1; done += 1; skip_by_story[story_id] += 1
-            skipped_items.append({"id": tc_id, "title": tc_title, "reason": "Already had steps"})
-            cb("log", {"msg": tc_title + " — already has steps, skipped", "tone": "warn", "id": tc_id, "ico": "⏭", "ar": True})
+            _el = round(time.time() - _tc_start, 1)
+            skipped_items.append({"id": tc_id, "title": tc_title,
+                                  "reason": "Already had steps", "secs": _el})
+            cb("log", {"msg": tc_title + " — already has steps, skipped", "tone": "warn",
+                       "id": tc_id, "ico": "⏭", "ar": True, "secs": _el,
+                       "detail": f"skipped · ⏱ {_fmt_mmss(_el)}"})
         else:
             inadequate_reason = ""
             proceed = True
@@ -1233,9 +1237,13 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
                     verdict = {"adequate": False, "reason": "تعذر التقييم"}
                 if verdict.get("adequate"):
                     skipped += 1; done += 1; proceed = False; skip_by_story[story_id] += 1
+                    _el = round(time.time() - _tc_start, 1)
                     skipped_items.append({"id": tc_id, "title": tc_title,
-                                          "reason": verdict.get("reason","Existing steps adequate")})
-                    cb("log", {"msg": tc_title + " — existing steps adequate", "tone": "ok", "id": tc_id, "ar": True})
+                                          "reason": verdict.get("reason","Existing steps adequate"),
+                                          "secs": _el})
+                    cb("log", {"msg": tc_title + " — existing steps adequate", "tone": "ok",
+                               "id": tc_id, "ar": True, "secs": _el,
+                               "detail": f"existing steps adequate · ⏱ {_fmt_mmss(_el)}"})
                 else:
                     inadequate_reason = verdict.get("reason", "")
             if proceed:
@@ -1403,7 +1411,13 @@ def _fmt_mmss(s):
 
 
 def build_report_email(tool, summary, stats, action_items=None, skipped_items=None,
-                       per_story=None, plan_url=None, total_secs=None, log_lines=None):
+                       per_story=None, plan_url=None, total_secs=None, log_lines=None,
+                       org=None, project=None):
+    # Helper to build an Azure DevOps work-item URL for a test case / story id.
+    def _wi_url(item_id):
+        if not (org and project and item_id):
+            return ""
+        return f"https://dev.azure.com/{org}/{project}/_workitems/edit/{item_id}"
     """Build a polished card-based HTML email for the run report."""
     # Stat cards
     tone_map = {"Updated": ("#1F9D57", "#E5F6EC"), "Created": ("#5234E0", "#ECE8FF"),
@@ -1424,15 +1438,25 @@ def build_report_email(tool, summary, stats, action_items=None, skipped_items=No
         title = _html.escape(str(a.get("title", "")))
         reason = _html.escape(str(a.get("reason", "")))
         item_id = _html.escape(str(a.get("id", "")))
+        secs = a.get("secs", None)
         rtl = "direction:rtl;text-align:right;" if any('\u0600' <= c <= '\u06ff' for c in title) else ""
+        url = _wi_url(a.get("id"))
+        title_html = (f"<a href='{_html.escape(url, quote=True)}' style='color:#1B1A22;"
+                      f"text-decoration:none'>{title}</a>" if url else title)
+        id_html = (f"<a href='{_html.escape(url, quote=True)}' style='color:#A3A1AD;"
+                   f"text-decoration:none'>#{item_id} &rarr;</a>" if url else f"#{item_id}")
+        time_chip = ""
+        if secs not in (None, "", 0):
+            time_chip = (f" <span style='font-family:monospace;font-size:11px;color:#74727E;"
+                         f"font-weight:700'>· ⏱ {_fmt_mmss(secs)}</span>")
         return (f"<div style='border:1px solid #E8E7EE;border-radius:10px;padding:12px 14px;"
                 f"margin-bottom:10px;background:#fff'>"
                 f"<div style='margin-bottom:6px'>"
                 f"<span style='background:{tone_bg};color:{tone_fg};font-size:11px;font-weight:700;"
                 f"padding:3px 9px;border-radius:20px'>{label}</span> "
                 f"<span style='font-family:monospace;font-size:12px;color:#A3A1AD;font-weight:700'>"
-                f"#{item_id}</span></div>"
-                f"<div style='font-size:13px;font-weight:700;color:#1B1A22;{rtl}'>{title}</div>"
+                f"{id_html}</span>{time_chip}</div>"
+                f"<div style='font-size:13px;font-weight:700;color:#1B1A22;{rtl}'>{title_html}</div>"
                 + (f"<div style='font-size:12px;color:#74727E;margin-top:4px;{rtl}'>{reason}</div>" if reason else "")
                 + "</div>")
 
@@ -1461,11 +1485,16 @@ def build_report_email(tool, summary, stats, action_items=None, skipped_items=No
             if er: chips += (f"<span style='background:#FCEBEC;color:#E0474D;font-size:11px;font-weight:700;"
                              f"padding:2px 8px;border-radius:20px;margin-right:4px'>✕ {er}</span>")
             time_sub = (f" · ⏱ {_fmt_mmss(secs)}" if secs not in (None, "", 0) else "")
+            _su = _wi_url(sp.get("id"))
+            title_link = (f"<a href='{_html.escape(_su, quote=True)}' style='color:#1B1A22;"
+                          f"text-decoration:none'>{title}</a>" if _su else title)
+            id_link = (f"<a href='{_html.escape(_su, quote=True)}' style='color:#A3A1AD;"
+                       f"text-decoration:none'>#{sid} &rarr;</a>" if _su else f"#{sid}")
             rows += (f"<tr style='border-bottom:1px solid #EEEDF3'>"
                      f"<td style='padding:10px 12px;vertical-align:top'>"
-                     f"<div style='font-size:13px;font-weight:700;color:#1B1A22;{rtl}'>{title}</div>"
+                     f"<div style='font-size:13px;font-weight:700;color:#1B1A22;{rtl}'>{title_link}</div>"
                      f"<div style='font-family:monospace;font-size:11px;color:#A3A1AD;font-weight:700;"
-                     f"margin-top:2px'>#{sid} · {total} test case" + ("s" if total != 1 else "") + time_sub + "</div>"
+                     f"margin-top:2px'>{id_link} · {total} test case" + ("s" if total != 1 else "") + time_sub + "</div>"
                      f"</td>"
                      f"<td style='padding:10px 12px;text-align:right;white-space:nowrap;vertical-align:top'>{chips}</td>"
                      f"</tr>")
@@ -1488,21 +1517,44 @@ def build_report_email(tool, summary, stats, action_items=None, skipped_items=No
     log_block = ""
     if log_lines:
         tone_color = {"ok": "#1F9D57", "err": "#E0474D", "warn": "#C2860C",
-                      "story": "#5234E0", "dim": "#74727E", "info": "#1B1A22"}
+                      "story": "#5234E0", "dim": "#A3A1AD", "info": "#5234E0"}
+        default_ico = {"ok": "✓", "err": "✕", "warn": "⏭", "story": "▸", "info": "●"}
         rows_html = ""
-        for ln in log_lines[:400]:
-            txt = _html.escape(str(ln.get("text", "")))
-            col = tone_color.get(ln.get("tone", "dim"), "#1B1A22")
-            rtl = "direction:rtl;" if any('\u0600' <= c <= '\u06ff' for c in txt) else ""
-            rows_html += (f"<div style='color:{col};padding:1px 0;{rtl}'>{txt}</div>")
-        more = (f"<div style='color:#A3A1AD;margin-top:4px'>…and {len(log_lines)-400} more lines</div>"
-                if len(log_lines) > 400 else "")
+        for ln in log_lines[:500]:
+            tone = ln.get("tone", "dim")
+            col = tone_color.get(tone, "#1B1A22")
+            ico = ln.get("ico") or default_ico.get(tone, "")
+            msg = _html.escape(str(ln.get("msg", "")))
+            item_id = _html.escape(str(ln.get("id", "")))
+            detail = _html.escape(str(ln.get("detail", "")))
+            indent = ln.get("indent")
+            is_ar = ln.get("ar") or any('\u0600' <= c <= '\u06ff' for c in str(ln.get("msg","")))
+            rtl = "direction:rtl;text-align:right;" if is_ar else ""
+            pad_left = "padding-left:22px;" if indent else ""
+            # main line: icon + [id] + title
+            id_badge = (f"<span style='font-family:monospace;font-size:11px;color:#A3A1AD;"
+                        f"font-weight:700;margin:0 6px'>[{item_id}]</span>" if item_id else "")
+            _u = _wi_url(ln.get("id"))
+            title_html = (f"<a href='{_html.escape(_u, quote=True)}' "
+                          f"style='color:#1B1A22;text-decoration:none'>{msg}</a>"
+                          if _u else msg)
+            rows_html += (
+                f"<div style='padding:5px 0;border-bottom:1px solid #F1F0F5;{pad_left}'>"
+                f"<div style='{rtl}'>"
+                f"<span style='color:{col};font-weight:700;font-size:13px'>{ico}</span>"
+                f"{id_badge}"
+                f"<span style='font-size:13px;font-weight:700;color:#1B1A22'>{title_html}</span>"
+                f"</div>"
+                + (f"<div style='font-size:11.5px;color:#A3A1AD;font-weight:600;margin-top:2px;"
+                   f"padding-left:20px;{rtl}'>{detail}</div>" if detail else "")
+                + "</div>")
+        more = (f"<div style='color:#A3A1AD;font-size:12px;margin-top:6px'>"
+                f"…and {len(log_lines)-500} more lines</div>" if len(log_lines) > 500 else "")
         log_block = (
             f"<h3 style='color:#1B1A22;font-size:15px;margin:24px 0 10px'>"
             f"Run activity log ({len(log_lines)} lines)</h3>"
-            f"<div style='max-height:320px;overflow-y:auto;background:#16141E;border-radius:10px;"
-            f"padding:14px 16px;font-family:Consolas,monospace;font-size:12px;line-height:1.6;"
-            f"color:#D7D5E0;border:1px solid #2A2833'>{rows_html}{more}</div>")
+            f"<div style='max-height:360px;overflow-y:auto;background:#fff;border-radius:10px;"
+            f"padding:6px 14px;border:1px solid #E8E7EE'>{rows_html}{more}</div>")
 
     tool_safe = _html.escape(str(tool))
     summary_safe = _html.escape(str(summary))

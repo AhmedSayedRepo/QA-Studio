@@ -2650,26 +2650,30 @@ class QAStudio:
                     plan_url = (f"https://dev.azure.com/{E.AZURE_ORG}/{self.project}"
                                 f"/_testPlans/define?planId={self.plan_id}")
                 to = [e.strip() for e in self.emails.split(",") if e.strip()]
-                # Build a plain-text log for the email (test-case activity)
+                # Build a STRUCTURED log for the email so it renders like the
+                # in-app Run activity log (icon · id · title · detail), not raw text.
                 email_log = []
                 for ln in getattr(self, "_log_lines", []):
                     msg = ln.get("msg", "")
                     if not msg:
                         continue
-                    ico = ln.get("ico", "")
-                    detail = ln.get("detail", "")
-                    prefix = "    " if ln.get("indent") else ""
-                    line = f"{prefix}{ico} {msg}".strip()
-                    if detail:
-                        line += f"  ({detail})"
-                    email_log.append({"text": line, "tone": ln.get("tone", "dim")})
+                    email_log.append({
+                        "msg": msg,
+                        "id": ln.get("id", ""),
+                        "ico": ln.get("ico", ""),
+                        "detail": ln.get("detail", ""),
+                        "tone": ln.get("tone", "dim"),
+                        "indent": bool(ln.get("indent")),
+                        "ar": bool(ln.get("ar")),
+                    })
                 html = E.build_report_email(tool_name, rpt.get("summary",""), stats,
                                             rpt.get("action_items",[]),
                                             rpt.get("skipped_items",[]),
                                             per_story=rpt.get("per_story", []),
                                             plan_url=plan_url,
                                             total_secs=_secs,
-                                            log_lines=email_log)
+                                            log_lines=email_log,
+                                            org=E.AZURE_ORG, project=self.project)
                 ok, err = E.send_report(to, f"QA Studio — {tool_name} report", html)
                 if not ok:
                     self._log_lines.append({"tone":"warn","ico":"✉",
