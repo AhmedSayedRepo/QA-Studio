@@ -2566,26 +2566,56 @@ def check_for_update(timeout=6):
     """Fetch the repo's VERSION file and compare to local.
     Returns dict: {"update": bool, "local": str, "remote": str, "error": str|None}.
     Network failures are swallowed (update=False) so startup is never blocked.
+
+    Primary source is the GitHub *API* (api.github.com), which returns the live
+    file content and is not subject to the raw-CDN caching that delayed detection.
+    Falls back to the cache-busted raw URL if the API is unavailable.
     """
-    import time as _t
+    import time as _t, base64 as _b64
     local = local_version()
-    # Cache-bust: raw.githubusercontent.com is served via a CDN that ignores
-    # request headers and can cache the file for minutes. A unique query string
-    # forces a fresh copy so updates are detected right after a push.
     bust = int(_t.time())
-    raw = (f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_REPO}/"
-           f"{GITHUB_BRANCH}/VERSION?cb={bust}")
-    try:
-        r = requests.get(raw, timeout=timeout,
+
+    def _via_api():
+        url = (f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/"
+               f"contents/VERSION?ref={GITHUB_BRANCH}")
+        r = requests.get(url, timeout=timeout, headers={
+            "Accept": "application/vnd.github.raw+json",
+            "Cache-Control": "no-cache",
+        })
+        if r.status_code != 200:
+            raise RuntimeError(f"API HTTP {r.status_code}")
+        txt = r.text or ""
+        # With the raw+json Accept header GitHub returns the file content directly.
+        # If it returned JSON (older behavior), decode the base64 content field.
+        if txt.lstrip().startswith("{"):
+            import json as _json
+            data = _json.loads(txt)
+            txt = _b64.b64decode(data.get("content", "")).decode("utf-8", "ignore")
+        return txt.strip()
+
+    def _via_raw():
+        url = (f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_REPO}/"
+               f"{GITHUB_BRANCH}/VERSION?cb={bust}")
+        r = requests.get(url, timeout=timeout,
                          headers={"Cache-Control": "no-cache", "Pragma": "no-cache"})
         if r.status_code != 200:
-            return {"update": False, "local": local, "remote": None,
-                    "error": f"HTTP {r.status_code}"}
-        remote = (r.text or "").strip()
-        return {"update": _ver_newer(remote, local), "local": local,
-                "remote": remote, "error": None}
-    except Exception as e:
-        return {"update": False, "local": local, "remote": None, "error": str(e)[:120]}
+            raise RuntimeError(f"raw HTTP {r.status_code}")
+        return (r.text or "").strip()
+
+    remote = None
+    err = None
+    for fetch in (_via_api, _via_raw):
+        try:
+            remote = fetch()
+            if remote:
+                break
+        except Exception as e:
+            err = str(e)[:120]
+            continue
+    if not remote:
+        return {"update": False, "local": local, "remote": None, "error": err}
+    return {"update": _ver_newer(remote, local), "local": local,
+            "remote": remote, "error": None}
 
 def apply_update(cb=None):
     """Run `git pull` in the app directory to fetch the new version.
