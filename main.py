@@ -1431,17 +1431,23 @@ class QAStudio:
             _update_summary_inplace()
             self._fetch_estimate()
 
-        def _commit_stories(e=None):
-            raw = (self.story_field.value or "").strip().strip("()[]")
+        def _parse_ids(raw):
             ids = []
-            for x in raw.replace(" ", ",").split(","):
-                x = x.strip()
-                if x.isdigit() and int(x) not in ids:
+            for x in (raw or "").replace(" ", ",").replace("\n", ",").split(","):
+                x = x.strip().strip("()[]")
+                if x.isdigit() and int(x) not in ids and int(x) not in self.story_ids:
                     ids.append(int(x))
-            self.story_ids = ids
-            if ids:
-                self._err_msg = ""  # clear any "add a story" error
-            self.story_field.value = ", ".join(str(s) for s in ids)
+            return ids
+
+        def _commit_stories(e=None):
+            """Full commit (Enter): turn everything in the box into chips."""
+            new_ids = _parse_ids(self.story_field.value)
+            for i in new_ids:
+                if i not in self.story_ids:
+                    self.story_ids.append(i)
+            if self.story_ids:
+                self._err_msg = ""
+            self.story_field.value = ""   # cleared; committed IDs now live as chips
             _build_chips()
             self._estimated_tc = None
             try:
@@ -1451,12 +1457,36 @@ class QAStudio:
             _update_summary_inplace()
             self._fetch_estimate()
 
+        def _on_story_change(e=None):
+            """As the user types/pastes, auto-chip any COMPLETED id (one followed
+            by a comma or space), but leave a trailing in-progress number in the
+            box so clicking away to copy another id won't prematurely commit it."""
+            val = self.story_field.value or ""
+            # Only act when the text ends with a separator (id is 'finished')
+            if val and val[-1] in (",", " ", "\n"):
+                new_ids = _parse_ids(val)
+                if new_ids:
+                    for i in new_ids:
+                        if i not in self.story_ids:
+                            self.story_ids.append(i)
+                    self._err_msg = ""
+                    self.story_field.value = ""
+                    _build_chips()
+                    self._estimated_tc = None
+                    try:
+                        self.story_field.update(); self._chip_row.update(); self._chip_wrap.update()
+                    except Exception:
+                        pass
+                    _update_summary_inplace()
+                    self._fetch_estimate()
+
         self.story_field = ft.TextField(
-            value=", ".join(str(s) for s in self.story_ids),
-            hint_text="e.g. 166730, 166731, 166732  (comma-separated)",
+            value="",
+            hint_text="Paste an ID and press Enter (or comma). Repeat to add more.",
             border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
             content_padding=ft.Padding.symmetric(vertical=12, horizontal=12),
-            text_size=13, expand=True, on_submit=_commit_stories, on_blur=_commit_stories)
+            text_size=13, expand=True, on_submit=_commit_stories,
+            on_change=_on_story_change)
         _build_chips()
         story_box = ft.Column([self.story_field, self._chip_wrap], spacing=0, tight=True)
 
@@ -1549,8 +1579,39 @@ class QAStudio:
     def _on_plan_change(self, e):
         self.plan_id = int(self.plan_dd.value)
         for p in self._plans:
-            if p["id"] == self.plan_id: self.plan_name = p["name"]
-        self.render()
+            if p["id"] == self.plan_id:
+                self.plan_name = p["name"]
+        # Update only the affected controls in place so the scroll position
+        # doesn't jump to the top on every selection.
+        updated_any = False
+        try:
+            if hasattr(self, "plan_id_field"):
+                self.plan_id_field.value = str(self.plan_id)
+                self.plan_id_field.update(); updated_any = True
+        except Exception:
+            pass
+        # Enable/recolor the Sprint Summary button now that a plan is chosen
+        try:
+            if hasattr(self, "_summary_btn"):
+                self._summary_btn.disabled = False
+                self._summary_btn.style = ft.ButtonStyle(
+                    bgcolor={"": T.GREEN}, color={"": "#FFFFFF"}, elevation=0,
+                    shape=ft.RoundedRectangleBorder(radius=T.R),
+                    padding=ft.Padding.symmetric(horizontal=16, vertical=0))
+                self._summary_btn.update(); updated_any = True
+        except Exception:
+            pass
+        # Update the THIS RUN summary panel's "Test plan" line
+        try:
+            if hasattr(self, "_sum_plan"):
+                self._sum_plan.value = f"#{self.plan_id}"
+                self._sum_plan.update(); updated_any = True
+        except Exception:
+            pass
+        self._fetch_estimate()
+        # Fall back to a full render only if we couldn't patch in place
+        if not updated_any:
+            self.render()
 
     def _fetch_estimate(self):
         """Fetch the real number of test cases across selected stories (steps mode).
@@ -1635,6 +1696,8 @@ class QAStudio:
                                    tooltip=full_vals.get(k))
                 if k == "Stories":
                     self._sum_stories = val_text
+                if k == "Test plan":
+                    self._sum_plan = val_text
                 detail_rows.append(ft.Container(
                     ft.Row([ft.Text(k, size=12, color=T.INK_2, weight=ft.FontWeight.BOLD),
                             ft.Container(expand=True),
