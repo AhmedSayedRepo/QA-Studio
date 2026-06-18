@@ -1551,61 +1551,170 @@ def _fmt_mmss(s):
 def build_report_email(tool, summary, stats, action_items=None, skipped_items=None,
                        per_story=None, plan_url=None, total_secs=None, log_lines=None,
                        org=None, project=None):
-    # Helper to build an Azure DevOps work-item URL for a test case / story id.
+    """Restrained, email-safe (table + inline-style) HTML run report.
+    Renders consistently across Outlook / Gmail / Apple Mail; web fonts fall
+    back to system fonts. Drives off the same data the in-app report uses."""
+    import datetime as _dt
+
+    # ---- palette ----
+    PAPER="#E9E8EE"; CARD="#FFFFFF"; TINT="#FAFAFC"
+    INK="#1B1A22"; INK2="#6B6975"; INK3="#9C9AA6"
+    LINE="#E8E7EE"; LINE2="#F1F0F5"
+    VIOLET="#6A4DFF"; VIOLET_INK="#5234E0"; VIOLET_SOFT="#EEEAFF"
+    GREEN="#1F8A52"; GREEN_SOFT="#E7F4ED"
+    RED="#D6414A"; RED_SOFT="#FBEAEC"
+    AMBER="#AB780C"; AMBER_SOFT="#F7EFD8"
+    UI='"Segoe UI",Roboto,Helvetica,Arial,sans-serif'
+    MONO='"SFMono-Regular",Consolas,Menlo,monospace'
+    AR='"Segoe UI","Tahoma",Arial,sans-serif'
+
     def _wi_url(item_id):
         if not (org and project and item_id):
             return ""
         return f"https://dev.azure.com/{org}/{project}/_workitems/edit/{item_id}"
-    """Build a polished card-based HTML email for the run report."""
-    # Stat cards
-    tone_map = {"Updated": ("#1F9D57", "#E5F6EC"), "Created": ("#5234E0", "#ECE8FF"),
-                "Skipped": ("#C2860C", "#FAF1DD"), "Failed": ("#E0474D", "#FCEBEC"),
-                "Stories": ("#5234E0", "#ECE8FF"), "Time": ("#1B1A22", "#F1F0F5")}
-    cards = ""
-    for k, v in stats.items():
-        fg, bg = tone_map.get(k, ("#1B1A22", "#F6F5FA"))
-        cards += (f"<td style='padding:6px'>"
-                  f"<div style='background:{bg};border-radius:12px;padding:14px 16px;text-align:center'>"
-                  f"<div style='font-size:11px;color:#74727E;font-weight:700;text-transform:uppercase;"
-                  f"letter-spacing:.4px'>{k}</div>"
-                  f"<div style='font-size:26px;font-weight:800;color:{fg};margin-top:4px'>{v}</div>"
-                  f"</div></td>")
-    cards_row = f"<table style='width:100%;border-collapse:collapse'><tr>{cards}</tr></table>"
 
-    def _item_card(a, tone_fg, tone_bg, label):
+    def _intval(v):
+        try:
+            return int(str(v).split('/')[0].strip())
+        except Exception:
+            return 0
+
+    def _is_ar(s):
+        return any('\u0600' <= c <= '\u06ff' for c in str(s))
+
+    stats = stats or {}
+    is_steps = "step" in str(tool).lower()
+    review_n = len(action_items or [])
+    failed_n = _intval(stats.get("Failed", 0))
+    stopped = "stop" in str(summary).lower()
+
+    # ---- status + accent ----
+    if failed_n > 0:
+        pill_fg, pill_bg, pill_txt = RED, RED_SOFT, "Completed with errors"; accent = RED
+    elif stopped:
+        pill_fg, pill_bg, pill_txt = AMBER, AMBER_SOFT, "Stopped early"; accent = AMBER
+    else:
+        pill_fg, pill_bg, pill_txt = GREEN, GREEN_SOFT, "Completed"; accent = VIOLET
+    check_ic = "&#10003;" if pill_fg != AMBER else "&#9632;"
+    status_pill = (f"<span style='display:inline-block;background:{pill_bg};color:{pill_fg};"
+                   f"font-size:11px;font-weight:700;letter-spacing:.4px;padding:5px 12px;"
+                   f"border-radius:20px'>{check_ic}&nbsp; {pill_txt.upper()}</span>")
+
+    # ---- headline ----
+    if is_steps:
+        n = _intval(stats.get("Updated", 0))
+        headline = (f"<b style='color:{VIOLET_INK}'>{n} test case" + ("s" if n != 1 else "") + "</b> updated") if n else "No test cases updated"
+    else:
+        n = _intval(stats.get("Created", 0))
+        headline = (f"<b style='color:{VIOLET_INK}'>{n} title" + ("s" if n != 1 else "") + "</b> created") if n else "No new titles created"
+    sub = _html.escape(str(summary or ""))
+
+    hero = (f"{status_pill}"
+            f"<div style='font-size:25px;font-weight:700;letter-spacing:-.5px;color:{INK};"
+            f"line-height:1.15;margin:14px 0 0'>{headline}</div>"
+            f"<div style='font-size:13px;color:{INK2};font-weight:600;margin-top:8px'>{sub}</div>")
+
+    # ---- masthead ----
+    today = _dt.date.today().strftime("%d %b %Y")
+    kind = "Test Case Steps" if is_steps else "Test Case Titles"
+    masthead = (
+        f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0'><tr>"
+        f"<td width='34' valign='middle' style='padding-right:13px'>"
+        f"<div style='width:34px;height:34px;background:{VIOLET_INK};border-radius:9px;"
+        f"color:#fff;font-size:13px;font-weight:700;text-align:center;line-height:34px;"
+        f"font-family:{MONO}'>QA</div></td>"
+        f"<td valign='middle'>"
+        f"<div style='font-size:15px;font-weight:700;color:{INK};letter-spacing:-.2px'>QA Studio</div>"
+        f"<div style='font-size:12px;font-weight:700;color:{VIOLET_INK};margin-top:2px'>{kind} &middot; Run report</div>"
+        f"</td>"
+        f"<td valign='middle' align='right' style='font-family:{MONO};font-size:11px;"
+        f"color:{INK3};font-weight:700'>{today}</td>"
+        f"</tr></table>")
+
+    # ---- metric strip ----
+    items = list(stats.items())
+    if is_steps:
+        merged = []
+        for k, v in items:
+            merged.append((k, v))
+            if k == "Updated":
+                merged.append(("Review", review_n))
+        items = merged
+
+    def _mcolor(k, v):
+        iv = _intval(v)
+        if k in ("Updated", "Created") and iv > 0: return GREEN
+        if k == "Review" and iv > 0: return AMBER
+        if k == "Failed" and iv > 0: return RED
+        if k in ("Time", "Stories"): return INK
+        return INK3
+    mcells = ""
+    for i, (k, v) in enumerate(items):
+        col = _mcolor(k, v)
+        bl = "" if i == 0 else f"border-left:1px solid {LINE2};"
+        vsize = "18px" if k == "Time" else "24px"
+        mcells += (f"<td width='1' style='{bl}padding:13px 6px 14px;text-align:center;vertical-align:top'>"
+                   f"<div style='font-size:9.5px;font-weight:700;letter-spacing:1px;color:{INK3};"
+                   f"text-transform:uppercase'>{_html.escape(str(k))}</div>"
+                   f"<div style='font-family:{MONO};font-size:{vsize};font-weight:700;color:{col};"
+                   f"margin-top:6px;line-height:1'>{_html.escape(str(v))}</div></td>")
+    metrics = (f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0' "
+               f"style='border:1px solid {LINE};border-radius:12px;table-layout:fixed'>"
+               f"<tr>{mcells}</tr></table>")
+
+    # ---- cta ----
+    cta_row = ""
+    if plan_url:
+        safe_url = _html.escape(str(plan_url), quote=True)
+        cta_row = (f"<tr><td style='padding:20px 32px 0'>"
+                   f"<a href='{safe_url}' style='display:inline-block;background:{VIOLET};color:#fff;"
+                   f"text-decoration:none;font-size:13px;font-weight:700;padding:12px 22px;"
+                   f"border-radius:11px'>Open test plan in Azure DevOps &rarr;</a></td></tr>")
+
+    # ---- section heading helper ----
+    def _sec_head(dot, title, count, desc=""):
+        d = (f"<div style='font-size:12.5px;color:{INK2};font-weight:600;margin-top:7px;"
+             f"line-height:1.5'>{desc}</div>") if desc else ""
+        return (f"<table role='presentation' cellpadding='0' cellspacing='0'><tr>"
+                f"<td valign='middle' style='padding-right:10px'>"
+                f"<span style='display:inline-block;width:9px;height:9px;border-radius:50%;"
+                f"background:{dot}'></span></td>"
+                f"<td valign='middle' style='font-size:14.5px;font-weight:700;color:{INK};"
+                f"letter-spacing:-.2px'>{title}</td>"
+                f"<td valign='middle' style='padding-left:9px'><span style='font-family:{MONO};"
+                f"font-size:11px;font-weight:700;color:{INK2};background:{LINE2};border-radius:20px;"
+                f"padding:3px 9px'>{count}</span></td>"
+                f"</tr></table>{d}")
+
+    # ---- case card (review / skipped) ----
+    def _case_card(a, rail, tag_fg, tag_bg, label, bg=CARD):
         title = _html.escape(str(a.get("title", "")))
         reason = _html.escape(str(a.get("reason", "")))
         item_id = _html.escape(str(a.get("id", "")))
-        secs = a.get("secs", None)
-        rtl = "direction:rtl;text-align:right;" if any('\u0600' <= c <= '\u06ff' for c in title) else ""
+        rtl = "direction:rtl;text-align:right;" if _is_ar(a.get("title", "")) else ""
         url = _wi_url(a.get("id"))
-        title_html = (f"<a href='{_html.escape(url, quote=True)}' style='color:#1B1A22;"
-                      f"text-decoration:none'>{title}</a>" if url else title)
-        id_html = (f"<a href='{_html.escape(url, quote=True)}' style='color:#A3A1AD;"
-                   f"text-decoration:none'>#{item_id} &rarr;</a>" if url else f"#{item_id}")
-        time_chip = ""
-        if secs not in (None, "", 0):
-            time_chip = (f" <span style='font-family:monospace;font-size:11px;color:#74727E;"
-                         f"font-weight:700'>· ⏱ {_fmt_mmss(secs)}</span>")
-        return (f"<div style='border:1px solid #E8E7EE;border-radius:10px;padding:12px 14px;"
-                f"margin-bottom:10px;background:#fff'>"
-                f"<div style='margin-bottom:6px'>"
-                f"<span style='background:{tone_bg};color:{tone_fg};font-size:11px;font-weight:700;"
-                f"padding:3px 9px;border-radius:20px'>{label}</span> "
-                f"<span style='font-family:monospace;font-size:12px;color:#A3A1AD;font-weight:700'>"
-                f"{id_html}</span>{time_chip}</div>"
-                f"<div style='font-size:13px;font-weight:700;color:#1B1A22;{rtl}'>{title_html}</div>"
-                + (f"<div style='font-size:12px;color:#74727E;margin-top:4px;{rtl}'>{reason}</div>" if reason else "")
-                + "</div>")
+        open_link = (f"<a href='{_html.escape(url, quote=True)}' style='color:{VIOLET_INK};"
+                     f"font-size:11.5px;font-weight:700;text-decoration:none'>Open &rarr;</a>") if url else ""
+        return (f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0' "
+                f"style='margin-top:11px;background:{bg};border:1px solid {LINE};"
+                f"border-left:3px solid {rail};border-radius:11px'><tr>"
+                f"<td style='padding:13px 16px'>"
+                f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0'><tr>"
+                f"<td valign='middle'><span style='display:inline-block;background:{tag_bg};color:{tag_fg};"
+                f"font-size:10px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;"
+                f"padding:3px 9px;border-radius:6px'>{label}</span> "
+                f"<span style='font-family:{MONO};font-size:11.5px;font-weight:700;color:{INK3}'>#{item_id}</span></td>"
+                f"<td valign='middle' align='right'>{open_link}</td>"
+                f"</tr></table>"
+                f"<div style='font-family:{AR};font-size:14px;font-weight:600;color:{INK};"
+                f"margin-top:11px;line-height:1.5;{rtl}'>{title}</div>"
+                + (f"<div style='font-family:{AR};font-size:12.5px;color:{INK2};margin-top:6px;"
+                   f"line-height:1.7;{rtl}'>{reason}</div>" if reason else "")
+                + f"</td></tr></table>")
 
-    review_block = ""
-    if action_items:
-        cards_html = "".join(_item_card(a, "#C2860C", "#FAF1DD", "Review") for a in action_items)
-        review_block = (f"<h3 style='color:#C2860C;font-size:15px;margin:24px 0 12px'>"
-                        f"⚠ Needs review ({len(action_items)})</h3>{cards_html}")
+    sections = ""
 
-    # Per-story breakdown table (mirrors the Report screen)
-    per_story_block = ""
+    # per-story (top of the report)
     if per_story:
         rows = ""
         for sp in per_story:
@@ -1614,136 +1723,134 @@ def build_report_email(tool, summary, stats, action_items=None, skipped_items=No
             total = int(sp.get("total", 0) or 0)
             ok = int(sp.get("ok", 0) or 0); sk = int(sp.get("skipped", 0) or 0); er = int(sp.get("err", 0) or 0)
             secs = sp.get("secs", None)
-            rtl = "direction:rtl;text-align:right;" if any('\u0600' <= c <= '\u06ff' for c in title) else ""
+            rtl = "direction:rtl;text-align:right;" if _is_ar(sp.get("title", "")) else ""
             chips = ""
-            if ok: chips += (f"<span style='background:#E5F6EC;color:#1F9D57;font-size:11px;font-weight:700;"
-                             f"padding:2px 8px;border-radius:20px;margin-right:4px'>✓ {ok}</span>")
-            if sk: chips += (f"<span style='background:#FAF1DD;color:#C2860C;font-size:11px;font-weight:700;"
-                             f"padding:2px 8px;border-radius:20px;margin-right:4px'>⏭ {sk}</span>")
-            if er: chips += (f"<span style='background:#FCEBEC;color:#E0474D;font-size:11px;font-weight:700;"
-                             f"padding:2px 8px;border-radius:20px;margin-right:4px'>✕ {er}</span>")
-            time_sub = (f" · ⏱ {_fmt_mmss(secs)}" if secs not in (None, "", 0) else "")
-            _su = _wi_url(sp.get("id"))
-            title_link = (f"<a href='{_html.escape(_su, quote=True)}' style='color:#1B1A22;"
-                          f"text-decoration:none'>{title}</a>" if _su else title)
-            id_link = (f"<a href='{_html.escape(_su, quote=True)}' style='color:#A3A1AD;"
-                       f"text-decoration:none'>#{sid} &rarr;</a>" if _su else f"#{sid}")
-            rows += (f"<tr style='border-bottom:1px solid #EEEDF3'>"
-                     f"<td style='padding:10px 12px;vertical-align:top'>"
-                     f"<div style='font-size:13px;font-weight:700;color:#1B1A22;{rtl}'>{title_link}</div>"
-                     f"<div style='font-family:monospace;font-size:11px;color:#A3A1AD;font-weight:700;"
-                     f"margin-top:2px'>{id_link} · {total} test case" + ("s" if total != 1 else "") + time_sub + "</div>"
-                     f"</td>"
-                     f"<td style='padding:10px 12px;text-align:right;white-space:nowrap;vertical-align:top'>{chips}</td>"
-                     f"</tr>")
-        per_story_block = (
-            f"<h3 style='color:#1B1A22;font-size:15px;margin:24px 0 12px'>"
-            f"Per-story breakdown ({len(per_story)})</h3>"
-            f"<table style='width:100%;border-collapse:collapse;border:1px solid #E8E7EE;"
-            f"border-radius:10px;overflow:hidden'>{rows}</table>")
+            if ok: chips += (f"<span style='display:inline-block;background:{GREEN_SOFT};color:{GREEN};"
+                             f"font-family:{MONO};font-size:11px;font-weight:700;padding:2px 9px;"
+                             f"border-radius:7px;margin-left:5px'>&#10003; {ok}</span>")
+            if sk: chips += (f"<span style='display:inline-block;background:{LINE2};color:{INK2};"
+                             f"font-family:{MONO};font-size:11px;font-weight:700;padding:2px 9px;"
+                             f"border-radius:7px;margin-left:5px'>{sk} skip</span>")
+            if er: chips += (f"<span style='display:inline-block;background:{RED_SOFT};color:{RED};"
+                             f"font-family:{MONO};font-size:11px;font-weight:700;padding:2px 9px;"
+                             f"border-radius:7px;margin-left:5px'>&#10005; {er}</span>")
+            tsub = f" &middot; {_fmt_mmss(secs)}" if secs not in (None, "", 0) else ""
+            su = _wi_url(sp.get("id"))
+            tlink = (f"<a href='{_html.escape(su, quote=True)}' style='color:{INK};"
+                     f"text-decoration:none'>{title}</a>" if su else title)
+            rows += (f"<tr><td style='padding:13px 0;border-top:1px solid {LINE2};vertical-align:top'>"
+                     f"<div style='font-size:14px;font-weight:700;color:{INK};{rtl}'>{tlink}</div>"
+                     f"<div style='font-family:{MONO};font-size:11px;font-weight:600;color:{INK3};"
+                     f"margin-top:3px'>#{sid} &middot; {total} test case" + ("s" if total != 1 else "") + tsub + "</div></td>"
+                     f"<td align='right' style='padding:13px 0;border-top:1px solid {LINE2};"
+                     f"vertical-align:top;white-space:nowrap'>{chips}</td></tr>")
+        sections += (f"<tr><td style='padding:26px 32px;border-top:1px solid {LINE}'>"
+                     f"{_sec_head(VIOLET, 'Per-story breakdown', len(per_story))}"
+                     f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0' "
+                     f"style='margin-top:6px'>{rows}</table></td></tr>")
 
-    skipped_block = ""
+    # needs review
+    if action_items:
+        cards = "".join(_case_card(a, AMBER, AMBER, AMBER_SOFT, "Review") for a in action_items)
+        sections += (f"<tr><td style='padding:26px 32px;border-top:1px solid {LINE}'>"
+                     f"{_sec_head(AMBER, 'Needs your review', len(action_items), 'Steps that no longer match the story&rsquo;s acceptance criteria were regenerated &mdash; confirm them before the next run.')}"
+                     f"{cards}</td></tr>")
+
+    # skipped
     if skipped_items:
-        shown = skipped_items[:30]
-        cards_html = "".join(_item_card(a, "#74727E", "#F1F0F5", "Skipped") for a in shown)
-        more = (f"<div style='font-size:12px;color:#A3A1AD;margin-top:6px'>"
-                f"…and {len(skipped_items)-30} more</div>") if len(skipped_items) > 30 else ""
-        skipped_block = (f"<h3 style='color:#74727E;font-size:15px;margin:24px 0 12px'>"
-                         f"⏭ Skipped ({len(skipped_items)})</h3>{cards_html}{more}")
+        shown = skipped_items[:40]
+        cards = "".join(_case_card(a, "#CBC9D4", INK2, LINE2, "Skipped", bg=TINT) for a in shown)
+        more = (f"<div style='font-size:12px;color:{INK3};margin-top:10px'>&hellip; and {len(skipped_items)-40} more</div>") if len(skipped_items) > 40 else ""
+        sections += (f"<tr><td style='padding:26px 32px;border-top:1px solid {LINE}'>"
+                     f"{_sec_head('#CBC9D4', 'Skipped', len(skipped_items), 'Existing steps were judged adequate and left untouched. No action needed.')}"
+                     f"{cards}{more}</td></tr>")
 
-    # Activity log — table layout so RTL Arabic + LTR ids/icons align cleanly.
-    # (No scrollable container: email clients like Outlook ignore overflow.)
-    log_block = ""
+    # activity log (full, scrollable where supported)
     if log_lines:
-        tone_color = {"ok": "#1F9D57", "err": "#E0474D", "warn": "#C2860C",
-                      "skip": "#74727E", "review": "#C2860C",
-                      "story": "#5234E0", "dim": "#A3A1AD", "info": "#5234E0"}
-        default_ico = {"ok": "✓", "err": "✕", "warn": "⏭", "skip": "⏭",
-                       "review": "⚠", "story": "▸", "info": "●"}
-        rows_html = ""
-        for ln in log_lines[:500]:
+        tone_color = {"ok": GREEN, "err": RED, "warn": AMBER, "skip": INK3,
+                      "review": AMBER, "story": VIOLET, "dim": INK3, "info": VIOLET_INK}
+        default_ico = {"ok": "&#10003;", "err": "&#10005;", "warn": "&#9888;", "skip": "&#9197;",
+                       "review": "&#9888;", "story": "&#9656;", "dim": "&middot;", "info": "&bull;"}
+        rows = ""
+        shown = log_lines[:600]
+        for ln in shown:
             tone = ln.get("tone", "dim")
-            col = tone_color.get(tone, "#1B1A22")
-            ico = ln.get("ico") or default_ico.get(tone, "•")
+            col = tone_color.get(tone, INK)
+            raw_ico = ln.get("ico")
+            ico = _html.escape(str(raw_ico)) if raw_ico else default_ico.get(tone, "&middot;")
             msg = _html.escape(str(ln.get("msg", "")))
             item_id = _html.escape(str(ln.get("id", "")))
             detail = _html.escape(str(ln.get("detail", "")))
-            indent = ln.get("indent")
-            is_ar = ln.get("ar") or any('\u0600' <= c <= '\u06ff' for c in str(ln.get("msg", "")))
+            is_ar = bool(ln.get("ar")) or _is_ar(ln.get("msg", ""))
             is_story = (tone == "story")
-            _u = _wi_url(ln.get("id"))
-            title_html = (f"<a href='{_html.escape(_u, quote=True)}' "
-                          f"style='color:#1B1A22;text-decoration:none'>{msg}</a>"
-                          if _u else msg)
-            id_html = (f"<span style='font-family:monospace;font-size:11px;color:#A3A1AD;"
-                       f"font-weight:700'>[{item_id}]</span> " if item_id else "")
-            text_dir = "rtl" if is_ar else "ltr"
-            text_align = "right" if is_ar else "left"
-            indent_pad = "padding-left:24px;" if indent else ""
-            title_color = col if is_story else "#1B1A22"
-            detail_html = (f"<div style='font-size:11px;color:#A3A1AD;font-weight:600;"
-                           f"margin-top:2px;direction:{text_dir};text-align:{text_align}'>"
-                           f"{detail}</div>" if detail else "")
-            rows_html += (
-                f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0' "
-                f"style='border-bottom:1px solid #F1F0F5;{indent_pad}'><tr>"
-                f"<td valign='top' width='20' style='padding:6px 0;color:{col};"
-                f"font-weight:700;font-size:13px;font-family:monospace'>{ico}</td>"
-                f"<td valign='top' style='padding:6px 0 6px 6px;direction:{text_dir};"
-                f"text-align:{text_align}'>"
-                f"<div style='font-size:13px;font-weight:700;color:{title_color}'>"
-                f"{id_html}{title_html}</div>{detail_html}</td></tr></table>")
-        more = (f"<div style='color:#A3A1AD;font-size:12px;margin-top:6px'>"
-                f"…and {len(log_lines)-500} more lines</div>" if len(log_lines) > 500 else "")
-        log_block = (
-            f"<h3 style='color:#1B1A22;font-size:15px;margin:24px 0 10px'>"
-            f"Run activity log ({len(log_lines)} lines)</h3>"
-            f"<div style='background:#fff;border-radius:10px;padding:4px 14px;"
-            f"border:1px solid #E8E7EE'>{rows_html}{more}</div>")
+            indent = "padding-left:30px;" if ln.get("indent") else ""
+            u = _wi_url(ln.get("id"))
+            tdir = "rtl" if is_ar else "ltr"; talign = "right" if is_ar else "left"
+            fam = AR if is_ar else UI
+            id_chip = (f"<span style='font-family:{MONO};font-size:10.5px;font-weight:700;"
+                       f"color:{INK3};background:#EEEDF3;border-radius:5px;padding:1px 6px'>{item_id}</span> ") if item_id else ""
+            title_color = col if is_story else INK
+            mlink = (f"<a href='{_html.escape(u, quote=True)}' style='color:{title_color};"
+                     f"text-decoration:none'>{msg}</a>" if u else msg)
+            detail_html = (f"<div style='font-family:{MONO};font-size:10.5px;font-weight:600;"
+                           f"color:{INK3};margin-top:3px'>{detail}</div>") if detail else ""
+            bg = "#F4F3F8" if tone in ("info", "story") and not is_ar else CARD
+            rows += (f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0' "
+                     f"style='border-top:1px solid {LINE2};{indent}background:{bg}'><tr>"
+                     f"<td width='18' valign='top' style='padding:8px 0 8px 0;color:{col};"
+                     f"font-family:{MONO};font-size:13px;font-weight:700;text-align:center'>{ico}</td>"
+                     f"<td valign='top' style='padding:8px 0 8px 9px;direction:{tdir};text-align:{talign}'>"
+                     f"<div style='font-family:{fam};font-size:12.5px;font-weight:600;color:{title_color};"
+                     f"line-height:1.5'>{id_chip}{mlink}</div>{detail_html}</td></tr></table>")
+        more = (f"<div style='padding:11px 15px;border-top:1px solid {LINE};background:#F4F3F8;"
+                f"text-align:center;font-size:11.5px;font-weight:600;color:{INK2}'>"
+                f"&hellip; and {len(log_lines)-600} more lines</div>") if len(log_lines) > 600 else ""
+        if is_steps:
+            legend = (f"<span style='color:{GREEN};font-weight:700'>&#9632;</span> updated &nbsp; "
+                      f"<span style='color:{AMBER};font-weight:700'>&#9632;</span> review &nbsp; "
+                      f"<span style='color:{INK3};font-weight:700'>&#9632;</span> kept")
+        else:
+            legend = (f"<span style='color:{GREEN};font-weight:700'>&#9632;</span> created &nbsp; "
+                      f"<span style='color:{AMBER};font-weight:700'>&#9632;</span> removed &nbsp; "
+                      f"<span style='color:{INK3};font-weight:700'>&#9632;</span> skipped")
+        toolbar = (f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0' "
+                   f"style='background:#F4F3F8;border-bottom:1px solid {LINE}'><tr>"
+                   f"<td style='padding:9px 15px;font-family:{MONO};font-size:10.5px;font-weight:700;color:{INK2}'>"
+                   f"{len(log_lines)} lines &middot; full trace</td>"
+                   f"<td align='right' style='padding:9px 15px;font-family:{UI};font-size:10px;"
+                   f"font-weight:700;color:{INK3}'>{legend}</td></tr></table>")
+        log_box = (f"<div style='border:1px solid {LINE};border-radius:12px;overflow:hidden;background:{TINT}'>"
+                   f"{toolbar}"
+                   f"<div style='max-height:420px;overflow-y:auto;overflow-x:hidden'>{rows}</div>"
+                   f"{more}</div>")
+        sections += (f"<tr><td style='padding:26px 32px;border-top:1px solid {LINE}'>"
+                     f"{_sec_head(INK, 'Run activity log', str(len(log_lines)) + ' lines')}"
+                     f"<div style='margin-top:14px'>{log_box}</div></td></tr>")
 
-    tool_safe = _html.escape(str(tool))
-    summary_safe = _html.escape(str(summary))
+    footer = (f"<table role='presentation' cellpadding='0' cellspacing='0'><tr>"
+              f"<td valign='middle' style='padding-right:9px'><span style='display:inline-block;"
+              f"width:20px;height:20px;background:{VIOLET_SOFT};border-radius:6px;color:{VIOLET_INK};"
+              f"text-align:center;line-height:20px;font-size:11px;font-weight:700;font-family:{MONO}'>Q</span></td>"
+              f"<td valign='middle' style='font-size:11.5px;font-weight:600;color:{INK3}'>"
+              f"Generated by QA Studio &middot; Azure DevOps + AI</td></tr></table>"
+              + (f"<div style='font-family:{MONO};font-size:11px;color:{INK3};margin-top:8px;line-height:1.6'>"
+                 f"Org: {_html.escape(str(org))} &middot; Project: {_html.escape(str(project))}</div>" if (org and project) else ""))
 
-    # Total time line in the header
-    time_chip = ""
-    if total_secs not in (None, "", 0):
-        time_chip = (f"<div style='display:inline-block;margin:12px 0 0 8px;"
-                     f"background:rgba(255,255,255,0.18);color:#ffffff;font-size:13px;"
-                     f"font-weight:700;padding:6px 14px;border-radius:20px'>"
-                     f"⏱ {_fmt_secs(total_secs)}</div>")
-
-    # Test Plan button (only if a URL is available)
-    plan_button = ""
-    if plan_url:
-        safe_url = _html.escape(str(plan_url), quote=True)
-        plan_button = (
-            f"<div style='margin-top:20px'>"
-            f"<a href='{safe_url}' style='display:inline-block;background:#5234E0;color:#ffffff;"
-            f"text-decoration:none;font-size:13px;font-weight:700;padding:11px 22px;"
-            f"border-radius:10px'>Open Test Plan in Azure DevOps &rarr;</a></div>")
-
-    return f"""<html><body style='font-family:Segoe UI,Arial,sans-serif;color:#1B1A22;background:#FBFBFD;
-    max-width:640px;margin:auto;padding:0'>
-    <div style='background:#5234E0;padding:28px 30px;border-radius:14px 14px 0 0'>
-      <h1 style='color:#ffffff;margin:0;font-size:24px;font-weight:800;
-      letter-spacing:-0.3px;line-height:1.2'>QA Studio</h1>
-      <div style='color:#ffffff;font-size:15px;font-weight:700;margin-top:2px'>{tool_safe}</div>
-      <div style='display:inline-block;margin-top:12px;background:rgba(255,255,255,0.18);
-      color:#ffffff;font-size:13px;font-weight:700;padding:6px 14px;border-radius:20px'>{summary_safe}</div>{time_chip}
-    </div>
-    <div style='background:#fff;padding:24px 28px;border:1px solid #E8E7EE;border-top:none;
-    border-radius:0 0 14px 14px'>
-      {cards_row}
-      {plan_button}
-      {per_story_block}
-      {review_block}
-      {skipped_block}
-      {log_block}
-    </div>
-    <div style='text-align:center;color:#A3A1AD;font-size:11px;padding:16px'>
-      Generated by QA Studio · Azure DevOps + AI
-    </div>
-    </body></html>"""
+    return f"""<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'></head>
+<body style='margin:0;padding:0;background:{PAPER};-webkit-text-size-adjust:100%'>
+<center style='width:100%;background:{PAPER}'>
+<table role='presentation' width='100%' cellpadding='0' cellspacing='0' style='background:{PAPER}'><tr>
+<td align='center' style='padding:26px 12px 48px'>
+<table role='presentation' width='640' cellpadding='0' cellspacing='0' style='width:640px;max-width:640px;background:{CARD};border:1px solid #DEDDE6;border-radius:16px;overflow:hidden;font-family:{UI};color:{INK}'>
+  <tr><td style='height:3px;line-height:3px;font-size:0;background:{accent}'>&nbsp;</td></tr>
+  <tr><td style='padding:24px 32px 0'>{masthead}</td></tr>
+  <tr><td style='padding:18px 32px 4px'>{hero}</td></tr>
+  <tr><td style='padding:18px 32px 0'>{metrics}</td></tr>
+  {cta_row}
+  {sections}
+  <tr><td style='padding:20px 32px 26px;border-top:1px solid {LINE};background:{TINT}'>{footer}</td></tr>
+</table>
+</td></tr></table></center></body></html>"""
 
 def build_sprint_summary_email(data):
     """Build an HTML email for the sprint summary report.
