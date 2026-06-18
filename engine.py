@@ -2602,7 +2602,292 @@ def build_automation_project(out_dir, stories_payload, dom_elements, base_url,
     return written
 
 
-def push_to_git(repo_dir, remote_url, token, branch="main", message="Add QA Studio automation tests", cb=None):
+# ── Incremental generation: survive prior stories, append only new test cases ──
+def _manifest_path(project_dir):
+    return os.path.join(project_dir, ".qastudio", "manifest.json")
+
+def load_manifest(project_dir):
+    """Read the per-project manifest that records which stories/test-cases have
+    already been generated. Missing/corrupt → empty manifest."""
+    try:
+        with open(_manifest_path(project_dir), "r", encoding="utf-8") as f:
+            m = json.load(f)
+    except Exception:
+        m = {}
+    if not isinstance(m, dict):
+        m = {}
+    m.setdefault("stories", {})
+    return m
+
+def save_manifest(project_dir, m):
+    try:
+        os.makedirs(os.path.dirname(_manifest_path(project_dir)), exist_ok=True)
+        with open(_manifest_path(project_dir), "w", encoding="utf-8") as f:
+            json.dump(m, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+def _tc_key(tc):
+    """Stable identity for a test case: Azure id if present, else a title slug."""
+    k = tc.get("id")
+    if k is not None and str(k).strip():
+        return str(k)
+    return "t_" + _safe_class_name(tc.get("title", ""), "TC")
+
+def _method_name(title):
+    n = _safe_class_name(title, "test")
+    return (n[:1].lower() + n[1:]) if n else "test"
+
+def classify_selection(project_dir, stories_payload):
+    """Compare the current selection against the on-disk manifest. Returns
+    (new, grew, done, new_tcs):
+      new  = story ids never generated here
+      grew = story ids already generated that have NEW test cases to add
+      done = story ids already generated with nothing new
+      new_tcs = {story_id: [fresh test-case dicts]} for the grew set
+    All ids are strings."""
+    m = load_manifest(project_dir)
+    new, grew, done, new_tcs = [], [], [], {}
+    for sp in stories_payload:
+        sid = str(sp.get("story", {}).get("id"))
+        rec = m["stories"].get(sid)
+        tcs = sp.get("test_cases", []) or []
+        if not rec:
+            new.append(sid); continue
+        have = set(rec.get("test_cases", {}).keys())
+        fresh = [tc for tc in tcs if _tc_key(tc) not in have]
+        if fresh:
+            grew.append(sid); new_tcs[sid] = fresh
+        else:
+            done.append(sid)
+    return new, grew, done, new_tcs
+
+def _splice_members(java_src, new_members, new_imports=""):
+    """Append new methods/fields into an existing Java class WITHOUT touching the
+    code already there: merge any missing imports, then insert the new members
+    just before the class's final closing brace."""
+    if not java_src:
+        return java_src
+    src = java_src
+    if new_imports and new_imports.strip():
+        want = [ln.strip() for ln in new_imports.splitlines() if ln.strip().startswith("import ")]
+        have = set(ln.strip() for ln in src.splitlines() if ln.strip().startswith("import "))
+        add = [ln for ln in want if ln not in have]
+        if add:
+            lines = src.splitlines()
+            idx = 0
+            for i, ln in enumerate(lines):
+                s = ln.strip()
+                if s.startswith("import "):
+                    idx = i + 1
+                elif s.startswith("package ") and idx == 0:
+                    idx = i + 1
+            lines[idx:idx] = add
+            src = "\n".join(lines)
+    if new_members and new_members.strip():
+        pos = src.rfind("}")
+        if pos != -1:
+            src = src[:pos] + "\n" + new_members.rstrip() + "\n}\n" + src[pos + 1:].lstrip()
+        else:
+            src = src + "\n" + new_members
+    return src
+
+def generate_additional_methods(story, new_test_cases, dom_elements, base_package,
+                                page_class, test_class, existing_methods=None, log=None):
+    """Ask the AI for ONLY the Java members needed by NEW test cases, so they can
+    be spliced into the already-generated classes without regenerating (and thus
+    re-evaluating) the existing methods."""
+    log = log or (lambda *a, **k: None)
+    existing_methods = existing_methods or []
+    dom_brief = [{k: e.get(k, "") for k in
+                  ("tag", "type", "id", "name", "text", "placeholder", "aria", "css", "xpath")}
+                 for e in (dom_elements or [])[:120]]
+    tc_brief = []
+    for tc in new_test_cases:
+        steps = tc.get("steps") or []
+        tc_brief.append({"title": tc.get("title", ""),
+                         "steps": [{"action": s.get("action", ""),
+                                    "expected": s.get("expected", ""),
+                                    "precondition": s.get("precondition", ""),
+                                    "locator": s.get("locator"),
+                                    "locator_src": s.get("locator_src", ""),
+                                    "assert_locator": s.get("assert_locator")} for s in steps]})
+    prompt = f"""
+You are a senior SDET EXTENDING an existing Selenium + Java + TestNG project (Page Object Model).
+Do NOT regenerate or restate existing code. Output ONLY the new members to append.
+
+Existing classes (already on disk - reference only, never rewrite):
+  Page Object: {base_package}.pages.{page_class}  (extends BasePage)
+  Test class : {base_package}.tests.{test_class}  (extends BaseTest)
+Existing @Test methods you must NOT redefine: {json.dumps(existing_methods, ensure_ascii=False)}
+
+Return EXACTLY these delimited blocks and nothing else (no markdown, no commentary):
+
+===TEST_IMPORTS===
+<extra import lines the new test methods need, or empty>
+===TEST_METHODS===
+<one new @Test method per new test case - method declarations only, NO class wrapper>
+===PAGE_IMPORTS===
+<extra import lines the new page methods need, or empty>
+===PAGE_METHODS===
+<new Page Object methods / By fields the new tests call - NO class wrapper>
+===END===
+
+Rules:
+- One @Test per new test case below; name = camelCase of its title; if it collides
+  with an existing name, suffix a number.
+- Follow each step in order; add a TestNG assertion when "expected" is non-empty.
+- Use a step's "locator" exactly when locator_src=="live". If locator_src=="snapshot",
+  use it but add `// TODO verify locator (from snapshot)`. If null, use the REAL DOM
+  list and add `// TODO verify locator`.
+- Reuse existing Page Object methods where possible; only add page members that are new.
+- Members must compile when pasted into the existing classes.
+
+Story: id={story.get('id')} title={story.get('title')}
+New test cases:
+{json.dumps(tc_brief, ensure_ascii=False)[:6000]}
+REAL DOM elements:
+{json.dumps(dom_brief, ensure_ascii=False)[:6000]}
+"""
+    raw = ai_complete(prompt, max_tokens=6000) or ""
+    def _blk(a, b):
+        try:
+            return raw.split(a, 1)[1].split(b, 1)[0].strip()
+        except Exception:
+            return ""
+    return {
+        "test_imports": _blk("===TEST_IMPORTS===", "===TEST_METHODS==="),
+        "test_methods": _blk("===TEST_METHODS===", "===PAGE_IMPORTS==="),
+        "page_imports": _blk("===PAGE_IMPORTS===", "===PAGE_METHODS==="),
+        "page_methods": _blk("===PAGE_METHODS===", "===END==="),
+    }
+
+def build_or_merge_project(out_dir, stories_payload, dom_elements, base_url,
+                           reeval_ids=None, group_id="com.qastudio",
+                           artifact_id="automation-tests", cb=None,
+                           should_stop=lambda: False):
+    """Incrementally build/extend a Maven project in `out_dir` (the user's local
+    folder, which persists across runs). Stories already in the manifest are KEPT;
+    only brand-new stories, newly-added test cases, or stories whose id is in
+    `reeval_ids` are sent to the AI. Scaffolding is written only when missing, so a
+    working tree is never clobbered. Returns a summary dict."""
+    cb = cb or (lambda *a, **k: None)
+    reeval_ids = set(str(x) for x in (reeval_ids or []))
+    pkg = group_id; pkg_path = pkg.replace(".", "/")
+    src_main = os.path.join(out_dir, "src", "main", "java", pkg_path)
+    src_test = os.path.join(out_dir, "src", "test", "java", pkg_path)
+    os.makedirs(os.path.join(src_main, "core"), exist_ok=True)
+    os.makedirs(os.path.join(src_main, "pages"), exist_ok=True)
+    os.makedirs(os.path.join(src_test, "tests"), exist_ok=True)
+
+    def _w(path, content):
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+
+    for p, c in (
+        (os.path.join(out_dir, "pom.xml"), _pom_xml(group_id, artifact_id)),
+        (os.path.join(src_main, "core", "DriverFactory.java"), _driver_factory(pkg)),
+        (os.path.join(src_main, "pages", "BasePage.java"), _base_page(pkg)),
+        (os.path.join(src_test, "tests", "BaseTest.java"), _base_test(pkg, base_url)),
+    ):
+        if not os.path.exists(p):
+            _w(p, c)
+
+    m = load_manifest(out_dir)
+    counts = {"new": 0, "extended": 0, "reeval": 0, "kept": 0, "added_methods": 0}
+
+    for item in stories_payload:
+        if should_stop():
+            break
+        story = item["story"]; tcs = item.get("test_cases", []) or []
+        sid = str(story.get("id"))
+        rec = m["stories"].get(sid)
+
+        # full (re)generation: brand-new story OR an explicit re-evaluation
+        if rec is None or sid in reeval_ids:
+            mode = "reeval" if rec is not None else "new"
+            cb(f"[{mode}] story {sid} - {story.get('title','')}", "story")
+            try:
+                gen = generate_test_class(story, tcs, dom_elements, pkg,
+                                          log=lambda mm, t="warn": cb(mm, t))
+                _w(os.path.join(src_main, "pages", gen["page_class"] + ".java"), gen["page_code"])
+                _w(os.path.join(src_test, "tests", gen["class_name"] + ".java"), gen["test_code"])
+                m["stories"][sid] = {
+                    "page_class": gen["page_class"],
+                    "test_class": gen["class_name"],
+                    "test_cases": {_tc_key(tc): _method_name(tc.get("title", "")) for tc in tcs},
+                }
+                counts["reeval" if mode == "reeval" else "new"] += 1
+                cb(f"  ok {gen['class_name']} ({len(tcs)} test method(s))", "ok")
+            except CreditBalanceError:
+                cb("Out of AI credits - stopping.", "err"); break
+            except Exception as e:
+                cb(f"  x story {sid} failed: {e}", "err")
+            continue
+
+        # existing story: keep methods, append only the NEW test cases
+        have = set(rec.get("test_cases", {}).keys())
+        fresh = [tc for tc in tcs if _tc_key(tc) not in have]
+        if not fresh:
+            counts["kept"] += 1
+            cb(f"[keep] story {sid} - already complete, nothing new.", "dim")
+            continue
+
+        cb(f"[extend] story {sid} - appending {len(fresh)} new test case(s).", "story")
+        test_file = os.path.join(src_test, "tests", rec["test_class"] + ".java")
+        page_file = os.path.join(src_main, "pages", rec["page_class"] + ".java")
+        try:
+            with open(test_file, "r", encoding="utf-8") as f:
+                test_src = f.read()
+            with open(page_file, "r", encoding="utf-8") as f:
+                page_src = f.read()
+        except Exception as e:
+            cb(f"  ! files for {sid} missing ({e}) - regenerating the whole story.", "warn")
+            try:
+                gen = generate_test_class(story, tcs, dom_elements, pkg,
+                                          log=lambda mm, t="warn": cb(mm, t))
+                _w(page_file, gen["page_code"]); _w(test_file, gen["test_code"])
+                m["stories"][sid]["test_cases"] = {_tc_key(tc): _method_name(tc.get("title", "")) for tc in tcs}
+                m["stories"][sid]["page_class"] = gen["page_class"]
+                m["stories"][sid]["test_class"] = gen["class_name"]
+                counts["reeval"] += 1
+            except Exception as e2:
+                cb(f"  x regen failed for {sid}: {e2}", "err")
+            continue
+
+        try:
+            add = generate_additional_methods(
+                story, fresh, dom_elements, pkg, rec["page_class"], rec["test_class"],
+                existing_methods=list(rec.get("test_cases", {}).values()),
+                log=lambda mm, t="warn": cb(mm, t))
+        except CreditBalanceError:
+            cb("Out of AI credits - stopping.", "err"); break
+        except Exception as e:
+            cb(f"  x new-method generation failed for {sid}: {e}", "err"); continue
+
+        if not (add.get("test_methods") or "").strip():
+            cb(f"  ! AI returned no new methods for {sid} - skipped (existing kept).", "warn")
+            continue
+        test_src = _splice_members(test_src, add.get("test_methods", ""), add.get("test_imports", ""))
+        page_src = _splice_members(page_src, add.get("page_methods", ""), add.get("page_imports", ""))
+        _w(test_file, test_src); _w(page_file, page_src)
+        for tc in fresh:
+            m["stories"][sid].setdefault("test_cases", {})[_tc_key(tc)] = _method_name(tc.get("title", ""))
+        counts["extended"] += 1; counts["added_methods"] += len(fresh)
+        cb(f"  ok appended {len(fresh)} method(s) to {rec['test_class']}", "ok")
+
+    # testng.xml across EVERY recorded class so a push carries all stories, not just this run
+    all_classes = sorted({r.get("test_class") for r in m["stories"].values() if r.get("test_class")})
+    _w(os.path.join(out_dir, "testng.xml"), _testng_xml(all_classes, pkg))
+    save_manifest(out_dir, m)
+    counts["classes_total"] = len(all_classes)
+    cb(f"Project updated - {counts['new']} new, {counts['extended']} extended "
+       f"(+{counts['added_methods']} methods), {counts['reeval']} re-evaluated, "
+       f"{counts['kept']} kept. {counts['classes_total']} class(es) total.", "ok")
+    return counts
+
+
+def push_to_git(repo_dir, remote_url, token, branch="main", message="Add QA Studio automation tests", cb=None, force=False):
     """Init/commit/push the generated project to a Git remote using the git CLI.
     `token` is embedded into the HTTPS URL for auth (GitHub/Azure DevOps style).
     Returns (ok, message).
@@ -2652,7 +2937,10 @@ def push_to_git(repo_dir, remote_url, token, branch="main", message="Add QA Stud
     run(["git", "remote", "add", "origin", auth_url])
 
     cb(f"Pushing to {branch}…", "dim")
-    p = run(["git", "push", "-u", "origin", branch, "--force"])
+    _push = ["git", "push", "-u", "origin", branch]
+    if force:
+        _push.append("--force")
+    p = run(_push)
     out = (p.stdout + p.stderr)
     # scrub token from any echoed output
     if token:

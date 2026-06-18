@@ -3421,12 +3421,55 @@ class QAStudio:
         self._auto_stop = True
         self._auto_logmsg("Stopping after the current step…", "warn")
 
+    def _auto_project_dir(self):
+        """Canonical local project folder — the persistent working tree that
+        accumulates stories across runs (also what Push to Git pushes from)."""
+        import os as _os
+        lp = (self.auto_local_path or "").strip()
+        if not lp:
+            return None
+        dest = lp
+        if _os.path.isdir(dest):
+            dest = _os.path.join(dest, "automation-tests")
+        return dest
+
+    def _ask_reeval(self, new_ids, grew_ids, done_ids, on_choice):
+        """Confirmation shown when some selected stories were already generated.
+        Default-safe: keep existing methods; re-eval only on explicit choice."""
+        already = list(grew_ids or []) + list(done_ids or [])
+        bits = [f"{len(already)} selected story(ies) already have generated tests"]
+        if grew_ids:
+            bits.append(f"{len(grew_ids)} of them have new test cases to add")
+        if new_ids:
+            bits.append(f"{len(new_ids)} brand-new story(ies) will be generated regardless")
+        msg = (". ".join(bits) + ".\n\nKeep the existing methods and only add the new "
+               "test cases, or re-evaluate the already-generated stories from scratch "
+               "with AI (this REPLACES their current methods)?")
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Row([ft.Icon(ft.Icons.HISTORY, size=20, color=T.VIOLET),
+                          ft.Text("Existing tests found", size=15,
+                                  weight=ft.FontWeight.BOLD, color=T.INK)], spacing=9),
+            content=ft.Container(width=430, content=ft.Text(
+                msg, size=12.5, color=T.INK_2, weight=ft.FontWeight.W_500)),
+            actions=[
+                ghost_btn("Cancel", on_click=lambda e: (on_choice("cancel"), self._close_dialog())),
+                green_btn("Keep & add new", on_click=lambda e: (on_choice("keep"), self._close_dialog())),
+                danger_btn("Re-evaluate with AI", on_click=lambda e: (on_choice("reeval"), self._close_dialog())),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+            shape=ft.RoundedRectangleBorder(radius=T.R_LG))
+        self._show_dialog(dlg)
+
     def _start_automation(self):
         if not (self.story_ids and self.project and self.plan_id):
             self._toast("Select stories on Setup first.")
             return
         if not self.auto_site_url.strip():
             self._toast("Enter the site URL.")
+            return
+        if not self._auto_project_dir():
+            self._toast("Set 'Save project to folder' (Local copy) - it's now the project home.")
             return
         self._save_git_creds()
         self._auto_running = True
@@ -3440,10 +3483,9 @@ class QAStudio:
             self._auto_logmsg(msg, tone)
 
         def work():
-            import tempfile, os as _os, shutil
             try:
                 # 1) connect to Azure + fetch stories with their test cases/steps
-                cb("Connecting to Azure DevOps…", "dim")
+                cb("Connecting to Azure DevOps...", "dim")
                 E.connect_azure_sdk(self.project)
                 smap = E.discover_suites_for_stories(self.project, self.plan_id,
                                                      set(self.story_ids), create_missing=False)
@@ -3476,58 +3518,77 @@ class QAStudio:
                         "story": {"id": sid, "title": title, "criteria": criteria},
                         "test_cases": tcs,
                     })
-                cb(f"Loaded {len(stories_payload)} story/stories · {total_tc} test case(s) · "
+                cb(f"Loaded {len(stories_payload)} story/stories - {total_tc} test case(s) - "
                    f"{total_steps} step(s) from Azure.", "ok")
 
                 if self._auto_stop:
                     cb("Stopped before scraping.", "warn"); return
 
-                # 2) LIVE-WALK: log in (verified) and walk each test case's steps,
-                #    capturing the exact locator for every step from the real page.
-                login = None
-                if self.auto_login_user.strip() and self.auto_login_pass:
-                    login = {"url": self.auto_login_url.strip() or self.auto_site_url.strip(),
-                             "user": self.auto_login_user.strip(),
-                             "password": self.auto_login_pass}
-                cb("Starting live exploration (real browser actions)…", "info")
-                result = E.explore_and_map(stories_payload, login,
-                                           self.auto_site_url.strip(), cb=cb,
-                                           should_stop=lambda: self._auto_stop,
-                                           headless=False)
-                stories_payload = result["stories_payload"]
-                dom = result["dom_snapshot"]
-                _st = result.get("stats", {})
-                cb(f"Locators — {_st.get('live',0)} live · {_st.get('snapshot',0)} from "
-                   f"snapshots · {_st.get('guess',0)} guessed.", "ok")
+                # 2) decide what needs (re)generating vs what we keep
+                project_dir = self._auto_project_dir()
+                new_ids, grew_ids, done_ids, new_tcs = E.classify_selection(
+                    project_dir, stories_payload)
+                reeval = set()
+                if grew_ids or done_ids:
+                    ev = threading.Event()
+                    decision = {"reeval": set(), "cancel": False}
+                    def _choose(kind):
+                        if kind == "reeval":
+                            decision["reeval"] = set(grew_ids) | set(done_ids)
+                        elif kind == "cancel":
+                            decision["cancel"] = True
+                        ev.set()
+                    self.ui_safe(lambda: self._ask_reeval(new_ids, grew_ids, done_ids, _choose))
+                    ev.wait()
+                    if decision["cancel"]:
+                        cb("Cancelled - existing tests untouched.", "warn"); return
+                    reeval = decision["reeval"]
+
+                # only stories we will (re)generate need a live walk; for a 'grew'
+                # story walk just its NEW test cases. Kept stories are skipped.
+                walk_payload = []
+                for sp in stories_payload:
+                    sid = str(sp["story"]["id"])
+                    if sid in new_ids or sid in reeval:
+                        walk_payload.append(sp)
+                    elif sid in grew_ids:
+                        walk_payload.append({"story": sp["story"],
+                                             "test_cases": new_tcs.get(sid, [])})
+
+                dom = []
+                if walk_payload:
+                    login = None
+                    if self.auto_login_user.strip() and self.auto_login_pass:
+                        login = {"url": self.auto_login_url.strip() or self.auto_site_url.strip(),
+                                 "user": self.auto_login_user.strip(),
+                                 "password": self.auto_login_pass}
+                    cb("Starting live exploration (real browser actions)...", "info")
+                    result = E.explore_and_map(walk_payload, login,
+                                               self.auto_site_url.strip(), cb=cb,
+                                               should_stop=lambda: self._auto_stop,
+                                               headless=False)
+                    dom = result.get("dom_snapshot", [])
+                    _st = result.get("stats", {})
+                    cb(f"Locators - {_st.get('live',0)} live - {_st.get('snapshot',0)} from "
+                       f"snapshots - {_st.get('guess',0)} guessed.", "ok")
+                else:
+                    cb("Nothing new to walk - all selected stories already generated.", "info")
 
                 if self._auto_stop:
                     cb("Stopped before generation.", "warn"); return
 
-                # 3) build the Maven project
-                out_dir = tempfile.mkdtemp(prefix="qastudio_automation_")
-                self._auto_out_dir = out_dir
-                cb(f"Generating project at {out_dir}", "dim")
-                E.build_automation_project(out_dir, stories_payload, dom,
-                                           self.auto_site_url.strip(),
-                                           cb=cb, should_stop=lambda: self._auto_stop)
-                # 3b) optional copy to a local folder for IntelliJ
-                lp = (self.auto_local_path or "").strip()
-                if lp:
-                    try:
-                        dest = lp
-                        if _os.path.isdir(dest):
-                            dest = _os.path.join(dest, "automation-tests")
-                        if _os.path.exists(dest):
-                            shutil.rmtree(dest, ignore_errors=True)
-                        shutil.copytree(out_dir, dest)
-                        self.creds["auto_local_path"] = lp
-                        try:
-                            store.save(self.creds)
-                        except Exception:
-                            pass
-                        cb(f"Copied project to {dest}", "ok")
-                    except Exception as ce:
-                        cb(f"Could not copy to local folder: {str(ce)[:150]}", "warn")
+                # 3) build/extend the project IN the local folder (prior stories survive)
+                cb(f"Updating project at {project_dir}", "dim")
+                E.build_or_merge_project(project_dir, stories_payload, dom,
+                                         self.auto_site_url.strip(),
+                                         reeval_ids=reeval,
+                                         cb=cb, should_stop=lambda: self._auto_stop)
+                self._auto_out_dir = project_dir
+                self.creds["auto_local_path"] = (self.auto_local_path or "").strip()
+                try:
+                    store.save(self.creds)
+                except Exception:
+                    pass
                 if self._auto_stop:
                     cb("Stopped.", "warn"); return
                 self._auto_built = True
@@ -3543,8 +3604,10 @@ class QAStudio:
         self._bg(work)
 
     def _push_automation(self):
-        if not (self._auto_built and self._auto_out_dir):
-            self._toast("Generate scripts first.")
+        import os as _os
+        proj = self._auto_project_dir()
+        if not proj or not _os.path.isdir(proj):
+            self._toast("Generate scripts to the local folder first.")
             return
         if not self.auto_git_url.strip() or not self.auto_git_token.strip():
             self._toast("Enter the Git repo URL and access token.")
@@ -3559,14 +3622,15 @@ class QAStudio:
 
         def work():
             try:
-                ok, msg = E.push_to_git(self._auto_out_dir, self.auto_git_url.strip(),
+                cb(f"Pushing from {proj}", "dim")
+                ok, msg = E.push_to_git(proj, self.auto_git_url.strip(),
                                         self.auto_git_token.strip(),
                                         branch=(self.auto_git_branch.strip() or "main"),
                                         cb=cb)
                 if ok:
                     cb("Pushed. Open/refresh the repo in IntelliJ to sync.", "ok")
                 else:
-                    cb(f"Push failed — {msg}", "err")
+                    cb(f"Push failed - {msg}", "err")
             except Exception as ex:
                 cb(f"Push error: {str(ex)[:200]}", "err")
             finally:
