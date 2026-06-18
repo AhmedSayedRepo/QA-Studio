@@ -84,7 +84,7 @@ def active_providers():
             out.append(name)
     return out
 
-def ai_complete(prompt_text, images=None, max_tokens=4096):
+def ai_complete(prompt_text, images=None, max_tokens=4096, timeout=None):
     cfg = _ai_cfg(); provider = AI_PROVIDER; images = images or []
     try:
         if provider == "anthropic":
@@ -95,7 +95,7 @@ def ai_complete(prompt_text, images=None, max_tokens=4096):
                     "media_type": im["media_type"], "data": im["data"]}})
             content.append({"type": "text", "text": prompt_text})
             resp = anthropic.Anthropic(api_key=cfg["api_key"]).messages.create(
-                model=cfg["model"], max_tokens=max_tokens,
+                model=cfg["model"], max_tokens=max_tokens, timeout=timeout,
                 messages=[{"role": "user", "content": content}])
             return resp.content[0].text
 
@@ -108,7 +108,7 @@ def ai_complete(prompt_text, images=None, max_tokens=4096):
                 content.append({"type": "image_url", "image_url": {
                     "url": f"data:{im['media_type']};base64,{im['data']}"}})
             resp = client.chat.completions.create(
-                model=cfg["model"], max_tokens=max_tokens,
+                model=cfg["model"], max_tokens=max_tokens, timeout=timeout,
                 messages=[{"role": "user", "content": content}])
             return resp.choices[0].message.content
 
@@ -121,7 +121,7 @@ def ai_complete(prompt_text, images=None, max_tokens=4096):
                 content.append({"type": "image_url", "image_url": {
                     "url": f"data:{im['media_type']};base64,{im['data']}"}})
             resp = client.chat.completions.create(
-                model=cfg["deployment"], max_tokens=max_tokens,
+                model=cfg["deployment"], max_tokens=max_tokens, timeout=timeout,
                 messages=[{"role": "user", "content": content}])
             return resp.choices[0].message.content
 
@@ -1948,7 +1948,12 @@ def _match_step_to_element(action, elements, cb):
         '\"value\": \"<text to type if kind==type/select, else empty>\"}'
     )
     try:
-        raw = ai_complete(prompt, max_tokens=300)
+        raw = ai_complete(prompt, max_tokens=1024, timeout=60)
+        if not (raw or "").strip():
+            # reasoning models (e.g. NVIDIA qwen) sometimes spend the whole
+            # budget thinking and return empty — retry once before giving up
+            cb("    matcher returned empty — retrying once…", "dim")
+            raw = ai_complete(prompt, max_tokens=1024, timeout=60)
         data = parse_json_robust(raw)
         if isinstance(data, list) and data:
             data = data[0]
@@ -2046,6 +2051,20 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
             return {"by": "css", "value": el["css"]}
         return {"by": "xpath", "value": el.get("xpath", "")}
 
+    def _dedup_reindex(els):
+        """De-dup the merged snapshot union and assign fresh unique idx values,
+        so the matcher can reference elements unambiguously (each per-page harvest
+        restarts idx at 0, which would otherwise collide across the union)."""
+        seen = set(); out = []
+        for e in els:
+            key = (e.get("id"), e.get("name"), e.get("css"), e.get("xpath"))
+            if key in seen:
+                continue
+            seen.add(key)
+            e2 = dict(e); e2["idx"] = len(out)
+            out.append(e2)
+        return out
+
     def find_live(el):
         """Locate the actual Selenium element for an harvested element dict."""
         try:
@@ -2058,6 +2077,21 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
             return driver.find_element(By.XPATH, el["xpath"])
         except Exception:
             return None
+
+    def _safe_click(el):
+        """Click that survives overlays: scroll into view, try native click,
+        then fall back to a JS click if something intercepts it."""
+        try:
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
+        except Exception:
+            pass
+        try:
+            el.click(); return True
+        except Exception:
+            try:
+                driver.execute_script("arguments[0].click();", el); return True
+            except Exception as e:
+                cb(f"    click fallback failed: {str(e)[:70]}", "warn"); return False
 
     try:
         # ── login + verify ──
@@ -2161,15 +2195,17 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                 cb(f"  walking '{tc.get('title','')}' ({len(steps)} steps)", "info")
                 # Return to the start page for each test case for a clean state
                 try:
+                    cb("    loading start page…", "dim")
                     driver.get(site_url); _t.sleep(wait_secs)
                 except Exception:
                     pass
-                for st in steps:
+                for si, st in enumerate(steps, 1):
                     if should_stop():
                         break
                     action = st.get("action", "") or ""
                     if not action.strip():
                         continue
+                    cb(f"    step {si}/{len(steps)}: {action.strip()[:60]}", "dim")
                     els = snapshot()
                     match, kind, value = _match_step_to_element(action, els, cb)
                     if match:
@@ -2187,9 +2223,9 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                                     try:
                                         Select(live_el).select_by_visible_text(value)
                                     except Exception:
-                                        live_el.click()
+                                        _safe_click(live_el)
                                 else:  # click / navigate / default
-                                    live_el.click()
+                                    _safe_click(live_el)
                                 _t.sleep(1.2)  # let the page react
                         except Exception as ae:
                             cb(f"    action issue: {str(ae)[:70]}", "warn")
@@ -2200,10 +2236,26 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                             m2, _, _ = _match_step_to_element(exp, els2, cb)
                             st["assert_locator"] = to_locator(m2) if m2 else None
                     else:
-                        st["locator"] = None
-                        st["locator_src"] = "guess"
-                        guess_count += 1
-        cb(f"Exploration done — {live_count} exact, {guess_count} need a guess.", "ok")
+                        # Live page had no match. Before giving up, retry against
+                        # every element seen so far this run (the snapshot union) —
+                        # many steps target a page reached earlier in the walk.
+                        union = _dedup_reindex(all_snapshots)
+                        m2, _k2, _v2 = (_match_step_to_element(action, union, cb)
+                                        if union else (None, "none", ""))
+                        if m2:
+                            st["locator"] = to_locator(m2)
+                            st["locator_src"] = "snapshot"
+                            snap_count += 1
+                            exp = st.get("expected", "") or ""
+                            if exp.strip():
+                                ma, _, _ = _match_step_to_element(exp, union, cb)
+                                st["assert_locator"] = to_locator(ma) if ma else None
+                        else:
+                            st["locator"] = None
+                            st["locator_src"] = "guess"
+                            guess_count += 1
+        cb(f"Exploration done — {live_count} exact, {snap_count} from snapshots, "
+           f"{guess_count} still need a guess.", "ok")
         # de-dup snapshots
         seen = set(); uniq = []
         for e in all_snapshots:
@@ -2212,7 +2264,8 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                 continue
             seen.add(key); uniq.append(e)
         return {"stories_payload": stories_payload, "dom_snapshot": uniq[:300],
-                "stats": {"live": live_count, "guess": guess_count}}
+                "stats": {"live": live_count, "snapshot": snap_count,
+                          "guess": guess_count}}
     finally:
         try:
             driver.quit()
@@ -2283,6 +2336,9 @@ Requirements:
       matching By (By.id/By.name/By.cssSelector/By.xpath).
     * "assert_locator" (when present) is the verified element for the expected
       result — use it for the assertion.
+    * If "locator" is present and locator_src=="snapshot", it is a REAL locator
+      captured from a page seen earlier in the walk (not the exact step page).
+      Use it as-is, but add `// TODO verify locator (from snapshot)` above the line.
     * If "locator" is null, fall back to the REAL DOM list below; pick the most
       stable (id > name > css > xpath) and add `// TODO verify locator`.
 - Use locators from the REAL DOM list only when a step has no captured locator.
