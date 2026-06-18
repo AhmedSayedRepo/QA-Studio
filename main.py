@@ -3350,20 +3350,13 @@ class QAStudio:
             ft.Row([push_btn], spacing=0),
         ], spacing=14, scroll=ft.ScrollMode.AUTO, expand=True)
 
-        # ── right: live log + info ──
-        log_lines = []
-        for ln in self._auto_log:
-            tone = ln.get("tone", "dim")
-            cmap = {"ok": T.GREEN, "err": T.RED, "warn": T.AMBER, "story": T.VIOLET_INK,
-                    "dim": T.INK_3, "info": T.INK_2}
-            log_lines.append(ft.Text(ln.get("msg", ""), size=12,
-                                     color=cmap.get(tone, T.INK_2),
-                                     weight=ft.FontWeight.W_500,
-                                     font_family=(T.F_MONO if tone in ("dim", "info") else None)))
+        # ── right: live counters + clean log ──
+        log_lines = [self._auto_log_line(ln.get("msg", ""), ln.get("tone", "dim"))
+                     for ln in self._auto_log]
         if not log_lines:
             log_lines = [ft.Text("Configure the site + Git, then Generate. Activity shows here.",
                                  size=12, color=T.INK_3, weight=ft.FontWeight.W_500)]
-        self._auto_log_col = ft.Column(log_lines, spacing=4, scroll=ft.ScrollMode.AUTO,
+        self._auto_log_col = ft.Column(log_lines, spacing=3, scroll=ft.ScrollMode.AUTO,
                                        expand=True, auto_scroll=True)
 
         spinner = (ft.ProgressRing(width=15, height=15, stroke_width=2, color=T.VIOLET)
@@ -3372,30 +3365,91 @@ class QAStudio:
             card(ft.Column([
                 ft.Row([spinner, ft.Text("ACTIVITY", size=11, weight=ft.FontWeight.BOLD,
                                          color=T.INK_3)], spacing=8),
-                ft.Container(height=10),
+                ft.Container(height=12),
+                self._auto_counts_header(),
+                ft.Container(height=12),
                 ft.Container(ft.SelectionArea(content=self._auto_log_col), expand=True, bgcolor="#FCFCFE",
                              border=ft.Border.all(1, T.BORDER), border_radius=T.R, padding=12),
             ], spacing=0, expand=True), expand=True),
         ], spacing=14, expand=True)
 
         body = ft.Row([ft.Container(left, expand=True),
-                       ft.Container(right, width=360)], spacing=22,
+                       ft.Container(right, width=384)], spacing=22,
                       vertical_alignment=ft.CrossAxisAlignment.STRETCH, expand=True)
         sub = (f"{len(self.story_ids)} stories selected" if self.story_ids else "no stories selected")
         return self.shell("Automation", sub, body)
+
+    # ---- activity panel: live counters + clean, RTL-aware log lines ----
+    def _auto_count(self):
+        """Derive Live / Snapshot / Guess / TODO tallies from the activity log,
+        keyed off the exact outcome markers the explorer emits."""
+        live = snap = guess = 0
+        for ln in self._auto_log:
+            s = (ln.get("msg", "") or "").strip()
+            if s.startswith("SNAPSHOT:"):
+                snap += 1
+            elif s.startswith("GUESS:"):
+                guess += 1
+            elif s.startswith(("typed into", "clicked", "selected on")) or \
+                 (s.startswith("matched ") and "left the page" in s):
+                live += 1
+        return {"live": live, "snapshot": snap, "guess": guess, "todo": snap + guess}
+
+    def _auto_counts_header(self):
+        c = self._auto_count()
+        self._auto_count_ctl = {}
+        def chip(key, label, color, soft):
+            val = ft.Text(str(c[key]), size=14, weight=ft.FontWeight.BOLD, color=color)
+            self._auto_count_ctl[key] = val
+            return ft.Container(
+                ft.Row([ft.Container(width=7, height=7, border_radius=4, bgcolor=color),
+                        ft.Text(label, size=10, weight=ft.FontWeight.W_600, color=T.INK_2),
+                        val], spacing=5, alignment=ft.MainAxisAlignment.CENTER),
+                padding=ft.Padding.symmetric(vertical=8, horizontal=6),
+                bgcolor=soft, border_radius=T.R, expand=True,
+                alignment=ft.Alignment.CENTER)
+        return ft.Row([
+            chip("live", "Live", T.GREEN, T.GREEN_SOFT),
+            chip("snapshot", "Snap", T.AMBER, T.AMBER_SOFT),
+            chip("guess", "Guess", T.RED, T.RED_SOFT),
+            chip("todo", "TODO", T.VIOLET, T.VIOLET_SOFT),
+        ], spacing=7)
+
+    def _auto_log_line(self, msg, tone):
+        cmap = {"ok": T.GREEN, "err": T.RED, "warn": T.AMBER, "story": T.VIOLET_INK,
+                "dim": T.INK_3, "info": T.INK_2}
+        color = cmap.get(tone, T.INK_2)
+        stripped = (msg or "").lstrip(" ")
+        indent = len(msg or "") - len(stripped)
+        pad = min(indent, 8) * 3
+        is_ar = any("\u0600" <= ch <= "\u06ff" for ch in stripped)
+        weight = ft.FontWeight.BOLD if tone == "story" else ft.FontWeight.W_500
+        dot = ft.Container(width=6, height=6, border_radius=3, bgcolor=color,
+                           margin=ft.Margin.only(top=5))
+        txt = ft.Text(stripped, size=12, color=color, weight=weight,
+                      font_family=(T.F_AR if is_ar else (T.F_MONO if tone in ("dim", "info") else None)),
+                      text_align=(ft.TextAlign.RIGHT if is_ar else ft.TextAlign.LEFT),
+                      expand=True)
+        return ft.Container(
+            ft.Row([dot, ft.Container(width=8), txt], spacing=0,
+                   vertical_alignment=ft.CrossAxisAlignment.START),
+            padding=ft.Padding.only(left=pad, top=1, bottom=1))
 
     def _auto_logmsg(self, msg, tone="dim"):
         self._auto_log.append({"msg": msg, "tone": tone})
         def upd():
             try:
                 if hasattr(self, "_auto_log_col"):
-                    cmap = {"ok": T.GREEN, "err": T.RED, "warn": T.AMBER, "story": T.VIOLET_INK,
-                            "dim": T.INK_3, "info": T.INK_2}
-                    self._auto_log_col.controls.append(
-                        ft.Text(msg, size=12, color=cmap.get(tone, T.INK_2),
-                                weight=ft.FontWeight.W_500,
-                                font_family=(T.F_MONO if tone in ("dim", "info") else None)))
+                    self._auto_log_col.controls.append(self._auto_log_line(msg, tone))
                     self._auto_log_col.update()
+                ctl = getattr(self, "_auto_count_ctl", None)
+                if ctl:
+                    c = self._auto_count()
+                    for k, t in ctl.items():
+                        try:
+                            t.value = str(c.get(k, 0)); t.update()
+                        except Exception:
+                            pass
             except Exception:
                 pass
         self.ui_safe(upd)
@@ -3422,16 +3476,14 @@ class QAStudio:
         self._auto_logmsg("Stopping after the current step…", "warn")
 
     def _auto_project_dir(self):
-        """Canonical local project folder — the persistent working tree that
-        accumulates stories across runs (also what Push to Git pushes from)."""
+        """The chosen folder IS the project home and the git repo we push from.
+        Use it exactly as given (created if missing) — NO nesting, so the Maven
+        project lands right next to .git and 'Push to Git' pushes this folder."""
         import os as _os
         lp = (self.auto_local_path or "").strip()
         if not lp:
             return None
-        dest = lp
-        if _os.path.isdir(dest):
-            dest = _os.path.join(dest, "automation-tests")
-        return dest
+        return _os.path.normpath(lp)
 
     def _ask_reeval(self, new_ids, grew_ids, done_ids, on_choice):
         """Confirmation shown when some selected stories were already generated.

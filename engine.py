@@ -1964,6 +1964,8 @@ def _match_step_to_element(action, elements, cb):
             return None, kind, value
         match = next((e for e in elements if e.get("idx") == idx), None)
         return match, kind, value
+    except CreditBalanceError:
+        raise  # propagate so explore_and_map can auto-stop on repeated hits
     except Exception as e:
         cb(f"  match error: {str(e)[:80]}", "warn")
         return None, "none", ""
@@ -2093,6 +2095,32 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
             except Exception as e:
                 cb(f"    click fallback failed: {str(e)[:70]}", "warn"); return False
 
+    def _describe(el):
+        """Short, human-readable identity for a harvested element (for the log)."""
+        if not el:
+            return "?"
+        if el.get("id"):
+            return "#" + el["id"]
+        if el.get("name"):
+            return "[name=" + el["name"] + "]"
+        t = (el.get("text") or el.get("aria") or el.get("placeholder") or "").strip()
+        if t:
+            return '"' + t[:24] + '"'
+        return (el.get("css") or el.get("xpath") or "?")[:32]
+
+    def _flash(live_el):
+        """Briefly outline the element in the real browser so the human watching
+        can SEE which element each step touched."""
+        try:
+            driver.execute_script(
+                "var o=arguments[0];var p=o.style.outline;var q=o.style.outlineOffset;"
+                "o.scrollIntoView({block:'center'});"
+                "o.style.outline='3px solid #6A4DFF';o.style.outlineOffset='2px';"
+                "setTimeout(function(){o.style.outline=p;o.style.outlineOffset=q;},900);",
+                live_el)
+        except Exception:
+            pass
+
     try:
         # ── login + verify ──
         login_url = (login or {}).get("url") or site_url
@@ -2181,81 +2209,126 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
         _t.sleep(1.0)
 
         live_count = snap_count = guess_count = 0
+        todos = []                 # steps that will carry a // TODO verify locator
+        credit_hits = 0            # repeated AI credit-limit errors -> auto-stop
+        CREDIT_STOP = 5
+        abort_credit = False
 
-        # ── walk each test case ──
+        def try_match(a, els):
+            """Run the AI matcher, but treat repeated credit-limit errors as a
+            signal to stop the whole walk instead of hammering the API."""
+            nonlocal credit_hits, abort_credit
+            try:
+                return _match_step_to_element(a, els, cb)
+            except CreditBalanceError:
+                credit_hits += 1
+                cb(f"AI credit limit hit ({credit_hits}/{CREDIT_STOP}).", "err")
+                if credit_hits >= CREDIT_STOP:
+                    abort_credit = True
+                return None, "none", ""
+
+        # walk each test case
         for sp in stories_payload:
-            if should_stop():
-                cb("Stopped.", "warn"); break
+            if should_stop() or abort_credit:
+                break
             story = sp.get("story", {})
-            cb(f"▸ Story {story.get('id')} — {story.get('title','')}", "story")
+            cb(f"\u25b8 Story {story.get('id')} \u2014 {story.get('title','')}", "story")
             for tc in sp.get("test_cases", []):
-                if should_stop():
+                if should_stop() or abort_credit:
                     break
                 steps = tc.get("steps", []) or []
                 cb(f"  walking '{tc.get('title','')}' ({len(steps)} steps)", "info")
-                # Return to the start page for each test case for a clean state
                 try:
-                    cb("    loading start page…", "dim")
+                    cb("    loading start page\u2026", "dim")
                     driver.get(site_url); _t.sleep(wait_secs)
                 except Exception:
                     pass
                 for si, st in enumerate(steps, 1):
-                    if should_stop():
+                    if should_stop() or abort_credit:
                         break
                     action = st.get("action", "") or ""
                     if not action.strip():
                         continue
-                    cb(f"    step {si}/{len(steps)}: {action.strip()[:60]}", "dim")
+                    disp = action.strip()
+                    for _pfx in ("\u0627\u0644\u0634\u0631\u0637 \u0627\u0644\u0645\u0633\u0628\u0642:", "Precondition:", "precondition:"):
+                        if disp.startswith(_pfx):
+                            disp = disp[len(_pfx):].strip(); break
+                    cb(f"  {si}/{len(steps)}  {disp[:45]}", "dim")
                     els = snapshot()
-                    match, kind, value = _match_step_to_element(action, els, cb)
+                    match, kind, value = try_match(action, els)
+                    if abort_credit:
+                        break
                     if match:
                         st["locator"] = to_locator(match)
                         st["locator_src"] = "live"
                         live_count += 1
-                        # perform the action to advance the page state
                         live_el = find_live(match)
-                        try:
-                            if live_el is not None:
+                        if live_el is not None:
+                            _flash(live_el)  # outline it in the browser
+                            try:
                                 if kind == "type":
                                     live_el.clear(); live_el.send_keys(value or "test")
+                                    cb(f"      typed into {_describe(match)}", "ok")
                                 elif kind == "select":
                                     from selenium.webdriver.support.ui import Select
                                     try:
                                         Select(live_el).select_by_visible_text(value)
                                     except Exception:
                                         _safe_click(live_el)
+                                    cb(f"      selected on {_describe(match)}", "ok")
                                 else:  # click / navigate / default
                                     _safe_click(live_el)
+                                    cb(f"      clicked {_describe(match)}", "ok")
                                 _t.sleep(1.2)  # let the page react
-                        except Exception as ae:
-                            cb(f"    action issue: {str(ae)[:70]}", "warn")
-                        # capture the expected-result target after the action
+                            except Exception as ae:
+                                cb(f"      couldn't act on {_describe(match)}: {str(ae)[:50]}", "warn")
+                        else:
+                            cb(f"      matched {_describe(match)} but it left the page", "warn")
                         exp = st.get("expected", "") or ""
                         if exp.strip():
                             els2 = snapshot()
-                            m2, _, _ = _match_step_to_element(exp, els2, cb)
+                            m2, _, _ = try_match(exp, els2)
                             st["assert_locator"] = to_locator(m2) if m2 else None
                     else:
-                        # Live page had no match. Before giving up, retry against
-                        # every element seen so far this run (the snapshot union) —
-                        # many steps target a page reached earlier in the walk.
                         union = _dedup_reindex(all_snapshots)
-                        m2, _k2, _v2 = (_match_step_to_element(action, union, cb)
-                                        if union else (None, "none", ""))
+                        m2, _k2, _v2 = (try_match(action, union) if union else (None, "none", ""))
+                        if abort_credit:
+                            break
                         if m2:
                             st["locator"] = to_locator(m2)
                             st["locator_src"] = "snapshot"
                             snap_count += 1
+                            cb(f"      SNAPSHOT: using {_describe(m2)} from an earlier page "
+                               f"\u2014 will be marked // TODO verify (from snapshot)", "warn")
+                            todos.append({"s": story.get("id"), "tc": tc.get("title", ""),
+                                          "n": si, "a": disp, "kind": "snapshot"})
                             exp = st.get("expected", "") or ""
                             if exp.strip():
-                                ma, _, _ = _match_step_to_element(exp, union, cb)
+                                ma, _, _ = try_match(exp, union)
                                 st["assert_locator"] = to_locator(ma) if ma else None
                         else:
                             st["locator"] = None
                             st["locator_src"] = "guess"
                             guess_count += 1
-        cb(f"Exploration done — {live_count} exact, {snap_count} from snapshots, "
+                            cb("      GUESS: no element matched \u2014 step will be marked "
+                               "// TODO verify locator", "warn")
+                            todos.append({"s": story.get("id"), "tc": tc.get("title", ""),
+                                          "n": si, "a": disp, "kind": "guess"})
+
+        if abort_credit:
+            cb(f"Stopped automatically \u2014 the AI credit limit was hit {credit_hits} "
+               f"times. Top up credits or switch provider, then run again.", "err")
+
+        cb(f"Exploration done \u2014 {live_count} exact, {snap_count} from snapshots, "
            f"{guess_count} still need a guess.", "ok")
+        # summary of every step that will carry a // TODO verify locator
+        if todos:
+            cb(f"{len(todos)} step(s) will need a // TODO verify locator:", "warn")
+            for _t2 in todos:
+                cb(f"   - story {_t2['s']} / {(_t2['tc'] or '')[:26]} / step {_t2['n']}  "
+                   f"[{_t2['kind']}]  {_t2['a'][:32]}", "warn")
+        else:
+            cb("No TODOs \u2014 every walked step captured a real locator.", "ok")
         # de-dup snapshots
         seen = set(); uniq = []
         for e in all_snapshots:
