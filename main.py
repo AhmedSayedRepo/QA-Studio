@@ -112,9 +112,16 @@ def _logo_b64():
             _LOGO_B64 = ""
     return _LOGO_B64
 
+_LOGO_CTL = {}
 def logo_img(size=38, fallback_icon=None, fallback_color="#FFFFFF"):
     """Brand logo as an ft.Image; falls back to an icon if the file is missing.
+    The built control is cached per (size, fallback) and REUSED across renders so
+    Flet doesn't re-decode the base64 on every button click (which caused a flicker).
     Avoids ft.ImageFit / Image.border_radius hard deps (absent in some Flet builds)."""
+    ckey = (size, fallback_icon, fallback_color)
+    cached = _LOGO_CTL.get(ckey)
+    if cached is not None:
+        return cached
     b = _logo_b64()
     if b:
         img = None
@@ -137,9 +144,12 @@ def logo_img(size=38, fallback_icon=None, fallback_color="#FFFFFF"):
                 img.border_radius = int(size * 0.29)
             except Exception:
                 pass
+            _LOGO_CTL[ckey] = img
             return img
-    return ft.Icon(fallback_icon or ft.Icons.SCIENCE_OUTLINED,
-                   color=fallback_color, size=int(size * 0.55))
+    fb = ft.Icon(fallback_icon or ft.Icons.SCIENCE_OUTLINED,
+                 color=fallback_color, size=int(size * 0.55))
+    _LOGO_CTL[ckey] = fb
+    return fb
 
 
 def primary_btn(text, icon=None, on_click=None, expand=False, disabled=False):
@@ -291,6 +301,8 @@ class QAStudio:
         self._auto_log = []
         self._auto_running = False
         self._auto_stop = False
+        self._auto_paused = False
+        self._auto_cond = threading.Condition()
         self._auto_out_dir = None
         self._auto_built = False
         self._run_active = False
@@ -1105,8 +1117,41 @@ class QAStudio:
         },
     }
 
+    # per-provider key instructions + console link (drives the API-key info icon)
+    PROVIDER_KEY_HELP = {
+        "anthropic": ("console.anthropic.com → API Keys → Create Key.",
+                      "https://console.anthropic.com/settings/keys", "Open Anthropic Console"),
+        "openai":    ("platform.openai.com → API Keys → Create new secret key.",
+                      "https://platform.openai.com/api-keys", "Open OpenAI Keys"),
+        "gemini":    ("aistudio.google.com → Get API key → Create API key.",
+                      "https://aistudio.google.com/app/apikey", "Open Google AI Studio"),
+        "nvidia":    ("build.nvidia.com → your profile → API Keys → Generate.",
+                      "https://build.nvidia.com/", "Open NVIDIA Build"),
+        "deepseek":  ("platform.deepseek.com → API keys → Create new API key. "
+                      "Ensure your balance is topped up.",
+                      "https://platform.deepseek.com/api_keys", "Open DeepSeek Platform"),
+        "qwen":      ("Alibaba Model Studio (International) → API-KEY → Create. "
+                      "Use the Singapore endpoint key.",
+                      "https://modelstudio.console.alibabacloud.com/", "Open Model Studio"),
+        "azure_openai": ("Azure Portal → your Azure OpenAI resource → Keys and Endpoint.",
+                         "https://portal.azure.com/", "Open Azure Portal"),
+        "ollama":    ("Ollama runs locally — no API key needed. Just run `ollama serve`.",
+                      "https://ollama.com/download", "Get Ollama"),
+    }
+
     def _show_help(self, key):
-        h = self.HELP.get(key)
+        # API-key help is provider-aware: show the SELECTED provider's instructions
+        if key == "api_key":
+            name = getattr(self, "_provider_choice", "anthropic")
+            how, url, label = self.PROVIDER_KEY_HELP.get(
+                name, self.PROVIDER_KEY_HELP["anthropic"])
+            h = {"title": f"{T.disp_name(name)} API Key",
+                 "steps": [f"{T.disp_name(name)}: {how}",
+                           "Copy the key and paste it here, then click Save.",
+                           "It is stored only on this device, per provider."],
+                 "url": url, "url_label": label}
+        else:
+            h = self.HELP.get(key)
         if not h:
             return
         step_rows = []
@@ -1216,14 +1261,14 @@ class QAStudio:
             field_label("AI Provider", req=True, info="How to make a provider active",
                         on_info=lambda e: self._show_help("provider")),
             ft.Container(self.prov_dd, padding=ft.Padding.only(top=4, bottom=12)),
+            field_label("API Key", req=True, info="How to get your AI provider API key",
+                        on_info=lambda e: self._show_help("api_key")),
+            ft.Container(ft.Row([self.api_key_field, self.api_btn], spacing=8),
+                        padding=ft.Padding.only(top=4, bottom=12)),
             field_label("Azure Organization", req=True,
                         info="How to find your Azure organization name",
                         on_info=lambda e: self._show_help("org")),
             ft.Container(ft.Row([self.org_field, self.org_btn], spacing=8),
-                        padding=ft.Padding.only(top=4, bottom=12)),
-            field_label("API Key", req=True, info="How to get your AI provider API key",
-                        on_info=lambda e: self._show_help("api_key")),
-            ft.Container(ft.Row([self.api_key_field, self.api_btn], spacing=8),
                         padding=ft.Padding.only(top=4, bottom=12)),
             ft.Row([
                 ft.Column([
@@ -1345,6 +1390,12 @@ class QAStudio:
         self.api_key_field.read_only = active
         self.api_key_field.bgcolor = T.CARD_2 if active else T.CARD
         self.api_key_field.hint_text = f"Paste key for {T.disp_name(name)}"
+        # switch the live engine provider (+ its saved key, if any) so a PAUSED
+        # automation can Resume on this provider without re-running Connect
+        try:
+            E.set_credentials(provider=name, api_key=(self._saved_key(name) or None))
+        except Exception:
+            pass
         # rebuild the button
         self.render()
 
@@ -1354,8 +1405,14 @@ class QAStudio:
         if not val:
             self._err("API Key is required."); return
         self.creds["keys"][name] = val; store.save(self.creds)
+        # apply to the engine immediately so a PAUSED automation can Resume on the
+        # newly chosen provider/key without re-running Connect
+        try:
+            E.set_credentials(provider=name, api_key=val)
+        except Exception:
+            pass
         self._key_unlocked = False
-        self._toast("API key saved."); self.render()
+        self._toast(f"API key saved & {T.disp_name(name)} activated."); self.render()
 
     def _unlock_key(self, e=None):
         self._key_unlocked = True; self.render()
@@ -3433,20 +3490,43 @@ class QAStudio:
 
         gen_disabled = self._auto_running or not ready
         if self._auto_running:
-            # While running, show a polished full-width Stop button instead of Generate
+            # While running, show Stop + Pause/Resume side by side (matching shadow)
             _stop_btn = ft.FilledButton(
                 content=ft.Row(
                     [ft.Icon(ft.Icons.STOP_CIRCLE, size=18, color="#FFFFFF"),
-                     ft.Text("Stop generation", size=14, weight=ft.FontWeight.BOLD,
+                     ft.Text("Stop", size=14, weight=ft.FontWeight.BOLD,
                              color="#FFFFFF")],
-                    spacing=9, tight=True,
+                    spacing=8, tight=True,
                     alignment=ft.MainAxisAlignment.CENTER),
-                height=46, on_click=lambda e: self._stop_automation(),
+                height=46, expand=True, on_click=lambda e: self._stop_automation(),
                 style=ft.ButtonStyle(
                     bgcolor={"": T.RED}, color={"": "#FFFFFF"}, elevation=0,
                     shape=ft.RoundedRectangleBorder(radius=T.R),
-                    padding=ft.Padding.symmetric(horizontal=18, vertical=0)))
-            gen_btn = _shadow_wrap(_stop_btn, T.RED, 0.55, True)
+                    padding=ft.Padding.symmetric(horizontal=14, vertical=0)))
+            _paused = bool(getattr(self, "_auto_paused", False))
+            if _paused:
+                _pr_label, _pr_icon, _pr_col = "Resume", ft.Icons.PLAY_ARROW, T.GREEN
+                _pr_click = lambda e: self._resume_automation()
+            else:
+                _pr_label, _pr_icon, _pr_col = "Pause", ft.Icons.PAUSE_CIRCLE, T.AMBER
+                _pr_click = lambda e: self._pause_automation()
+            _pr_btn = ft.FilledButton(
+                content=ft.Row(
+                    [ft.Icon(_pr_icon, size=18, color="#FFFFFF"),
+                     ft.Text(_pr_label, size=14, weight=ft.FontWeight.BOLD,
+                             color="#FFFFFF")],
+                    spacing=8, tight=True,
+                    alignment=ft.MainAxisAlignment.CENTER),
+                height=46, expand=True, on_click=_pr_click,
+                style=ft.ButtonStyle(
+                    bgcolor={"": _pr_col}, color={"": "#FFFFFF"}, elevation=0,
+                    shape=ft.RoundedRectangleBorder(radius=T.R),
+                    padding=ft.Padding.symmetric(horizontal=14, vertical=0)))
+            _stop_w = ft.Container(_stop_btn, border_radius=T.R,
+                                   shadow=_btn_shadow(T.RED, 0.55), expand=True)
+            _pr_w = ft.Container(_pr_btn, border_radius=T.R,
+                                 shadow=_btn_shadow(_pr_col, 0.55), expand=True)
+            gen_btn = ft.Row([_stop_w, _pr_w], spacing=10)
         else:
             gen_btn = primary_btn(
                 "Generate automation scripts",
@@ -3559,6 +3639,9 @@ class QAStudio:
             padding=ft.Padding.only(left=pad, top=1, bottom=1))
 
     def _auto_logmsg(self, msg, tone="dim"):
+        # drop consecutive duplicate lines (e.g. repeated "Paused…" notices)
+        if self._auto_log and self._auto_log[-1].get("msg") == msg:
+            return
         self._auto_log.append({"msg": msg, "tone": tone})
         def upd():
             try:
@@ -3595,8 +3678,65 @@ class QAStudio:
 
     def _stop_automation(self):
         """Request the running automation to stop after the current step."""
-        self._auto_stop = True
+        with self._auto_cond:
+            self._auto_stop = True
+            self._auto_paused = False
+            self._auto_cond.notify_all()
         self._auto_logmsg("Stopping after the current step…", "warn")
+
+    def _pause_automation(self):
+        """Pause the run at the next safe point (between test cases)."""
+        with self._auto_cond:
+            self._auto_paused = True
+        self._auto_logmsg("Paused. Switch the AI provider in Setup if needed, "
+                          "then Resume — or Stop to abort.", "warn")
+        try:
+            self.render()
+        except Exception:
+            pass
+
+    def _resume_automation(self):
+        """Resume a paused run (e.g. after switching provider)."""
+        with self._auto_cond:
+            self._auto_paused = False
+            self._auto_cond.notify_all()
+        self._auto_logmsg("Resuming…", "info")
+        try:
+            self.render()
+        except Exception:
+            pass
+
+    def _auto_gate(self):
+        """Block while paused; return False if we're stopping (so the engine
+        aborts cleanly). Called by the engine between test cases."""
+        with self._auto_cond:
+            while self._auto_paused and not self._auto_stop:
+                self._auto_cond.wait()
+        return not self._auto_stop
+
+    def _auto_on_ai_error(self, msg):
+        """Engine calls this on a recoverable AI error (e.g. low credit). Auto-pause
+        and wait: Resume (after switching provider) → 'retry'; Stop → 'stop'."""
+        try:
+            friendly = E.friendly_ai_error(msg)
+        except Exception:
+            friendly = str(msg)[:200]
+        self._auto_logmsg(friendly, "red")
+        self._auto_logmsg("Paused on error. Switch the AI provider in Setup, then "
+                          "Resume — or Stop to abort.", "warn")
+        with self._auto_cond:
+            self._auto_paused = True
+        try:
+            self.render()
+        except Exception:
+            pass
+        with self._auto_cond:
+            while self._auto_paused and not self._auto_stop:
+                self._auto_cond.wait()
+        if self._auto_stop:
+            return "stop"
+        self._auto_logmsg("Retrying with the current provider…", "info")
+        return "retry"
 
     def _auto_project_dir(self):
         """The chosen folder IS the project home and the git repo we push from.
@@ -3649,9 +3789,9 @@ class QAStudio:
         self._save_git_creds()
         self._auto_running = True
         self._auto_stop = False
+        self._auto_paused = False
         self._auto_built = False
         self._auto_log = []
-        self._set_run_active(True)
         self.render()
 
         def cb(msg, tone="dim"):
@@ -3744,7 +3884,8 @@ class QAStudio:
                 cb("Generating self-healing automation (no browser)…", "info")
                 E.generate_and_push_selfhealing(
                     project_dir, stories_payload, self.auto_site_url.strip(),
-                    login=login, cb=cb, should_stop=lambda: self._auto_stop)
+                    login=login, cb=cb, should_stop=lambda: self._auto_stop,
+                    on_error=self._auto_on_ai_error, gate=self._auto_gate)
 
                 self._auto_out_dir = project_dir
                 self.creds["auto_local_path"] = (self.auto_local_path or "").strip()
@@ -3763,7 +3904,7 @@ class QAStudio:
             finally:
                 self._auto_running = False
                 self._auto_stop = False
-                self._set_run_active(False)
+                self._auto_paused = False
                 self.ui_safe(self.render)
 
         self._bg(work)
@@ -3777,9 +3918,13 @@ class QAStudio:
         if not self.auto_git_url.strip() or not self.auto_git_token.strip():
             self._toast("Enter the Git repo URL and access token.")
             return
+        _ok_url, _url_msg = E._validate_remote_url(self.auto_git_url.strip())
+        if not _ok_url:
+            self._toast(_url_msg)
+            self._auto_logmsg(_url_msg, "err")
+            return
         self._save_git_creds()
         self._auto_running = True
-        self._set_run_active(True)
         self.render()
 
         def cb(msg, tone="dim"):
@@ -3800,7 +3945,6 @@ class QAStudio:
                 cb(f"Push error: {str(ex)[:200]}", "err")
             finally:
                 self._auto_running = False
-                self._set_run_active(False)
                 self.ui_safe(self.render)
 
         self._bg(work)

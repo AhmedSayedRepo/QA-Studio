@@ -40,8 +40,8 @@ PALETTE = {
 }
 
 
-def _logo_data_uri():
-    for name in ("qa-logo-full.png", "qa-logo.png", "app.png"):
+def _logo_data_uri(names=("qa-logo-full.png", "qa-logo.png", "app.png")):
+    for name in names:
         p = os.path.join(HERE, name)
         if os.path.exists(p):
             try:
@@ -180,6 +180,7 @@ def _page():
     for k, v in P.items():
         html = html.replace("__" + k.upper() + "__", v)
     html = html.replace("__LOGO__", logo_html)
+    html = html.replace("__FAVICON__", _logo_data_uri(("app.png", "qa-logo.png")) or logo or "")
     html = html.replace("__APP__", APP_NAME)
     return html
 
@@ -187,6 +188,7 @@ def _page():
 _PAGE_TMPL = """<!doctype html><html lang="en"><head>
 <meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>__APP__ Setup</title>
+<link rel="icon" type="image/png" href="__FAVICON__"/>
 <style>
 :root{
   --paper:__PAPER__;--card:__CARD__;--tint:__TINT__;
@@ -200,15 +202,16 @@ _PAGE_TMPL = """<!doctype html><html lang="en"><head>
 }
 *{box-sizing:border-box}
 html,body{margin:0;height:100%}
-body{background:var(--paper);font-family:var(--ui);color:var(--ink);
-  min-height:100vh;display:flex;align-items:center;justify-content:center;padding:30px 16px}
-.win{width:640px;max-width:96vw;background:var(--paper);border-radius:16px;overflow:hidden;
-  box-shadow:0 40px 90px -30px rgba(20,16,40,.45),0 0 0 1px rgba(20,16,40,.05)}
+body{background:#E5E4EC;font-family:var(--ui);color:var(--ink);min-height:100vh;
+  display:flex;align-items:center;justify-content:center;padding:22px}
+.win{width:600px;max-width:96vw;background:var(--paper);border-radius:18px;overflow:hidden;
+  display:flex;flex-direction:column;
+  box-shadow:0 30px 70px -25px rgba(20,16,40,.5),0 2px 6px -2px rgba(20,16,40,.18),0 0 0 1px rgba(20,16,40,.05)}
 .accent{height:4px;background:linear-gradient(90deg,var(--grad1),var(--violet),var(--grad2))}
-.head{text-align:center;padding:28px 36px 6px;display:flex;flex-direction:column;align-items:center}
+.head{text-align:center;padding:30px 40px 6px;display:flex;flex-direction:column;align-items:center}
 .head .tagline{font-size:13px;font-weight:600;color:var(--ink2);margin-top:10px}
 .divider{height:1px;background:var(--line);margin:22px 36px}
-.body{padding:0 36px 30px}
+.body{padding:0 40px 34px;flex:1;display:flex;flex-direction:column}
 .lead{font-size:17px;font-weight:800;color:var(--ink);margin:0}
 .leadsub{font-size:13px;font-weight:500;color:var(--ink2);margin:7px 0 0;line-height:1.55}
 .steps{margin:20px 0 4px;border:1px solid var(--line);border-radius:12px;background:var(--card);overflow:hidden}
@@ -231,6 +234,12 @@ body{background:var(--paper);font-family:var(--ui);color:var(--ink);
 .progtop .lbl{font-size:12.5px;font-weight:600;color:var(--ink2)}
 .progtop .pct{font-family:var(--mono);font-size:15px;font-weight:800;color:var(--violetInk)}
 .track{height:8px;border-radius:99px;background:#E5E3EE;overflow:hidden}
+.spinner{width:15px;height:15px;border-radius:50%;border:2px solid var(--violetSoft);
+  border-top-color:var(--violet);animation:spin .7s linear infinite;display:inline-block;
+  vertical-align:-2px;box-sizing:border-box}
+.pspin{margin-right:9px}
+.step.active .dot .spinner{width:13px;height:13px;border-color:#CFD6FF;border-top-color:var(--violet)}
+@keyframes spin{to{transform:rotate(360deg)}}
 .fill{height:100%;border-radius:99px;width:0%;
   background:linear-gradient(90deg,var(--violet),#6276E8);transition:width .5s ease;
   box-shadow:0 0 12px -2px rgba(58,87,214,.6)}
@@ -244,7 +253,7 @@ body{background:var(--paper);font-family:var(--ui);color:var(--ink);
 .console .lines::-webkit-scrollbar-thumb{background:#34343F;border-radius:8px}
 .cl{white-space:pre-wrap;color:#B7B5C4}
 .cl.ok{color:#5BD99A}.cl.err{color:#FF8A8F}.cl.warn{color:#F2C94C}.cl.dim{color:#6B6979}
-.actions{display:flex;gap:12px;margin-top:24px;align-items:center}
+.actions{display:flex;gap:12px;margin-top:auto;padding-top:26px;align-items:center}
 .btn{height:48px;border-radius:12px;border:0;cursor:pointer;font:800 14px var(--ui);
   display:inline-flex;align-items:center;justify-content:center;gap:9px;transition:background .15s,transform .05s}
 .btn:active{transform:translateY(1px)}
@@ -274,7 +283,7 @@ body{background:var(--paper);font-family:var(--ui);color:var(--ink);
     </div>
 
     <div class="progwrap" id="progwrap">
-      <div class="progtop"><span class="lbl" id="proglbl">Installing&hellip;</span><span class="pct" id="pct">0%</span></div>
+      <div class="progtop"><span class="lbl"><span class="spinner pspin" id="pspin"></span><span id="proglbl">Installing&hellip;</span></span><span class="pct" id="pct">0%</span></div>
       <div class="track"><div class="fill" id="fill"></div></div>
     </div>
 
@@ -301,6 +310,7 @@ function setStep(i,state,meta){
   const dot=el.querySelector('.dot');
   if(state==='done')dot.innerHTML='&#10003;';
   else if(state==='error')dot.innerHTML='&#10005;';
+  else if(state==='active')dot.innerHTML='<span class="spinner"></span>';
   else dot.textContent=String(i+1);
   if(meta!=null)el.querySelector('.smeta').textContent=meta;
 }
@@ -312,10 +322,11 @@ function logLine(tone,msg){
 function setProgress(v){$('#fill').style.width=v+'%';$('#pct').textContent=Math.round(v)+'%';}
 function startInstall(){
   $('#install').disabled=true;$('#install').innerHTML='Installing&hellip;';
-  $('#progwrap').classList.add('show');$('#console').classList.add('show');
+  $('#progwrap').classList.add('show');
   fetch('/install',{method:'POST'});
 }
 function onDone(){
+  var ps=$('#pspin'); if(ps)ps.style.display='none';
   $('#lead').textContent='Installation complete';$('#lead').style.color='var(--green)';
   $('#leadsub').textContent='QA Studio is ready. A shortcut has been added to your Desktop.';
   $('#proglbl').textContent='All set';
@@ -324,6 +335,7 @@ function onDone(){
     '<button class="btn btn-green" style="flex:0 0 auto;padding:0 26px" onclick="launch()">Launch '+APP+' &rarr;</button>';
 }
 function onFail(msg){
+  var ps=$('#pspin'); if(ps)ps.style.display='none';
   $('#lead').textContent='Installation failed';$('#lead').style.color='var(--red)';
   $('#leadsub').textContent=msg||'Something went wrong.';
   $('#actions').innerHTML=
@@ -463,7 +475,7 @@ def _open_app_window(url):
     """Open the installer in a chromeless app window (Edge/Chrome --app mode) so
     it looks like a native installer instead of a browser tab. Falls back to the
     default browser if no Chromium browser is found."""
-    W, H = 720, 880
+    W, H = 648, 720
     candidates = []
     if os.name == "nt":
         pf = os.environ.get("ProgramFiles", r"C:\\Program Files")
@@ -472,26 +484,10 @@ def _open_app_window(url):
         candidates = [
             os.path.join(pf86, "Microsoft", "Edge", "Application", "msedge.exe"),
             os.path.join(pf, "Microsoft", "Edge", "Application", "msedge.exe"),
-            os.path.join(local, "Microsoft", "Edge", "Application", "msedge.exe"),
             os.path.join(pf, "Google", "Chrome", "Application", "chrome.exe"),
             os.path.join(pf86, "Google", "Chrome", "Application", "chrome.exe"),
             os.path.join(local, "Google", "Chrome", "Application", "chrome.exe"),
         ]
-        # Registry App Paths = authoritative location; survives non-default dirs.
-        try:
-            import winreg
-            for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
-                for app in ("chrome.exe", "msedge.exe"):
-                    try:
-                        with winreg.OpenKey(hive,
-                                r"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\" + app) as k:
-                            p = winreg.QueryValue(k, None)
-                            if p:
-                                candidates.append(p)
-                    except OSError:
-                        pass
-        except Exception:
-            pass
     elif sys.platform == "darwin":
         candidates = [
             "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -501,11 +497,7 @@ def _open_app_window(url):
         candidates = ["/usr/bin/google-chrome", "/usr/bin/microsoft-edge",
                       "/usr/bin/chromium", "/usr/bin/chromium-browser"]
 
-    exe = next((c for c in candidates if c and os.path.exists(c)), None)
-    if not exe:  # last resort: anything named edge/chrome on PATH
-        import shutil
-        exe = (shutil.which("msedge") or shutil.which("chrome")
-               or shutil.which("google-chrome") or shutil.which("chromium"))
+    exe = next((c for c in candidates if os.path.exists(c)), None)
     if exe:
         try:
             import tempfile
@@ -518,58 +510,11 @@ def _open_app_window(url):
             return
         except Exception:
             pass
-    # Fallback: no Chromium browser found — open a normal tab and say so, instead
-    # of silently looking like the wrong behavior.
-    print("No Edge/Chrome found for app-window mode; opening in your default "
-          "browser tab instead.")
+    # Fallback: default browser tab
     try:
         webbrowser.open(url)
     except Exception:
         pass
-
-
-def _ensure_webview():
-    """Return the pywebview module for a true native window, installing it on the
-    fly if needed (the installer runs before app deps exist). Returns None if it
-    can't be made available, so the caller falls back to a browser window."""
-    try:
-        import webview  # noqa: F401
-        return webview
-    except Exception:
-        pass
-    try:
-        print("Preparing the installer window (one-time setup)\u2026")
-        subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", "--quiet",
-             "--disable-pip-version-check", "pywebview"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        import webview  # noqa: F401
-        return webview
-    except Exception as e:
-        print(f"Native window unavailable ({str(e)[:80]}); using a browser window.")
-        return None
-
-
-def _run_native_window(webview, url):
-    """Open the installer as a real OS window via WebView2 (Windows) / the system
-    web view. Returns True if a window was shown (and has since closed)."""
-    try:
-        webview.create_window(f"{APP_NAME} Installer", url,
-                              width=760, height=920, resizable=True,
-                              min_size=(620, 700))
-    except Exception as e:
-        print(f"Could not create native window: {str(e)[:80]}")
-        return False
-    # Prefer the modern Edge WebView2 backend on Windows; fall back to auto.
-    attempts = [{"gui": "edgechromium"}, {}] if os.name == "nt" else [{}]
-    for kw in attempts:
-        try:
-            webview.start(**kw)
-            return True
-        except Exception as e:
-            print(f"webview backend {kw or 'auto'} failed: {str(e)[:70]}")
-            continue
-    return False
 
 
 def main():
@@ -579,25 +524,6 @@ def main():
     port = _free_port()
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     url = f"http://127.0.0.1:{port}/"
-
-    # Path 2: a genuine native window (no browser chrome). The localhost server
-    # runs on a background thread because pywebview must own the main thread.
-    wv = _ensure_webview()
-    if wv is not None:
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        print(f"{APP_NAME} installer running at {url}")
-        if _run_native_window(wv, url):
-            return  # window closed -> done (daemon server thread exits with us)
-        print("Native window failed to start; opening a browser window instead.")
-        threading.Thread(target=lambda: _open_app_window(url), daemon=True).start()
-        try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            pass
-        return
-
-    # Fallback: chromeless browser app-window, else a normal tab.
     threading.Thread(target=lambda: _open_app_window(url), daemon=True).start()
     print(f"{APP_NAME} installer running at {url}")
     print("If a window didn't open, paste that address into your browser.")

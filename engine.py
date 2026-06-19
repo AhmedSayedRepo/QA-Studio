@@ -92,6 +92,30 @@ def _is_credit_error(msg):
     return ("credit balance is too low" in m or "insufficient_quota" in m
             or ("quota" in m and "exceeded" in m) or ("billing" in m and "hard limit" in m))
 
+def friendly_ai_error(msg):
+    """Turn a raw provider error (often a long JSON 400/401) into one readable
+    line for the activity log."""
+    m = str(msg or "")
+    low = m.lower()
+    if _is_credit_error(m):
+        prov = T_disp(AI_PROVIDER)
+        return (f"{prov}: your account is out of credit/quota. Top up with that "
+                f"provider, or switch the AI Provider in Setup (e.g. DeepSeek / Qwen) "
+                f"and Resume.")
+    if "401" in low or "invalid api key" in low or "authentication" in low or "unauthorized" in low:
+        return (f"{T_disp(AI_PROVIDER)}: the API key was rejected (401). Re-check the "
+                f"key for this provider in Setup, Save it, then Resume.")
+    if "429" in low or "rate limit" in low:
+        return f"{T_disp(AI_PROVIDER)}: rate limited (429). Wait a moment, then Resume."
+    # generic: collapse whitespace and trim
+    return re.sub(r"\s+", " ", m).strip()[:200]
+
+def T_disp(name):
+    """Pretty provider name without importing the UI theme."""
+    return {"anthropic": "Anthropic", "openai": "OpenAI", "gemini": "Gemini",
+            "azure_openai": "Azure OpenAI", "ollama": "Ollama", "nvidia": "NVIDIA",
+            "deepseek": "DeepSeek", "qwen": "Qwen"}.get(name, str(name).title())
+
 def active_providers():
     """Provider names that have a usable key."""
     out = []
@@ -4050,6 +4074,47 @@ def build_or_merge_project(out_dir, stories_payload, dom_elements, base_url,
     return counts
 
 
+def _validate_remote_url(url):
+    """Validate a git remote URL before we hand it to git, so a wrong URL gives a
+    clear message (and a suggested fix) instead of a cryptic git failure.
+    Returns (ok: bool, message_or_suggestion: str)."""
+    import urllib.parse
+    u = (url or "").strip()
+    if not u:
+        return (False, "Repository URL is empty. Paste your repo URL, e.g. "
+                       "https://github.com/owner/repo.git")
+    # SSH remotes (git@host:owner/repo.git or ssh://…) — accept as-is.
+    if u.startswith("git@") or u.startswith("ssh://"):
+        return (True, u)
+    if not (u.startswith("https://") or u.startswith("http://")):
+        return (False, "Repository URL must start with https:// (or be an SSH "
+                       f"git@ URL). Got: {u[:70]}")
+    try:
+        p = urllib.parse.urlparse(u)
+    except Exception:
+        return (False, f"Repository URL could not be parsed: {u[:70]}")
+    if not p.netloc or "." not in p.netloc:
+        return (False, f"Repository URL has no valid host: {u[:70]}")
+    segs = [s for s in p.path.split("/") if s]
+    if len(segs) < 2:
+        return (False, "Repository URL is missing the owner/repo, e.g. "
+                       f"https://{p.netloc}/<owner>/<repo>.git")
+    owner, repo = segs[0], segs[1]
+    clean_repo = repo.split(".git")[0] if ".git" in repo else repo
+    suggestion = f"https://{p.netloc}/{owner}/{clean_repo}.git"
+    host = p.netloc.lower()
+    github_like = any(h in host for h in ("github.com", "gitlab.com", "bitbucket.org"))
+    # ".git" appearing anywhere but the end (e.g. ".gitm", ".git/extra") is malformed
+    path_no_slash = p.path.rstrip("/")
+    bad_git = (".git" in path_no_slash and not path_no_slash.endswith(".git"))
+    # GitHub/GitLab repos are exactly owner/repo; extra path segments are wrong
+    extra_segs = github_like and len(segs) > 2
+    if bad_git or extra_segs:
+        return (False, "Repository URL looks malformed (check for a typo like "
+                       "'.gitm' or extra text after the repo name). Try: " + suggestion)
+    return (True, u)
+
+
 def push_to_git(repo_dir, remote_url, token, branch="main", message="Add QA Studio automation tests", cb=None, force=False):
     """Init/commit/push the generated project to a Git remote using the git CLI.
     `token` is embedded into the HTTPS URL for auth (GitHub/Azure DevOps style).
@@ -4057,6 +4122,24 @@ def push_to_git(repo_dir, remote_url, token, branch="main", message="Add QA Stud
     """
     cb = cb or (lambda *a, **k: None)
     import subprocess
+
+    # --- pre-flight: the folder must exist and contain the generated project ---
+    if not repo_dir or not os.path.isdir(repo_dir):
+        return False, f"Project folder not found: {repo_dir or '(blank)'}. Generate scripts first."
+    try:
+        entries = [e for e in os.listdir(repo_dir) if e != ".git"]
+    except Exception:
+        entries = []
+    if not entries:
+        return False, ("Project folder is empty — nothing to push. Generate the "
+                       "automation scripts to this folder first.")
+
+    # --- pre-flight: validate the remote URL with a friendly message ---
+    ok_url, url_msg = _validate_remote_url(remote_url)
+    if not ok_url:
+        return False, url_msg
+    remote_url = url_msg if url_msg.startswith(("http", "git@", "ssh://")) else remote_url
+
     def run(args, **kw):
         return subprocess.run(args, cwd=repo_dir, capture_output=True, text=True, **kw)
 
@@ -4243,27 +4326,38 @@ def apply_update(cb=None):
 #  generated framework self-heals + caches locators.
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def validate_and_sequence_suite(stories_payload, log=None, want_ai=True):
+def validate_and_sequence_suite(stories_payload, log=None, want_ai=True,
+                                should_stop=lambda: False, on_error=None, gate=None):
     """Validate/repair each test case for automatability and order the suite.
+
+    Pause/stop hooks:
+      should_stop()  -> True to abort.
+      gate()         -> called per case; blocks while the user paused; returns
+                        False if stopping (so we abort cleanly).
+      on_error(msg)  -> called on a recoverable AI error (e.g. low credit). It
+                        blocks until the user switches provider + resumes
+                        ('retry') or stops ('stop'); we retry the compile on
+                        'retry' so the new provider takes effect.
 
     Ordering buckets (so we never log out to re-test invalids):
       0  login-page negative/validation  (logged OUT)
       1  login-page presence/interaction (logged OUT, e.g. language dropdown)
       2  the successful-login case        (transition; synthesized if absent)
-      3  app cases                        (logged IN; e.g. language toggle)
-
-    For each case we attach: page_context ('login'|'app'), case_type, priority,
-    and compiled intents. A case whose steps don't form a coherent automatable
-    sequence is repaired by the AI (compile_test_case already normalizes; here we
-    additionally drop empty cases and ensure a login transition exists)."""
+      3  app cases                        (logged IN; e.g. language toggle)"""
     log = log or (lambda *a, **k: None)
     out = []
     for sp in stories_payload:
+        if should_stop():
+            return out
         story = sp.get("story", {})
         cases = []
         has_app = False
         has_positive_login = False
         for tc in sp.get("test_cases", []):
+            if should_stop():
+                return out
+            if gate and not gate():   # manual pause point (returns False on stop)
+                return out
             ctype = _classify_case(tc)
             pctx = _infer_page_context(tc, ctype)
             # bucket + priority
@@ -4281,16 +4375,26 @@ def validate_and_sequence_suite(stories_payload, log=None, want_ai=True):
             if positive_login:
                 bucket = 2
                 has_positive_login = True
+            # compile to intents, pausing (not aborting) on a recoverable AI error
             intents = []
             if want_ai:
-                intents = compile_test_case(tc, story, log, ctype) or []
+                while True:
+                    if should_stop():
+                        return out
+                    try:
+                        intents = compile_test_case(tc, story, log, ctype) or []
+                        break
+                    except CreditBalanceError as e:
+                        decision = on_error(str(e)) if on_error else "stop"
+                        if decision == "retry":
+                            continue
+                        return out   # user chose Stop (should_stop is now True)
             if not intents:
                 intents = _intents_from_raw_steps(tc)
             n_act = sum(1 for i in intents if i["role"] == "action")
             if n_act == 0 and bucket != 2:
                 log(f"    skipping non-automatable case (no actions): "
                     f"{tc.get('title','')[:40]}", "warn")
-                # keep as presence assertion-only if it has assertions, else drop
                 if not any(i["role"] == "assertion" for i in intents):
                     continue
             cases.append({"tc": tc, "title": tc.get("title", ""), "ctype": ctype,
@@ -4817,12 +4921,17 @@ def build_selfhealing_project(out_dir, sequenced, base_url, login=None,
 
 def generate_and_push_selfhealing(out_dir, stories_payload, base_url, login=None,
                                   group_id="com.qastudio", artifact_id="automation-tests",
-                                  cb=None, should_stop=lambda: False, want_ai=True):
+                                  cb=None, should_stop=lambda: False, want_ai=True,
+                                  on_error=None, gate=None):
     """End-to-end no-browser path: validate+sequence → generate self-healing
-    project. (Push is done separately via push_to_git, as today.)"""
+    project. (Push is done separately via push_to_git, as today.)
+    on_error/gate enable pause-on-error and manual pause (see
+    validate_and_sequence_suite)."""
     cb = cb or (lambda *a, **k: None)
     cb("Validating and sequencing test cases (no browser)\u2026", "info")
-    sequenced = validate_and_sequence_suite(stories_payload, log=cb, want_ai=want_ai)
+    sequenced = validate_and_sequence_suite(stories_payload, log=cb, want_ai=want_ai,
+                                            should_stop=should_stop, on_error=on_error,
+                                            gate=gate)
     if should_stop():
         return []
     return build_selfhealing_project(out_dir, sequenced, base_url, login,
