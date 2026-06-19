@@ -30,6 +30,23 @@ AI_CONFIG = {
     "ollama":       {"api_key": "", "base_url": "http://localhost:11434", "model": "llama3.1", "vision": False},
     "nvidia":       {"api_key": "nvapi-your-nvidia-key-here", "base_url": "https://integrate.api.nvidia.com/v1",
                      "model": "qwen/qwen3.5-397b-a17b", "vision": True},
+    # DeepSeek — OpenAI-compatible API (base_url https://api.deepseek.com).
+    # New accounts get a one-time free token grant, then cheap pay-as-you-go.
+    # "deepseek-chat" is the current alias for V4-Flash (non-thinking). NOTE: the
+    # deepseek-chat / deepseek-reasoner aliases are scheduled for deprecation on
+    # 2026-07-24 — after that switch model to "deepseek-v4-flash" (fast/cheap) or
+    # "deepseek-v4-pro" (stronger reasoning). deepseek-chat is text-only.
+    "deepseek":     {"api_key": "your-deepseek-key-here", "base_url": "https://api.deepseek.com",
+                     "model": "deepseek-chat", "vision": False},
+    # Qwen (Alibaba DashScope / Model Studio) — OpenAI-compatible. Default base_url
+    # is the INTERNATIONAL (Singapore) endpoint, correct for accounts outside
+    # mainland China (e.g. Egypt). For a Beijing-region key use
+    # https://dashscope.aliyuncs.com/compatible-mode/v1 ; US: dashscope-us...
+    # "qwen-plus" is a solid text default; for image input switch to "qwen-vl-max"
+    # and set vision: True. New Model Studio accounts get limited trial credits.
+    "qwen":         {"api_key": "your-qwen-key-here",
+                     "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+                     "model": "qwen-plus", "vision": False},
 }
 
 FEATURE_DESCRIPTION = ""   # optional global feature context for step generation
@@ -99,7 +116,7 @@ def ai_complete(prompt_text, images=None, max_tokens=4096, timeout=None):
                 messages=[{"role": "user", "content": content}])
             return resp.content[0].text
 
-        elif provider in ("openai", "nvidia"):
+        elif provider in ("openai", "nvidia", "deepseek", "qwen"):
             from openai import OpenAI
             client = OpenAI(api_key=cfg["api_key"], base_url=cfg.get("base_url")) if cfg.get("base_url") \
                      else OpenAI(api_key=cfg["api_key"])
@@ -677,6 +694,17 @@ def generate_steps(tc_title, acceptance_criteria, ui_description="", log=None):
         أعد فقط مصفوفة JSON — بدون أي نص إضافي أو markdown.
         مهم: لا تستخدم علامات الاقتباس المزدوجة داخل قيم النصوص.
 
+        قواعد صارمة لمنع الخطوات المكررة أو الزائدة:
+        - كل خطوة = إجراء واحد فقط يقوم به المستخدم، مع نتيجته المتوقعة في حقل expected.
+        - لا تنشئ خطوة منفصلة لمجرد إعادة وصف إجراء سابق أو نتيجته. مثال خاطئ يجب تجنّبه:
+          أربع خطوات كلها تقول «تم النقر على أيقونة تغيير اللغة وظهرت القائمة» — هذا تكرار،
+          اجعلها خطوة واحدة (النقر) ونتيجتها في expected (ظهور القائمة).
+        - الشروط البيئية أو شروط الحالة (يوجد اتصال إنترنت، فتح المتصفح، المستخدم على صفحة
+          تسجيل الدخول) تُكتب فقط في حقل precondition لأول خطوة مرتبطة، وليست خطوة إجراء مستقلة.
+        - التحقق من نتيجة يوضع في حقل expected، لا كخطوة إجراء جديدة.
+        - استخدم أقل عدد من الخطوات يغطي السيناريو بالكامل (عادة 2 إلى 6 خطوات).
+        - لا تكرر نفس الإجراء عبر خطوات متعددة.
+
         عنوان حالة الاختبار: {tc_title}
         معايير القبول: {acceptance_criteria}
         وصف الميزة: {FEATURE_DESCRIPTION}{ui_block}
@@ -691,6 +719,19 @@ def generate_steps(tc_title, acceptance_criteria, ui_description="", log=None):
         Write ALL steps in English only.
         Return ONLY a JSON array — no extra text or markdown.
         Important: do not use double quotes inside the string values.
+
+        Strict rules to prevent repeated / redundant steps:
+        - Each step = exactly ONE concrete user action, with its expected result in 'expected'.
+        - Do NOT create a separate step that merely restates a previous action or its outcome.
+          Bad example to avoid: four steps that all say "clicked the language icon and the menu
+          appeared" — that is duplication; make it ONE step (the click) with the menu appearing
+          in 'expected'.
+        - Environmental / state preconditions (internet is available, browser opened, user is on
+          the login page) go ONLY in the 'precondition' field of the first related step — never
+          as their own action step.
+        - Verifying an outcome goes in 'expected', not as a new action step.
+        - Use the FEWEST steps that fully cover the scenario (usually 2-6).
+        - Never repeat the same action across multiple steps.
 
         Test case title: {tc_title}
         Acceptance criteria: {acceptance_criteria}
@@ -731,6 +772,10 @@ def evaluate_existing_steps(tc_title, criteria, existing_steps_xml):
         prompt = f"""
         أنت مهندس ضمان جودة خبير. لديك حالة اختبار بخطواتها الحالية، ومعايير القبول الخاصة بها.
         مهمتك: قرر هل الخطوات الحالية كافية وتغطي معايير القبول بشكل صحيح أم لا.
+        اعتبر الخطوات غير كافية (adequate=false) إذا وُجد أي مما يلي:
+        - خطوات مكررة تعيد وصف نفس الإجراء أو نتيجته أكثر من مرة.
+        - شروط بيئية مكتوبة كخطوات إجراء مستقلة (اتصال إنترنت، فتح المتصفح، المستخدم على الصفحة).
+        - نتيجة متوقعة مكتوبة كخطوات إجراء متعددة بدلاً من حقل النتيجة.
         عنوان حالة الاختبار: {tc_title}
         معايير القبول: {criteria}
         الخطوات الحالية: {plain}
@@ -742,6 +787,11 @@ def evaluate_existing_steps(tc_title, criteria, existing_steps_xml):
         You are an expert QA engineer. You have a test case with its current steps and its
         acceptance criteria. Your task: decide whether the current steps are adequate and
         correctly cover the acceptance criteria or not.
+        Consider the steps INADEQUATE (adequate=false) if any of these are present:
+        - repeated steps that restate the same action or its outcome more than once;
+        - environmental preconditions written as their own action steps (internet available,
+          browser opened, user is on the page);
+        - an expected outcome written as several action steps instead of an 'expected' result.
         Test case title: {tc_title}
         Acceptance criteria: {criteria}
         Current steps: {plain}
@@ -2069,17 +2119,43 @@ function xpathOf(el){
   }
   return '/'+parts.join('/');
 }
-const sel='input,button,a,select,textarea,[role=button],[role=link],[role=tab],[contenteditable=true]';
+const sel='input,button,a,select,textarea,[role=button],[role=link],[role=tab],[role=menuitem],[role=option],[role=checkbox],[role=switch],[contenteditable=true]';
+function anameOf(el){
+  // best-effort accessible name: aria-label, associated <label>, title, alt, text
+  let n = el.getAttribute('aria-label') || '';
+  if(!n && el.id){
+    try{ var lab=document.querySelector('label[for="'+CSS.escape(el.id)+'"]');
+         if(lab) n=(lab.innerText||'').trim(); }catch(e){}
+  }
+  if(!n){ var pl=el.closest('label'); if(pl) n=(pl.innerText||'').trim(); }
+  if(!n) n = el.getAttribute('title') || el.getAttribute('alt') || '';
+  return (n||'').trim().slice(0,80);
+}
 const els=[...document.querySelectorAll(sel)];
 return els.slice(0,250).map((el,i)=>({
   idx: i,
   tag: el.tagName.toLowerCase(),
   type: el.getAttribute('type')||'',
+  role: el.getAttribute('role')||'',
   id: el.id||'',
   name: el.getAttribute('name')||'',
+  testid: el.getAttribute('data-testid')||el.getAttribute('data-test')||el.getAttribute('data-cy')||'',
   text: (el.innerText||el.value||'').trim().slice(0,60),
   placeholder: el.getAttribute('placeholder')||'',
   aria: el.getAttribute('aria-label')||'',
+  aname: anameOf(el),
+  cls: ((typeof el.className==='string'?el.className:'')+' '+
+        (el.querySelector('i,svg,[class*=icon i]')?
+          (el.querySelector('i,svg,[class*=icon i]').getAttribute('class')||''):'')).trim().slice(0,120),
+  svgicon: (function(){
+    var s=el.getAttribute('data-svgicon')||el.getAttribute('data-svg-icon')||
+          el.getAttribute('ng-reflect-svg-icon')||el.getAttribute('data-icon')||'';
+    if(!s){var d=el.querySelector('[data-svgicon],[data-svg-icon],[ng-reflect-svg-icon],[data-icon]');
+           if(d) s=d.getAttribute('data-svgicon')||d.getAttribute('data-svg-icon')||
+                   d.getAttribute('ng-reflect-svg-icon')||d.getAttribute('data-icon')||'';}
+    return (s||'').trim().slice(0,40);
+  })(),
+  disabled: !!(el.disabled||el.getAttribute('aria-disabled')==='true'),
   visible: !!(el.offsetWidth||el.offsetHeight||el.getClientRects().length),
   css: robustCss(el),
   xpath: xpathOf(el)
@@ -2087,10 +2163,78 @@ return els.slice(0,250).map((el,i)=>({
 """
 
 
+# Error / validation message nodes — these are usually spans/divs/[role=alert]
+# and are invisible to the interactive harvest above. Captured separately so the
+# DOM-diff assertion binder (and negative-login error capture) can find them.
+_ERROR_HARVEST_JS = r"""
+function robustCss(el){
+  if(el.id) return '#'+CSS.escape(el.id);
+  if(el.name) return el.tagName.toLowerCase()+'[name="'+el.name+'"]';
+  let path=[], e=el;
+  while(e && e.nodeType===1 && path.length<5){
+    let sel=e.tagName.toLowerCase();
+    if(e.className && typeof e.className==='string'){
+      let c=e.className.trim().split(/\s+/).filter(Boolean).slice(0,2);
+      if(c.length) sel+='.'+c.map(x=>CSS.escape(x)).join('.');
+    }
+    let p=e.parentNode, idx=1, sib=e;
+    while(sib=sib.previousElementSibling){ if(sib.tagName===e.tagName) idx++; }
+    sel+=':nth-of-type('+idx+')';
+    path.unshift(sel);
+    e=e.parentNode;
+    if(e && e.id){ path.unshift('#'+CSS.escape(e.id)); break; }
+  }
+  return path.join(' > ');
+}
+function xpathOf(el){
+  if(el.id) return '//*[@id="'+el.id+'"]';
+  let parts=[], e=el;
+  while(e && e.nodeType===1){
+    let idx=1, sib=e;
+    while(sib=sib.previousElementSibling){ if(sib.tagName===e.tagName) idx++; }
+    parts.unshift(e.tagName.toLowerCase()+'['+idx+']');
+    e=e.parentNode;
+  }
+  return '/'+parts.join('/');
+}
+const sel="[role=alert],[role=status],[aria-live],.alert,.alert-error,.alert-danger,"+
+  ".error,.has-error,.invalid-feedback,.help-block,.field-error,.form-error,.toast,"+
+  ".kc-feedback-text,.pf-c-form__helper-text,#input-error,.message,.notification,"+
+  "[id*=error i],[class*=error i],[class*=invalid i],[class*=feedback i],[class*=danger i],[class*=toast i]";
+const out=[]; const seen=new Set();
+[...document.querySelectorAll(sel)].forEach(el=>{
+  const txt=(el.innerText||el.textContent||'').trim();
+  if(!txt) return;
+  if(txt.length>220) return;
+  const key=robustCss(el);
+  if(seen.has(key)) return; seen.add(key);
+  out.push({
+    tag: el.tagName.toLowerCase(), type:'', role: el.getAttribute('role')||'',
+    id: el.id||'', name: el.getAttribute('name')||'', testid:'',
+    text: txt.slice(0,120), placeholder:'',
+    aria: el.getAttribute('aria-label')||'', aname:'',
+    disabled:false,
+    visible: !!(el.offsetWidth||el.offsetHeight||el.getClientRects().length),
+    css: key, xpath: xpathOf(el), is_error: true
+  });
+});
+return out.slice(0,80);
+"""
+
+
 def _harvest_dom(driver):
     """Return the list of interactive elements on the current page."""
     try:
         return driver.execute_script("return (function(){" + _HARVEST_JS + "})();") or []
+    except Exception:
+        return []
+
+
+def _harvest_errors(driver):
+    """Return visible error/validation/notification message nodes."""
+    try:
+        return driver.execute_script(
+            "return (function(){" + _ERROR_HARVEST_JS + "})();") or []
     except Exception:
         return []
 
@@ -2234,6 +2378,400 @@ def scrape_dom(url, login=None, cb=None, headless=True, wait_secs=4):
             pass
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  INTENT-DRIVEN EXPLORER  (compile → deterministic execute → AI tie-break)
+#  Replaces the old "ask the AI to pick 1 of 120 elements per step" approach,
+#  which produced repeated clicks (assertions/restated steps treated as actions)
+#  and false guesses (preconditions treated as actions). Now:
+#    1. compile_test_case()  — LLM turns messy steps into typed intents ONCE per
+#       case (precondition / action / assertion), with page-language keywords.
+#    2. _rank_candidates()   — deterministic locator binding against the live DOM.
+#    3. AI is used only to break ties among a short candidate list, never to
+#       invent locators. Assertions bind by DOM-diff (what newly appeared).
+# ═══════════════════════════════════════════════════════════════════════════════
+import unicodedata as _ud
+
+_AR_DIACRITICS = "".join(chr(c) for c in list(range(0x0610, 0x061B)) +
+                         list(range(0x064B, 0x0660)) + [0x0670, 0x0640])  # +tatweel
+
+def _norm(s):
+    """Normalize text for language-agnostic matching: lowercase, strip Arabic
+    diacritics/tatweel, unify alef/ya/ta-marbuta, collapse whitespace."""
+    s = (s or "").strip().lower()
+    s = "".join(ch for ch in s if ch not in _AR_DIACRITICS)
+    s = (s.replace("\u0623", "\u0627").replace("\u0625", "\u0627").replace("\u0622", "\u0627")
+           .replace("\u0649", "\u064a").replace("\u0629", "\u0647"))
+    s = _ud.normalize("NFKC", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+# Framework-generated ids that change between renders/sessions and MUST NOT be
+# captured as saved locators (the generated Java would break next run):
+# PrimeNG (pn_id_*), Angular CDK/Material (cdk-*, mat-*), React useId (:r0:),
+# GUIDs, and PrimeNG panel/header patterns like pn_id_18_0_header.
+_VOLATILE_ID = re.compile(
+    r"(^pn_id|^cdk-|^mat-|^ui-id-|^:r[0-9a-z]+:|"
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}|_[0-9]+_[0-9]+)", re.I)
+
+
+def _xq(s):
+    """Quote a string for an XPath literal, handling embedded quotes via concat()."""
+    s = s or ""
+    if '"' not in s:
+        return '"' + s + '"'
+    if "'" not in s:
+        return "'" + s + "'"
+    return "concat(" + ", '\"', ".join('"%s"' % p for p in s.split('"')) + ")"
+
+
+_LOGIN_CTX_KWS = ("login", "log in", "logon", "sign in", "signin", "authenticat",
+                  "تسجيل الدخول", "تسجيل دخول", "الدخول", "كلمة المرور", "كلمة مرور",
+                  "اسم المستخدم", "اسم مستخدم")
+_NEG_LOGIN_KWS = ("invalid", "wrong", "incorrect", "fail", "empty", "blank", "without",
+                  "locked", "lockout", "bad credentials", "required",
+                  "خاطئ", "خاطئة", "غير صحيح", "غير صحيحة", "بيانات غير", "فارغ",
+                  "بدون", "فشل", "خطأ", "مطلوب")
+_PRESENCE_KWS = ("التحقق من وجود", "من وجود", "وجود", "موجود", "ظهور",
+                 "verify the existence", "existence of", "presence of", "exists",
+                 "is displayed", "is visible", "is present")
+_EMPTY_FIELD_KWS = ("empty", "blank", "without", "leave it", "leave the", "do not enter",
+                    "don't enter", "no password", "no username", "missing",
+                    "فارغ", "بدون", "اترك", "دون إدخال", "لا تدخل")
+
+
+def _tc_blob(tc):
+    blob = (tc.get("title", "") or "")
+    for s in (tc.get("steps") or []):
+        blob += " " + (s.get("action", "") or "") + " " + \
+                (s.get("expected", "") or "") + " " + (s.get("precondition", "") or "")
+    return blob.lower()
+
+
+def _is_negative_login_tc(tc):
+    """A negative/validation LOGIN case — must run on a fresh login page so the
+    bad submit surfaces real error-state locators."""
+    low = _tc_blob(tc)
+    return (any(k in low for k in _LOGIN_CTX_KWS) and
+            any(k.lower() in low for k in _NEG_LOGIN_KWS))
+
+
+def _classify_case(tc):
+    """Return 'negative_login' | 'presence' | 'interaction'."""
+    if _is_negative_login_tc(tc):
+        return "negative_login"
+    # presence is a property of the case's INTENT (its title), not of an "appears"
+    # word that may show up in any interaction case's expected result.
+    title = _norm(tc.get("title", ""))
+    if any(_norm(k) in title for k in _PRESENCE_KWS):
+        return "presence"
+    return "interaction"
+
+
+# Words that say a case belongs on the LOGGED-OUT login page (where the Keycloak
+# language DROPDOWN lives) vs. the authenticated app (where a single language
+# TOGGLE button lives). Inferred from the case's own title/steps — no hard-coded
+# per-story rules — exactly as the AI-authored case intends.
+_LOGIN_PAGE_KWS = ("صفحة تسجيل الدخول", "صفحه تسجيل الدخول", "تسجيل الدخول",
+                   "قبل تسجيل الدخول", "شاشة الدخول", "login page", "sign-in page",
+                   "sign in page", "on login", "locale", "kc_locale")
+_DROPDOWN_KWS = ("قائمة منسدلة", "قائمه منسدله", "منسدلة", "منسدله", "القائمة المنسدلة",
+                 "الاختيار بين", "قائمة اللغات", "dropdown", "drop-down", "drop down")
+
+
+def _infer_page_context(tc, case_type="interaction"):
+    """Decide where this case runs: 'login' (logged-out, language dropdown) or
+    'app' (post-login, single language toggle). Read from the case text. Ambiguous
+    cases default to 'app' (the common case) and the choice is logged so a wrong
+    inference is visible in the activity feed."""
+    if case_type == "negative_login":
+        return "login"
+    blob = _norm(_tc_blob(tc))
+    if any(_norm(k) in blob for k in _LOGIN_PAGE_KWS):
+        return "login"
+    # a language case described as a DROPDOWN / choose-between is the login page;
+    # the in-app control is a single toggle with no dropdown.
+    lang = any(_norm(k) in blob for k in ("اللغة", "لغة", "language", "locale"))
+    if lang and any(_norm(k) in blob for k in _DROPDOWN_KWS):
+        return "login"
+    return "app"
+
+
+def _wants_empty_field(text):
+    t = (text or "").lower()
+    return any(k in t for k in _EMPTY_FIELD_KWS)
+
+
+def compile_test_case(tc, story=None, log=None, case_type="interaction"):
+    """STAGE 1 — turn a test case's raw steps into a normalized, deduplicated list
+    of typed INTENTS. The LLM reads the (often messy, Arabic) steps and returns
+    JSON; it never sees locators, so it cannot hallucinate them.
+
+    case_type ('presence'|'interaction'|'negative_login') shapes the output: a
+    presence case must NOT be walked as a long interaction.
+
+    Each intent:
+      {"role":"precondition"|"action"|"assertion",
+       "verb":"navigate|click|type|select|hover|wait",   # action only
+       "target":"<human description>",
+       "keywords":["visible text / aria tokens in the PAGE language", ...],
+       "kind":"button|link|input|select|checkbox|menuitem|text|any",
+       "value":"<text to type/select, '' for empty-field cases>",
+       "check":"visible|hidden|text_contains|url_contains|enabled|disabled|count",
+       "expected":"<expected value for the check>",
+       "from_steps":[1-based original step indices this intent came from]}
+
+    Returns a list of intents, or [] on failure (caller falls back to raw steps).
+    """
+    log = log or (lambda *a, **k: None)
+    steps = tc.get("steps") or []
+    raw = []
+    for i, s in enumerate(steps, 1):
+        raw.append({"n": i, "precondition": (s.get("precondition", "") or "").strip(),
+                    "action": (s.get("action", "") or "").strip(),
+                    "expected": (s.get("expected", "") or "").strip()})
+    lang = "Arabic" if _is_arabic_out() else "English"
+    shape = {
+        "presence": ("This is a PRESENCE/visibility case. Emit the MINIMUM: an "
+                     "optional navigate, then ONE assertion that the element is "
+                     "visible. Do NOT click/select or walk an interaction."),
+        "negative_login": ("This is a NEGATIVE-LOGIN case. Emit: type the (invalid "
+                           "or empty) credentials, click submit, then ONE assertion "
+                           "that the error/validation message is visible."),
+        "interaction": ("This is an INTERACTION case. Emit the real action sequence "
+                        "the user performs, each action ONCE."),
+    }.get(case_type, "Emit the real action sequence, each action once.")
+    prompt = (
+        "You convert ONE UI test case into an ordered list of atomic INTENTS for a "
+        "Selenium walker. The steps may be in Arabic or English and are often noisy: "
+        "preconditions written as steps, the same action restated across several "
+        "steps, or an action and its expected result merged together.\n\n"
+        f"CASE TYPE: {case_type} — {shape}\n\n"
+        "RULES:\n"
+        "- Output ONLY a JSON array, no markdown, no commentary.\n"
+        "- role='precondition' for environmental/state setup with NO UI action "
+        "(internet available, browser open, user is on page X). Do NOT invent a click for these.\n"
+        "- role='action' for ONE real UI operation: verb in "
+        "[navigate,click,type,select,hover,wait]. Collapse repeated/restated steps "
+        "that describe the SAME operation into a SINGLE action. Never emit the same "
+        "action twice in a row.\n"
+        "- role='assertion' for a verification/expected outcome. COLLAPSE assertions "
+        "hard: emit at most ONE assertion per distinct observable outcome, and never "
+        "two assertions in a row that check the same thing. Most cases need 1-2 "
+        "assertions total, NOT one per step. An assertion is NOT an action — never click for it.\n"
+        "- A custom dropdown (PrimeNG/Material, not a native <select>) is TWO actions: "
+        "click the trigger to open it, then click/select the option. For 'select' set "
+        "kind='menuitem' and value=the option's visible text (e.g. English / العربية).\n"
+        "- Total intents should be SMALL — roughly (distinct actions) + 1 or 2 "
+        "assertions. If your output has more assertions than actions, you over-split; redo it.\n"
+        "- 'keywords' = the literal visible text / aria-label / placeholder tokens the "
+        f"element most likely has, in the page language ({lang}); include both the "
+        "Arabic and an English guess when unsure. For ICON-ONLY buttons (no text), "
+        "also add likely icon-class tokens: globe, language, lang, flag, world, "
+        "translate. Keep 1-6 short tokens.\n"
+        "- 'kind' = the element type you expect.\n"
+        "- For empty-field validation steps (leave a field blank), emit a type action "
+        "with value='' so the walker leaves it empty.\n"
+        "- 'from_steps' MUST list the original step number(s) each intent came from.\n\n"
+        f"TEST CASE TITLE: {tc.get('title','')}\n"
+        f"ACCEPTANCE CRITERIA: {((story or {}).get('criteria') or '')[:800]}\n"
+        f"RAW STEPS (JSON): {json.dumps(raw, ensure_ascii=False)[:5000]}\n\n"
+        'Example item: {"role":"action","verb":"click","target":"language switcher",'
+        '"keywords":["اللغة","language","lang"],"kind":"button","value":"",'
+        '"check":"","expected":"","from_steps":[4,5,6]}'
+    )
+    try:
+        out = parse_json_robust(ai_complete(prompt, max_tokens=2048, timeout=90))
+        if isinstance(out, dict):
+            out = out.get("intents") or out.get("items") or [out]
+        if not isinstance(out, list) or not out:
+            return []
+        clean = []
+        for it in out:
+            if not isinstance(it, dict):
+                continue
+            role = (it.get("role") or "action").strip().lower()
+            if role not in ("precondition", "action", "assertion"):
+                role = "action"
+            fs = it.get("from_steps") or []
+            if isinstance(fs, int):
+                fs = [fs]
+            clean.append({
+                "role": role,
+                "verb": (it.get("verb") or ("navigate" if role == "action" else "")).strip().lower(),
+                "target": (it.get("target") or "").strip(),
+                "keywords": [str(k) for k in (it.get("keywords") or []) if str(k).strip()][:6],
+                "kind": (it.get("kind") or "any").strip().lower(),
+                "value": str(it.get("value") or ""),
+                "check": (it.get("check") or "").strip().lower(),
+                "expected": str(it.get("expected") or ""),
+                "from_steps": [int(x) for x in fs if str(x).strip().lstrip("-").isdigit()],
+            })
+        # Safety net: collapse consecutive assertions that check the same thing
+        # (the LLM sometimes still emits one per restated step). Merge their
+        # from_steps so each original step still receives an assert_locator.
+        collapsed = []
+        for it in clean:
+            if (it["role"] == "assertion" and collapsed and
+                    collapsed[-1]["role"] == "assertion" and
+                    _norm(collapsed[-1]["target"]) == _norm(it["target"]) and
+                    _norm(collapsed[-1]["expected"]) == _norm(it["expected"])):
+                collapsed[-1]["from_steps"] = sorted(set(collapsed[-1]["from_steps"] + it["from_steps"]))
+                continue
+            collapsed.append(it)
+        return collapsed
+    except CreditBalanceError:
+        raise
+    except Exception as e:
+        log(f"    compile failed ({str(e)[:60]}) — using raw steps", "warn")
+        return []
+
+
+def _intents_from_raw_steps(tc):
+    """Fallback when the compiler is unavailable: derive simple intents from the
+    raw steps so the walk never regresses below the old behavior."""
+    intents = []
+    for i, s in enumerate(tc.get("steps") or [], 1):
+        action = (s.get("action", "") or "").strip()
+        exp = (s.get("expected", "") or "").strip()
+        disp = action
+        for pfx in ("الشرط المسبق:", "الإجراء:", "Precondition:", "Action:"):
+            disp = disp.replace(pfx, " ")
+        disp = disp.strip()
+        if not disp and not exp:
+            intents.append({"role": "precondition", "verb": "", "target": "",
+                            "keywords": [], "kind": "any", "value": "", "check": "",
+                            "expected": "", "from_steps": [i]})
+            continue
+        if disp:
+            low = _norm(disp)
+            verb = ("type" if any(k in low for k in ("type", "enter", "ادخل", "أدخل", "اكتب", "كتابة"))
+                    else "select" if any(k in low for k in ("select", "اختر", "اختيار"))
+                    else "click")
+            intents.append({"role": "action", "verb": verb, "target": disp,
+                            "keywords": [w for w in re.split(r"[\s,.:؛،]+", disp) if len(w) > 2][:6],
+                            "kind": "input" if verb == "type" else "any",
+                            "value": "" if _wants_empty_field(disp) else "",
+                            "check": "", "expected": "", "from_steps": [i]})
+        if exp:
+            intents.append({"role": "assertion", "verb": "", "target": exp,
+                            "keywords": [w for w in re.split(r"[\s,.:؛،]+", exp) if len(w) > 2][:6],
+                            "kind": "any", "value": "", "check": "visible",
+                            "expected": "", "from_steps": [i]})
+    return intents
+
+
+def _el_haystack(el):
+    return _norm(" ".join(str(el.get(k, "")) for k in
+                          ("text", "aname", "aria", "placeholder", "name", "id",
+                           "role", "testid", "type", "cls", "svgicon")))
+
+
+def _kind_matches(kind, el):
+    if not kind or kind == "any":
+        return False
+    tag = (el.get("tag") or "").lower(); typ = (el.get("type") or "").lower()
+    role = (el.get("role") or "").lower(); cls = _norm(el.get("cls", ""))
+    menu_cls = any(t in cls for t in ("menu-item", "menuitem", "dropdown-item",
+                                      "dropdownitem", "list-item", "option"))
+    m = {"button": tag == "button" or typ in ("button", "submit") or role == "button",
+         "link": tag == "a" or role == "link",
+         "input": tag in ("input", "textarea") and typ not in ("button", "submit", "checkbox"),
+         "select": tag == "select" or role in ("combobox", "listbox"),
+         "checkbox": typ == "checkbox" or role in ("checkbox", "switch"),
+         "menuitem": role in ("menuitem", "option", "tab") or menu_cls}
+    return bool(m.get(kind, False))
+
+
+def _rank_candidates(intent, elements):
+    """STAGE 2 — deterministic scoring of live elements against an intent.
+    Returns a list of (score, element) sorted high→low. No LLM involved."""
+    kws = [_norm(k) for k in (intent.get("keywords") or []) if _norm(k)]
+    tgt = _norm(intent.get("target", ""))
+    kind = intent.get("kind", "any")
+    verb = intent.get("verb", "")
+    ranked = []
+    for el in elements:
+        if not el.get("visible", True):
+            continue
+        hay = _el_haystack(el)
+        score = 0.0
+        for k in kws:
+            if k and k in hay:
+                score += 2.0
+                if hay == k or (el.get("text") and _norm(el["text"]) == k):
+                    score += 1.0           # exact label match
+        # token overlap with the target description
+        for tok in (t for t in tgt.split(" ") if len(t) > 2):
+            if tok in hay:
+                score += 0.5
+        if _kind_matches(kind, el):
+            score += 1.0
+        if verb == "type" and el.get("tag") in ("input", "textarea"):
+            score += 0.5
+        if score > 0:
+            ranked.append((score, el))
+    ranked.sort(key=lambda t: t[0], reverse=True)
+    return ranked
+
+
+def _tiebreak_with_ai(intent, shortlist, cb):
+    """The ONLY place the LLM picks an element — and only among a short list of
+    real candidates (never the full DOM). Returns the chosen element or None."""
+    brief = [{"idx": e["idx"], "tag": e.get("tag"), "type": e.get("type"),
+              "text": e.get("text"), "aname": e.get("aname"), "aria": e.get("aria"),
+              "placeholder": e.get("placeholder"), "id": e.get("id")}
+             for e in shortlist]
+    prompt = (
+        "Pick the ONE element that best matches the intent. Reply ONLY JSON.\n"
+        f"INTENT: {json.dumps({k: intent.get(k) for k in ('role','verb','target','keywords','kind')}, ensure_ascii=False)}\n"
+        f"CANDIDATES: {json.dumps(brief, ensure_ascii=False)[:3000]}\n"
+        '{"idx": <chosen idx or -1>}'
+    )
+    try:
+        data = parse_json_robust(ai_complete(prompt, max_tokens=256, timeout=45))
+        if isinstance(data, list) and data:
+            data = data[0]
+        idx = int(data.get("idx", -1))
+        return next((e for e in shortlist if e.get("idx") == idx), None) if idx >= 0 else None
+    except CreditBalanceError:
+        raise
+    except Exception as e:
+        cb(f"    tiebreak error: {str(e)[:60]}", "warn")
+        return None
+
+
+def _to_locator(el):
+    """Pick the most STABLE locator for the SAVED test (generated Java), so it
+    survives re-renders. Order: data-testid > data-svgicon > stable id > name >
+    aria-label > short visible text > css path > xpath. Framework-generated ids
+    (PrimeNG pn_id_*, Angular/React, GUIDs) are skipped — they change every run."""
+    if not el:
+        return None
+    tid = (el.get("testid") or "").strip()
+    if tid:
+        return {"by": "css", "value": '[data-testid="%s"]' % tid}
+    svg = (el.get("svgicon") or "").strip()
+    if svg:
+        return {"by": "css", "value": '[data-svgicon="%s"]' % svg}
+    eid = (el.get("id") or "").strip()
+    if eid and not _VOLATILE_ID.search(eid):
+        return {"by": "id", "value": eid}
+    nm = (el.get("name") or "").strip()
+    if nm:
+        return {"by": "name", "value": nm}
+    al = (el.get("aria") or el.get("aname") or "").strip()
+    if al:
+        return {"by": "xpath", "value": "//*[@aria-label=%s]" % _xq(al)}
+    txt = (el.get("text") or "").strip()
+    if txt and len(txt) <= 40:
+        return {"by": "xpath",
+                "value": "//%s[normalize-space()=%s]" % (el.get("tag", "*"), _xq(txt))}
+    css = (el.get("css") or "")
+    if css and not _VOLATILE_ID.search(css):
+        return {"by": "css", "value": css}
+    return {"by": "xpath", "value": el.get("xpath", "")}
+
+
 def _match_step_to_element(action, elements, cb):
     """Ask the AI which real DOM element best matches a step's action.
     Returns (element_dict_or_None, kind) where kind in
@@ -2341,23 +2879,27 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
             _t.sleep(0.4)
         return None
 
-    def snapshot(tag=""):
+    def snapshot(tag="", with_errors=False):
         els = _harvest_dom(driver)
+        if with_errors:
+            errs = _harvest_errors(driver)
+            base = len(els)
+            for j, e in enumerate(errs):
+                e2 = dict(e); e2["idx"] = base + j
+                els.append(e2)
+            if errs and tag:
+                cb(f"  + {len(errs)} message/error element(s)", "dim")
         all_snapshots.extend(els)
         if tag:
             cb(f"  captured {len(els)} elements ({tag})", "dim")
         return els
 
+    def _el_key(e):
+        return (e.get("id"), e.get("name"), e.get("css"), e.get("xpath"))
+
     def to_locator(el):
-        if not el:
-            return None
-        if el.get("id"):
-            return {"by": "id", "value": el["id"]}
-        if el.get("name"):
-            return {"by": "name", "value": el["name"]}
-        if el.get("css"):
-            return {"by": "css", "value": el["css"]}
-        return {"by": "xpath", "value": el.get("xpath", "")}
+        """Stable locator strategy (module-level _to_locator, see there)."""
+        return _to_locator(el)
 
     def _dedup_reindex(els):
         """De-dup the merged snapshot union and assign fresh unique idx values,
@@ -2427,6 +2969,153 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
         except Exception:
             pass
 
+    def _settle(timeout=8):
+        """Wait for the page to stop being busy: readyState complete, no
+        aria-busy, and common spinner/loader overlays gone."""
+        wait_dom_ready()
+        end = _t.time() + timeout
+        while _t.time() < end:
+            try:
+                busy = driver.execute_script(
+                    "var b=document.querySelector('[aria-busy=true]');"
+                    "var s=document.querySelector("
+                    "  '.spinner,.loading,.loader,.MuiBackdrop-root,[class*=spinner i],[class*=loading i]');"
+                    "function vis(e){return e&&(e.offsetWidth||e.offsetHeight||e.getClientRects().length);}"
+                    "return !!(vis(b)||vis(s));")
+            except Exception:
+                busy = False
+            if not busy:
+                return
+            _t.sleep(0.25)
+
+    def _dismiss_overlays():
+        """Best-effort dismissal of cookie/consent banners and stray modals that
+        would intercept clicks. Only clicks clearly-dismissive controls."""
+        labels = ["accept", "accept all", "agree", "i agree", "got it", "ok", "close",
+                  "dismiss", "no thanks", "موافق", "قبول", "أوافق", "إغلاق", "تم", "حسنا"]
+        try:
+            btns = _harvest_dom(driver)
+            for el in btns:
+                txt = _norm(el.get("text") or el.get("aname") or el.get("aria"))
+                if not txt:
+                    continue
+                if any(_norm(l) == txt or _norm(l) in txt for l in labels):
+                    live = find_live(el)
+                    if live is not None and live.is_displayed():
+                        try:
+                            driver.execute_script("arguments[0].click();", live)
+                            _t.sleep(0.4)
+                            return True
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+        return False
+
+    def _topmost_ok(live_el):
+        """True if the element is the topmost hit at its center (not covered by an
+        overlay). Used to decide whether to dismiss an overlay before clicking."""
+        try:
+            return driver.execute_script(
+                "var e=arguments[0];var r=e.getBoundingClientRect();"
+                "if(!r.width||!r.height)return false;"
+                "var x=r.left+r.width/2,y=r.top+r.height/2;"
+                "var t=document.elementFromPoint(x,y);"
+                "return !!t&&(t===e||e.contains(t)||t.contains(e));", live_el)
+        except Exception:
+            return True
+
+    def _act(el_dict, verb, value, empty_ok=False):
+        """STAGE 3 — perform an action so it survives overlays and timing.
+        Re-finds the element, scrolls to center, waits to settle, clears overlays
+        if it's covered, then runs a retry ladder (native → JS → ActionChains).
+        Returns the live element acted on (or None)."""
+        live = find_live(el_dict)
+        if live is None:
+            return None
+        _flash(live)
+        try:
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", live)
+        except Exception:
+            pass
+        _settle(timeout=4)
+        # type / select don't need topmost; clicks do
+        if verb == "type":
+            try:
+                if empty_ok:
+                    live.clear()
+                else:
+                    live.clear(); live.send_keys(value or "test")
+                return live
+            except Exception as e:
+                cb(f"      type failed: {str(e)[:50]}", "warn"); return live
+        if verb == "select":
+            from selenium.webdriver.support.ui import Select
+            # native <select>
+            if (el_dict.get("tag") or "").lower() == "select":
+                try:
+                    Select(live).select_by_visible_text(value); return live
+                except Exception:
+                    try:
+                        Select(live).select_by_value(value); return live
+                    except Exception:
+                        pass
+            # custom dropdown (PrimeNG/Material/etc.): open the trigger, then click
+            # the option whose visible text matches `value` (options render in an
+            # overlay appended to <body> only after opening).
+            self_open = _act(el_dict, "click", "", empty_ok)
+            _settle(timeout=3); _t.sleep(0.4)
+            want = _norm(value)
+            want_toks = [t for t in want.split(" ") if len(t) > 1]
+            best = None
+            for o in _harvest_dom(driver):
+                if not o.get("visible", True):
+                    continue
+                hay = _norm(" ".join(str(o.get(k, "")) for k in ("text", "aname", "aria")))
+                if not hay:
+                    continue
+                if (want and want in hay) or any(tok in hay for tok in want_toks) or hay in want:
+                    best = o; break
+            if best is not None:
+                lo = find_live(best)
+                if lo is not None:
+                    _flash(lo)
+                    try:
+                        lo.click()
+                    except Exception:
+                        try:
+                            driver.execute_script("arguments[0].click();", lo)
+                        except Exception:
+                            pass
+                    return lo
+            cb(f"      select: option '{value[:24]}' not found after opening", "warn")
+            return self_open or live
+        # click / hover / navigate(default) — make it interception-proof
+        if not _topmost_ok(live):
+            if _dismiss_overlays():
+                live = find_live(el_dict) or live
+        try:
+            WebDriverWait(driver, 6).until(EC.element_to_be_clickable(live))
+        except Exception:
+            pass
+        # retry ladder
+        for attempt in range(3):
+            try:
+                live.click(); return live
+            except Exception:
+                live = find_live(el_dict) or live      # handle staleness
+                try:
+                    from selenium.webdriver.common.action_chains import ActionChains
+                    ActionChains(driver).move_to_element(live).pause(0.1).click().perform()
+                    return live
+                except Exception:
+                    try:
+                        driver.execute_script("arguments[0].click();", live); return live
+                    except Exception:
+                        _dismiss_overlays(); _t.sleep(0.3)
+        cb("      could not click after retries", "warn")
+        return live
+
     try:
         # ── login + verify ──
         login_url = (login or {}).get("url") or site_url
@@ -2453,59 +3142,64 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
         except Exception:
             pass
         if login and login.get("user") and login.get("password"):
-            cb("Opening login page…", "dim")
-            driver.get(login_url)
-            wait_dom_ready()
-            try:
-                # Username/email — wait for it to actually appear. Covers Keycloak
-                # (#username), generic email/text inputs, and common name patterns.
-                user_sel = login.get("user_locator") or (
-                    "#username,input[type=email],input[name=email],input[name=username],"
-                    "input[name*=user i],input[id*=user i],input[type=text]")
-                cb("Waiting for the username field…", "dim")
-                u = find_first(user_sel, timeout=25)
-                if u is None:
-                    raise RuntimeError("username/email field did not appear")
-                u.clear(); u.send_keys(login["user"])
-
-                # Password — may be on the same page or a second step. Wait for it.
-                pass_sel = login.get("pass_locator") or "#password,input[type=password]"
-                p = find_first(pass_sel, timeout=10)
-                if p is None:
-                    # Two-step login: click Next/Continue first, then wait for password
-                    nxt = find_first("button[type=submit],#kc-login,button,input[type=submit]", timeout=5)
-                    if nxt is not None:
-                        nxt.click(); wait_dom_ready()
-                    p = find_first(pass_sel, timeout=15)
-                if p is None:
-                    raise RuntimeError("password field did not appear")
-                p.clear(); p.send_keys(login["password"])
-
-                # Submit
-                submit_sel = login.get("submit_locator") or (
-                    "#kc-login,button[type=submit],input[type=submit],button")
-                btn = find_first(submit_sel, timeout=10)
-                if btn is None:
-                    p.submit()
-                else:
-                    btn.click()
-                cb("Submitted login — verifying…", "dim")
-                # wait for navigation away from the login form
-                try:
-                    WebDriverWait(driver, 20).until(
-                        lambda d: (d.current_url or "").rstrip("/") != login_url.rstrip("/")
-                                  or not d.find_elements(By.CSS_SELECTOR, "input[type=password]"))
-                except Exception:
-                    pass
+            def do_login(fresh=False):
+                """Run the login flow on a clean login page. fresh=True clears the
+                session first (used to re-establish auth after a negative-login
+                case). Returns (ok, reason)."""
+                if fresh:
+                    try:
+                        driver.delete_all_cookies()
+                    except Exception:
+                        pass
+                cb("Opening login page\u2026", "dim")
+                driver.get(login_url)
                 wait_dom_ready()
-            except Exception as e:
-                raise RuntimeError(f"Login step failed: {str(e)[:160]}")
-            ok, reason = _verify_logged_in(driver, login_url, cb)
+                try:
+                    user_sel = login.get("user_locator") or (
+                        "#username,input[type=email],input[name=email],input[name=username],"
+                        "input[name*=user i],input[id*=user i],input[type=text]")
+                    cb("Waiting for the username field\u2026", "dim")
+                    u = find_first(user_sel, timeout=25)
+                    if u is None:
+                        raise RuntimeError("username/email field did not appear")
+                    u.clear(); u.send_keys(login["user"])
+                    pass_sel = login.get("pass_locator") or "#password,input[type=password]"
+                    p = find_first(pass_sel, timeout=10)
+                    if p is None:
+                        nxt = find_first("button[type=submit],#kc-login,button,input[type=submit]", timeout=5)
+                        if nxt is not None:
+                            nxt.click(); wait_dom_ready()
+                        p = find_first(pass_sel, timeout=15)
+                    if p is None:
+                        raise RuntimeError("password field did not appear")
+                    p.clear(); p.send_keys(login["password"])
+                    submit_sel = login.get("submit_locator") or (
+                        "#kc-login,button[type=submit],input[type=submit],button")
+                    btn = find_first(submit_sel, timeout=10)
+                    if btn is None:
+                        p.submit()
+                    else:
+                        btn.click()
+                    cb("Submitted login \u2014 verifying\u2026", "dim")
+                    try:
+                        WebDriverWait(driver, 20).until(
+                            lambda d: (d.current_url or "").rstrip("/") != login_url.rstrip("/")
+                                      or not d.find_elements(By.CSS_SELECTOR, "input[type=password]"))
+                    except Exception:
+                        pass
+                    wait_dom_ready()
+                except Exception as e:
+                    raise RuntimeError(f"Login step failed: {str(e)[:160]}")
+                return _verify_logged_in(driver, login_url, cb)
+
+            have_creds = True
+            ok, reason = do_login()
             if not ok:
                 raise RuntimeError(f"Login could not be verified — {reason}. "
                                    f"Aborting so locators aren't captured from the wrong page.")
             cb(f"Login verified — {reason}", "ok")
         else:
+            have_creds = False
             cb("No login provided — exploring as anonymous user.", "warn")
 
         # Navigate to the starting page
@@ -2520,20 +3214,74 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
         CREDIT_STOP = 5
         abort_credit = False
 
-        def try_match(a, els):
-            """Run the AI matcher, but treat repeated credit-limit errors as a
-            signal to stop the whole walk instead of hammering the API."""
+        def _credit_guard(fn, *a, **k):
+            """Run an AI-calling fn; count credit errors and trip abort_credit."""
             nonlocal credit_hits, abort_credit
             try:
-                return _match_step_to_element(a, els, cb)
+                return fn(*a, **k)
             except CreditBalanceError:
                 credit_hits += 1
                 cb(f"AI credit limit hit ({credit_hits}/{CREDIT_STOP}).", "err")
                 if credit_hits >= CREDIT_STOP:
                     abort_credit = True
-                return None, "none", ""
+                return None
 
-        # walk each test case
+        MIN_SCORE = 2.0   # below this, there is no real keyword/kind hit — don't
+                          # auto-bind (that's how a click landed on #pn_id_*_header)
+
+        def bind_target(intent, pool):
+            """Deterministic-first binding of an intent to a live element.
+            Returns (element_or_None, source) with source in
+            {'live','snapshot','guess'}. The AI is used ONLY to break ties among a
+            short candidate list — never to invent a locator. A weak best candidate
+            (below MIN_SCORE) is NOT taken silently: the AI may rescue it, else it
+            becomes a guess rather than a wrong click."""
+            ranked = _rank_candidates(intent, pool)
+            if ranked and ranked[0][0] >= MIN_SCORE:
+                top = ranked[0][0]
+                second = ranked[1][0] if len(ranked) > 1 else 0.0
+                if len(ranked) == 1 or (top - second) >= 1:
+                    return ranked[0][1], "live"          # confident — no AI call
+                shortlist = [e for _, e in ranked[:5]]
+                chosen = _credit_guard(_tiebreak_with_ai, intent, shortlist, cb)
+                return (chosen or ranked[0][1]), "live"  # AI tie-break, else best deterministic
+            if ranked:
+                # weak candidates only — let the AI decide from the shortlist; if it
+                # declines, fall through rather than clicking a low-confidence guess
+                chosen = _credit_guard(_tiebreak_with_ai, intent, [e for _, e in ranked[:5]], cb)
+                if chosen is not None:
+                    return chosen, "live"
+            # nothing solid on this page → try the union of everything seen so far
+            union = _dedup_reindex(all_snapshots)
+            if union:
+                q = intent.get("target") or " ".join(intent.get("keywords") or [])
+                r = _credit_guard(_match_step_to_element, q, union, cb)
+                if r and r[0]:
+                    return r[0], "snapshot"
+            return None, "guess"
+
+        def assign(step_idxs, locator, src, as_assert=False):
+            """Write a captured locator back onto the ORIGINAL step(s) the intent
+            came from, so the generated Java still mirrors the authored test case."""
+            nonlocal live_count, snap_count, guess_count
+            for n in step_idxs:
+                if 1 <= n <= len(steps):
+                    if as_assert:
+                        steps[n - 1]["assert_locator"] = locator
+                    else:
+                        steps[n - 1]["locator"] = locator
+                        steps[n - 1]["locator_src"] = src
+            if not as_assert:
+                if src == "live":      live_count += 1
+                elif src == "snapshot": snap_count += 1
+                elif src == "guess":    guess_count += 1
+
+        def _todo(story, tc, idxs, target, kind):
+            for n in idxs:
+                todos.append({"s": story.get("id"), "tc": tc.get("title", ""),
+                              "n": n, "a": (target or "")[:32], "kind": kind})
+
+        # walk each test case (intent-driven)
         for sp in stories_payload:
             if should_stop() or abort_credit:
                 break
@@ -2543,83 +3291,119 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                 if should_stop() or abort_credit:
                     break
                 steps = tc.get("steps", []) or []
-                cb(f"  walking '{tc.get('title','')}' ({len(steps)} steps)", "info")
-                try:
-                    cb("    loading start page\u2026", "dim")
-                    driver.get(site_url); _t.sleep(wait_secs)
-                except Exception:
-                    pass
-                for si, st in enumerate(steps, 1):
+                ctype = _classify_case(tc)
+                is_neg = (ctype == "negative_login")
+                pctx = _infer_page_context(tc, ctype)
+                cb(f"  walking '{tc.get('title','')}'  [{ctype} \u00b7 {pctx}-page]  "
+                   f"({len(steps)} steps)", "info")
+
+                # STAGE 1 — compile messy steps into typed intents (collapses
+                # restated/duplicate steps, routes preconditions away from clicks)
+                intents = _credit_guard(compile_test_case, tc, story, cb, ctype) or []
+                if not intents:
+                    intents = _intents_from_raw_steps(tc)
+                n_act = sum(1 for it in intents if it["role"] == "action")
+                n_ass = sum(1 for it in intents if it["role"] == "assertion")
+                cb(f"    compiled \u2192 {n_act} action(s), {n_ass} assertion(s), "
+                   f"{len(intents) - n_act - n_ass} precondition(s)", "dim")
+
+                # start page — login-page cases (incl. negative-login) walk on a
+                # FRESH logged-out login page, where the language dropdown exists;
+                # app cases walk on the authenticated page (single toggle).
+                if pctx == "login":
+                    cb(f"    \u21b3 {ctype} \u2014 walking on a fresh logged-out login "
+                       f"page (where the language dropdown lives)", "info")
+                    if have_creds:
+                        try:
+                            driver.delete_all_cookies()
+                        except Exception:
+                            pass
+                    try:
+                        driver.get(login_url); wait_dom_ready(); _t.sleep(wait_secs)
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        cb("    loading start page (authenticated app)\u2026", "dim")
+                        driver.get(site_url); _t.sleep(wait_secs)
+                    except Exception:
+                        pass
+
+                last_before = None   # snapshot keys just before the latest action
+                for it in intents:
                     if should_stop() or abort_credit:
                         break
-                    action = st.get("action", "") or ""
-                    if not action.strip():
+                    role = it["role"]; fs = it.get("from_steps") or []
+
+                    if role == "precondition":
+                        cb(f"    \u2022 precondition (no UI action): "
+                           f"{(it.get('target') or '')[:40]}", "dim")
+                        for n in fs:
+                            if 1 <= n <= len(steps):
+                                steps[n - 1].setdefault("locator", None)
+                                steps[n - 1]["locator_src"] = "precondition"
                         continue
-                    disp = action.strip()
-                    for _pfx in ("\u0627\u0644\u0634\u0631\u0637 \u0627\u0644\u0645\u0633\u0628\u0642:", "Precondition:", "precondition:"):
-                        if disp.startswith(_pfx):
-                            disp = disp[len(_pfx):].strip(); break
-                    cb(f"  {si}/{len(steps)}  {disp[:45]}", "dim")
-                    els = snapshot()
-                    match, kind, value = try_match(action, els)
+
+                    if role == "assertion":
+                        # STAGE 2 (assert) — bind by DOM-diff: prefer elements that
+                        # newly appeared/changed since the last action (the menu that
+                        # opened, the error that showed). Same mechanism powers
+                        # negative-login error capture.
+                        _settle(timeout=4)
+                        after = snapshot(with_errors=True)
+                        new_pool = ([e for e in after if _el_key(e) not in last_before]
+                                    if last_before is not None else after)
+                        el, src = bind_target(it, new_pool or after)
+                        assign(fs, to_locator(el) if el else None, src, as_assert=True)
+                        if el:
+                            tag = " (new)" if (last_before is not None and
+                                               _el_key(el) not in last_before) else ""
+                            cb(f"    \u2713 assertion \u2192 {_describe(el)}{tag}", "ok")
+                        else:
+                            cb("    ? assertion target not found on page", "warn")
+                        continue
+
+                    # role == 'action'
+                    verb = it.get("verb") or "click"
+                    cb(f"    \u2192 {verb}: {(it.get('target') or '')[:40]}", "dim")
+                    cur = snapshot(with_errors=is_neg)
+                    last_before = set(_el_key(e) for e in cur)
+                    el, src = bind_target(it, cur)
                     if abort_credit:
                         break
-                    if match:
-                        st["locator"] = to_locator(match)
-                        st["locator_src"] = "live"
-                        live_count += 1
-                        live_el = find_live(match)
-                        if live_el is not None:
-                            _flash(live_el)  # outline it in the browser
-                            try:
-                                if kind == "type":
-                                    live_el.clear(); live_el.send_keys(value or "test")
-                                    cb(f"      typed into {_describe(match)}", "ok")
-                                elif kind == "select":
-                                    from selenium.webdriver.support.ui import Select
-                                    try:
-                                        Select(live_el).select_by_visible_text(value)
-                                    except Exception:
-                                        _safe_click(live_el)
-                                    cb(f"      selected on {_describe(match)}", "ok")
-                                else:  # click / navigate / default
-                                    _safe_click(live_el)
-                                    cb(f"      clicked {_describe(match)}", "ok")
-                                _t.sleep(1.2)  # let the page react
-                            except Exception as ae:
-                                cb(f"      couldn't act on {_describe(match)}: {str(ae)[:50]}", "warn")
-                        else:
-                            cb(f"      matched {_describe(match)} but it left the page", "warn")
-                        exp = st.get("expected", "") or ""
-                        if exp.strip():
-                            els2 = snapshot()
-                            m2, _, _ = try_match(exp, els2)
-                            st["assert_locator"] = to_locator(m2) if m2 else None
-                    else:
-                        union = _dedup_reindex(all_snapshots)
-                        m2, _k2, _v2 = (try_match(action, union) if union else (None, "none", ""))
-                        if abort_credit:
-                            break
-                        if m2:
-                            st["locator"] = to_locator(m2)
-                            st["locator_src"] = "snapshot"
-                            snap_count += 1
-                            cb(f"      SNAPSHOT: using {_describe(m2)} from an earlier page "
-                               f"\u2014 will be marked // TODO verify (from snapshot)", "warn")
-                            todos.append({"s": story.get("id"), "tc": tc.get("title", ""),
-                                          "n": si, "a": disp, "kind": "snapshot"})
-                            exp = st.get("expected", "") or ""
-                            if exp.strip():
-                                ma, _, _ = try_match(exp, union)
-                                st["assert_locator"] = to_locator(ma) if ma else None
-                        else:
-                            st["locator"] = None
-                            st["locator_src"] = "guess"
-                            guess_count += 1
-                            cb("      GUESS: no element matched \u2014 step will be marked "
-                               "// TODO verify locator", "warn")
-                            todos.append({"s": story.get("id"), "tc": tc.get("title", ""),
-                                          "n": si, "a": disp, "kind": "guess"})
+                    if el is None:
+                        assign(fs, None, "guess")
+                        cb("      GUESS: no element matched \u2014 // TODO verify locator", "warn")
+                        _todo(story, tc, fs, it.get("target"), "guess")
+                        continue
+                    assign(fs, to_locator(el), src)
+                    if src == "snapshot":
+                        cb(f"      SNAPSHOT: using {_describe(el)} from an earlier page "
+                           f"\u2014 // TODO verify (from snapshot)", "warn")
+                        _todo(story, tc, fs, it.get("target"), "snapshot")
+                        continue
+                    if verb == "navigate":
+                        cb("      (navigate) \u2014 already on the target page", "dim")
+                        continue
+                    # STAGE 3 — interception-proof action
+                    empty_ok = (verb == "type" and not (it.get("value") or "").strip()
+                                and _wants_empty_field((it.get("target", "") + " " +
+                                                        " ".join(it.get("keywords") or []))))
+                    _act(el, verb, it.get("value", ""), empty_ok=empty_ok)
+                    cb(f"      {verb} {_describe(el)}"
+                       f"{' (left empty)' if empty_ok else ''}", "ok")
+                    _settle(timeout=4); _t.sleep(0.6)
+
+                # restore the authenticated session after a login-page case so
+                # later app cases don't capture locators from the login page
+                if pctx == "login" and have_creds and not (should_stop() or abort_credit):
+                    cb("    \u21b3 re-establishing login after login-page case\u2026", "dim")
+                    try:
+                        ok2, reason2 = do_login(fresh=True)
+                        cb(f"    \u21b3 re-login {'verified' if ok2 else 'NOT verified'} "
+                           f"\u2014 {reason2}", "ok" if ok2 else "warn")
+                    except Exception as e:
+                        cb(f"    \u21b3 re-login failed: {str(e)[:80]}", "warn")
 
         if abort_credit:
             cb(f"Stopped automatically \u2014 the AI credit limit was hit {credit_hits} "
@@ -3448,3 +4232,598 @@ def apply_update(cb=None):
             return (False, out[:300] or "git pull failed.")
     cb("Update downloaded.", "ok")
     return (True, "Updated. Please restart QA Studio to use the new version.")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  SELF-HEALING AUTOMATION (no live browser in QA Studio)
+#  The Automation screen compiles each story's cases into intents, orders them
+#  into a logical sequence (logged-out negatives/validation/login-page cases →
+#  successful login → app cases), and GENERATES a Maven/TestNG/Selenium project
+#  whose runtime heals locators by calling the Anthropic API when a seed locator
+#  fails. QA Studio never drives the browser; IntelliJ runs `mvn test` and the
+#  generated framework self-heals + caches locators.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def validate_and_sequence_suite(stories_payload, log=None, want_ai=True):
+    """Validate/repair each test case for automatability and order the suite.
+
+    Ordering buckets (so we never log out to re-test invalids):
+      0  login-page negative/validation  (logged OUT)
+      1  login-page presence/interaction (logged OUT, e.g. language dropdown)
+      2  the successful-login case        (transition; synthesized if absent)
+      3  app cases                        (logged IN; e.g. language toggle)
+
+    For each case we attach: page_context ('login'|'app'), case_type, priority,
+    and compiled intents. A case whose steps don't form a coherent automatable
+    sequence is repaired by the AI (compile_test_case already normalizes; here we
+    additionally drop empty cases and ensure a login transition exists)."""
+    log = log or (lambda *a, **k: None)
+    out = []
+    for sp in stories_payload:
+        story = sp.get("story", {})
+        cases = []
+        has_app = False
+        has_positive_login = False
+        for tc in sp.get("test_cases", []):
+            ctype = _classify_case(tc)
+            pctx = _infer_page_context(tc, ctype)
+            # bucket + priority
+            if pctx == "login" and ctype == "negative_login":
+                bucket = 0
+            elif pctx == "login":
+                bucket = 1
+            else:
+                bucket = 3
+                has_app = True
+            low = _norm(tc.get("title", ""))
+            positive_login = (pctx == "login" and ctype not in ("negative_login", "presence")
+                              and any(k in low for k in ("نجاح", "صحيح", "الصحيحة", "valid",
+                                                         "success", "successful")))
+            if positive_login:
+                bucket = 2
+                has_positive_login = True
+            intents = []
+            if want_ai:
+                intents = compile_test_case(tc, story, log, ctype) or []
+            if not intents:
+                intents = _intents_from_raw_steps(tc)
+            n_act = sum(1 for i in intents if i["role"] == "action")
+            if n_act == 0 and bucket != 2:
+                log(f"    skipping non-automatable case (no actions): "
+                    f"{tc.get('title','')[:40]}", "warn")
+                # keep as presence assertion-only if it has assertions, else drop
+                if not any(i["role"] == "assertion" for i in intents):
+                    continue
+            cases.append({"tc": tc, "title": tc.get("title", ""), "ctype": ctype,
+                          "page_context": pctx, "bucket": bucket, "intents": intents})
+        # synthesize a successful-login transition if app cases exist but no
+        # explicit positive-login case was authored
+        if has_app and not has_positive_login:
+            cases.append({"tc": {"title": "Successful login (auto-inserted)", "steps": []},
+                          "title": "Successful login (auto-inserted)",
+                          "ctype": "login", "page_context": "login", "bucket": 2,
+                          "intents": [{"role": "action", "verb": "login", "target": "login",
+                                       "keywords": [], "kind": "any", "value": "",
+                                       "check": "", "expected": "", "from_steps": []}],
+                          "synthetic_login": True})
+            log("    + inserted a successful-login step before app cases", "dim")
+        cases.sort(key=lambda c: (c["bucket"], c["title"]))
+        for i, c in enumerate(cases):
+            c["priority"] = c["bucket"] * 100 + i
+        out.append({"story": story, "cases": cases})
+        log(f"  sequenced story {story.get('id')}: "
+            f"{sum(1 for c in cases if c['bucket']<2)} logged-out, "
+            f"{sum(1 for c in cases if c['bucket']==2)} login, "
+            f"{sum(1 for c in cases if c['bucket']>2)} app case(s)", "info")
+    return out
+
+
+def _seed_locator_for_intent(intent):
+    """Best-effort seed Selenium By for an intent, BEFORE any runtime healing.
+    'Stable where known, // TODO only where unknown.' Returns (by, value, known)."""
+    kws = [k for k in (intent.get("keywords") or []) if str(k).strip()]
+    kind = intent.get("kind", "any")
+    low = _norm(" ".join(kws) + " " + (intent.get("target", "") or ""))
+    # known stable patterns we validated against the real DOM
+    if any(k in low for k in ("languageswitch", "language toggle", "زر اللغة", "زر اللغه")):
+        return ("cssSelector", '[data-svgicon="languageSwitch"]', True)
+    if "kc-current-locale" in low or ("locale" in low and "dropdown" in low):
+        return ("id", "kc-current-locale-link", True)
+    if kind == "input" and any(k in low for k in ("username", "user", "email", "اسم المستخدم")):
+        return ("cssSelector", "#username,input[name=username],input[type=email]", True)
+    if kind == "input" and any(k in low for k in ("password", "كلمة المرور", "كلمة مرور")):
+        return ("cssSelector", "#password,input[type=password]", True)
+    if any(k in low for k in ("kc-login", "submit", "تسجيل الدخول", "login button", "sign in")):
+        return ("cssSelector", "#kc-login,button[type=submit],input[type=submit]", True)
+    # text-based xpath for an option/button with a clear label
+    label = next((k for k in kws if len(str(k)) >= 2 and not str(k).isascii() or
+                  (str(k).isascii() and len(str(k)) >= 3)), None)
+    if label and kind in ("menuitem", "link", "button"):
+        tag = {"menuitem": "a", "link": "a", "button": "button"}.get(kind, "*")
+        return ("xpath", '//%s[normalize-space()="%s"]' % (tag, label), False)
+    return ("cssSelector", "TODO_RESOLVE_AT_RUNTIME", False)
+
+
+def _sh_pom(group_id, artifact_id):
+    return ("""<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>__GID__</groupId>
+  <artifactId>__AID__</artifactId>
+  <version>1.0.0</version>
+  <properties>
+    <maven.compiler.source>17</maven.compiler.source>
+    <maven.compiler.target>17</maven.compiler.target>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+  </properties>
+  <dependencies>
+    <dependency><groupId>org.seleniumhq.selenium</groupId><artifactId>selenium-java</artifactId><version>4.21.0</version></dependency>
+    <dependency><groupId>org.testng</groupId><artifactId>testng</artifactId><version>7.10.2</version></dependency>
+    <dependency><groupId>io.github.bonigarcia</groupId><artifactId>webdrivermanager</artifactId><version>5.9.2</version></dependency>
+    <dependency><groupId>com.fasterxml.jackson.core</groupId><artifactId>jackson-databind</artifactId><version>2.17.1</version></dependency>
+  </dependencies>
+  <build><plugins>
+    <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-surefire-plugin</artifactId><version>3.2.5</version>
+      <configuration><suiteXmlFiles><suiteXmlFile>testng.xml</suiteXmlFile></suiteXmlFiles></configuration>
+    </plugin>
+  </plugins></build>
+</project>
+""".replace("__GID__", group_id).replace("__AID__", artifact_id))
+
+
+def _sh_config(pkg, base_url, login_url):
+    return ("""package __PKG__.core;
+
+/** Runtime config. Secrets come from environment variables, never hard-coded. */
+public final class Config {
+    private Config() {}
+    public static final String BASE_URL  = env("APP_BASE_URL",  "__BASE__");
+    public static final String LOGIN_URL = env("APP_LOGIN_URL", "__LOGIN__");
+    public static final String USER      = env("APP_USER",  "");
+    public static final String PASS      = env("APP_PASS",  "");
+    public static final String API_KEY   = env("ANTHROPIC_API_KEY", "");
+    public static final String MODEL     = env("ANTHROPIC_MODEL", "claude-sonnet-4-6");
+    public static final boolean HEAL      = !API_KEY.isEmpty();
+    private static String env(String k, String d) {
+        String v = System.getenv(k); return (v == null || v.isEmpty()) ? d : v;
+    }
+}
+""".replace("__PKG__", pkg).replace("__BASE__", base_url).replace("__LOGIN__", login_url))
+
+
+def _sh_locator_store(pkg):
+    return ("""package __PKG__.core;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.openqa.selenium.By;
+import java.io.File;
+import java.util.HashMap;
+import java.util.Map;
+
+/** Persists healed locators to locators-cache.json so each key is resolved by
+ *  the AI at most once, then reused on later runs. */
+public final class LocatorStore {
+    private static final File FILE = new File("locators-cache.json");
+    private static final ObjectMapper M = new ObjectMapper();
+    private final Map<String, Map<String, String>> cache;
+
+    @SuppressWarnings("unchecked")
+    public LocatorStore() {
+        Map<String, Map<String, String>> c = new HashMap<>();
+        try { if (FILE.exists()) c = M.readValue(FILE, Map.class); } catch (Exception ignored) {}
+        this.cache = c;
+    }
+    public By get(String key) {
+        Map<String, String> e = cache.get(key);
+        if (e == null) return null;
+        return Healer.toBy(e.get("by"), e.get("value"));
+    }
+    public void put(String key, String by, String value) {
+        Map<String, String> e = new HashMap<>(); e.put("by", by); e.put("value", value);
+        cache.put(key, e);
+        try { M.writerWithDefaultPrettyPrinter().writeValue(FILE, cache); } catch (Exception ignored) {}
+    }
+}
+""".replace("__PKG__", pkg))
+
+
+def _sh_anthropic_client(pkg):
+    return ("""package __PKG__.core;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.util.Map;
+
+/** Minimal Anthropic Messages API client used ONLY to pick a locator when a seed
+ *  fails. Returns {"by","value"} or null. */
+public final class AnthropicClient {
+    private static final ObjectMapper M = new ObjectMapper();
+    private static final HttpClient HTTP = HttpClient.newHttpClient();
+
+    /** Ask Claude to choose the best Selenium locator for `intentJson` from the
+     *  harvested `candidatesJson` (a JSON array of elements on the live page). */
+    public static Map<String, String> pickLocator(String intentJson, String candidatesJson) {
+        if (Config.API_KEY.isEmpty()) return null;
+        try {
+            String prompt = "You resolve a Selenium locator for a UI test step that failed to "
+                + "find its element. Choose the ONE element that matches the intent and return a "
+                + "STABLE locator. Reply ONLY JSON: {\\"by\\":\\"id|name|cssSelector|xpath\\",\\"value\\":\\"...\\"}. "
+                + "Prefer id (non-generated) > data-testid/[data-svgicon] css > name > aria/text xpath. "
+                + "Never use framework ids like pn_id_*, cdk-, mat-, GUIDs.\\n\\nINTENT: " + intentJson
+                + "\\n\\nCANDIDATES: " + candidatesJson;
+            ObjectNode body = M.createObjectNode();
+            body.put("model", Config.MODEL);
+            body.put("max_tokens", 256);
+            ArrayNode msgs = body.putArray("messages");
+            ObjectNode m = msgs.addObject(); m.put("role", "user"); m.put("content", prompt);
+            HttpRequest req = HttpRequest.newBuilder()
+                .uri(URI.create("https://api.anthropic.com/v1/messages"))
+                .header("x-api-key", Config.API_KEY)
+                .header("anthropic-version", "2023-06-01")
+                .header("content-type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(M.writeValueAsString(body)))
+                .build();
+            HttpResponse<String> resp = HTTP.send(req, HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() / 100 != 2) {
+                System.out.println("[heal] API error " + resp.statusCode() + ": " + resp.body());
+                return null;
+            }
+            JsonNode root = M.readTree(resp.body());
+            String text = root.path("content").path(0).path("text").asText("");
+            int a = text.indexOf('{'), b = text.lastIndexOf('}');
+            if (a < 0 || b < a) return null;
+            JsonNode loc = M.readTree(text.substring(a, b + 1));
+            String by = loc.path("by").asText(""), value = loc.path("value").asText("");
+            if (by.isEmpty() || value.isEmpty()) return null;
+            return Map.of("by", by, "value", value);
+        } catch (Exception e) {
+            System.out.println("[heal] pickLocator failed: " + e.getMessage());
+            return null;
+        }
+    }
+}
+""".replace("__PKG__", pkg))
+
+
+def _sh_healer(pkg):
+    return ("""package __PKG__.core;
+
+import org.openqa.selenium.*;
+import org.openqa.selenium.support.ui.ExpectedConditions;
+import org.openqa.selenium.support.ui.WebDriverWait;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.util.Map;
+
+/** Finds elements with runtime self-healing. Order per step key:
+ *  1) cached healed locator  2) the generated seed locator
+ *  3) ask the Anthropic API to pick one from the live DOM, then cache it. */
+public final class Healer {
+    private final WebDriver driver;
+    private final WebDriverWait wait;
+    private final LocatorStore store = new LocatorStore();
+    private static String HARVEST_JS;
+
+    public Healer(WebDriver driver) {
+        this.driver = driver;
+        this.wait = new WebDriverWait(driver, Duration.ofSeconds(12));
+    }
+
+    public WebElement find(String key, By seed, String intentJson) {
+        By cached = store.get(key);
+        if (cached != null) {
+            WebElement e = tryFind(cached);
+            if (e != null) return e;
+        }
+        if (seed != null) {
+            WebElement e = tryFind(seed);
+            if (e != null) return e;
+        }
+        if (Config.HEAL) {
+            System.out.println("[heal] resolving '" + key + "' via Anthropic API");
+            String dom = harvest();
+            Map<String, String> picked = AnthropicClient.pickLocator(intentJson, dom);
+            if (picked != null) {
+                By by = toBy(picked.get("by"), picked.get("value"));
+                WebElement e = tryFind(by);
+                if (e != null) {
+                    store.put(key, picked.get("by"), picked.get("value"));
+                    System.out.println("[heal] '" + key + "' -> " + picked.get("by")
+                        + "=" + picked.get("value"));
+                    return e;
+                }
+            }
+        }
+        throw new NoSuchElementException("Could not resolve step '" + key
+            + "'. Seed=" + seed + ". Set ANTHROPIC_API_KEY to enable healing.");
+    }
+
+    public void act(String key, String verb, By seed, String intentJson, String value) {
+        if ("navigate".equals(verb) || "wait".equals(verb)) return;
+        WebElement el = find(key, seed, intentJson);
+        ((JavascriptExecutor) driver).executeScript(
+            "arguments[0].scrollIntoView({block:'center'});", el);
+        switch (verb == null ? "click" : verb) {
+            case "type":
+                el.clear(); if (value != null && !value.isEmpty()) el.sendKeys(value); break;
+            case "select":
+                el.click(); break;   // custom dropdowns: open; the next intent picks the option
+            case "hover":
+                el.click(); break;
+            default:
+                try { el.click(); }
+                catch (Exception e) {
+                    ((JavascriptExecutor) driver).executeScript("arguments[0].click();", el);
+                }
+        }
+    }
+
+    public boolean assertVisible(String key, By seed, String intentJson) {
+        try { return find(key, seed, intentJson).isDisplayed(); }
+        catch (Exception e) { return false; }
+    }
+
+    private WebElement tryFind(By by) {
+        try { return wait.until(ExpectedConditions.visibilityOfElementLocated(by)); }
+        catch (Exception e) { return null; }
+    }
+
+    private String harvest() {
+        try {
+            if (HARVEST_JS == null) {
+                var in = Healer.class.getResourceAsStream("/harvest.js");
+                HARVEST_JS = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+            }
+            Object r = ((JavascriptExecutor) driver).executeScript(
+                "return JSON.stringify((function(){" + HARVEST_JS + "})());");
+            return r == null ? "[]" : r.toString();
+        } catch (Exception e) { return "[]"; }
+    }
+
+    public static By toBy(String by, String value) {
+        if (by == null) return By.cssSelector(value);
+        switch (by) {
+            case "id":          return By.id(value);
+            case "name":        return By.name(value);
+            case "xpath":       return By.xpath(value);
+            case "linkText":    return By.linkText(value);
+            case "className":   return By.className(value);
+            default:            return By.cssSelector(value);
+        }
+    }
+}
+""".replace("__PKG__", pkg))
+
+
+def _sh_base_test(pkg):
+    return ("""package __PKG__.tests;
+
+import __PKG__.core.*;
+import org.openqa.selenium.*;
+import org.testng.annotations.AfterClass;
+import org.testng.annotations.BeforeClass;
+import java.time.Duration;
+
+/** One browser per test class. Logged-out cases run first (priority order),
+ *  then the successful-login step, then app cases — no logout-to-retest. */
+public abstract class BaseTest {
+    protected WebDriver driver;
+    protected Healer heal;
+
+    @BeforeClass
+    public void setUp() {
+        driver = DriverFactory.create();
+        driver.manage().timeouts().implicitlyWait(Duration.ofSeconds(6));
+        heal = new Healer(driver);
+        openLoginPage();
+    }
+    @AfterClass
+    public void tearDown() { if (driver != null) driver.quit(); }
+
+    /** Fresh, logged-out login page (clears any session). */
+    protected void openLoginPage() {
+        try { driver.manage().deleteAllCookies(); } catch (Exception ignored) {}
+        driver.get(Config.LOGIN_URL);
+    }
+
+    /** Perform a real successful login using the seed login locators + healing. */
+    protected void performLogin() {
+        heal.act("login.username", "type",
+            Healer.toBy("cssSelector", "#username,input[name=username],input[type=email]"),
+            "{\\"target\\":\\"username field\\",\\"kind\\":\\"input\\"}", Config.USER);
+        heal.act("login.password", "type",
+            Healer.toBy("cssSelector", "#password,input[type=password]"),
+            "{\\"target\\":\\"password field\\",\\"kind\\":\\"input\\"}", Config.PASS);
+        heal.act("login.submit", "click",
+            Healer.toBy("cssSelector", "#kc-login,button[type=submit],input[type=submit]"),
+            "{\\"target\\":\\"login submit button\\",\\"kind\\":\\"button\\"}", "");
+        try { Thread.sleep(2500); } catch (InterruptedException ignored) {}
+    }
+}
+""".replace("__PKG__", pkg))
+
+
+def _sh_gitignore():
+    return "target/\n*.iml\n.idea/\n# healed locators are environment-specific:\nlocators-cache.json\n"
+
+
+def _sh_readme(base_url, login_url):
+    return ("""# QA Studio — self-healing automation
+
+Generated by QA Studio. QA Studio did NOT drive a browser; locators are resolved
+at RUNTIME: each step has a seed locator, and when it fails, the framework asks the
+Anthropic API to pick the right element from the live DOM, then caches it in
+`locators-cache.json` (reused on later runs, so the AI is called at most once per step).
+
+## Run
+1. Set environment variables (never hard-code secrets):
+   - `ANTHROPIC_API_KEY`  (enables healing; without it, only seed locators are used)
+   - `APP_USER`, `APP_PASS`  (login credentials)
+   - optional `APP_BASE_URL` (default __BASE__), `APP_LOGIN_URL` (default __LOGIN__),
+     `ANTHROPIC_MODEL` (default claude-sonnet-4-6)
+2. `mvn test`
+
+## Sequence
+Tests run by TestNG priority: logged-out cases (invalid login, validation, the
+login-page language dropdown) first, then the successful-login step, then the
+authenticated app cases — all in one browser, no logout-to-retest.
+
+## Healing log
+Watch stdout for `[heal] resolving '<step>' ...` and `[heal] '<step>' -> by=value`.
+Commit the resulting `locators-cache.json` only if you want to share resolved
+locators across machines (it is git-ignored by default).
+""".replace("__BASE__", base_url).replace("__LOGIN__", login_url))
+
+
+def _java_str(s):
+    """Escape a Python string for a Java double-quoted literal."""
+    return (str(s or "").replace("\\", "\\\\").replace('"', '\\"')
+            .replace("\n", " ").replace("\r", " ").replace("\t", " "))
+
+
+def _java_ident(s, fallback):
+    out = re.sub(r"[^A-Za-z0-9_]", "", (s or "").title().replace(" ", ""))
+    if not out or not (out[0].isalpha() or out[0] == "_"):
+        out = fallback
+    return out[:60]
+
+
+def _emit_intent(lines, key, intent):
+    """Append the Java for one intent to `lines`."""
+    role = intent.get("role")
+    target = intent.get("target", "")
+    ij = json.dumps({"target": target, "keywords": intent.get("keywords", []),
+                     "kind": intent.get("kind", "any"), "verb": intent.get("verb", "")},
+                    ensure_ascii=False)
+    by, val, _known = _seed_locator_for_intent(intent)
+    seed = ("null" if val == "TODO_RESOLVE_AT_RUNTIME"
+            else 'Healer.toBy("%s", "%s")' % (by, _java_str(val)))
+    todo = "  // TODO verify locator (resolved at runtime)" if val == "TODO_RESOLVE_AT_RUNTIME" else ""
+    if role == "precondition":
+        lines.append('        // precondition (no UI action): %s' % _java_str(target)[:70])
+        return
+    if role == "assertion":
+        lines.append('        org.testng.Assert.assertTrue(heal.assertVisible("%s", %s, "%s"),'
+                     % (_java_str(key), seed, _java_str(ij)))
+        lines.append('            "expected: %s");%s' % (_java_str(target)[:60], todo))
+        return
+    verb = intent.get("verb") or "click"
+    value = _java_str(intent.get("value", ""))
+    lines.append('        heal.act("%s", "%s", %s, "%s", "%s");%s'
+                 % (_java_str(key), verb, seed, _java_str(ij), value, todo))
+
+
+def generate_selfhealing_test_class(story, cases, pkg):
+    """Emit a TestNG class for one story DETERMINISTICALLY from compiled intents
+    (no LLM writing Java). Cases run by priority: logged-out → login → app."""
+    sid = str(story.get("id", "0"))
+    cls = "Story%sTests" % re.sub(r"[^A-Za-z0-9]", "", sid)
+    L = []
+    L.append("package %s.tests;" % pkg)
+    L.append("")
+    L.append("import %s.core.*;" % pkg)
+    L.append("import org.testng.annotations.Test;")
+    L.append("")
+    L.append("/** Story %s — %s */" % (sid, _java_str(story.get("title", ""))))
+    L.append("public class %s extends BaseTest {" % cls)
+    for ci, c in enumerate(cases):
+        bucket = c["bucket"]; pr = c.get("priority", bucket * 100 + ci)
+        mname = "tc_%d_%s" % (pr, _java_ident(c.get("title", ""), "case%d" % ci))
+        L.append("")
+        L.append('    @Test(priority = %d, description = "%s")'
+                 % (pr, _java_str(c.get("title", ""))))
+        L.append("    public void %s() {" % mname)
+        L.append('        // [%s · %s-page]' % (c["ctype"], c["page_context"]))
+        if bucket < 2:
+            L.append("        openLoginPage();")
+        elif bucket == 2:
+            L.append("        openLoginPage();")
+            L.append("        performLogin();")
+        else:
+            L.append("        driver.get(Config.BASE_URL);")
+        # emit intents (for the login-transition case, skip its action intents —
+        # performLogin() already did the real login — but keep its assertions)
+        for ii, intent in enumerate(c.get("intents", [])):
+            if bucket == 2 and intent.get("role") == "action":
+                continue
+            _emit_intent(L, "%s.%d.%d" % (sid, ci, ii), intent)
+        L.append("    }")
+    L.append("}")
+    return "\n".join(L) + "\n", cls
+
+
+def build_selfhealing_project(out_dir, sequenced, base_url, login=None,
+                              group_id="com.qastudio", artifact_id="automation-tests",
+                              cb=None, should_stop=lambda: False):
+    """Write a full self-healing Maven/TestNG project (no browser was driven).
+    `sequenced` = output of validate_and_sequence_suite(). Returns written paths."""
+    cb = cb or (lambda *a, **k: None)
+    pkg = group_id
+    pkg_path = pkg.replace(".", "/")
+    src_main = os.path.join(out_dir, "src", "main", "java", pkg_path, "core")
+    src_test = os.path.join(out_dir, "src", "test", "java", pkg_path, "tests")
+    res_dir = os.path.join(out_dir, "src", "test", "resources")
+    for d in (src_main, src_test, res_dir):
+        os.makedirs(d, exist_ok=True)
+    login_url = (login or {}).get("url") or base_url
+    written = []
+
+    def _w(path, content):
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+        written.append(os.path.relpath(path, out_dir))
+
+    cb("Writing self-healing framework (Config, Healer, Anthropic client)\u2026", "dim")
+    _w(os.path.join(out_dir, "pom.xml"), _sh_pom(group_id, artifact_id))
+    _w(os.path.join(out_dir, ".gitignore"), _sh_gitignore())
+    _w(os.path.join(out_dir, "README.md"), _sh_readme(base_url, login_url))
+    _w(os.path.join(src_main, "DriverFactory.java"), _driver_factory(pkg))
+    _w(os.path.join(src_main, "Config.java"), _sh_config(pkg, base_url, login_url))
+    _w(os.path.join(src_main, "LocatorStore.java"), _sh_locator_store(pkg))
+    _w(os.path.join(src_main, "AnthropicClient.java"), _sh_anthropic_client(pkg))
+    _w(os.path.join(src_main, "Healer.java"), _sh_healer(pkg))
+    _w(os.path.join(src_test, "BaseTest.java"), _sh_base_test(pkg))
+    _w(os.path.join(res_dir, "harvest.js"), _HARVEST_JS)
+
+    test_classes = []
+    for entry in sequenced:
+        if should_stop():
+            break
+        story = entry["story"]
+        if not entry.get("cases"):
+            continue
+        cb(f"  generating tests for story {story.get('id')} "
+           f"({len(entry['cases'])} case(s))", "dim")
+        java, cls = generate_selfhealing_test_class(story, entry["cases"], pkg)
+        _w(os.path.join(src_test, "%s.java" % cls), java)
+        test_classes.append(cls)
+
+    items = "\n".join('      <class name="%s.tests.%s"/>' % (pkg, c) for c in test_classes)
+    _w(os.path.join(out_dir, "testng.xml"),
+       '<?xml version="1.0" encoding="UTF-8"?>\n'
+       '<!DOCTYPE suite SYSTEM "https://testng.org/testng-1.0.dtd">\n'
+       '<suite name="QA Studio Self-Healing Suite" verbose="1">\n'
+       '  <test name="Sequenced Tests"><classes>\n%s\n  </classes></test>\n</suite>\n' % items)
+    cb(f"Wrote {len(written)} files, {len(test_classes)} test class(es).", "ok")
+    return written
+
+
+def generate_and_push_selfhealing(out_dir, stories_payload, base_url, login=None,
+                                  group_id="com.qastudio", artifact_id="automation-tests",
+                                  cb=None, should_stop=lambda: False, want_ai=True):
+    """End-to-end no-browser path: validate+sequence → generate self-healing
+    project. (Push is done separately via push_to_git, as today.)"""
+    cb = cb or (lambda *a, **k: None)
+    cb("Validating and sequencing test cases (no browser)\u2026", "info")
+    sequenced = validate_and_sequence_suite(stories_payload, log=cb, want_ai=want_ai)
+    if should_stop():
+        return []
+    return build_selfhealing_project(out_dir, sequenced, base_url, login,
+                                     group_id, artifact_id, cb, should_stop)

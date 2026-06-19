@@ -459,6 +459,119 @@ def _acquire_single_instance():
         return None
 
 
+def _open_app_window(url):
+    """Open the installer in a chromeless app window (Edge/Chrome --app mode) so
+    it looks like a native installer instead of a browser tab. Falls back to the
+    default browser if no Chromium browser is found."""
+    W, H = 720, 880
+    candidates = []
+    if os.name == "nt":
+        pf = os.environ.get("ProgramFiles", r"C:\\Program Files")
+        pf86 = os.environ.get("ProgramFiles(x86)", r"C:\\Program Files (x86)")
+        local = os.environ.get("LocalAppData", "")
+        candidates = [
+            os.path.join(pf86, "Microsoft", "Edge", "Application", "msedge.exe"),
+            os.path.join(pf, "Microsoft", "Edge", "Application", "msedge.exe"),
+            os.path.join(local, "Microsoft", "Edge", "Application", "msedge.exe"),
+            os.path.join(pf, "Google", "Chrome", "Application", "chrome.exe"),
+            os.path.join(pf86, "Google", "Chrome", "Application", "chrome.exe"),
+            os.path.join(local, "Google", "Chrome", "Application", "chrome.exe"),
+        ]
+        # Registry App Paths = authoritative location; survives non-default dirs.
+        try:
+            import winreg
+            for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+                for app in ("chrome.exe", "msedge.exe"):
+                    try:
+                        with winreg.OpenKey(hive,
+                                r"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\" + app) as k:
+                            p = winreg.QueryValue(k, None)
+                            if p:
+                                candidates.append(p)
+                    except OSError:
+                        pass
+        except Exception:
+            pass
+    elif sys.platform == "darwin":
+        candidates = [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        ]
+    else:
+        candidates = ["/usr/bin/google-chrome", "/usr/bin/microsoft-edge",
+                      "/usr/bin/chromium", "/usr/bin/chromium-browser"]
+
+    exe = next((c for c in candidates if c and os.path.exists(c)), None)
+    if not exe:  # last resort: anything named edge/chrome on PATH
+        import shutil
+        exe = (shutil.which("msedge") or shutil.which("chrome")
+               or shutil.which("google-chrome") or shutil.which("chromium"))
+    if exe:
+        try:
+            import tempfile
+            prof = os.path.join(tempfile.gettempdir(), "qastudio_installer_profile")
+            flags = 0x08000000 if os.name == "nt" else 0
+            subprocess.Popen(
+                [exe, f"--app={url}", f"--window-size={W},{H}",
+                 f"--user-data-dir={prof}", "--no-first-run", "--no-default-browser-check"],
+                creationflags=flags)
+            return
+        except Exception:
+            pass
+    # Fallback: no Chromium browser found — open a normal tab and say so, instead
+    # of silently looking like the wrong behavior.
+    print("No Edge/Chrome found for app-window mode; opening in your default "
+          "browser tab instead.")
+    try:
+        webbrowser.open(url)
+    except Exception:
+        pass
+
+
+def _ensure_webview():
+    """Return the pywebview module for a true native window, installing it on the
+    fly if needed (the installer runs before app deps exist). Returns None if it
+    can't be made available, so the caller falls back to a browser window."""
+    try:
+        import webview  # noqa: F401
+        return webview
+    except Exception:
+        pass
+    try:
+        print("Preparing the installer window (one-time setup)\u2026")
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", "--quiet",
+             "--disable-pip-version-check", "pywebview"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        import webview  # noqa: F401
+        return webview
+    except Exception as e:
+        print(f"Native window unavailable ({str(e)[:80]}); using a browser window.")
+        return None
+
+
+def _run_native_window(webview, url):
+    """Open the installer as a real OS window via WebView2 (Windows) / the system
+    web view. Returns True if a window was shown (and has since closed)."""
+    try:
+        webview.create_window(f"{APP_NAME} Installer", url,
+                              width=760, height=920, resizable=True,
+                              min_size=(620, 700))
+    except Exception as e:
+        print(f"Could not create native window: {str(e)[:80]}")
+        return False
+    # Prefer the modern Edge WebView2 backend on Windows; fall back to auto.
+    attempts = [{"gui": "edgechromium"}, {}] if os.name == "nt" else [{}]
+    for kw in attempts:
+        try:
+            webview.start(**kw)
+            return True
+        except Exception as e:
+            print(f"webview backend {kw or 'auto'} failed: {str(e)[:70]}")
+            continue
+    return False
+
+
 def main():
     lock = _acquire_single_instance()
     if lock is None:
@@ -466,9 +579,28 @@ def main():
     port = _free_port()
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     url = f"http://127.0.0.1:{port}/"
-    threading.Thread(target=lambda: webbrowser.open(url), daemon=True).start()
+
+    # Path 2: a genuine native window (no browser chrome). The localhost server
+    # runs on a background thread because pywebview must own the main thread.
+    wv = _ensure_webview()
+    if wv is not None:
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        print(f"{APP_NAME} installer running at {url}")
+        if _run_native_window(wv, url):
+            return  # window closed -> done (daemon server thread exits with us)
+        print("Native window failed to start; opening a browser window instead.")
+        threading.Thread(target=lambda: _open_app_window(url), daemon=True).start()
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            pass
+        return
+
+    # Fallback: chromeless browser app-window, else a normal tab.
+    threading.Thread(target=lambda: _open_app_window(url), daemon=True).start()
     print(f"{APP_NAME} installer running at {url}")
-    print("If a browser tab didn't open, paste that address into your browser.")
+    print("If a window didn't open, paste that address into your browser.")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

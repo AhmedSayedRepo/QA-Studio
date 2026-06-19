@@ -3730,34 +3730,22 @@ class QAStudio:
                         walk_payload.append({"story": sp["story"],
                                              "test_cases": new_tcs.get(sid, [])})
 
-                dom = []
-                if walk_payload:
-                    login = None
-                    if self.auto_login_user.strip() and self.auto_login_pass:
-                        login = {"url": self.auto_login_url.strip() or self.auto_site_url.strip(),
-                                 "user": self.auto_login_user.strip(),
-                                 "password": self.auto_login_pass}
-                    cb("Starting live exploration (real browser actions)...", "info")
-                    result = E.explore_and_map(walk_payload, login,
-                                               self.auto_site_url.strip(), cb=cb,
-                                               should_stop=lambda: self._auto_stop,
-                                               headless=False)
-                    dom = result.get("dom_snapshot", [])
-                    _st = result.get("stats", {})
-                    cb(f"Locators - {_st.get('live',0)} live - {_st.get('snapshot',0)} from "
-                       f"snapshots - {_st.get('guess',0)} guessed.", "ok")
-                else:
-                    cb("Nothing new to walk - all selected stories already generated.", "info")
+                # 2) Generate a SELF-HEALING project from the stories — no browser.
+                #    Locators are seeded (stable where known, // TODO otherwise) and
+                #    resolved at RUNTIME by the generated framework via the Anthropic
+                #    API when a seed fails. Cases are validated + ordered into a
+                #    logical sequence (logged-out negatives/validation/login-page →
+                #    successful login → app cases) so we never log out to re-test.
+                login = None
+                if self.auto_login_user.strip() and self.auto_login_pass:
+                    login = {"url": self.auto_login_url.strip() or self.auto_site_url.strip(),
+                             "user": self.auto_login_user.strip(),
+                             "password": self.auto_login_pass}
+                cb("Generating self-healing automation (no browser)…", "info")
+                E.generate_and_push_selfhealing(
+                    project_dir, stories_payload, self.auto_site_url.strip(),
+                    login=login, cb=cb, should_stop=lambda: self._auto_stop)
 
-                if self._auto_stop:
-                    cb("Stopped before generation.", "warn"); return
-
-                # 3) build/extend the project IN the local folder (prior stories survive)
-                cb(f"Updating project at {project_dir}", "dim")
-                E.build_or_merge_project(project_dir, stories_payload, dom,
-                                         self.auto_site_url.strip(),
-                                         reeval_ids=reeval,
-                                         cb=cb, should_stop=lambda: self._auto_stop)
                 self._auto_out_dir = project_dir
                 self.creds["auto_local_path"] = (self.auto_local_path or "").strip()
                 try:
@@ -3767,7 +3755,9 @@ class QAStudio:
                 if self._auto_stop:
                     cb("Stopped.", "warn"); return
                 self._auto_built = True
-                cb("Done. Review the activity, then Push to Git.", "ok")
+                cb("Done — review the activity, then Push to Git. Before `mvn test` in "
+                   "IntelliJ, set ANTHROPIC_API_KEY, APP_USER and APP_PASS so the "
+                   "generated tests can self-heal locators at runtime.", "ok")
             except Exception as ex:
                 cb(f"Automation failed: {str(ex)[:200]}", "err")
             finally:
