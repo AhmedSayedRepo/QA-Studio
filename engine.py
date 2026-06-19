@@ -2090,6 +2090,17 @@ return els.slice(0,250).map((el,i)=>({
   placeholder: el.getAttribute('placeholder')||'',
   aria: el.getAttribute('aria-label')||'',
   aname: anameOf(el),
+  cls: ((typeof el.className==='string'?el.className:'')+' '+
+        (el.querySelector('i,svg,[class*=icon i]')?
+          (el.querySelector('i,svg,[class*=icon i]').getAttribute('class')||''):'')).trim().slice(0,120),
+  svgicon: (function(){
+    var s=el.getAttribute('data-svgicon')||el.getAttribute('data-svg-icon')||
+          el.getAttribute('ng-reflect-svg-icon')||el.getAttribute('data-icon')||'';
+    if(!s){var d=el.querySelector('[data-svgicon],[data-svg-icon],[ng-reflect-svg-icon],[data-icon]');
+           if(d) s=d.getAttribute('data-svgicon')||d.getAttribute('data-svg-icon')||
+                   d.getAttribute('ng-reflect-svg-icon')||d.getAttribute('data-icon')||'';}
+    return (s||'').trim().slice(0,40);
+  })(),
   disabled: !!(el.disabled||el.getAttribute('aria-disabled')==='true'),
   visible: !!(el.offsetWidth||el.offsetHeight||el.getClientRects().length),
   css: robustCss(el),
@@ -2340,6 +2351,25 @@ def _norm(s):
     return re.sub(r"\s+", " ", s).strip()
 
 
+# Framework-generated ids that change between renders/sessions and MUST NOT be
+# captured as saved locators (the generated Java would break next run):
+# PrimeNG (pn_id_*), Angular CDK/Material (cdk-*, mat-*), React useId (:r0:),
+# GUIDs, and PrimeNG panel/header patterns like pn_id_18_0_header.
+_VOLATILE_ID = re.compile(
+    r"(^pn_id|^cdk-|^mat-|^ui-id-|^:r[0-9a-z]+:|"
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}|_[0-9]+_[0-9]+)", re.I)
+
+
+def _xq(s):
+    """Quote a string for an XPath literal, handling embedded quotes via concat()."""
+    s = s or ""
+    if '"' not in s:
+        return '"' + s + '"'
+    if "'" not in s:
+        return "'" + s + "'"
+    return "concat(" + ", '\"', ".join('"%s"' % p for p in s.split('"')) + ")"
+
+
 _LOGIN_CTX_KWS = ("login", "log in", "logon", "sign in", "signin", "authenticat",
                   "تسجيل الدخول", "تسجيل دخول", "الدخول", "كلمة المرور", "كلمة مرور",
                   "اسم المستخدم", "اسم مستخدم")
@@ -2383,15 +2413,47 @@ def _classify_case(tc):
     return "interaction"
 
 
+# Words that say a case belongs on the LOGGED-OUT login page (where the Keycloak
+# language DROPDOWN lives) vs. the authenticated app (where a single language
+# TOGGLE button lives). Inferred from the case's own title/steps — no hard-coded
+# per-story rules — exactly as the AI-authored case intends.
+_LOGIN_PAGE_KWS = ("صفحة تسجيل الدخول", "صفحه تسجيل الدخول", "تسجيل الدخول",
+                   "قبل تسجيل الدخول", "شاشة الدخول", "login page", "sign-in page",
+                   "sign in page", "on login", "locale", "kc_locale")
+_DROPDOWN_KWS = ("قائمة منسدلة", "قائمه منسدله", "منسدلة", "منسدله", "القائمة المنسدلة",
+                 "الاختيار بين", "قائمة اللغات", "dropdown", "drop-down", "drop down")
+
+
+def _infer_page_context(tc, case_type="interaction"):
+    """Decide where this case runs: 'login' (logged-out, language dropdown) or
+    'app' (post-login, single language toggle). Read from the case text. Ambiguous
+    cases default to 'app' (the common case) and the choice is logged so a wrong
+    inference is visible in the activity feed."""
+    if case_type == "negative_login":
+        return "login"
+    blob = _norm(_tc_blob(tc))
+    if any(_norm(k) in blob for k in _LOGIN_PAGE_KWS):
+        return "login"
+    # a language case described as a DROPDOWN / choose-between is the login page;
+    # the in-app control is a single toggle with no dropdown.
+    lang = any(_norm(k) in blob for k in ("اللغة", "لغة", "language", "locale"))
+    if lang and any(_norm(k) in blob for k in _DROPDOWN_KWS):
+        return "login"
+    return "app"
+
+
 def _wants_empty_field(text):
     t = (text or "").lower()
     return any(k in t for k in _EMPTY_FIELD_KWS)
 
 
-def compile_test_case(tc, story=None, log=None):
+def compile_test_case(tc, story=None, log=None, case_type="interaction"):
     """STAGE 1 — turn a test case's raw steps into a normalized, deduplicated list
     of typed INTENTS. The LLM reads the (often messy, Arabic) steps and returns
     JSON; it never sees locators, so it cannot hallucinate them.
+
+    case_type ('presence'|'interaction'|'negative_login') shapes the output: a
+    presence case must NOT be walked as a long interaction.
 
     Each intent:
       {"role":"precondition"|"action"|"assertion",
@@ -2414,11 +2476,22 @@ def compile_test_case(tc, story=None, log=None):
                     "action": (s.get("action", "") or "").strip(),
                     "expected": (s.get("expected", "") or "").strip()})
     lang = "Arabic" if _is_arabic_out() else "English"
+    shape = {
+        "presence": ("This is a PRESENCE/visibility case. Emit the MINIMUM: an "
+                     "optional navigate, then ONE assertion that the element is "
+                     "visible. Do NOT click/select or walk an interaction."),
+        "negative_login": ("This is a NEGATIVE-LOGIN case. Emit: type the (invalid "
+                           "or empty) credentials, click submit, then ONE assertion "
+                           "that the error/validation message is visible."),
+        "interaction": ("This is an INTERACTION case. Emit the real action sequence "
+                        "the user performs, each action ONCE."),
+    }.get(case_type, "Emit the real action sequence, each action once.")
     prompt = (
         "You convert ONE UI test case into an ordered list of atomic INTENTS for a "
         "Selenium walker. The steps may be in Arabic or English and are often noisy: "
         "preconditions written as steps, the same action restated across several "
         "steps, or an action and its expected result merged together.\n\n"
+        f"CASE TYPE: {case_type} — {shape}\n\n"
         "RULES:\n"
         "- Output ONLY a JSON array, no markdown, no commentary.\n"
         "- role='precondition' for environmental/state setup with NO UI action "
@@ -2427,12 +2500,20 @@ def compile_test_case(tc, story=None, log=None):
         "[navigate,click,type,select,hover,wait]. Collapse repeated/restated steps "
         "that describe the SAME operation into a SINGLE action. Never emit the same "
         "action twice in a row.\n"
-        "- role='assertion' for a verification/expected outcome (a menu appeared, an "
-        "error is shown, text changed). Give 'check' and 'expected'. An assertion is "
-        "NOT an action — do not click for it.\n"
+        "- role='assertion' for a verification/expected outcome. COLLAPSE assertions "
+        "hard: emit at most ONE assertion per distinct observable outcome, and never "
+        "two assertions in a row that check the same thing. Most cases need 1-2 "
+        "assertions total, NOT one per step. An assertion is NOT an action — never click for it.\n"
+        "- A custom dropdown (PrimeNG/Material, not a native <select>) is TWO actions: "
+        "click the trigger to open it, then click/select the option. For 'select' set "
+        "kind='menuitem' and value=the option's visible text (e.g. English / العربية).\n"
+        "- Total intents should be SMALL — roughly (distinct actions) + 1 or 2 "
+        "assertions. If your output has more assertions than actions, you over-split; redo it.\n"
         "- 'keywords' = the literal visible text / aria-label / placeholder tokens the "
         f"element most likely has, in the page language ({lang}); include both the "
-        "Arabic and an English guess when unsure. Keep 1-5 short tokens.\n"
+        "Arabic and an English guess when unsure. For ICON-ONLY buttons (no text), "
+        "also add likely icon-class tokens: globe, language, lang, flag, world, "
+        "translate. Keep 1-6 short tokens.\n"
         "- 'kind' = the element type you expect.\n"
         "- For empty-field validation steps (leave a field blank), emit a type action "
         "with value='' so the walker leaves it empty.\n"
@@ -2471,7 +2552,19 @@ def compile_test_case(tc, story=None, log=None):
                 "expected": str(it.get("expected") or ""),
                 "from_steps": [int(x) for x in fs if str(x).strip().lstrip("-").isdigit()],
             })
-        return clean
+        # Safety net: collapse consecutive assertions that check the same thing
+        # (the LLM sometimes still emits one per restated step). Merge their
+        # from_steps so each original step still receives an assert_locator.
+        collapsed = []
+        for it in clean:
+            if (it["role"] == "assertion" and collapsed and
+                    collapsed[-1]["role"] == "assertion" and
+                    _norm(collapsed[-1]["target"]) == _norm(it["target"]) and
+                    _norm(collapsed[-1]["expected"]) == _norm(it["expected"])):
+                collapsed[-1]["from_steps"] = sorted(set(collapsed[-1]["from_steps"] + it["from_steps"]))
+                continue
+            collapsed.append(it)
+        return collapsed
     except CreditBalanceError:
         raise
     except Exception as e:
@@ -2516,20 +2609,22 @@ def _intents_from_raw_steps(tc):
 def _el_haystack(el):
     return _norm(" ".join(str(el.get(k, "")) for k in
                           ("text", "aname", "aria", "placeholder", "name", "id",
-                           "role", "testid", "type")))
+                           "role", "testid", "type", "cls", "svgicon")))
 
 
 def _kind_matches(kind, el):
     if not kind or kind == "any":
         return False
     tag = (el.get("tag") or "").lower(); typ = (el.get("type") or "").lower()
-    role = (el.get("role") or "").lower()
+    role = (el.get("role") or "").lower(); cls = _norm(el.get("cls", ""))
+    menu_cls = any(t in cls for t in ("menu-item", "menuitem", "dropdown-item",
+                                      "dropdownitem", "list-item", "option"))
     m = {"button": tag == "button" or typ in ("button", "submit") or role == "button",
          "link": tag == "a" or role == "link",
          "input": tag in ("input", "textarea") and typ not in ("button", "submit", "checkbox"),
          "select": tag == "select" or role in ("combobox", "listbox"),
          "checkbox": typ == "checkbox" or role in ("checkbox", "switch"),
-         "menuitem": role in ("menuitem", "option", "tab")}
+         "menuitem": role in ("menuitem", "option", "tab") or menu_cls}
     return bool(m.get(kind, False))
 
 
@@ -2589,6 +2684,38 @@ def _tiebreak_with_ai(intent, shortlist, cb):
     except Exception as e:
         cb(f"    tiebreak error: {str(e)[:60]}", "warn")
         return None
+
+
+def _to_locator(el):
+    """Pick the most STABLE locator for the SAVED test (generated Java), so it
+    survives re-renders. Order: data-testid > data-svgicon > stable id > name >
+    aria-label > short visible text > css path > xpath. Framework-generated ids
+    (PrimeNG pn_id_*, Angular/React, GUIDs) are skipped — they change every run."""
+    if not el:
+        return None
+    tid = (el.get("testid") or "").strip()
+    if tid:
+        return {"by": "css", "value": '[data-testid="%s"]' % tid}
+    svg = (el.get("svgicon") or "").strip()
+    if svg:
+        return {"by": "css", "value": '[data-svgicon="%s"]' % svg}
+    eid = (el.get("id") or "").strip()
+    if eid and not _VOLATILE_ID.search(eid):
+        return {"by": "id", "value": eid}
+    nm = (el.get("name") or "").strip()
+    if nm:
+        return {"by": "name", "value": nm}
+    al = (el.get("aria") or el.get("aname") or "").strip()
+    if al:
+        return {"by": "xpath", "value": "//*[@aria-label=%s]" % _xq(al)}
+    txt = (el.get("text") or "").strip()
+    if txt and len(txt) <= 40:
+        return {"by": "xpath",
+                "value": "//%s[normalize-space()=%s]" % (el.get("tag", "*"), _xq(txt))}
+    css = (el.get("css") or "")
+    if css and not _VOLATILE_ID.search(css):
+        return {"by": "css", "value": css}
+    return {"by": "xpath", "value": el.get("xpath", "")}
 
 
 def _match_step_to_element(action, elements, cb):
@@ -2717,15 +2844,8 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
         return (e.get("id"), e.get("name"), e.get("css"), e.get("xpath"))
 
     def to_locator(el):
-        if not el:
-            return None
-        if el.get("id"):
-            return {"by": "id", "value": el["id"]}
-        if el.get("name"):
-            return {"by": "name", "value": el["name"]}
-        if el.get("css"):
-            return {"by": "css", "value": el["css"]}
-        return {"by": "xpath", "value": el.get("xpath", "")}
+        """Stable locator strategy (module-level _to_locator, see there)."""
+        return _to_locator(el)
 
     def _dedup_reindex(els):
         """De-dup the merged snapshot union and assign fresh unique idx values,
@@ -2877,14 +2997,45 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                 cb(f"      type failed: {str(e)[:50]}", "warn"); return live
         if verb == "select":
             from selenium.webdriver.support.ui import Select
-            try:
-                Select(live).select_by_visible_text(value)
-            except Exception:
+            # native <select>
+            if (el_dict.get("tag") or "").lower() == "select":
                 try:
-                    Select(live).select_by_value(value)
+                    Select(live).select_by_visible_text(value); return live
                 except Exception:
-                    return _act(el_dict, "click", "", empty_ok)  # fall back to clicking it open
-            return live
+                    try:
+                        Select(live).select_by_value(value); return live
+                    except Exception:
+                        pass
+            # custom dropdown (PrimeNG/Material/etc.): open the trigger, then click
+            # the option whose visible text matches `value` (options render in an
+            # overlay appended to <body> only after opening).
+            self_open = _act(el_dict, "click", "", empty_ok)
+            _settle(timeout=3); _t.sleep(0.4)
+            want = _norm(value)
+            want_toks = [t for t in want.split(" ") if len(t) > 1]
+            best = None
+            for o in _harvest_dom(driver):
+                if not o.get("visible", True):
+                    continue
+                hay = _norm(" ".join(str(o.get(k, "")) for k in ("text", "aname", "aria")))
+                if not hay:
+                    continue
+                if (want and want in hay) or any(tok in hay for tok in want_toks) or hay in want:
+                    best = o; break
+            if best is not None:
+                lo = find_live(best)
+                if lo is not None:
+                    _flash(lo)
+                    try:
+                        lo.click()
+                    except Exception:
+                        try:
+                            driver.execute_script("arguments[0].click();", lo)
+                        except Exception:
+                            pass
+                    return lo
+            cb(f"      select: option '{value[:24]}' not found after opening", "warn")
+            return self_open or live
         # click / hover / navigate(default) — make it interception-proof
         if not _topmost_ok(live):
             if _dismiss_overlays():
@@ -3021,21 +3172,32 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                     abort_credit = True
                 return None
 
+        MIN_SCORE = 2.0   # below this, there is no real keyword/kind hit — don't
+                          # auto-bind (that's how a click landed on #pn_id_*_header)
+
         def bind_target(intent, pool):
             """Deterministic-first binding of an intent to a live element.
             Returns (element_or_None, source) with source in
             {'live','snapshot','guess'}. The AI is used ONLY to break ties among a
-            short candidate list — never to invent a locator."""
+            short candidate list — never to invent a locator. A weak best candidate
+            (below MIN_SCORE) is NOT taken silently: the AI may rescue it, else it
+            becomes a guess rather than a wrong click."""
             ranked = _rank_candidates(intent, pool)
-            if ranked:
+            if ranked and ranked[0][0] >= MIN_SCORE:
                 top = ranked[0][0]
                 second = ranked[1][0] if len(ranked) > 1 else 0.0
-                if len(ranked) == 1 or (top >= 2 and (top - second) >= 1):
+                if len(ranked) == 1 or (top - second) >= 1:
                     return ranked[0][1], "live"          # confident — no AI call
                 shortlist = [e for _, e in ranked[:5]]
                 chosen = _credit_guard(_tiebreak_with_ai, intent, shortlist, cb)
                 return (chosen or ranked[0][1]), "live"  # AI tie-break, else best deterministic
-            # nothing matched on this page → try the union of everything seen so far
+            if ranked:
+                # weak candidates only — let the AI decide from the shortlist; if it
+                # declines, fall through rather than clicking a low-confidence guess
+                chosen = _credit_guard(_tiebreak_with_ai, intent, [e for _, e in ranked[:5]], cb)
+                if chosen is not None:
+                    return chosen, "live"
+            # nothing solid on this page → try the union of everything seen so far
             union = _dedup_reindex(all_snapshots)
             if union:
                 q = intent.get("target") or " ".join(intent.get("keywords") or [])
@@ -3077,11 +3239,13 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                 steps = tc.get("steps", []) or []
                 ctype = _classify_case(tc)
                 is_neg = (ctype == "negative_login")
-                cb(f"  walking '{tc.get('title','')}'  [{ctype}]  ({len(steps)} steps)", "info")
+                pctx = _infer_page_context(tc, ctype)
+                cb(f"  walking '{tc.get('title','')}'  [{ctype} \u00b7 {pctx}-page]  "
+                   f"({len(steps)} steps)", "info")
 
                 # STAGE 1 — compile messy steps into typed intents (collapses
                 # restated/duplicate steps, routes preconditions away from clicks)
-                intents = _credit_guard(compile_test_case, tc, story, cb) or []
+                intents = _credit_guard(compile_test_case, tc, story, cb, ctype) or []
                 if not intents:
                     intents = _intents_from_raw_steps(tc)
                 n_act = sum(1 for it in intents if it["role"] == "action")
@@ -3089,10 +3253,12 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                 cb(f"    compiled \u2192 {n_act} action(s), {n_ass} assertion(s), "
                    f"{len(intents) - n_act - n_ass} precondition(s)", "dim")
 
-                # start page — a fresh login page for negative-login cases
-                if is_neg:
-                    cb("    \u21b3 negative-login case \u2014 walking on a fresh login page "
-                       "to capture error-state locators", "info")
+                # start page — login-page cases (incl. negative-login) walk on a
+                # FRESH logged-out login page, where the language dropdown exists;
+                # app cases walk on the authenticated page (single toggle).
+                if pctx == "login":
+                    cb(f"    \u21b3 {ctype} \u2014 walking on a fresh logged-out login "
+                       f"page (where the language dropdown lives)", "info")
                     if have_creds:
                         try:
                             driver.delete_all_cookies()
@@ -3104,7 +3270,7 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                         pass
                 else:
                     try:
-                        cb("    loading start page\u2026", "dim")
+                        cb("    loading start page (authenticated app)\u2026", "dim")
                         driver.get(site_url); _t.sleep(wait_secs)
                     except Exception:
                         pass
@@ -3174,10 +3340,10 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                        f"{' (left empty)' if empty_ok else ''}", "ok")
                     _settle(timeout=4); _t.sleep(0.6)
 
-                # restore the authenticated session after a negative-login case so
-                # later cases don't capture locators from the login page
-                if is_neg and have_creds and not (should_stop() or abort_credit):
-                    cb("    \u21b3 re-establishing login after negative-login case\u2026", "dim")
+                # restore the authenticated session after a login-page case so
+                # later app cases don't capture locators from the login page
+                if pctx == "login" and have_creds and not (should_stop() or abort_credit):
+                    cb("    \u21b3 re-establishing login after login-page case\u2026", "dim")
                     try:
                         ok2, reason2 = do_login(fresh=True)
                         cb(f"    \u21b3 re-login {'verified' if ok2 else 'NOT verified'} "
