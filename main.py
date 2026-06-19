@@ -125,12 +125,14 @@ def logo_img(size=38, fallback_icon=None, fallback_color="#FFFFFF"):
     b = _logo_b64()
     if b:
         img = None
-        # Flet builds differ: newer use src_base64, others want a data: URI in src.
+        # Prefer a data: URI in `src` — Flet caches images by their src string and
+        # does NOT re-decode on re-mount, so the logo no longer flickers when the
+        # page is rebuilt on each button click. src_base64 re-decodes every mount.
         try:
-            img = ft.Image(src_base64=b, width=size, height=size)
-        except TypeError:
+            img = ft.Image(src=f"data:image/png;base64,{b}", width=size, height=size)
+        except Exception:
             try:
-                img = ft.Image(src=f"data:image/png;base64,{b}", width=size, height=size)
+                img = ft.Image(src_base64=b, width=size, height=size)
             except Exception:
                 img = None
         if img is not None:
@@ -1140,16 +1142,28 @@ class QAStudio:
     }
 
     def _show_help(self, key):
-        # API-key help is provider-aware: show the SELECTED provider's instructions
-        if key == "api_key":
-            name = getattr(self, "_provider_choice", "anthropic")
+        # Both the AI-Provider and API-Key info icons are provider-aware: they show
+        # the SELECTED provider's instructions + the correct console URL.
+        if key in ("api_key", "provider"):
+            name = getattr(self, "_provider_choice", None) or "anthropic"
             how, url, label = self.PROVIDER_KEY_HELP.get(
                 name, self.PROVIDER_KEY_HELP["anthropic"])
-            h = {"title": f"{T.disp_name(name)} API Key",
-                 "steps": [f"{T.disp_name(name)}: {how}",
-                           "Copy the key and paste it here, then click Save.",
-                           "It is stored only on this device, per provider."],
-                 "url": url, "url_label": label}
+            if key == "provider":
+                h = {"title": f"Activating {T.disp_name(name)}",
+                     "steps": [
+                         f"A provider becomes 'active' once you save a valid {T.disp_name(name)} API key.",
+                         f"Get the key: {how}",
+                         "Paste it in the API Key field below, then click Save.",
+                         "The dropdown shows '(active)'. Then click Connect.",
+                         "Each provider stores its own key — switching keeps them all.",
+                     ],
+                     "url": url, "url_label": label}
+            else:
+                h = {"title": f"{T.disp_name(name)} API Key",
+                     "steps": [f"{T.disp_name(name)}: {how}",
+                               "Copy the key and paste it here, then click Save.",
+                               "It is stored only on this device, per provider."],
+                     "url": url, "url_label": label}
         else:
             h = self.HELP.get(key)
         if not h:
@@ -1990,13 +2004,19 @@ class QAStudio:
                 self._safe_render()
                 kok, kmsg = E.validate_api_key()
                 if not kok:
+                    prov = E.T_disp(E.AI_PROVIDER)
                     if kmsg == "auth":
-                        self._err(f"AI provider key rejected. Check your {E.AI_PROVIDER.upper()} "
-                                  f"API key is correct and active.")
+                        self._err(f"{prov}: API key rejected. Check the key is correct and active.")
                     elif kmsg == "network":
-                        self._err("Cannot reach the AI provider — check your network/firewall.")
+                        self._err(f"{prov}: cannot reach the provider — check your network/firewall.")
+                    elif kmsg.startswith("missing-package:"):
+                        pkg = kmsg.split(":", 1)[1]
+                        self._err(f"{prov}: the '{pkg}' package isn't installed. "
+                                  f"Re-run the installer or: pip install {pkg}")
+                    elif kmsg.startswith("error:"):
+                        self._err(f"{prov}: {kmsg.split(':', 1)[1]}")
                     else:
-                        self._err(f"AI provider key check failed: {kmsg}")
+                        self._err(f"{prov} key check failed: {kmsg}")
                     return
                 # 2) Validate the Azure PAT
                 self._connect_status = "Validating PAT & loading projects…"

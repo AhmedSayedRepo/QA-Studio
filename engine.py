@@ -144,26 +144,40 @@ def ai_complete(prompt_text, images=None, max_tokens=4096, timeout=None):
             from openai import OpenAI
             client = OpenAI(api_key=cfg["api_key"], base_url=cfg.get("base_url")) if cfg.get("base_url") \
                      else OpenAI(api_key=cfg["api_key"])
-            content = [{"type": "text", "text": prompt_text}]
-            for im in images:
-                content.append({"type": "image_url", "image_url": {
-                    "url": f"data:{im['media_type']};base64,{im['data']}"}})
-            resp = client.chat.completions.create(
-                model=cfg["model"], max_tokens=max_tokens, timeout=timeout,
-                messages=[{"role": "user", "content": content}])
+            if images:
+                content = [{"type": "text", "text": prompt_text}]
+                for im in images:
+                    content.append({"type": "image_url", "image_url": {
+                        "url": f"data:{im['media_type']};base64,{im['data']}"}})
+            else:
+                # text-only: send a plain string. Some providers (DeepSeek, Qwen,
+                # certain NVIDIA models) reject the [{"type":"text",...}] array form
+                # for non-vision models, which made every non-Anthropic provider
+                # fail at Connect.
+                content = prompt_text
+            kwargs = {"model": cfg["model"], "max_tokens": max_tokens,
+                      "messages": [{"role": "user", "content": content}]}
+            if timeout is not None:
+                kwargs["timeout"] = timeout
+            resp = client.chat.completions.create(**kwargs)
             return resp.choices[0].message.content
 
         elif provider == "azure_openai":
             from openai import AzureOpenAI
             client = AzureOpenAI(api_key=cfg["api_key"], azure_endpoint=cfg["endpoint"],
                                  api_version=cfg["api_version"])
-            content = [{"type": "text", "text": prompt_text}]
-            for im in images:
-                content.append({"type": "image_url", "image_url": {
-                    "url": f"data:{im['media_type']};base64,{im['data']}"}})
-            resp = client.chat.completions.create(
-                model=cfg["deployment"], max_tokens=max_tokens, timeout=timeout,
-                messages=[{"role": "user", "content": content}])
+            if images:
+                content = [{"type": "text", "text": prompt_text}]
+                for im in images:
+                    content.append({"type": "image_url", "image_url": {
+                        "url": f"data:{im['media_type']};base64,{im['data']}"}})
+            else:
+                content = prompt_text
+            kwargs = {"model": cfg["deployment"], "max_tokens": max_tokens,
+                      "messages": [{"role": "user", "content": content}]}
+            if timeout is not None:
+                kwargs["timeout"] = timeout
+            resp = client.chat.completions.create(**kwargs)
             return resp.choices[0].message.content
 
         elif provider == "gemini":
@@ -223,29 +237,37 @@ def validate_pat(pat):
 
 def validate_api_key():
     """Cheap check that the configured AI provider key works.
-    Returns (ok, message). Uses a tiny ai_complete call and maps auth errors."""
+    Returns (ok, message). Uses a tiny ai_complete call and maps auth errors.
+    The raw error text is preserved in `message` for non-auth failures so the UI
+    can show why a provider failed (wrong model, missing package, bad base_url…)."""
     try:
-        out = ai_complete("ping", max_tokens=5)
-        # Some providers return None/empty on success-but-no-content; only treat
-        # an exception as failure. A returned string (even empty) means auth passed.
+        out = ai_complete("ping", max_tokens=8)
         if out is None:
-            # ambiguous — try once more with a real token request
-            out = ai_complete("Reply with: ok", max_tokens=5)
+            out = ai_complete("Reply with: ok", max_tokens=8)
         return True, "ok"
-    except CreditBalanceError as e:
+    except CreditBalanceError:
         # key is valid but out of credits — let the user proceed/decide
         return True, "credit"
+    except ModuleNotFoundError as e:
+        # the provider's SDK isn't installed (e.g. openai / google-generativeai)
+        missing = str(e).split("'")[-2] if "'" in str(e) else str(e)
+        return False, f"missing-package:{missing}"
     except Exception as e:
         m = str(e).lower()
-        if ("401" in m or "403" in m or "invalid" in m or "unauthor" in m
-                or "forbidden" in m or "authentication" in m or "api key" in m
-                or "permission" in m or "x-api-key" in m):
+        # Only treat clear authentication signals as an auth failure. Anything else
+        # (invalid model, bad base_url, 404, JSON decode) is reported verbatim so
+        # the user can see the actual reason instead of a misleading 'key rejected'.
+        if ("401" in m or "invalid api key" in m or "incorrect api key" in m
+                or "unauthorized" in m or "authentication" in m
+                or "x-api-key" in m or "no api key" in m or "api key not" in m):
             return False, "auth"
-        if "429" in m or "rate" in m:
+        if "429" in m or "rate limit" in m:
             return True, "ratelimited"  # key valid, just throttled
-        if "connect" in m or "timeout" in m or "timed out" in m or "ssl" in m:
+        if ("connect" in m or "timed out" in m or "timeout" in m
+                or "ssl" in m or "getaddrinfo" in m or "name or service" in m):
             return False, "network"
-        return False, str(e)[:120]
+        # surface the real error (model not found, 404, base_url, etc.)
+        return False, "error:" + re.sub(r"\s+", " ", str(e)).strip()[:160]
 
 
 def fetch_projects(pat=None):
