@@ -57,7 +57,7 @@ def field_label(text, req=False, hint=None, info=None, info_url=None, on_info=No
             ft.Text(hint, size=10, color=T.INK_3, weight=ft.FontWeight.BOLD),
             padding=ft.Padding.symmetric(vertical=2, horizontal=7),
             bgcolor=T.CARD_2, border_radius=10, margin=ft.Margin.only(left=4)))
-    return ft.Row(parts, spacing=4, tight=True,
+    return ft.Row(parts, spacing=4, tight=True, height=24,
                   vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
 def _btn_shadow(color_rgb, alpha=0.55):
@@ -1595,6 +1595,19 @@ class QAStudio:
             shadow=(_btn_shadow(T.GREEN, 0.5) if _sum_enabled else None))
         _summary_row = self._summary_shadow
 
+        # Open-in-Azure button beside the Test Plan ID (refreshed in _on_plan_change)
+        self._open_plan_btn = ft.IconButton(
+            ft.Icons.OPEN_IN_NEW, icon_size=17,
+            icon_color=(T.VIOLET_INK if self.plan_id else T.INK_3),
+            tooltip=("Open this test plan in Azure DevOps"
+                     if self.plan_id else "Select a test plan first"),
+            disabled=not bool(self.plan_id),
+            on_click=lambda e: self._open_azure(),
+            style=ft.ButtonStyle(
+                bgcolor={"": T.VIOLET_SOFT} if self.plan_id else {"": T.CARD_2},
+                shape=ft.RoundedRectangleBorder(radius=T.R)),
+            width=46, height=46)
+
         rows = [
             sec_head("3", "Task",
                      ft.Row([ft.Icon(ft.Icons.ARROW_FORWARD, size=13, color=T.INK_3),
@@ -1610,7 +1623,11 @@ class QAStudio:
                            ft.Container(self.plan_dd, padding=ft.Padding.only(top=4))],
                           expand=1, spacing=0),
                 ft.Column([field_label("Test Plan ID", hint="auto"),
-                           ft.Container(self.plan_id_field, padding=ft.Padding.only(top=4))],
+                           ft.Container(
+                               ft.Row([self.plan_id_field, self._open_plan_btn],
+                                      spacing=8,
+                                      vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                               padding=ft.Padding.only(top=4))],
                           expand=1, spacing=0),
             ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.START),
             ft.Container(height=12),
@@ -1669,6 +1686,18 @@ class QAStudio:
             if hasattr(self, "plan_id_field"):
                 self.plan_id_field.value = str(self.plan_id)
                 self.plan_id_field.update(); updated_any = True
+        except Exception:
+            pass
+        # Enable/recolor the Open-in-Azure button now that a plan is chosen
+        try:
+            if hasattr(self, "_open_plan_btn"):
+                self._open_plan_btn.disabled = False
+                self._open_plan_btn.icon_color = T.VIOLET_INK
+                self._open_plan_btn.tooltip = "Open this test plan in Azure DevOps"
+                self._open_plan_btn.style = ft.ButtonStyle(
+                    bgcolor={"": T.VIOLET_SOFT},
+                    shape=ft.RoundedRectangleBorder(radius=T.R))
+                self._open_plan_btn.update(); updated_any = True
         except Exception:
             pass
         # Enable/recolor the Sprint Summary button now that a plan is chosen
@@ -3404,13 +3433,20 @@ class QAStudio:
 
         gen_disabled = self._auto_running or not ready
         if self._auto_running:
-            # While running, show a Stop button instead of Generate
-            gen_btn = ft.Row([ft.FilledButton(
-                "Stop", icon=ft.Icons.STOP_CIRCLE_OUTLINED, expand=True,
-                on_click=lambda e: self._stop_automation(),
-                style=ft.ButtonStyle(bgcolor={"": T.RED}, color={"": "#FFFFFF"},
+            # While running, show a polished full-width Stop button instead of Generate
+            _stop_btn = ft.FilledButton(
+                content=ft.Row(
+                    [ft.Icon(ft.Icons.STOP_CIRCLE, size=18, color="#FFFFFF"),
+                     ft.Text("Stop generation", size=14, weight=ft.FontWeight.BOLD,
+                             color="#FFFFFF")],
+                    spacing=9, tight=True,
+                    alignment=ft.MainAxisAlignment.CENTER),
+                height=46, on_click=lambda e: self._stop_automation(),
+                style=ft.ButtonStyle(
+                    bgcolor={"": T.RED}, color={"": "#FFFFFF"}, elevation=0,
                     shape=ft.RoundedRectangleBorder(radius=T.R),
-                    padding=ft.Padding.symmetric(vertical=14)))], spacing=0)
+                    padding=ft.Padding.symmetric(horizontal=18, vertical=0)))
+            gen_btn = _shadow_wrap(_stop_btn, T.RED, 0.55, True)
         else:
             gen_btn = primary_btn(
                 "Generate automation scripts",

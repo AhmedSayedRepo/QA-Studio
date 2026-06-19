@@ -1,433 +1,439 @@
-"""installer.py — QA Studio graphical installer.
+"""installer.py — QA Studio graphical installer (modern web UI).
 
-Zero external dependencies (uses only Python's stdlib tkinter), so it can run
-before any pip packages are installed. It:
-  1. Verifies pip is available
-  2. Installs everything in requirements.txt with a live progress bar + %
-  3. Creates a Desktop shortcut with the app icon
-  4. Offers to launch the app
+Zero external dependencies: uses only Python's standard library (http.server,
+webbrowser, subprocess), so it runs BEFORE `pip install` — it cannot depend on
+Flet/Qt/etc. because those aren't installed yet. Instead of tkinter, it spins up
+a tiny localhost web server and opens a polished HTML/CSS interface in the user's
+default browser, streaming live install progress over Server-Sent Events.
 
-UI redesign: light header with the QA Studio logo, a 3-step checklist, a slim
-violet progress bar, a refined dark log console, and Ready → Installing → Done
-states — matching the app + email visual language.
+Run:  python installer.py
 """
+
 import os
 import sys
+import json
+import time
+import queue
+import socket
 import threading
 import subprocess
-import tkinter as tk
-from tkinter import ttk
+import webbrowser
+import base64
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 APP_NAME = "QA Studio"
 APP_VER  = "v1.4"
 HERE = os.path.dirname(os.path.abspath(__file__))
 REQ_FILE = os.path.join(HERE, "requirements.txt")
-MAIN_PY = os.path.join(HERE, "main.py")
+MAIN_PY  = os.path.join(HERE, "main.py")
 ICON_ICO = os.path.join(HERE, "app.ico")
-LOGO_PNG = next((os.path.join(HERE, n) for n in ("qa-logo.png", "app.png")
-                 if os.path.exists(os.path.join(HERE, n))), "")
-LOGO_FULL_PNG = (os.path.join(HERE, "qa-logo-full.png")
-                if os.path.exists(os.path.join(HERE, "qa-logo-full.png")) else "")
 
-# Brand palette (matches theme.py / the email design)
-PAPER     = "#F4F3F8"
-CARD      = "#FFFFFF"
-TINT      = "#FAFAFC"
-VIOLET    = "#6A4DFF"
-VIOLET_H  = "#5C3FF2"
-VIOLET_INK= "#5234E0"
-VIOLET_SOFT="#EEEAFF"
-INK       = "#1B1A22"
-INK_2     = "#6B6975"
-INK_3     = "#9C9AA6"
-GREEN     = "#1F8A52"
-GREEN_H   = "#188044"
-GREEN_SOFT= "#E7F4ED"
-RED       = "#D6414A"
-AMBER     = "#AB780C"
-AMBER_SOFT= "#F7EFD8"
-LINE      = "#E7E6EE"
-LINE_2    = "#F0EFF5"
-LOG_BG    = "#16151C"      # dark log surface
-LOG_TOP   = "#1E1D26"
-LOG_DIM   = "#6B697A"
-LOG_OK    = "#5BD99A"
-LOG_ERR   = "#FF7A80"
-LOG_WARN  = "#E7B450"
-LOG_INFO  = "#9B86FF"
-LOG_INK   = "#B7B5C4"
-
-# ASCII-safe spinner (avoids UTF-8 corruption across editors/transfers)
-SPIN = ["|", "/", "-", "\\"]
-
-# Step glyphs / colors per state
-DOT_WAIT = ("\u25CB", INK_3)     # ○
-DOT_ACTIVE = ("\u25CF", VIOLET_INK)  # ●
-DOT_DONE = ("\u2713", GREEN)     # ✓
+# ── Brand palette (matches theme.py / the app + emails) ───────────────────────
+PALETTE = {
+    "paper": "#F4F3F8", "card": "#FFFFFF", "tint": "#FAFAFC",
+    "ink": "#1B1A22", "ink2": "#6B6975", "ink3": "#9C9AA6",
+    "line": "#E7E6EE", "line2": "#F0EFF5",
+    "violet": "#3A57D6", "violetH": "#2C44BE", "violetInk": "#2940C2",
+    "violetSoft": "#E7ECFF", "grad1": "#1C80E0", "grad2": "#6A33A8",
+    "green": "#1F8A52", "greenSoft": "#E7F4ED",
+    "red": "#D6414A", "amber": "#AB780C",
+}
 
 
-def _round_points(x1, y1, x2, y2, r):
-    return [x1+r, y1, x2-r, y1, x2, y1, x2, y1+r, x2, y2-r, x2, y2,
-            x2-r, y2, x1+r, y2, x1, y2, x1, y2-r, x1, y1+r, x1, y1]
-
-
-class RoundedButton(tk.Canvas):
-    """A flat, rounded-rectangle button (Tkinter has no native rounded buttons)."""
-    def __init__(self, parent, text="", command=None, fill=VIOLET, hover=VIOLET_H,
-                 fg="#FFFFFF", height=50, radius=13,
-                 font=("Segoe UI Semibold", 11, "bold"), bg=PAPER):
-        super().__init__(parent, height=height, bg=bg, highlightthickness=0, bd=0)
-        self._command = command
-        self._fill = fill; self._hover = hover; self._fg = fg
-        self._radius = radius; self._font = font; self._text = text
-        self._enabled = True; self._cur = fill
-        self.bind("<Configure>", lambda e: self._draw())
-        self.bind("<Button-1>", self._on_click)
-        self.bind("<Enter>", self._on_enter)
-        self.bind("<Leave>", self._on_leave)
-
-    def _draw(self):
-        self.delete("all")
-        w = self.winfo_width(); h = self.winfo_height()
-        if w <= 1:
-            return
-        pts = _round_points(1, 1, w - 1, h - 1, self._radius)
-        self.create_polygon(pts, smooth=True, splinesteps=24,
-                            fill=self._cur, outline=self._cur)
-        self.create_text(w / 2, h / 2, text=self._text, fill=self._fg, font=self._font)
-
-    def _on_click(self, e):
-        if self._enabled and self._command:
-            self._command()
-
-    def _on_enter(self, e):
-        if self._enabled:
-            self._cur = self._hover; self.config(cursor="hand2"); self._draw()
-
-    def _on_leave(self, e):
-        self._cur = self._fill; self.config(cursor=""); self._draw()
-
-    def set(self, text=None, fill=None, hover=None, fg=None, command=None, enabled=None):
-        if text is not None: self._text = text
-        if fill is not None: self._fill = fill; self._cur = fill
-        if hover is not None: self._hover = hover
-        if fg is not None: self._fg = fg
-        if command is not None: self._command = command
-        if enabled is not None: self._enabled = enabled
-        self._draw()
-
-
-class Installer:
-    def __init__(self, root):
-        self.root = root
-        self.root.title(f"{APP_NAME} Setup")
-        self.root.configure(bg=PAPER)
-        self.root.resizable(False, False)
-        try:
-            if os.path.exists(ICON_ICO):
-                self.root.iconbitmap(ICON_ICO)
-        except Exception:
-            pass
-
-        W, H = 540, 720
-        sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
-        self.root.geometry(f"{W}x{H}+{(sw-W)//2}+{(sh-H)//2}")
-        self.root.minsize(W, H)
-
-        self._pct = 0.0
-        self._target = 0.0
-        self._spin_i = 0
-        self._running = False
-        self._logo_img = None
-        self._steps = []   # list of (dot_label, text_label, meta_label)
-
-        # thin violet accent line
-        tk.Frame(self.root, bg=VIOLET, height=3).pack(fill="x", side="top")
-
-        # ── Header: full QA Studio logo lockup (mark + wordmark) ────────────
-        header = tk.Frame(self.root, bg=PAPER)
-        header.pack(fill="x", side="top", padx=28, pady=(16, 0))
-
-        if LOGO_FULL_PNG:
+def _logo_data_uri():
+    for name in ("qa-logo-full.png", "qa-logo.png", "app.png"):
+        p = os.path.join(HERE, name)
+        if os.path.exists(p):
             try:
-                img = tk.PhotoImage(file=LOGO_FULL_PNG)
-                f = max(1, round(img.height() / 132))
-                self._logo_img = img.subsample(f, f)
+                with open(p, "rb") as f:
+                    b = base64.b64encode(f.read()).decode("ascii")
+                return f"data:image/png;base64,{b}"
             except Exception:
-                self._logo_img = None
-        if self._logo_img is not None:
-            tk.Label(header, image=self._logo_img, bg=PAPER).pack(anchor="center")
+                pass
+    return ""
+
+
+# ── Event bus (worker → browser via SSE), with replay buffer ──────────────────
+_EVENTS = []
+_COND = threading.Condition()
+_STATE = {"started": False, "finished": False, "ok": False}
+
+
+def emit(ev):
+    with _COND:
+        _EVENTS.append(ev)
+        _COND.notify_all()
+
+
+# ── Install worker ────────────────────────────────────────────────────────────
+def _run(cmd, lo, hi, progress):
+    """Stream a subprocess to the log; nudge progress between lo..hi."""
+    nice = " ".join(os.path.basename(c) if i == 0 else c for i, c in enumerate(cmd))
+    emit({"type": "log", "tone": "dim", "msg": "> " + nice})
+    cur = lo
+    try:
+        flags = 0x08000000 if os.name == "nt" else 0
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True,
+                                creationflags=flags)
+        for line in proc.stdout:
+            line = line.rstrip()
+            if not line:
+                continue
+            low = line.lower()
+            tone = "dim"
+            if "error" in low or "failed" in low:
+                tone = "err"
+            elif "warning" in low or "not on path" in low:
+                tone = "warn"
+            elif "successfully installed" in low or "satisfied" in low:
+                tone = "ok"
+            emit({"type": "log", "tone": tone, "msg": line})
+            if cur < hi:
+                cur = min(hi, cur + 0.8)
+                emit({"type": "progress", "value": round(cur)})
+        proc.wait()
+        return proc.returncode
+    except Exception as e:
+        emit({"type": "log", "tone": "err", "msg": f"ERROR: {e}"})
+        return 1
+
+
+def _make_shortcut(py):
+    if os.name != "nt":
+        return
+    try:
+        pythonw = os.path.join(os.path.dirname(py), "pythonw.exe")
+        if not os.path.exists(pythonw):
+            pythonw = py
+        desktop = os.path.join(os.path.expanduser("~"), "Desktop")
+        lnk = os.path.join(desktop, f"{APP_NAME}.lnk")
+        icon = ICON_ICO if os.path.exists(ICON_ICO) else pythonw
+        ps = (
+            "$ws = New-Object -ComObject WScript.Shell; "
+            f"$s = $ws.CreateShortcut('{lnk}'); "
+            f"$s.TargetPath = '{pythonw}'; "
+            f"$s.Arguments = '\"{MAIN_PY}\"'; "
+            f"$s.WorkingDirectory = '{HERE}'; "
+            f"$s.IconLocation = '{icon}'; "
+            f"$s.Description = '{APP_NAME} — AI Test Case Generator'; "
+            "$s.Save()"
+        )
+        subprocess.run(["powershell", "-NoProfile", "-Command", ps],
+                       creationflags=0x08000000, check=False)
+        emit({"type": "log", "tone": "ok", "msg": "Desktop shortcut created."})
+    except Exception as e:
+        emit({"type": "log", "tone": "warn", "msg": f"Shortcut note: {e}"})
+
+
+def _work():
+    py = sys.executable
+
+    emit({"type": "status", "title": "Installing\u2026",
+          "desc": "Setting up QA Studio. You can watch progress below \u2014 this only takes a moment."})
+    emit({"type": "step", "i": 0, "state": "active", "meta": "running"})
+    emit({"type": "progress", "value": 10})
+    _run([py, "-m", "pip", "install", "--upgrade", "pip"], 10, 22, None)
+
+    emit({"type": "step", "i": 0, "state": "done", "meta": "done"})
+    emit({"type": "step", "i": 1, "state": "active", "meta": "working"})
+    emit({"type": "progress", "value": 30})
+    code = _run([py, "-m", "pip", "install", "-r", REQ_FILE], 30, 88, None)
+    if code != 0:
+        emit({"type": "step", "i": 1, "state": "error", "meta": "failed"})
+        emit({"type": "fail",
+              "msg": "Dependency installation failed. Check your internet connection and try again."})
+        _STATE["finished"] = True
+        return
+
+    emit({"type": "step", "i": 1, "state": "done", "meta": "done"})
+    emit({"type": "step", "i": 2, "state": "active", "meta": "working"})
+    emit({"type": "progress", "value": 94})
+    _make_shortcut(py)
+
+    emit({"type": "step", "i": 2, "state": "done", "meta": "done"})
+    emit({"type": "progress", "value": 100})
+    emit({"type": "done"})
+    _STATE["finished"] = True
+    _STATE["ok"] = True
+
+
+def _launch_app():
+    try:
+        pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+        if not os.path.exists(pythonw):
+            pythonw = sys.executable
+        flags = 0x08000000 if os.name == "nt" else 0
+        subprocess.Popen([pythonw, MAIN_PY], cwd=HERE, creationflags=flags)
+    except Exception:
+        pass
+
+
+# ── HTML UI ───────────────────────────────────────────────────────────────────
+def _page():
+    P = PALETTE
+    logo = _logo_data_uri()
+    logo_html = ("<img src='" + logo + "' alt='QA Studio' style='height:118px;display:block'/>"
+                 if logo else
+                 "<div style='font:800 26px Segoe UI;color:" + P["violetInk"] + "'>QA STUDIO</div>")
+    html = _PAGE_TMPL
+    for k, v in P.items():
+        html = html.replace("__" + k.upper() + "__", v)
+    html = html.replace("__LOGO__", logo_html)
+    html = html.replace("__APP__", APP_NAME)
+    return html
+
+
+_PAGE_TMPL = """<!doctype html><html lang="en"><head>
+<meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>__APP__ Setup</title>
+<style>
+:root{
+  --paper:__PAPER__;--card:__CARD__;--tint:__TINT__;
+  --ink:__INK__;--ink2:__INK2__;--ink3:__INK3__;
+  --line:__LINE__;--line2:__LINE2__;
+  --violet:__VIOLET__;--violetH:__VIOLETH__;--violetInk:__VIOLETINK__;
+  --violetSoft:__VIOLETSOFT__;--grad1:__GRAD1__;--grad2:__GRAD2__;
+  --green:__GREEN__;--greenSoft:__GREENSOFT__;--red:__RED__;--amber:__AMBER__;
+  --ui:'Segoe UI Variable','Segoe UI',system-ui,Roboto,sans-serif;
+  --mono:'Cascadia Code',Consolas,'JetBrains Mono',monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--paper);font-family:var(--ui);color:var(--ink);
+  min-height:100vh;display:flex;align-items:center;justify-content:center;padding:30px 16px}
+.win{width:640px;max-width:96vw;background:var(--paper);border-radius:16px;overflow:hidden;
+  box-shadow:0 40px 90px -30px rgba(20,16,40,.45),0 0 0 1px rgba(20,16,40,.05)}
+.accent{height:4px;background:linear-gradient(90deg,var(--grad1),var(--violet),var(--grad2))}
+.head{text-align:center;padding:28px 36px 6px;display:flex;flex-direction:column;align-items:center}
+.head .tagline{font-size:13px;font-weight:600;color:var(--ink2);margin-top:10px}
+.divider{height:1px;background:var(--line);margin:22px 36px}
+.body{padding:0 36px 30px}
+.lead{font-size:17px;font-weight:800;color:var(--ink);margin:0}
+.leadsub{font-size:13px;font-weight:500;color:var(--ink2);margin:7px 0 0;line-height:1.55}
+.steps{margin:20px 0 4px;border:1px solid var(--line);border-radius:12px;background:var(--card);overflow:hidden}
+.step{display:flex;align-items:center;gap:13px;padding:13px 16px;border-top:1px solid var(--line2)}
+.step:first-child{border-top:0}
+.step .dot{width:24px;height:24px;border-radius:50%;flex:0 0 24px;display:grid;place-items:center;
+  font-size:13px;font-weight:800}
+.step.wait .dot{background:var(--line2);color:var(--ink3)}
+.step.active .dot{background:var(--violetSoft);color:var(--violetInk)}
+.step.done .dot{background:var(--greenSoft);color:var(--green)}
+.step.error .dot{background:#FBE7E8;color:var(--red)}
+.step .stext{font-size:13.5px;font-weight:600;color:var(--ink)}
+.step.wait .stext{color:var(--ink3);font-weight:500}
+.step .smeta{margin-left:auto;font-family:var(--mono);font-size:11px;font-weight:600;color:var(--ink3)}
+.step.active .smeta{color:var(--violetInk)}
+.step.done .smeta{color:var(--green)}
+.progwrap{margin:22px 0 6px;display:none}
+.progwrap.show{display:block}
+.progtop{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:9px}
+.progtop .lbl{font-size:12.5px;font-weight:600;color:var(--ink2)}
+.progtop .pct{font-family:var(--mono);font-size:15px;font-weight:800;color:var(--violetInk)}
+.track{height:8px;border-radius:99px;background:#E5E3EE;overflow:hidden}
+.fill{height:100%;border-radius:99px;width:0%;
+  background:linear-gradient(90deg,var(--violet),#6276E8);transition:width .5s ease;
+  box-shadow:0 0 12px -2px rgba(58,87,214,.6)}
+.console{margin-top:18px;background:#15151F;border:1px solid #2A2A38;border-radius:12px;overflow:hidden;display:none}
+.console.show{display:block}
+.console .ctop{display:flex;align-items:center;gap:7px;padding:9px 14px;background:#1D1D29;border-bottom:1px solid #2A2A38}
+.console .ctop .cd{width:9px;height:9px;border-radius:50%}
+.console .ctop .lbl{margin-left:6px;font-family:var(--mono);font-size:10.5px;font-weight:600;color:#7E7C8C}
+.console .lines{padding:12px 16px;max-height:200px;overflow-y:auto;font-family:var(--mono);font-size:11.5px;line-height:1.85}
+.console .lines::-webkit-scrollbar{width:8px}
+.console .lines::-webkit-scrollbar-thumb{background:#34343F;border-radius:8px}
+.cl{white-space:pre-wrap;color:#B7B5C4}
+.cl.ok{color:#5BD99A}.cl.err{color:#FF8A8F}.cl.warn{color:#F2C94C}.cl.dim{color:#6B6979}
+.actions{display:flex;gap:12px;margin-top:24px;align-items:center}
+.btn{height:48px;border-radius:12px;border:0;cursor:pointer;font:800 14px var(--ui);
+  display:inline-flex;align-items:center;justify-content:center;gap:9px;transition:background .15s,transform .05s}
+.btn:active{transform:translateY(1px)}
+.btn svg{width:17px;height:17px}
+.btn-primary{flex:1;background:var(--violet);color:#fff;box-shadow:0 10px 22px -10px rgba(58,87,214,.9)}
+.btn-primary:hover{background:var(--violetH)}
+.btn-primary[disabled]{background:#BFC6E8;box-shadow:none;cursor:default}
+.btn-green{background:var(--green);color:#fff;box-shadow:0 10px 22px -10px rgba(31,138,82,.85)}
+.btn-green:hover{background:#188044}
+.done-note{display:flex;align-items:center;gap:9px;font-size:13px;font-weight:700;color:var(--green)}
+.done-note.err{color:var(--red)}
+.done-note svg{width:18px;height:18px}
+</style></head>
+<body>
+<div class="win">
+  <div class="accent"></div>
+  <div class="head">__LOGO__<div class="tagline">AI-powered Azure DevOps test-case generator</div></div>
+  <div class="divider"></div>
+  <div class="body">
+    <p class="lead" id="lead">Ready to install</p>
+    <p class="leadsub" id="leadsub">This installs the Python packages QA Studio needs and adds a Desktop shortcut so you can launch it any time. Takes about a minute.</p>
+
+    <div class="steps" id="steps">
+      <div class="step wait" data-i="0"><span class="dot">1</span><span class="stext">Check Python &amp; upgrade pip</span><span class="smeta">~5s</span></div>
+      <div class="step wait" data-i="1"><span class="dot">2</span><span class="stext">Install required packages</span><span class="smeta"></span></div>
+      <div class="step wait" data-i="2"><span class="dot">3</span><span class="stext">Create Desktop shortcut</span><span class="smeta"></span></div>
+    </div>
+
+    <div class="progwrap" id="progwrap">
+      <div class="progtop"><span class="lbl" id="proglbl">Installing&hellip;</span><span class="pct" id="pct">0%</span></div>
+      <div class="track"><div class="fill" id="fill"></div></div>
+    </div>
+
+    <div class="console" id="console">
+      <div class="ctop"><span class="cd" style="background:#FF5F57"></span><span class="cd" style="background:#FEBC2E"></span><span class="cd" style="background:#28C840"></span><span class="lbl">install log</span></div>
+      <div class="lines" id="lines"></div>
+    </div>
+
+    <div class="actions" id="actions">
+      <button class="btn btn-primary" id="install" onclick="startInstall()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>
+        Install __APP__
+      </button>
+    </div>
+  </div>
+</div>
+
+<script>
+const $=s=>document.querySelector(s);
+const APP="__APP__";
+function setStep(i,state,meta){
+  const el=document.querySelector('.step[data-i="'+i+'"]'); if(!el)return;
+  el.className='step '+state;
+  const dot=el.querySelector('.dot');
+  if(state==='done')dot.innerHTML='&#10003;';
+  else if(state==='error')dot.innerHTML='&#10005;';
+  else dot.textContent=String(i+1);
+  if(meta!=null)el.querySelector('.smeta').textContent=meta;
+}
+function logLine(tone,msg){
+  const box=$('#lines');const d=document.createElement('div');
+  d.className='cl '+(tone||'dim');d.textContent=msg;box.appendChild(d);
+  box.scrollTop=box.scrollHeight;
+}
+function setProgress(v){$('#fill').style.width=v+'%';$('#pct').textContent=Math.round(v)+'%';}
+function startInstall(){
+  $('#install').disabled=true;$('#install').innerHTML='Installing&hellip;';
+  $('#progwrap').classList.add('show');$('#console').classList.add('show');
+  fetch('/install',{method:'POST'});
+}
+function onDone(){
+  $('#lead').textContent='Installation complete';$('#lead').style.color='var(--green)';
+  $('#leadsub').textContent='QA Studio is ready. A shortcut has been added to your Desktop.';
+  $('#proglbl').textContent='All set';
+  $('#actions').innerHTML=
+    '<div class="done-note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8 12l3 3 5-6"/></svg>Setup finished successfully</div>'+
+    '<button class="btn btn-green" style="flex:0 0 auto;padding:0 26px" onclick="launch()">Launch '+APP+' &rarr;</button>';
+}
+function onFail(msg){
+  $('#lead').textContent='Installation failed';$('#lead').style.color='var(--red)';
+  $('#leadsub').textContent=msg||'Something went wrong.';
+  $('#actions').innerHTML=
+    '<div class="done-note err"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>Install failed</div>'+
+    '<button class="btn btn-primary" style="flex:0 0 auto;padding:0 24px" onclick="retry()">Retry</button>';
+}
+function launch(){
+  fetch('/launch',{method:'POST'});
+  setTimeout(function(){document.body.innerHTML='<div style="font:600 15px var(--ui);color:#6B6975;text-align:center">QA Studio is launching&hellip; you can close this tab.</div>';},400);
+}
+function retry(){location.reload();}
+window.addEventListener('beforeunload',function(){try{navigator.sendBeacon('/shutdown');}catch(e){}});
+
+const es=new EventSource('/events');
+es.onmessage=function(e){
+  if(!e.data)return;var ev;try{ev=JSON.parse(e.data);}catch(_){return;}
+  if(ev.type==='log')logLine(ev.tone,ev.msg);
+  else if(ev.type==='progress')setProgress(ev.value);
+  else if(ev.type==='step')setStep(ev.i,ev.state,ev.meta);
+  else if(ev.type==='status'){if(ev.title)$('#lead').textContent=ev.title;if(ev.desc)$('#leadsub').textContent=ev.desc;}
+  else if(ev.type==='done')onDone();
+  else if(ev.type==='fail')onFail(ev.msg);
+};
+</script>
+</body></html>"""
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *a):  # silence console noise
+        pass
+
+    def _send(self, code, body, ctype="text/html; charset=utf-8"):
+        data = body.encode("utf-8") if isinstance(body, str) else body
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        try:
+            self.wfile.write(data)
+        except Exception:
+            pass
+
+    def do_GET(self):
+        if self.path in ("/", "/index.html"):
+            self._send(200, _page())
+        elif self.path == "/events":
+            self._sse()
         else:
-            tk.Label(header, text=APP_NAME, bg=PAPER, fg=INK,
-                     font=("Segoe UI Semibold", 20, "bold")).pack(anchor="center")
-        tk.Label(header, text="AI-powered Azure DevOps test-case generator",
-                 bg=PAPER, fg=INK_2, font=("Segoe UI", 10)).pack(anchor="center", pady=(4, 0))
+            self._send(404, "not found", "text/plain")
 
-        # divider
-        tk.Frame(self.root, bg=LINE, height=1).pack(fill="x", padx=28, pady=(18, 0))
+    def do_POST(self):
+        if self.path == "/install":
+            if not _STATE["started"]:
+                _STATE["started"] = True
+                threading.Thread(target=_work, daemon=True).start()
+            self._send(200, "ok", "text/plain")
+        elif self.path == "/launch":
+            _launch_app()
+            self._send(200, "ok", "text/plain")
+            threading.Thread(target=self._delayed_shutdown, args=(0.8,), daemon=True).start()
+        elif self.path == "/shutdown":
+            self._send(200, "ok", "text/plain")
+            # Only shut down once the install is finished, so an accidental
+            # navigation mid-install doesn't kill the process.
+            if _STATE["finished"]:
+                threading.Thread(target=self._delayed_shutdown, args=(0.3,), daemon=True).start()
+        else:
+            self._send(404, "not found", "text/plain")
 
-        # ── Footer button (pinned bottom; packed before body) ───────────────
-        footer = tk.Frame(self.root, bg=PAPER)
-        footer.pack(fill="x", side="bottom", padx=28, pady=(0, 22))
-        self.btn = RoundedButton(footer, text="Install QA Studio",
-                                 command=self.start_install,
-                                 fill=VIOLET, hover=VIOLET_H, fg="#FFFFFF",
-                                 height=50, radius=13)
-        self.btn.pack(fill="x")
-        self._btn_idle = VIOLET
-
-        # ── Body ────────────────────────────────────────────────────────────
-        body = tk.Frame(self.root, bg=PAPER)
-        body.pack(fill="both", expand=True, side="top", padx=28, pady=(18, 6))
-
-        # lead + spinner
-        trow = tk.Frame(body, bg=PAPER)
-        trow.pack(fill="x")
-        self.title_lbl = tk.Label(trow, text="Ready to install", bg=PAPER, fg=INK,
-                                  font=("Segoe UI Semibold", 14, "bold"), anchor="w")
-        self.title_lbl.pack(side="left")
-        self.spin_lbl = tk.Label(trow, text="", bg=PAPER, fg=VIOLET,
-                                 font=("Consolas", 16, "bold"))
-        self.spin_lbl.pack(side="right")
-
-        self.desc_lbl = tk.Label(body,
-            text="This sets up the Python packages QA Studio needs and adds a\n"
-                 "Desktop shortcut so you can launch it any time.",
-            bg=PAPER, fg=INK_2, font=("Segoe UI", 10), anchor="w", justify="left")
-        self.desc_lbl.pack(fill="x", pady=(6, 0))
-
-        # ── Steps checklist card ────────────────────────────────────────────
-        card = tk.Frame(body, bg=CARD, highlightthickness=1, highlightbackground=LINE)
-        card.pack(fill="x", pady=(16, 0))
-        steps_def = [
-            ("Check Python & environment", "~5s"),
-            ("Install required packages", "5 pkgs"),
-            ("Create Desktop shortcut", ""),
-        ]
-        for i, (label, meta) in enumerate(steps_def):
-            if i > 0:
-                tk.Frame(card, bg=LINE_2, height=1).pack(fill="x")
-            row = tk.Frame(card, bg=CARD)
-            row.pack(fill="x", padx=14, pady=11)
-            dot = tk.Label(row, text=DOT_WAIT[0], fg=DOT_WAIT[1], bg=CARD,
-                           font=("Segoe UI", 13, "bold"), width=2)
-            dot.pack(side="left")
-            txt = tk.Label(row, text=label, bg=CARD, fg=INK_3,
-                           font=("Segoe UI", 11), anchor="w")
-            txt.pack(side="left", padx=(6, 0))
-            mt = tk.Label(row, text=meta, bg=CARD, fg=INK_3,
-                          font=("Consolas", 9), anchor="e")
-            mt.pack(side="right")
-            self._steps.append((dot, txt, mt))
-
-        # ── Progress bar + percentage ───────────────────────────────────────
-        prow = tk.Frame(body, bg=PAPER)
-        prow.pack(fill="x", pady=(20, 4))
-        style = ttk.Style()
+    def _sse(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+        idx = 0
         try:
-            style.theme_use("clam")
+            while True:
+                with _COND:
+                    while idx >= len(_EVENTS):
+                        if not _COND.wait(timeout=15):
+                            break
+                    pending = _EVENTS[idx:]
+                    idx = len(_EVENTS)
+                if pending:
+                    for ev in pending:
+                        self.wfile.write(f"data: {json.dumps(ev)}\n\n".encode("utf-8"))
+                    self.wfile.flush()
+                else:
+                    self.wfile.write(b": ping\n\n")
+                    self.wfile.flush()
+        except Exception:
+            return
+
+    def _delayed_shutdown(self, delay):
+        time.sleep(delay)
+        try:
+            self.server.shutdown()
         except Exception:
             pass
-        style.configure("QA.Horizontal.TProgressbar", troughcolor="#E5E3EE",
-                        background=VIOLET, bordercolor="#E5E3EE",
-                        lightcolor=VIOLET, darkcolor=VIOLET, thickness=8)
-        self.bar = ttk.Progressbar(prow, style="QA.Horizontal.TProgressbar",
-                                   mode="determinate", maximum=100, length=380)
-        self.bar.pack(side="left", fill="x", expand=True)
-        self.pct_lbl = tk.Label(prow, text="0%", bg=PAPER, fg=VIOLET_INK,
-                                font=("Consolas", 13, "bold"), width=5, anchor="e")
-        self.pct_lbl.pack(side="right", padx=(12, 0))
+        os._exit(0)
 
-        self.status_lbl = tk.Label(body, text="", bg=PAPER, fg=INK_3,
-                                   font=("Segoe UI", 9), anchor="w")
-        self.status_lbl.pack(fill="x")
 
-        # ── Dark log console ────────────────────────────────────────────────
-        console = tk.Frame(body, bg=LOG_BG, highlightthickness=1,
-                           highlightbackground="#2A2933")
-        console.pack(fill="both", expand=True, pady=(14, 0))
-        ctop = tk.Frame(console, bg=LOG_TOP, height=30)
-        ctop.pack(fill="x")
-        ctop.pack_propagate(False)
-        for c in ("#FF5F57", "#FEBC2E", "#28C840"):
-            tk.Label(ctop, text="\u25CF", fg=c, bg=LOG_TOP,
-                     font=("Segoe UI", 8)).pack(side="left", padx=(8 if c == "#FF5F57" else 1, 0))
-        tk.Label(ctop, text="install log", fg=LOG_DIM, bg=LOG_TOP,
-                 font=("Consolas", 9)).pack(side="left", padx=(8, 0))
-        self.log = tk.Text(console, height=6, bg=LOG_BG, fg=LOG_INK,
-                           font=("Consolas", 9), relief="flat", wrap="word",
-                           state="disabled", padx=12, pady=10, bd=0,
-                           insertbackground=LOG_INK)
-        self.log.pack(fill="both", expand=True)
-        for tag, col in (("dim", LOG_DIM), ("ok", LOG_OK), ("err", LOG_ERR),
-                         ("warn", LOG_WARN), ("info", LOG_INFO), ("ink", LOG_INK)):
-            self.log.tag_configure(tag, foreground=col)
-        self._log("$ Ready \u2014 click \u201cInstall QA Studio\u201d to begin.", "dim")
-
-        self._animate()  # start the smooth bar + spinner loop
-
-    # ── step state helper ───────────────────────────────────────────────────
-    def _step(self, i, state, meta=None):
-        if i < 0 or i >= len(self._steps):
-            return
-        dot, txt, mt = self._steps[i]
-        glyph, col = {"wait": DOT_WAIT, "active": DOT_ACTIVE, "done": DOT_DONE}[state]
-        dot.config(text=glyph, fg=col)
-        txt.config(fg=(INK if state != "wait" else INK_3),
-                   font=("Segoe UI", 11, "bold") if state != "wait" else ("Segoe UI", 11))
-        if meta is not None:
-            mt.config(text=meta, fg=(VIOLET_INK if state == "active" else INK_3))
-
-    # ── animation loop (runs on main thread via after) ─────────────────────
-    def _animate(self):
-        if self._pct < self._target:
-            self._pct = min(self._target, self._pct + max(0.4, (self._target - self._pct) * 0.18))
-        self.bar["value"] = self._pct
-        self.pct_lbl.config(text=f"{int(round(self._pct))}%")
-        if self._running:
-            self._spin_i = (self._spin_i + 1) % len(SPIN)
-            self.spin_lbl.config(text=SPIN[self._spin_i])
-        self.root.after(60, self._animate)
-
-    # ── UI helpers ──────────────────────────────────────────────────────────
-    def _set(self, target=None, status=None, title=None, desc=None):
-        if target is not None:
-            self._target = float(target)
-        if status is not None:
-            self.status_lbl.config(text=status)
-        if title is not None:
-            self.title_lbl.config(text=title)
-        if desc is not None:
-            self.desc_lbl.config(text=desc)
-
-    def _log(self, line, tag="ink"):
-        self.log.config(state="normal")
-        self.log.insert("end", line.rstrip() + "\n", tag)
-        self.log.see("end")
-        self.log.config(state="disabled")
-
-    def ui(self, fn):
-        self.root.after(0, fn)
-
-    # ── Install flow (worker thread) ─────────────────────────────────────────
-    def start_install(self):
-        self._running = True
-        self.btn.set(text="Installing\u2026", fill="#C9C2E8", hover="#C9C2E8", enabled=False)
-        threading.Thread(target=self._work, daemon=True).start()
-
-    def _work(self):
-        py = sys.executable
-
-        self.ui(lambda: (self._step(0, "active", "running"),
-                         self._set(target=10, title="Installing\u2026",
-                                   desc="Setting up QA Studio. You can watch progress below.",
-                                   status="Checking environment & upgrading pip\u2026")))
-        self._run([py, "-m", "pip", "install", "--upgrade", "pip"], 10, 22)
-
-        self.ui(lambda: (self._step(0, "done", "done"),
-                         self._step(1, "active", "working"),
-                         self._set(target=30, status="Installing packages — this can take a few minutes\u2026")))
-        code = self._run([py, "-m", "pip", "install", "-r", REQ_FILE], 30, 88)
-        if code != 0:
-            self.ui(lambda: self._fail("Dependency installation failed.\n"
-                                       "Check your internet connection and try again."))
-            return
-
-        self.ui(lambda: (self._step(1, "done", "done"),
-                         self._step(2, "active", "working"),
-                         self._set(target=94, status="Creating Desktop shortcut\u2026")))
-        self._make_shortcut(py)
-
-        self.ui(lambda: (self._step(2, "done", "done"),
-                         self._set(target=100, status="")))
-        self.ui(self._done)
-
-    def _run(self, cmd, lo, hi):
-        """Stream a subprocess to the log; nudge target between lo..hi."""
-        nice = " ".join(os.path.basename(c) if i == 0 else c for i, c in enumerate(cmd))
-        self.ui(lambda: self._log("> " + nice, "dim"))
-        try:
-            flags = 0x08000000 if os.name == "nt" else 0
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
-                                    stderr=subprocess.STDOUT, text=True,
-                                    creationflags=flags)
-            for line in proc.stdout:
-                line = line.rstrip()
-                if not line:
-                    continue
-                low = line.lower()
-                tag = "dim"
-                if "error" in low or "failed" in low:
-                    tag = "err"
-                elif "warning" in low or "not on path" in low:
-                    tag = "warn"
-                elif "successfully installed" in low or "satisfied" in low:
-                    tag = "ok"
-                self.ui(lambda l=line, t=tag: self._log(l, t))
-                if self._target < hi:
-                    self.ui(lambda: setattr(self, "_target", min(hi, self._target + 0.8)))
-            proc.wait()
-            return proc.returncode
-        except Exception as e:
-            self.ui(lambda: self._log(f"ERROR: {e}", "err"))
-            return 1
-
-    def _make_shortcut(self, py):
-        if os.name != "nt":
-            return
-        try:
-            pythonw = os.path.join(os.path.dirname(py), "pythonw.exe")
-            if not os.path.exists(pythonw):
-                pythonw = py
-            desktop = os.path.join(os.path.expanduser("~"), "Desktop")
-            lnk = os.path.join(desktop, f"{APP_NAME}.lnk")
-            icon = ICON_ICO if os.path.exists(ICON_ICO) else pythonw
-            ps = (
-                "$ws = New-Object -ComObject WScript.Shell; "
-                f"$s = $ws.CreateShortcut('{lnk}'); "
-                f"$s.TargetPath = '{pythonw}'; "
-                f"$s.Arguments = '\"{MAIN_PY}\"'; "
-                f"$s.WorkingDirectory = '{HERE}'; "
-                f"$s.IconLocation = '{icon}'; "
-                f"$s.Description = '{APP_NAME} — AI Test Case Generator'; "
-                "$s.Save()"
-            )
-            subprocess.run(["powershell", "-NoProfile", "-Command", ps],
-                          creationflags=0x08000000, check=False)
-            self.ui(lambda: self._log("Desktop shortcut created.", "ok"))
-        except Exception as e:
-            self.ui(lambda: self._log(f"Shortcut note: {e}", "warn"))
-
-    def _done(self):
-        self._running = False
-        self._target = 100
-        self.spin_lbl.config(text="\u2713", fg=GREEN)
-        self._set(title="Installation complete", status="",
-                  desc="QA Studio is ready. A shortcut was added to your Desktop.")
-        self.title_lbl.config(fg=GREEN)
-        self._btn_idle = GREEN
-        self.btn.set(text="Launch QA Studio  \u2192", fill=GREEN, hover=GREEN_H,
-                     enabled=True, command=self._launch)
-
-    def _fail(self, msg):
-        self._running = False
-        self.spin_lbl.config(text="\u2715", fg=RED)
-        self._set(title="Installation failed", desc=msg, status="")
-        self.title_lbl.config(fg=RED)
-        self._btn_idle = VIOLET
-        self.btn.set(text="Retry", fill=VIOLET, hover=VIOLET_H,
-                     enabled=True, command=self.start_install)
-
-    def _launch(self):
-        try:
-            pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
-            if not os.path.exists(pythonw):
-                pythonw = sys.executable
-            flags = 0x08000000 if os.name == "nt" else 0
-            subprocess.Popen([pythonw, MAIN_PY], cwd=HERE, creationflags=flags)
-        except Exception:
-            pass
-        self.root.after(400, self.root.destroy)
+def _free_port():
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
 
 
 def _acquire_single_instance():
@@ -457,22 +463,16 @@ def main():
     lock = _acquire_single_instance()
     if lock is None:
         return
-    root = tk.Tk()
-    Installer(root)
-
-    def _cleanup():
-        try:
-            import tempfile
-            lock.close()
-            os.remove(os.path.join(tempfile.gettempdir(), "qastudio_installer.lock"))
-        except Exception:
-            pass
-
-    root.protocol("WM_DELETE_WINDOW", lambda: (_cleanup(), root.destroy()))
+    port = _free_port()
+    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    url = f"http://127.0.0.1:{port}/"
+    threading.Thread(target=lambda: webbrowser.open(url), daemon=True).start()
+    print(f"{APP_NAME} installer running at {url}")
+    print("If a browser tab didn't open, paste that address into your browser.")
     try:
-        root.mainloop()
-    finally:
-        _cleanup()
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
 
 
 if __name__ == "__main__":
