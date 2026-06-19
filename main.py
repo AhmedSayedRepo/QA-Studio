@@ -117,18 +117,27 @@ def logo_img(size=38, fallback_icon=None, fallback_color="#FFFFFF"):
     Avoids ft.ImageFit / Image.border_radius hard deps (absent in some Flet builds)."""
     b = _logo_b64()
     if b:
-        img = ft.Image(src_base64=b, width=size, height=size)
-        _fit = getattr(ft, "ImageFit", None)
-        if _fit is not None and hasattr(_fit, "CONTAIN"):
+        img = None
+        # Flet builds differ: newer use src_base64, others want a data: URI in src.
+        try:
+            img = ft.Image(src_base64=b, width=size, height=size)
+        except TypeError:
             try:
-                img.fit = _fit.CONTAIN
+                img = ft.Image(src=f"data:image/png;base64,{b}", width=size, height=size)
+            except Exception:
+                img = None
+        if img is not None:
+            _fit = getattr(ft, "ImageFit", None)
+            if _fit is not None and hasattr(_fit, "CONTAIN"):
+                try:
+                    img.fit = _fit.CONTAIN
+                except Exception:
+                    pass
+            try:
+                img.border_radius = int(size * 0.29)
             except Exception:
                 pass
-        try:
-            img.border_radius = int(size * 0.29)
-        except Exception:
-            pass
-        return img
+            return img
     return ft.Icon(fallback_icon or ft.Icons.SCIENCE_OUTLINED,
                    color=fallback_color, size=int(size * 0.55))
 
