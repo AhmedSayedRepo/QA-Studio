@@ -717,15 +717,15 @@ class QAStudio:
             ], spacing=10)
         else:
             update_btn = ft.Container(
-                ft.FilledButton(
-                    "Update now", icon=ft.Icons.DOWNLOAD,
-                    on_click=lambda e: self._do_update(),
-                    style=ft.ButtonStyle(
-                        bgcolor={"": "#FFFFFF"}, color={"": T.VIOLET_INK},
-                        elevation=0,
-                        shape=ft.RoundedRectangleBorder(radius=T.R_SM),
-                        padding=ft.Padding.symmetric(horizontal=16, vertical=9))),
-                border_radius=T.R_SM,
+                ft.Row([
+                    ft.Icon(ft.Icons.DOWNLOAD, size=16, color=T.VIOLET_INK),
+                    ft.Text("Update now", size=13, color=T.VIOLET_INK,
+                            weight=ft.FontWeight.BOLD),
+                ], spacing=8, tight=True),
+                bgcolor="#FFFFFF", border_radius=T.R_SM,
+                padding=ft.Padding.symmetric(horizontal=18, vertical=11),
+                on_click=lambda e: self._do_update(), ink=True,
+                tooltip="Download and install the latest version",
                 shadow=ft.BoxShadow(blur_radius=14, spread_radius=-4,
                                     offset=ft.Offset(0, 4),
                                     color=ft.Colors.with_opacity(0.30, "#160F2E")))
