@@ -1,26 +1,38 @@
-"""theme.py — design tokens ported from the Claude Design system (styles.css)."""
+"""theme.py — design tokens ported from the Claude Design system (styles.css).
+
+Brand palette re-tuned to the QA Studio logo: an azure→royal-purple gradient.
+The single primary is an indigo that bridges both ends of that gradient, so the
+UI reads as one family with the mark. Variable names are kept (VIOLET*, etc.)
+so call sites elsewhere don't change — only the values moved to indigo-blue.
+"""
 
 # ── Colors ────────────────────────────────────────────────────────────────────
-BG        = "#FBFBFD"
+BG        = "#FAFBFE"
 CARD      = "#FFFFFF"
-CARD_2    = "#F6F5FA"
-BORDER    = "#E8E7EE"
-BORDER_2  = "#EEEDF3"
-INK       = "#1B1A22"
-INK_2     = "#74727E"
-INK_3     = "#A3A1AD"
+CARD_2    = "#F4F6FB"
+BORDER    = "#E6E8F1"
+BORDER_2  = "#EDEFF6"
+INK       = "#181A24"
+INK_2     = "#6E7180"
+INK_3     = "#9FA2B2"
 
-RAIL      = "#17151E"
-RAIL_2    = "#201D2A"
-RAIL_LINE = "#2A2733"
-RAIL_INK  = "#ECEAF2"
-RAIL_DIM  = "#8B8896"
+# Dark sidebar — deep indigo-navy (echoes the blue end of the logo gradient)
+RAIL      = "#121529"
+RAIL_2    = "#1B1F3A"
+RAIL_LINE = "#272C49"
+RAIL_INK  = "#EAECF7"
+RAIL_DIM  = "#878BA8"
 
-VIOLET      = "#6A4DFF"
-VIOLET_H    = "#5A3DEE"
-VIOLET_SOFT = "#ECE8FF"
-VIOLET_INK  = "#5234E0"
-STORY       = "#7C5CFF"
+# Brand — indigo primary (logo gradient midpoint) + its tints
+VIOLET      = "#3A57D6"   # primary (buttons, nav active, accents)
+VIOLET_H    = "#2C44BE"   # hover / pressed
+VIOLET_SOFT = "#E7ECFF"   # soft fill behind icons / badges
+VIOLET_INK  = "#2940C2"   # text on soft fills
+STORY       = "#6A52F0"   # story / log accent (leans to the purple end)
+
+# Logo gradient endpoints — use for brand fills (tile fallbacks, hero accents)
+BRAND_GRAD_1 = "#1C80E0"  # azure
+BRAND_GRAD_2 = "#6A33A8"  # royal purple
 
 GREEN       = "#1F9D57"; GREEN_SOFT = "#E5F6EC"
 RED         = "#E0474D"; RED_SOFT   = "#FCEBEC"

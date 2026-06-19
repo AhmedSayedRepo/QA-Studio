@@ -93,6 +93,46 @@ def _wrap_btn(btn, expand):
     btn.expand = True               # fill the Row horizontally
     return ft.Row([btn], spacing=0) # Row height = button's fixed height (no vertical flex)
 
+# ── Brand logo (loaded once as base64 so it works without an assets_dir) ──────
+_LOGO_B64 = None
+def _logo_b64():
+    global _LOGO_B64
+    if _LOGO_B64 is None:
+        _LOGO_B64 = ""
+        try:
+            import os, base64
+            here = os.path.dirname(os.path.abspath(__file__))
+            for name in ("app.png", "qa-logo.png"):
+                p = os.path.join(here, name)
+                if os.path.exists(p):
+                    with open(p, "rb") as f:
+                        _LOGO_B64 = base64.b64encode(f.read()).decode("ascii")
+                    break
+        except Exception:
+            _LOGO_B64 = ""
+    return _LOGO_B64
+
+def logo_img(size=38, fallback_icon=None, fallback_color="#FFFFFF"):
+    """Brand logo as an ft.Image; falls back to an icon if the file is missing.
+    Avoids ft.ImageFit / Image.border_radius hard deps (absent in some Flet builds)."""
+    b = _logo_b64()
+    if b:
+        img = ft.Image(src_base64=b, width=size, height=size)
+        _fit = getattr(ft, "ImageFit", None)
+        if _fit is not None and hasattr(_fit, "CONTAIN"):
+            try:
+                img.fit = _fit.CONTAIN
+            except Exception:
+                pass
+        try:
+            img.border_radius = int(size * 0.29)
+        except Exception:
+            pass
+        return img
+    return ft.Icon(fallback_icon or ft.Icons.SCIENCE_OUTLINED,
+                   color=fallback_color, size=int(size * 0.55))
+
+
 def primary_btn(text, icon=None, on_click=None, expand=False, disabled=False):
     btn = ft.FilledButton(
         text, icon=icon, on_click=on_click, disabled=disabled, height=46,
@@ -343,8 +383,9 @@ class QAStudio:
                     padding=ft.Padding.only(left=16, top=14, bottom=2)),
                 ft.Container(
                     ft.Row([
-                        ft.Container(ft.Icon(ft.Icons.SCIENCE_OUTLINED, color="#FFFFFF", size=20),
-                                     width=38, height=38, bgcolor=T.VIOLET, border_radius=11,
+                        ft.Container(logo_img(38),
+                                     width=38, height=38,
+                                     bgcolor=(None if _logo_b64() else T.VIOLET), border_radius=11,
                                      alignment=ft.Alignment.CENTER),
                         ft.Column([
                             ft.Text("QA Studio", size=15, weight=ft.FontWeight.BOLD, color=T.RAIL_INK),
@@ -666,23 +707,42 @@ class QAStudio:
                 ft.Text("Updating…", size=12.5, color="#FFFFFF", weight=ft.FontWeight.BOLD),
             ], spacing=10)
         else:
+            update_btn = ft.Container(
+                ft.FilledButton(
+                    "Update now", icon=ft.Icons.DOWNLOAD,
+                    on_click=lambda e: self._do_update(),
+                    style=ft.ButtonStyle(
+                        bgcolor={"": "#FFFFFF"}, color={"": T.VIOLET_INK},
+                        elevation=0,
+                        shape=ft.RoundedRectangleBorder(radius=T.R_SM),
+                        padding=ft.Padding.symmetric(horizontal=16, vertical=9))),
+                border_radius=T.R_SM,
+                shadow=ft.BoxShadow(blur_radius=14, spread_radius=-4,
+                                    offset=ft.Offset(0, 4),
+                                    color=ft.Colors.with_opacity(0.30, "#160F2E")))
             inner = ft.Row([
-                ft.Icon(ft.Icons.SYSTEM_UPDATE_ALT, size=18, color="#FFFFFF"),
-                ft.Text(f"A new version of QA Studio is available "
-                        f"(v{remote} · you have v{local}).",
-                        size=12.5, color="#FFFFFF", weight=ft.FontWeight.BOLD, expand=True),
-                ft.FilledButton("Update now", icon=ft.Icons.DOWNLOAD,
-                                on_click=lambda e: self._do_update(),
-                                style=ft.ButtonStyle(
-                                    bgcolor={"": "#FFFFFF"}, color={"": T.VIOLET_INK},
-                                    shape=ft.RoundedRectangleBorder(radius=T.R_SM),
-                                    padding=ft.Padding.symmetric(horizontal=14, vertical=6))),
-                ft.IconButton(ft.Icons.CLOSE, icon_size=16, icon_color="#FFFFFF",
+                ft.Container(ft.Icon(ft.Icons.SYSTEM_UPDATE_ALT, size=17, color="#FFFFFF"),
+                             width=32, height=32, border_radius=9,
+                             bgcolor=ft.Colors.with_opacity(0.18, "#FFFFFF"),
+                             alignment=ft.Alignment.CENTER),
+                ft.Column([
+                    ft.Text("Update available", size=12.5, color="#FFFFFF",
+                            weight=ft.FontWeight.BOLD),
+                    ft.Text(f"Version {remote} is ready \u2014 you\u2019re on {local}",
+                            size=11, weight=ft.FontWeight.W_500,
+                            color=ft.Colors.with_opacity(0.82, "#FFFFFF")),
+                ], spacing=1, expand=True),
+                update_btn,
+                ft.IconButton(ft.Icons.CLOSE, icon_size=16,
+                              icon_color=ft.Colors.with_opacity(0.85, "#FFFFFF"),
                               tooltip="Dismiss",
                               on_click=lambda e: self._dismiss_update()),
-            ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+            ], spacing=13, vertical_alignment=ft.CrossAxisAlignment.CENTER)
         return ft.Container(inner, bgcolor=T.VIOLET,
-                            padding=ft.Padding.symmetric(horizontal=18, vertical=10))
+                            padding=ft.Padding.symmetric(horizontal=18, vertical=11),
+                            shadow=ft.BoxShadow(blur_radius=18, spread_radius=-6,
+                                                offset=ft.Offset(0, 6),
+                                                color=ft.Colors.with_opacity(0.30, T.VIOLET)))
 
     def _dismiss_update(self):
         self._update_dismissed = True
@@ -1040,11 +1100,6 @@ class QAStudio:
         h = self.HELP.get(key)
         if not h:
             return
-        self._render_help(h)
-
-    def _render_help(self, h):
-        if not h:
-            return
         step_rows = []
         for i, s in enumerate(h["steps"], 1):
             step_rows.append(ft.Row([
@@ -1080,111 +1135,6 @@ class QAStudio:
             actions=[primary_btn("Got it", on_click=lambda e: self._close_dialog())],
             actions_alignment=ft.MainAxisAlignment.END)
         self._show_dialog(dlg)
-
-    # ---- per-provider key help (changes with the selected AI provider) ----
-    PROVIDER_HELP = {
-        "anthropic": {
-            "title": "Anthropic (Claude) API key",
-            "steps": [
-                "Sign in at console.anthropic.com → Settings → API Keys → Create Key.",
-                "Copy the key (starts with sk-ant-), paste it below, and click Save.",
-                "Paid: needs a credit balance on your Anthropic account.",
-                "Default model: claude-sonnet-4-6.",
-            ],
-            "url": "https://console.anthropic.com/settings/keys",
-            "url_label": "Open Anthropic Console",
-        },
-        "openai": {
-            "title": "OpenAI API key",
-            "steps": [
-                "Sign in at platform.openai.com → API keys → Create new secret key.",
-                "Copy the key (sk-…), paste it below, and click Save.",
-                "Paid pay-as-you-go; billing must be set up on the account.",
-                "Default model: gpt-4o.",
-            ],
-            "url": "https://platform.openai.com/api-keys",
-            "url_label": "Open OpenAI API keys",
-        },
-        "gemini": {
-            "title": "Google Gemini API key",
-            "steps": [
-                "Open Google AI Studio → Get API key → Create API key.",
-                "Copy it, paste it below, and click Save.",
-                "Has a free tier with rate limits, then pay-as-you-go.",
-                "Default model: gemini-1.5-pro.",
-            ],
-            "url": "https://aistudio.google.com/apikey",
-            "url_label": "Open Google AI Studio",
-        },
-        "azure_openai": {
-            "title": "Azure OpenAI key",
-            "steps": [
-                "In the Azure portal, open your Azure OpenAI resource.",
-                "Go to Keys and Endpoint → copy KEY 1 and the endpoint.",
-                "Paste the key below; set endpoint / deployment / api-version in engine config.",
-                "Billed through your Azure subscription.",
-            ],
-            "url": "https://portal.azure.com",
-            "url_label": "Open Azure portal",
-        },
-        "ollama": {
-            "title": "Ollama (local, no key)",
-            "steps": [
-                "Ollama runs models locally — no API key required.",
-                "Install from ollama.com, then run:  ollama pull llama3.1.",
-                "Leave the key blank; it serves at http://localhost:11434.",
-                "Free and offline; speed depends on your hardware.",
-            ],
-            "url": "https://ollama.com/download",
-            "url_label": "Open Ollama downloads",
-        },
-        "nvidia": {
-            "title": "NVIDIA API key",
-            "steps": [
-                "Sign in at build.nvidia.com → your profile → API Keys → Generate.",
-                "Copy the key (nvapi-…), paste it below, and click Save.",
-                "Free starter credits; OpenAI-compatible endpoint.",
-            ],
-            "url": "https://build.nvidia.com",
-            "url_label": "Open NVIDIA build",
-        },
-        "deepseek": {
-            "title": "DeepSeek API key",
-            "steps": [
-                "Sign in at platform.deepseek.com → API keys → Create new API key.",
-                "Copy it (shown once!), paste below, and click Save.",
-                "New accounts get a free token grant; you may need to top up after.",
-                "Model: deepseek-chat (switch to deepseek-v4-flash after 2026-07-24).",
-            ],
-            "url": "https://platform.deepseek.com/api_keys",
-            "url_label": "Open DeepSeek API keys",
-        },
-        "qwen": {
-            "title": "Qwen (Alibaba Model Studio) API key",
-            "steps": [
-                "Activate Alibaba Cloud Model Studio and pick your region "
-                "(International / Singapore for Egypt).",
-                "Open API Key (Key Management) → Create API Key.",
-                "Copy it (sk-…), paste below, and Save. Keys are region-specific.",
-                "New accounts get limited trial credits. Model: qwen-plus.",
-            ],
-            "url": "https://www.alibabacloud.com/help/en/model-studio/get-api-key",
-            "url_label": "How to get a Qwen key",
-        },
-    }
-
-    def _show_provider_help(self, e=None):
-        """Show key-setup help for the CURRENTLY selected AI provider, so the
-        info icon beside 'AI Provider' tracks whatever provider is chosen."""
-        name = getattr(self, "_provider_choice", None) or self.current_provider()
-        h = self.PROVIDER_HELP.get(name)
-        if not h:
-            # graceful fallback for any provider without a dedicated entry
-            h = {"title": f"{T.disp_name(name)} API key",
-                 "steps": ["Get an API key from this provider's console, paste it "
-                           "below, and click Save."],
-                 "url": None}
-        self._render_help(h)
 
     # ---- connection: editable (not connected) ----
     def _connection_edit(self):
@@ -1254,8 +1204,8 @@ class QAStudio:
         self.sender_btn = green_btn("Save", on_click=self._save_sender) if sender_editable                      else ghost_btn("Update", on_click=self._unlock_sender)
 
         return ft.Column([
-            field_label("AI Provider", req=True, info="How to get this provider's API key",
-                        on_info=self._show_provider_help),
+            field_label("AI Provider", req=True, info="How to make a provider active",
+                        on_info=lambda e: self._show_help("provider")),
             ft.Container(self.prov_dd, padding=ft.Padding.only(top=4, bottom=12)),
             field_label("Azure Organization", req=True,
                         info="How to find your Azure organization name",
@@ -1494,25 +1444,9 @@ class QAStudio:
         self.plan_id_field = ft.TextField(
             value=(str(self.plan_id) if self.plan_id else ""), read_only=True,
             hint_text="— none —", bgcolor=T.CARD_2, color=T.VIOLET_INK,
-            tooltip=(f"Test Plan ID: {self.plan_id} · click Open to view in Azure DevOps"
-                     if self.plan_id else None),
+            tooltip=(f"Test Plan ID: {self.plan_id}" if self.plan_id else None),
             text_size=13, border_color=T.BORDER, border_radius=T.R,
             content_padding=ft.Padding.symmetric(vertical=12, horizontal=10), expand=True)
-
-        # "Open in Azure DevOps" button beside the Test Plan ID. The click handler
-        # is always attached and guards on plan_id, so it stays valid across the
-        # in-place updates done in _on_plan_change (no full re-render needed).
-        self.plan_open_icon = ft.Icon(
-            ft.Icons.OPEN_IN_NEW, size=16,
-            color=(T.VIOLET_INK if self.plan_id else T.INK_3))
-        self.plan_open_btn = ft.Container(
-            self.plan_open_icon, width=46, height=44,
-            alignment=ft.Alignment.CENTER,
-            bgcolor=(T.VIOLET_SOFT if self.plan_id else T.CARD_2),
-            border_radius=T.R, border=ft.Border.all(1, T.BORDER),
-            tooltip=(f"Open plan #{self.plan_id} in Azure DevOps" if self.plan_id
-                     else "Select a test plan first"),
-            on_click=self._open_plan, ink=True)
 
         # Story IDs: editable comma field + in-place chip preview (no full re-render)
         self._chip_row = ft.Row([], wrap=True, spacing=6, run_spacing=6)
@@ -1645,7 +1579,12 @@ class QAStudio:
                 side=(None if _sum_enabled else ft.BorderSide(1, T.BORDER)),
                 padding=ft.Padding.symmetric(horizontal=16, vertical=0)))
         self._summary_btn.expand = True
-        _summary_row = ft.Row([self._summary_btn], spacing=0)
+        # Match Create Plan: carry a green drop shadow when enabled; none when disabled.
+        self._summary_shadow = ft.Container(
+            ft.Row([self._summary_btn], spacing=0),
+            border_radius=T.R, expand=True,
+            shadow=(_btn_shadow(T.GREEN, 0.5) if _sum_enabled else None))
+        _summary_row = self._summary_shadow
 
         rows = [
             sec_head("3", "Task",
@@ -1662,9 +1601,7 @@ class QAStudio:
                            ft.Container(self.plan_dd, padding=ft.Padding.only(top=4))],
                           expand=1, spacing=0),
                 ft.Column([field_label("Test Plan ID", hint="auto"),
-                           ft.Container(ft.Row([self.plan_id_field, self.plan_open_btn],
-                                               spacing=8),
-                                        padding=ft.Padding.only(top=4))],
+                           ft.Container(self.plan_id_field, padding=ft.Padding.only(top=4))],
                           expand=1, spacing=0),
             ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.START),
             ft.Container(height=12),
@@ -1733,6 +1670,12 @@ class QAStudio:
                     bgcolor={"": T.GREEN}, color={"": "#FFFFFF"}, elevation=0,
                     shape=ft.RoundedRectangleBorder(radius=T.R),
                     padding=ft.Padding.symmetric(horizontal=16, vertical=0))
+                if hasattr(self, "_summary_shadow"):
+                    self._summary_shadow.shadow = _btn_shadow(T.GREEN, 0.5)
+                    try:
+                        self._summary_shadow.update()
+                    except Exception:
+                        pass
                 self._summary_btn.update(); updated_any = True
         except Exception:
             pass
@@ -1743,33 +1686,10 @@ class QAStudio:
                 self._sum_plan.update(); updated_any = True
         except Exception:
             pass
-        # Light up the "open plan in Azure DevOps" button now a plan is chosen
-        try:
-            if hasattr(self, "plan_open_btn"):
-                self.plan_open_icon.color = T.VIOLET_INK
-                self.plan_open_btn.bgcolor = T.VIOLET_SOFT
-                self.plan_open_btn.tooltip = f"Open plan #{self.plan_id} in Azure DevOps"
-                self.plan_open_btn.update(); updated_any = True
-        except Exception:
-            pass
         self._fetch_estimate()
         # Fall back to a full render only if we couldn't patch in place
         if not updated_any:
             self.render()
-
-    def _plan_url(self):
-        """Azure DevOps deep link to the selected test plan, or None."""
-        if not (self.project and self.plan_id):
-            return None
-        return (f"https://dev.azure.com/{E.AZURE_ORG}/{self.project}"
-                f"/_testPlans/define?planId={self.plan_id}")
-
-    def _open_plan(self, e=None):
-        """Open the selected test plan in the browser (Azure DevOps Test Plans)."""
-        u = self._plan_url()
-        if not u:
-            self._err("Select a test plan first."); return
-        self._open_url(u)
 
     def _fetch_estimate(self):
         """Fetch the real number of test cases across selected stories (steps mode).
@@ -2364,9 +2284,10 @@ class QAStudio:
 
         dlg = ft.AlertDialog(
             modal=True,
-            title=ft.Row([ft.Icon(ft.Icons.SUMMARIZE_OUTLINED, color=T.VIOLET_INK, size=20),
+            title=ft.Row([ft.Container(logo_img(24, ft.Icons.SUMMARIZE_OUTLINED, T.VIOLET_INK),
+                                       width=24, height=24, alignment=ft.Alignment.CENTER),
                           ft.Text("Sprint Summary", weight=ft.FontWeight.BOLD, size=16)],
-                         spacing=8, tight=True),
+                         spacing=9, tight=True),
             content=ft.Container(
                 ft.Column([ft.Container(body_col, expand=True), email_bar],
                           spacing=4, tight=False),
@@ -2399,10 +2320,16 @@ class QAStudio:
 
                 # Header line
                 header = ft.Column([
-                    ft.Text(data["plan_name"], size=15, weight=ft.FontWeight.BOLD, color=T.INK),
+                    ft.Row([ft.Container(
+                        ft.Text("SPRINT SNAPSHOT", size=10, weight=ft.FontWeight.BOLD,
+                                color=T.VIOLET_INK),
+                        bgcolor=T.VIOLET_SOFT, border_radius=20,
+                        padding=ft.Padding.symmetric(vertical=4, horizontal=11))], tight=True),
+                    ft.Container(height=8),
+                    ft.Text(data["plan_name"], size=18, weight=ft.FontWeight.BOLD, color=T.INK),
                     ft.Text(data["iteration"] or "—", size=11, color=T.INK_3,
                             weight=ft.FontWeight.BOLD, font_family=T.F_MONO),
-                ], spacing=2)
+                ], spacing=2, horizontal_alignment=ft.CrossAxisAlignment.START)
 
                 # Stat tiles: total stories + total test cases
                 tiles = ft.Row([

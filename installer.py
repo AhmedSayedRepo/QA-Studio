@@ -6,6 +6,10 @@ before any pip packages are installed. It:
   2. Installs everything in requirements.txt with a live progress bar + %
   3. Creates a Desktop shortcut with the app icon
   4. Offers to launch the app
+
+UI redesign: light header with the QA Studio logo, a 3-step checklist, a slim
+violet progress bar, a refined dark log console, and Ready → Installing → Done
+states — matching the app + email visual language.
 """
 import os
 import sys
@@ -15,43 +19,109 @@ import tkinter as tk
 from tkinter import ttk
 
 APP_NAME = "QA Studio"
+APP_VER  = "v1.4"
 HERE = os.path.dirname(os.path.abspath(__file__))
 REQ_FILE = os.path.join(HERE, "requirements.txt")
 MAIN_PY = os.path.join(HERE, "main.py")
 ICON_ICO = os.path.join(HERE, "app.ico")
+LOGO_PNG = next((os.path.join(HERE, n) for n in ("qa-logo.png", "app.png")
+                 if os.path.exists(os.path.join(HERE, n))), "")
+LOGO_FULL_PNG = (os.path.join(HERE, "qa-logo-full.png")
+                if os.path.exists(os.path.join(HERE, "qa-logo-full.png")) else "")
 
-# Brand palette (matches theme.py)
-VIOLET    = "#6A4DFF"
-VIOLET_H  = "#5A3DEE"
-VIOLET_INK= "#5234E0"
-VIOLET_SOFT="#EFEBFF"
-BG        = "#F7F7FB"
+# Brand palette (matches theme.py / the email design)
+PAPER     = "#F4F3F8"
 CARD      = "#FFFFFF"
+TINT      = "#FAFAFC"
+VIOLET    = "#6A4DFF"
+VIOLET_H  = "#5C3FF2"
+VIOLET_INK= "#5234E0"
+VIOLET_SOFT="#EEEAFF"
 INK       = "#1B1A22"
-INK_2     = "#6B6877"
-INK_3     = "#A3A1AD"
-GREEN     = "#1F9D57"
+INK_2     = "#6B6975"
+INK_3     = "#9C9AA6"
+GREEN     = "#1F8A52"
 GREEN_H   = "#188044"
-RED       = "#E0474D"
-AMBER     = "#C2860C"
-BORDER    = "#E8E7EE"
-LOG_BG    = "#16141E"      # dark log surface
-LOG_DIM   = "#8C8A99"
-LOG_OK    = "#56D08A"
+GREEN_SOFT= "#E7F4ED"
+RED       = "#D6414A"
+AMBER     = "#AB780C"
+AMBER_SOFT= "#F7EFD8"
+LINE      = "#E7E6EE"
+LINE_2    = "#F0EFF5"
+LOG_BG    = "#16151C"      # dark log surface
+LOG_TOP   = "#1E1D26"
+LOG_DIM   = "#6B697A"
+LOG_OK    = "#5BD99A"
 LOG_ERR   = "#FF7A80"
 LOG_WARN  = "#E7B450"
-LOG_INK   = "#D7D5E0"
+LOG_INFO  = "#9B86FF"
+LOG_INK   = "#B7B5C4"
 
-# Weighted install phases for a smooth, believable percentage
 # ASCII-safe spinner (avoids UTF-8 corruption across editors/transfers)
 SPIN = ["|", "/", "-", "\\"]
+
+# Step glyphs / colors per state
+DOT_WAIT = ("\u25CB", INK_3)     # ○
+DOT_ACTIVE = ("\u25CF", VIOLET_INK)  # ●
+DOT_DONE = ("\u2713", GREEN)     # ✓
+
+
+def _round_points(x1, y1, x2, y2, r):
+    return [x1+r, y1, x2-r, y1, x2, y1, x2, y1+r, x2, y2-r, x2, y2,
+            x2-r, y2, x1+r, y2, x1, y2, x1, y2-r, x1, y1+r, x1, y1]
+
+
+class RoundedButton(tk.Canvas):
+    """A flat, rounded-rectangle button (Tkinter has no native rounded buttons)."""
+    def __init__(self, parent, text="", command=None, fill=VIOLET, hover=VIOLET_H,
+                 fg="#FFFFFF", height=50, radius=13,
+                 font=("Segoe UI Semibold", 11, "bold"), bg=PAPER):
+        super().__init__(parent, height=height, bg=bg, highlightthickness=0, bd=0)
+        self._command = command
+        self._fill = fill; self._hover = hover; self._fg = fg
+        self._radius = radius; self._font = font; self._text = text
+        self._enabled = True; self._cur = fill
+        self.bind("<Configure>", lambda e: self._draw())
+        self.bind("<Button-1>", self._on_click)
+        self.bind("<Enter>", self._on_enter)
+        self.bind("<Leave>", self._on_leave)
+
+    def _draw(self):
+        self.delete("all")
+        w = self.winfo_width(); h = self.winfo_height()
+        if w <= 1:
+            return
+        pts = _round_points(1, 1, w - 1, h - 1, self._radius)
+        self.create_polygon(pts, smooth=True, splinesteps=24,
+                            fill=self._cur, outline=self._cur)
+        self.create_text(w / 2, h / 2, text=self._text, fill=self._fg, font=self._font)
+
+    def _on_click(self, e):
+        if self._enabled and self._command:
+            self._command()
+
+    def _on_enter(self, e):
+        if self._enabled:
+            self._cur = self._hover; self.config(cursor="hand2"); self._draw()
+
+    def _on_leave(self, e):
+        self._cur = self._fill; self.config(cursor=""); self._draw()
+
+    def set(self, text=None, fill=None, hover=None, fg=None, command=None, enabled=None):
+        if text is not None: self._text = text
+        if fill is not None: self._fill = fill; self._cur = fill
+        if hover is not None: self._hover = hover
+        if fg is not None: self._fg = fg
+        if command is not None: self._command = command
+        if enabled is not None: self._enabled = enabled
+        self._draw()
 
 
 class Installer:
     def __init__(self, root):
         self.root = root
-        self.root.title(f"{APP_NAME} — Installer")
-        self.root.configure(bg=BG)
+        self.root.title(f"{APP_NAME} Setup")
+        self.root.configure(bg=PAPER)
         self.root.resizable(False, False)
         try:
             if os.path.exists(ICON_ICO):
@@ -59,7 +129,7 @@ class Installer:
         except Exception:
             pass
 
-        W, H = 500, 470
+        W, H = 540, 720
         sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
         self.root.geometry(f"{W}x{H}+{(sw-W)//2}+{(sh-H)//2}")
         self.root.minsize(W, H)
@@ -68,88 +138,148 @@ class Installer:
         self._target = 0.0
         self._spin_i = 0
         self._running = False
+        self._logo_img = None
+        self._steps = []   # list of (dot_label, text_label, meta_label)
 
-        # ── Header band ────────────────────────────────────────────────────
-        header = tk.Frame(self.root, bg=VIOLET, height=104)
-        header.pack(fill="x", side="top")
-        header.pack_propagate(False)
-        tk.Label(header, text=APP_NAME, bg=VIOLET, fg="white",
-                 font=("Segoe UI Semibold", 22, "bold"), anchor="w").pack(fill="x", padx=28, pady=(26, 0))
+        # thin violet accent line
+        tk.Frame(self.root, bg=VIOLET, height=3).pack(fill="x", side="top")
+
+        # ── Header: full QA Studio logo lockup (mark + wordmark) ────────────
+        header = tk.Frame(self.root, bg=PAPER)
+        header.pack(fill="x", side="top", padx=28, pady=(16, 0))
+
+        if LOGO_FULL_PNG:
+            try:
+                img = tk.PhotoImage(file=LOGO_FULL_PNG)
+                f = max(1, round(img.height() / 132))
+                self._logo_img = img.subsample(f, f)
+            except Exception:
+                self._logo_img = None
+        if self._logo_img is not None:
+            tk.Label(header, image=self._logo_img, bg=PAPER).pack(anchor="center")
+        else:
+            tk.Label(header, text=APP_NAME, bg=PAPER, fg=INK,
+                     font=("Segoe UI Semibold", 20, "bold")).pack(anchor="center")
         tk.Label(header, text="AI-powered Azure DevOps test-case generator",
-                 bg=VIOLET, fg="#D9CEFF", font=("Segoe UI", 10), anchor="w").pack(fill="x", padx=28, pady=(2, 0))
+                 bg=PAPER, fg=INK_2, font=("Segoe UI", 10)).pack(anchor="center", pady=(4, 0))
+
+        # divider
+        tk.Frame(self.root, bg=LINE, height=1).pack(fill="x", padx=28, pady=(18, 0))
 
         # ── Footer button (pinned bottom; packed before body) ───────────────
-        footer = tk.Frame(self.root, bg=BG)
-        footer.pack(fill="x", side="bottom", padx=28, pady=(0, 20))
-        self.btn = tk.Button(footer, text="Install", bg=VIOLET, fg="white",
-                             font=("Segoe UI Semibold", 11, "bold"), relief="flat",
-                             cursor="hand2", bd=0, pady=12,
-                             activebackground=VIOLET_H, activeforeground="white",
-                             command=self.start_install)
+        footer = tk.Frame(self.root, bg=PAPER)
+        footer.pack(fill="x", side="bottom", padx=28, pady=(0, 22))
+        self.btn = RoundedButton(footer, text="Install QA Studio",
+                                 command=self.start_install,
+                                 fill=VIOLET, hover=VIOLET_H, fg="#FFFFFF",
+                                 height=50, radius=13)
         self.btn.pack(fill="x")
-        self.btn.bind("<Enter>", lambda e: self.btn.config(bg=VIOLET_H) if self.btn["state"] == "normal" else None)
-        self.btn.bind("<Leave>", lambda e: self.btn.config(bg=self._btn_idle) if self.btn["state"] == "normal" else None)
         self._btn_idle = VIOLET
 
         # ── Body ────────────────────────────────────────────────────────────
-        body = tk.Frame(self.root, bg=BG)
-        body.pack(fill="both", expand=True, side="top", padx=28, pady=(20, 6))
+        body = tk.Frame(self.root, bg=PAPER)
+        body.pack(fill="both", expand=True, side="top", padx=28, pady=(18, 6))
 
-        # title row + spinner
-        trow = tk.Frame(body, bg=BG)
+        # lead + spinner
+        trow = tk.Frame(body, bg=PAPER)
         trow.pack(fill="x")
-        self.title_lbl = tk.Label(trow, text="Ready to install", bg=BG, fg=INK,
+        self.title_lbl = tk.Label(trow, text="Ready to install", bg=PAPER, fg=INK,
                                   font=("Segoe UI Semibold", 14, "bold"), anchor="w")
         self.title_lbl.pack(side="left")
-        self.spin_lbl = tk.Label(trow, text="", bg=BG, fg=VIOLET,
+        self.spin_lbl = tk.Label(trow, text="", bg=PAPER, fg=VIOLET,
                                  font=("Consolas", 16, "bold"))
         self.spin_lbl.pack(side="right")
 
         self.desc_lbl = tk.Label(body,
-            text="This will install the required Python packages and add a\nDesktop shortcut to launch the app.",
-            bg=BG, fg=INK_2, font=("Segoe UI", 10), anchor="w", justify="left")
+            text="This sets up the Python packages QA Studio needs and adds a\n"
+                 "Desktop shortcut so you can launch it any time.",
+            bg=PAPER, fg=INK_2, font=("Segoe UI", 10), anchor="w", justify="left")
         self.desc_lbl.pack(fill="x", pady=(6, 0))
 
-        # progress bar + percentage
-        prow = tk.Frame(body, bg=BG)
+        # ── Steps checklist card ────────────────────────────────────────────
+        card = tk.Frame(body, bg=CARD, highlightthickness=1, highlightbackground=LINE)
+        card.pack(fill="x", pady=(16, 0))
+        steps_def = [
+            ("Check Python & environment", "~5s"),
+            ("Install required packages", "5 pkgs"),
+            ("Create Desktop shortcut", ""),
+        ]
+        for i, (label, meta) in enumerate(steps_def):
+            if i > 0:
+                tk.Frame(card, bg=LINE_2, height=1).pack(fill="x")
+            row = tk.Frame(card, bg=CARD)
+            row.pack(fill="x", padx=14, pady=11)
+            dot = tk.Label(row, text=DOT_WAIT[0], fg=DOT_WAIT[1], bg=CARD,
+                           font=("Segoe UI", 13, "bold"), width=2)
+            dot.pack(side="left")
+            txt = tk.Label(row, text=label, bg=CARD, fg=INK_3,
+                           font=("Segoe UI", 11), anchor="w")
+            txt.pack(side="left", padx=(6, 0))
+            mt = tk.Label(row, text=meta, bg=CARD, fg=INK_3,
+                          font=("Consolas", 9), anchor="e")
+            mt.pack(side="right")
+            self._steps.append((dot, txt, mt))
+
+        # ── Progress bar + percentage ───────────────────────────────────────
+        prow = tk.Frame(body, bg=PAPER)
         prow.pack(fill="x", pady=(20, 4))
         style = ttk.Style()
         try:
             style.theme_use("clam")
         except Exception:
             pass
-        style.configure("QA.Horizontal.TProgressbar", troughcolor="#E7E4F2",
-                        background=VIOLET, bordercolor="#E7E4F2",
-                        lightcolor=VIOLET, darkcolor=VIOLET, thickness=12)
+        style.configure("QA.Horizontal.TProgressbar", troughcolor="#E5E3EE",
+                        background=VIOLET, bordercolor="#E5E3EE",
+                        lightcolor=VIOLET, darkcolor=VIOLET, thickness=8)
         self.bar = ttk.Progressbar(prow, style="QA.Horizontal.TProgressbar",
                                    mode="determinate", maximum=100, length=380)
         self.bar.pack(side="left", fill="x", expand=True)
-        self.pct_lbl = tk.Label(prow, text="0%", bg=BG, fg=VIOLET_INK,
-                                font=("Segoe UI Semibold", 11, "bold"), width=5, anchor="e")
-        self.pct_lbl.pack(side="right", padx=(10, 0))
+        self.pct_lbl = tk.Label(prow, text="0%", bg=PAPER, fg=VIOLET_INK,
+                                font=("Consolas", 13, "bold"), width=5, anchor="e")
+        self.pct_lbl.pack(side="right", padx=(12, 0))
 
-        self.status_lbl = tk.Label(body, text="", bg=BG, fg=INK_3,
+        self.status_lbl = tk.Label(body, text="", bg=PAPER, fg=INK_3,
                                    font=("Segoe UI", 9), anchor="w")
         self.status_lbl.pack(fill="x")
 
-        # dark log surface
-        wrap = tk.Frame(body, bg=LOG_BG, highlightthickness=1,
-                        highlightbackground=BORDER)
-        wrap.pack(fill="both", expand=True, pady=(14, 0))
-        self.log = tk.Text(wrap, height=6, bg=LOG_BG, fg=LOG_INK,
+        # ── Dark log console ────────────────────────────────────────────────
+        console = tk.Frame(body, bg=LOG_BG, highlightthickness=1,
+                           highlightbackground="#2A2933")
+        console.pack(fill="both", expand=True, pady=(14, 0))
+        ctop = tk.Frame(console, bg=LOG_TOP, height=30)
+        ctop.pack(fill="x")
+        ctop.pack_propagate(False)
+        for c in ("#FF5F57", "#FEBC2E", "#28C840"):
+            tk.Label(ctop, text="\u25CF", fg=c, bg=LOG_TOP,
+                     font=("Segoe UI", 8)).pack(side="left", padx=(8 if c == "#FF5F57" else 1, 0))
+        tk.Label(ctop, text="install log", fg=LOG_DIM, bg=LOG_TOP,
+                 font=("Consolas", 9)).pack(side="left", padx=(8, 0))
+        self.log = tk.Text(console, height=6, bg=LOG_BG, fg=LOG_INK,
                            font=("Consolas", 9), relief="flat", wrap="word",
                            state="disabled", padx=12, pady=10, bd=0,
                            insertbackground=LOG_INK)
         self.log.pack(fill="both", expand=True)
         for tag, col in (("dim", LOG_DIM), ("ok", LOG_OK), ("err", LOG_ERR),
-                         ("warn", LOG_WARN), ("ink", LOG_INK)):
+                         ("warn", LOG_WARN), ("info", LOG_INFO), ("ink", LOG_INK)):
             self.log.tag_configure(tag, foreground=col)
+        self._log("$ Ready \u2014 click \u201cInstall QA Studio\u201d to begin.", "dim")
 
         self._animate()  # start the smooth bar + spinner loop
 
+    # ── step state helper ───────────────────────────────────────────────────
+    def _step(self, i, state, meta=None):
+        if i < 0 or i >= len(self._steps):
+            return
+        dot, txt, mt = self._steps[i]
+        glyph, col = {"wait": DOT_WAIT, "active": DOT_ACTIVE, "done": DOT_DONE}[state]
+        dot.config(text=glyph, fg=col)
+        txt.config(fg=(INK if state != "wait" else INK_3),
+                   font=("Segoe UI", 11, "bold") if state != "wait" else ("Segoe UI", 11))
+        if meta is not None:
+            mt.config(text=meta, fg=(VIOLET_INK if state == "active" else INK_3))
+
     # ── animation loop (runs on main thread via after) ─────────────────────
     def _animate(self):
-        # ease the displayed percentage toward the target
         if self._pct < self._target:
             self._pct = min(self._target, self._pct + max(0.4, (self._target - self._pct) * 0.18))
         self.bar["value"] = self._pct
@@ -182,29 +312,34 @@ class Installer:
     # ── Install flow (worker thread) ─────────────────────────────────────────
     def start_install(self):
         self._running = True
-        self.btn.config(state="disabled", text="Installing…", bg=INK_3,
-                       disabledforeground="white")
+        self.btn.set(text="Installing\u2026", fill="#C9C2E8", hover="#C9C2E8", enabled=False)
         threading.Thread(target=self._work, daemon=True).start()
 
     def _work(self):
         py = sys.executable
 
-        self.ui(lambda: self._set(target=10, title="Installing dependencies",
-                                  desc="Setting up the Python package manager…",
-                                  status="Upgrading pip…"))
+        self.ui(lambda: (self._step(0, "active", "running"),
+                         self._set(target=10, title="Installing\u2026",
+                                   desc="Setting up QA Studio. You can watch progress below.",
+                                   status="Checking environment & upgrading pip\u2026")))
         self._run([py, "-m", "pip", "install", "--upgrade", "pip"], 10, 22)
 
-        self.ui(lambda: self._set(target=30, status="Installing packages — this can take a few minutes…"))
+        self.ui(lambda: (self._step(0, "done", "done"),
+                         self._step(1, "active", "working"),
+                         self._set(target=30, status="Installing packages — this can take a few minutes\u2026")))
         code = self._run([py, "-m", "pip", "install", "-r", REQ_FILE], 30, 88)
         if code != 0:
             self.ui(lambda: self._fail("Dependency installation failed.\n"
                                        "Check your internet connection and try again."))
             return
 
-        self.ui(lambda: self._set(target=94, status="Creating Desktop shortcut…"))
+        self.ui(lambda: (self._step(1, "done", "done"),
+                         self._step(2, "active", "working"),
+                         self._set(target=94, status="Creating Desktop shortcut\u2026")))
         self._make_shortcut(py)
 
-        self.ui(lambda: self._set(target=100, status=""))
+        self.ui(lambda: (self._step(2, "done", "done"),
+                         self._set(target=100, status="")))
         self.ui(self._done)
 
     def _run(self, cmd, lo, hi):
@@ -229,7 +364,6 @@ class Installer:
                 elif "successfully installed" in low or "satisfied" in low:
                     tag = "ok"
                 self.ui(lambda l=line, t=tag: self._log(l, t))
-                # creep the target forward within the band
                 if self._target < hi:
                     self.ui(lambda: setattr(self, "_target", min(hi, self._target + 0.8)))
             proc.wait()
@@ -267,23 +401,22 @@ class Installer:
     def _done(self):
         self._running = False
         self._target = 100
-        self.spin_lbl.config(text="✓", fg=GREEN)
+        self.spin_lbl.config(text="\u2713", fg=GREEN)
         self._set(title="Installation complete", status="",
                   desc="QA Studio is ready. A shortcut was added to your Desktop.")
         self.title_lbl.config(fg=GREEN)
         self._btn_idle = GREEN
-        self.btn.config(state="normal", text="Launch QA Studio", bg=GREEN,
-                       activebackground=GREEN_H)
-        self.btn.config(command=self._launch)
+        self.btn.set(text="Launch QA Studio  \u2192", fill=GREEN, hover=GREEN_H,
+                     enabled=True, command=self._launch)
 
     def _fail(self, msg):
         self._running = False
-        self.spin_lbl.config(text="✕", fg=RED)
+        self.spin_lbl.config(text="\u2715", fg=RED)
         self._set(title="Installation failed", desc=msg, status="")
         self.title_lbl.config(fg=RED)
         self._btn_idle = VIOLET
-        self.btn.config(state="normal", text="Retry", bg=VIOLET,
-                       command=self.start_install)
+        self.btn.set(text="Retry", fill=VIOLET, hover=VIOLET_H,
+                     enabled=True, command=self.start_install)
 
     def _launch(self):
         try:
