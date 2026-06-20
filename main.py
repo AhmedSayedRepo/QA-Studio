@@ -2994,6 +2994,8 @@ class QAStudio:
             pass
         self.stop_flag = False
         self._stopping = False
+        try: E.clear_stop()
+        except Exception: pass
         self.active = "run"
         self.nav_state = {"setup": "done", "run": "active"}
         # reset run state
@@ -3148,6 +3150,8 @@ class QAStudio:
     def _stop_run(self):
         self.stop_flag = True
         self._stopping = True
+        try: E.request_stop()   # interrupt any in-flight retry backoff
+        except Exception: pass
         # update the stop button label in place if present
         try:
             if hasattr(self, "_stop_btn_text"):
@@ -3957,6 +3961,8 @@ class QAStudio:
 
     def _stop_automation(self):
         """Request the running automation to stop after the current step."""
+        try: E.request_stop()   # interrupt any in-flight retry backoff
+        except Exception: pass
         with self._auto_cond:
             self._auto_stop = True
             self._auto_paused = False
@@ -4069,6 +4075,8 @@ class QAStudio:
         self._auto_running = True
         self._auto_stop = False
         self._auto_paused = False
+        try: E.clear_stop()
+        except Exception: pass
         self._auto_built = False
         self._auto_log = []
         self.render()

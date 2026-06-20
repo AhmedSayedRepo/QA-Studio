@@ -197,8 +197,11 @@ def classify_ai_error(exc):
 # Provider errors a user can fix by renewing a key, waiting, or switching provider
 # — these PAUSE the run (so the user can act + Resume). Everything else (a bad
 # JSON response, content filter, oversized context) falls back to raw steps.
-_RECOVERABLE_AI_CATS = {"auth", "credit", "rate_limit", "overloaded", "server",
-                        "network", "timeout", "bad_model", "not_found"}
+# Errors worth PAUSING the run for so the user can switch provider / fix the key.
+# Transient categories (rate_limit, server, overloaded, network, timeout) are
+# deliberately EXCLUDED — ai_complete already retries those patiently, so pausing
+# for them would just nag the user about something that clears on its own.
+_RECOVERABLE_AI_CATS = {"auth", "credit", "bad_model", "not_found"}
 
 def _is_recoverable_ai_error(exc):
     try:
@@ -358,16 +361,69 @@ def _ai_call_once(provider, cfg, prompt_text, images, max_tokens, timeout):
 
     raise RuntimeError(f"Unhandled provider '{provider}'")
 
+# Module-level cooperative stop: run loops set this so long backoff sleeps inside
+# ai_complete can bail out promptly when the user clicks Stop.
+import threading as _threading
+_STOP_EVENT = _threading.Event()
+
+def request_stop():
+    _STOP_EVENT.set()
+
+def clear_stop():
+    _STOP_EVENT.clear()
+
+def _interruptible_sleep(seconds):
+    """Sleep in small slices so a Stop request ends the wait quickly."""
+    end = time.time() + max(0.0, seconds)
+    while time.time() < end:
+        if _STOP_EVENT.is_set():
+            return
+        time.sleep(min(0.25, end - time.time()))
+
+def _retry_after_seconds(exc):
+    """Pull a Retry-After hint (seconds) from a provider exception, if any."""
+    # OpenAI/Anthropic SDKs attach .response with headers; also check the message.
+    try:
+        resp = getattr(exc, "response", None)
+        hdrs = getattr(resp, "headers", None) if resp is not None else None
+        if hdrs:
+            for k in ("retry-after", "Retry-After", "x-ratelimit-reset-requests",
+                      "x-ratelimit-reset-tokens"):
+                v = hdrs.get(k) if hasattr(hdrs, "get") else None
+                if v:
+                    m = re.search(r"[\d.]+", str(v))
+                    if m:
+                        return float(m.group(0))
+    except Exception:
+        pass
+    # message text: "try again in 12s" / "retry after 5 seconds"
+    try:
+        m = re.search(r"(?:retry[- ]after|try again in)\D*([\d.]+)\s*(m|min|s|sec)?",
+                      str(exc), re.I)
+        if m:
+            val = float(m.group(1))
+            unit = (m.group(2) or "s").lower()
+            return val * 60 if unit.startswith("m") else val
+    except Exception:
+        pass
+    return None
+
 def ai_complete(prompt_text, images=None, max_tokens=4096, timeout=None,
                 retries=3, on_retry=None):
     """Call the active AI provider with defensive extraction + retry on transient
     errors (rate limit / 5xx / overloaded / timeout / network).
 
-    Raises CreditBalanceError for out-of-credit, or a RuntimeError carrying the
-    friendly classified message for non-transient failures. `on_retry(msg)` (if
-    given) is called before each retry so the UI can log "retrying…".
+    Transient errors are retried patiently (rate-limit/overload get a larger
+    budget and honor any Retry-After hint), so they almost never bubble up to the
+    user. Raises CreditBalanceError for out-of-credit, or a RuntimeError carrying
+    the friendly classified message for non-transient failures. `on_retry(msg)`
+    (if given) is called before each retry so the UI can log "retrying…".
     """
     cfg = _ai_cfg(); provider = AI_PROVIDER; images = images or []
+    # Per-category retry budgets. Rate-limit / overloaded clear on their own, so
+    # we wait them out generously instead of surfacing an error to the user.
+    _BUDGET = {"rate_limit": 8, "overloaded": 8, "server": 5,
+               "timeout": 4, "network": 4}
     attempt = 0
     last_friendly = None
     while True:
@@ -383,19 +439,28 @@ def ai_complete(prompt_text, images=None, max_tokens=4096, timeout=None,
             if attempt <= retries:
                 _delay = min(2 * attempt, 8)
                 if on_retry: on_retry(f"{friendly} — retrying ({attempt}/{retries})…")
-                time.sleep(_delay); continue
+                _interruptible_sleep(_delay); continue
             raise RuntimeError(friendly)
         except Exception as e:
             if _is_credit_error(str(e)):
                 raise CreditBalanceError(str(e))
             cat, friendly = classify_ai_error(e)
             last_friendly = friendly
-            if cat in TRANSIENT_CATEGORIES and attempt <= retries:
-                # exponential-ish backoff; rate-limit waits a touch longer
-                _delay = (5 if cat == "rate_limit" else 2) * attempt
-                _delay = min(_delay, 20)
-                if on_retry: on_retry(f"{friendly} — retrying ({attempt}/{retries})…")
-                time.sleep(_delay); continue
+            budget = max(retries, _BUDGET.get(cat, 0)) if cat in TRANSIENT_CATEGORIES else 0
+            if budget and attempt <= budget:
+                # Honor a server-provided Retry-After when present; otherwise back
+                # off progressively. Rate-limit/overload wait longer (they clear).
+                ra = _retry_after_seconds(e)
+                if ra is not None:
+                    _delay = min(max(ra, 1), 60)
+                elif cat in ("rate_limit", "overloaded"):
+                    _delay = min(5 + 5 * attempt, 45)      # 10,15,…cap 45s
+                else:
+                    _delay = min(2 * attempt, 20)
+                if on_retry:
+                    on_retry(f"{friendly} — waiting {int(_delay)}s then retry "
+                             f"({attempt}/{budget})…")
+                _interruptible_sleep(_delay); continue
             raise RuntimeError(friendly)
 
 
@@ -2920,7 +2985,8 @@ def compile_test_case(tc, story=None, log=None, case_type="interaction"):
         '"check":"","expected":"","from_steps":[4,5,6]}'
     )
     try:
-        out = parse_json_robust(ai_complete(prompt, max_tokens=2048, timeout=90))
+        out = parse_json_robust(ai_complete(prompt, max_tokens=2048, timeout=90,
+                                            on_retry=lambda m: log(m, "dim")))
         if isinstance(out, dict):
             out = out.get("intents") or out.get("items") or [out]
         if not isinstance(out, list) or not out:
