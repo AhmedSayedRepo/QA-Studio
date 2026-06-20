@@ -344,6 +344,7 @@ class QAStudio:
         self._last_nav_update_check = 0
         self._updating = False
         self._update_dismissed = False
+        self._closing = False        # set on close to stop background loops
 
         self._build()
 
@@ -621,9 +622,11 @@ class QAStudio:
         if not _web:
             try:
                 if hasattr(self.page, "window") and self.page.window is not None:
-                    # Only intercept while a run is in progress; otherwise leave
-                    # the default close behavior intact.
-                    self.page.window.prevent_close = False
+                    # Always intercept close (prevent_close=True) so our handler
+                    # runs on EVERY close and can hard-exit the process tree —
+                    # otherwise Flet's natural close can leave a background thread
+                    # (e.g. the update-check loop) keeping python.exe alive.
+                    self.page.window.prevent_close = True
                     self.page.window.on_event = self._on_window_event
             except Exception:
                 pass
@@ -666,12 +669,13 @@ class QAStudio:
             pass
 
     def _set_run_active(self, active):
-        """Track whether a run is in progress, and toggle the OS window's
-        prevent_close so the X triggers a confirm dialog only during a run."""
+        """Track whether a run is in progress. prevent_close stays True at all
+        times so the close handler always runs (idle → exit immediately; during a
+        run → confirm first); the 'active' flag is what the handler branches on."""
         self._run_active = bool(active)
         try:
             if hasattr(self.page, "window") and self.page.window is not None:
-                self.page.window.prevent_close = bool(active)
+                self.page.window.prevent_close = True
                 self.page.update()
         except Exception:
             pass
@@ -717,6 +721,7 @@ class QAStudio:
         """Close the OS window / exit the process, trying every Flet API, and
         as a final guarantee terminate the flet client window process so it can
         never be left orphaned on screen."""
+        self._closing = True   # stop background loops (update checker, etc.)
         closed = False
         # 1) modern Flet: window.destroy()
         try:
@@ -767,20 +772,25 @@ class QAStudio:
 
     def _kickoff_update_check(self):
         """Check once at startup, then keep re-checking periodically while the
-        app stays open, so users who never relaunch still get notified."""
+        app stays open, so users who never relaunch still get notified. Runs on a
+        DAEMON thread that bails the moment we're closing, so it can never keep
+        python.exe alive after the window is gone."""
         import time as _t
         def work():
             self._run_update_check()
-            while True:
-                try:
-                    _t.sleep(600)   # re-check every 10 minutes
-                except Exception:
-                    break
+            while not getattr(self, "_closing", False):
+                for _ in range(60):                 # ~600s, but wake every 10s
+                    if getattr(self, "_closing", False):
+                        return
+                    try:
+                        _t.sleep(10)
+                    except Exception:
+                        return
                 if (self._update_info or {}).get("update") and not self._update_dismissed:
                     continue
                 self._run_update_check()
         try:
-            self._bg(work)
+            threading.Thread(target=work, daemon=True).start()
         except Exception:
             pass
 

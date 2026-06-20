@@ -4543,11 +4543,20 @@ def _github_token():
 def _app_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
+def _clean_ver(s):
+    """Tolerate a VERSION file written as UTF-16 (e.g. PowerShell `echo x > VERSION`),
+    which adds a BOM and a null byte between characters. Strip BOM, nulls, and any
+    non [digit/dot] noise so '\\ufeff1\\x00.\\x008\\x00.\\x004' still reads as '1.8.4'."""
+    s = (s or "").replace("\x00", "").lstrip("\ufeff\ufffe").strip()
+    m = re.search(r"\d+(?:\.\d+){0,3}", s)
+    return m.group(0) if m else s
+
 def local_version():
     """Read the local VERSION file (next to this module). Returns str or '0.0.0'."""
     try:
-        with open(os.path.join(_app_dir(), "VERSION"), "r", encoding="utf-8") as f:
-            return f.read().strip() or "0.0.0"
+        with open(os.path.join(_app_dir(), "VERSION"), "rb") as f:
+            raw = f.read().decode("utf-8-sig", "ignore")
+        return _clean_ver(raw) or "0.0.0"
     except Exception:
         return "0.0.0"
 
@@ -4603,7 +4612,7 @@ def check_for_update(timeout=6):
             import json as _json
             data = _json.loads(txt)
             txt = _b64.b64decode(data.get("content", "")).decode("utf-8", "ignore")
-        return txt.strip()
+        return _clean_ver(txt)
 
     def _via_raw():
         url = (f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_REPO}/"
@@ -4614,7 +4623,7 @@ def check_for_update(timeout=6):
             raise RuntimeError("raw 404 — VERSION file missing at repo root (or private repo).")
         if r.status_code != 200:
             raise RuntimeError(f"raw HTTP {r.status_code}")
-        return (r.text or "").strip()
+        return _clean_ver(r.text or "")
 
     remote = None
     err = None

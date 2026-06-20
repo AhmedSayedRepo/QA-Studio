@@ -594,12 +594,12 @@ def _open_app_window(url):
             prof = os.path.join(tempfile.gettempdir(), "qastudio_installer_profile")
             flags = 0x08000000 if os.name == "nt" else 0
             _log(f"opening chromeless app window via {os.path.basename(exe)}")
-            subprocess.Popen(
+            proc = subprocess.Popen(
                 [exe, f"--app={url}", f"--window-size={W},{H}",
                  f"--user-data-dir={prof}", "--no-first-run",
                  "--no-default-browser-check"],
                 creationflags=flags)
-            return
+            return proc
         except Exception as ex:
             _log(f"app-window launch failed ({ex})")
 
@@ -609,6 +609,7 @@ def _open_app_window(url):
         webbrowser.open(url)
     except Exception:
         pass
+    return None
 
 
 def _find_chromium():
@@ -650,16 +651,25 @@ def main():
     _log(f"installer running at {url}")
     _log("If a window didn't open, paste that address into your browser.")
     try:
-        _open_app_window(url)   # blocks for pywebview; returns immediately otherwise
+        proc = _open_app_window(url)   # pywebview path never returns (os._exit)
     except Exception:
-        pass
-    # If we got here via the Chromium/browser fallback (non-blocking), keep the
-    # process alive to serve requests until the user closes the window/Ctrl-C.
+        proc = None
+    # Chromium app-window fallback: wait for the window's process to exit, then
+    # quit — so we never leave an orphaned python process behind.
+    if proc is not None and hasattr(proc, "wait"):
+        try:
+            proc.wait()
+        except Exception:
+            pass
+        os._exit(0)
+    # Plain browser-tab fallback (no process handle): serve until the page's
+    # /shutdown beacon fires or the user Ctrl-C's.
     try:
         while True:
             time.sleep(3600)
     except KeyboardInterrupt:
         pass
+    os._exit(0)
 
 
 if __name__ == "__main__":
