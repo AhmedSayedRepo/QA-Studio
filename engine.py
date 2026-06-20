@@ -270,8 +270,11 @@ def _extract_openai_text(resp):
         raise EmptyAIResponse("response truncated (max_tokens) with no content")
     return text
 
-def _ai_call_once(provider, cfg, prompt_text, images, max_tokens, timeout):
-    """One provider call. Returns text or raises (EmptyAIResponse / SDK error)."""
+def _ai_call_once(provider, cfg, prompt_text, images, max_tokens, timeout, want_json=False):
+    """One provider call. Returns text or raises (EmptyAIResponse / SDK error).
+    want_json=True asks the provider for strict JSON output where supported (used
+    for the intent-compiler calls), so models like Gemini don't wrap the JSON in
+    reasoning prose ('Wait, let's…') which then fails to parse."""
     if provider == "anthropic":
         import anthropic
         content = []
@@ -335,7 +338,12 @@ def _ai_call_once(provider, cfg, prompt_text, images, max_tokens, timeout):
         parts = [prompt_text]
         for im in images:
             parts.append({"mime_type": im["media_type"], "data": base64.b64decode(im["data"])})
-        resp = model.generate_content(parts, generation_config={"max_output_tokens": max_tokens})
+        gen_cfg = {"max_output_tokens": max_tokens}
+        if want_json:
+            # Force strict JSON so Gemini 2.x doesn't emit reasoning prose around
+            # the JSON (the cause of "Cannot parse JSON … Wait, let's…" failures).
+            gen_cfg["response_mime_type"] = "application/json"
+        resp = model.generate_content(parts, generation_config=gen_cfg)
         # Gemini raises on .text if the candidate was blocked; surface that cleanly
         try:
             txt = resp.text
@@ -409,7 +417,7 @@ def _retry_after_seconds(exc):
     return None
 
 def ai_complete(prompt_text, images=None, max_tokens=4096, timeout=None,
-                retries=3, on_retry=None):
+                retries=3, on_retry=None, want_json=False):
     """Call the active AI provider with defensive extraction + retry on transient
     errors (rate limit / 5xx / overloaded / timeout / network).
 
@@ -429,7 +437,7 @@ def ai_complete(prompt_text, images=None, max_tokens=4096, timeout=None,
     while True:
         attempt += 1
         try:
-            return _ai_call_once(provider, cfg, prompt_text, images, max_tokens, timeout)
+            return _ai_call_once(provider, cfg, prompt_text, images, max_tokens, timeout, want_json)
         except CreditBalanceError:
             raise
         except EmptyAIResponse as e:
@@ -1149,7 +1157,7 @@ def generate_steps(tc_title, acceptance_criteria, ui_description="", log=None):
     last_err = None
     for attempt in range(5):
         try:
-            return parse_json_robust(ai_complete(text, max_tokens=4096))
+            return parse_json_robust(ai_complete(text, max_tokens=4096, want_json=True))
         except CreditBalanceError:
             raise
         except Exception as e:
@@ -1323,7 +1331,7 @@ def generate_titles(story_title, criteria, existing_titles=None, log=None):
     last_err = None
     for attempt in range(5):
         try:
-            return parse_json_robust(ai_complete(prompt, max_tokens=4096))
+            return parse_json_robust(ai_complete(prompt, max_tokens=4096, want_json=True))
         except CreditBalanceError:
             raise
         except Exception as e:
@@ -1433,7 +1441,8 @@ def dedupe_existing_suite(project, plan_id, suite_id, cb=None, do_delete=True):
         if not placed:
             groups[r["key"]] = [r]
 
-    removed = []
+    removed = []       # successfully deleted duplicates
+    kept_dupes = []    # duplicates we could NOT delete (left in the suite)
     dup_groups = 0
     for gk, members in groups.items():
         if len(members) < 2:
@@ -1446,25 +1455,41 @@ def dedupe_existing_suite(project, plan_id, suite_id, cb=None, do_delete=True):
                           f"({keeper['steps']} steps)", "tone": "info", "ar": True,
                    "id": keeper["id"], "detail": keeper["title"]})
         for victim in members[1:]:
-            if do_delete:
-                ok = delete_test_case(project, plan_id, suite_id, victim["id"])
-                tone = "skip" if ok else "err"
-                verb = "deleted" if ok else "delete FAILED"
+            if not do_delete:
+                cb("log", {"msg": f"{victim['title']}", "tone": "warn", "ar": True,
+                           "id": victim["id"],
+                           "detail": f"duplicate (not deleted) · {victim['steps']} steps · dup of #{keeper['id']}"})
+                kept_dupes.append({"id": victim["id"], "title": victim["title"], "kept_id": keeper["id"]})
+                continue
+            ok = delete_test_case(project, plan_id, suite_id, victim["id"])
+            if ok:
+                # log the OLD (removed) test — its id + title — and the id we kept
+                cb("log", {"msg": f"{victim['title']}", "tone": "skip", "ar": True,
+                           "id": victim["id"],
+                           "detail": f"removed old #{victim['id']} · {victim['steps']} steps · kept #{keeper['id']}"})
+                removed.append({"id": victim["id"], "title": victim["title"], "kept_id": keeper["id"]})
             else:
-                tone = "warn"; verb = "duplicate (not deleted)"
-            cb("log", {"msg": f"{victim['title']}", "tone": tone, "ar": True,
-                       "id": victim["id"],
-                       "detail": f"{verb} · {victim['steps']} steps · dup of #{keeper['id']}"})
-            removed.append({"id": victim["id"], "title": victim["title"],
-                            "kept_id": keeper["id"], "deleted": (do_delete and ok)})
+                # delete failed → the duplicate is STILL there; never count it as removed
+                cb("log", {"msg": f"{victim['title']}", "tone": "err", "ar": True,
+                           "id": victim["id"],
+                           "detail": f"delete FAILED — kept as duplicate · dup of #{keeper['id']}"})
+                kept_dupes.append({"id": victim["id"], "title": victim["title"], "kept_id": keeper["id"]})
     if dup_groups:
-        cb("log", {"msg": f"Removed {len(removed)} duplicate test case"
-                          + ("s" if len(removed) != 1 else "")
-                          + f" across {dup_groups} group" + ("s" if dup_groups != 1 else ""),
-                   "tone": "ok"})
+        if removed:
+            tail = (f"; {len(kept_dupes)} could not be deleted (kept)" if kept_dupes else "")
+            cb("log", {"msg": f"Removed {len(removed)} duplicate test case"
+                              + ("s" if len(removed) != 1 else "")
+                              + f" across {dup_groups} group" + ("s" if dup_groups != 1 else "")
+                              + tail,
+                       "tone": "warn" if kept_dupes else "ok"})
+        else:
+            cb("log", {"msg": f"Found {dup_groups} duplicate group"
+                              + ("s" if dup_groups != 1 else "")
+                              + f", but none could be deleted ({len(kept_dupes)} kept).",
+                       "tone": "err"})
     else:
         cb("log", {"msg": "No duplicate test cases found in the suite.", "tone": "dim"})
-    return {"removed": removed, "groups": dup_groups}
+    return {"removed": removed, "kept": kept_dupes, "groups": dup_groups}
 
 
 # Arabic filler/stop words that don't change a test's meaning — removed before
@@ -2986,7 +3011,8 @@ def compile_test_case(tc, story=None, log=None, case_type="interaction"):
     )
     try:
         out = parse_json_robust(ai_complete(prompt, max_tokens=2048, timeout=90,
-                                            on_retry=lambda m: log(m, "dim")))
+                                            on_retry=lambda m: log(m, "dim"),
+                                            want_json=True))
         if isinstance(out, dict):
             out = out.get("intents") or out.get("items") or [out]
         if not isinstance(out, list) or not out:
@@ -3140,7 +3166,7 @@ def _tiebreak_with_ai(intent, shortlist, cb):
         '{"idx": <chosen idx or -1>}'
     )
     try:
-        data = parse_json_robust(ai_complete(prompt, max_tokens=256, timeout=45))
+        data = parse_json_robust(ai_complete(prompt, max_tokens=256, timeout=45, want_json=True))
         if isinstance(data, list) and data:
             data = data[0]
         idx = int(data.get("idx", -1))

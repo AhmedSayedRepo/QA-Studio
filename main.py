@@ -1650,26 +1650,48 @@ class QAStudio:
 
     # ---- model selection ----
     def _model_options(self, name):
-        """Build dropdown options for the current provider, fetching live models
-        the first time (cached per provider on self._model_choices)."""
-        if getattr(self, "_models_for", None) != name:
-            self._model_choices = None  # provider changed → invalidate cache
-        choices = getattr(self, "_model_choices", None)
-        if choices is None:
-            key = self._saved_key(name)
+        """Build dropdown options for the current provider. Shows the static list
+        IMMEDIATELY (no blocking call), then fetches the live catalogue in the
+        background and re-renders — so switching provider updates the models at
+        once instead of freezing render() on a 15s network call."""
+        if getattr(self, "_models_for", None) == name and getattr(self, "_model_choices", None) is not None:
+            choices = self._model_choices
+        else:
+            static = list(E.STATIC_MODELS.get(name, []))
+            cur = self._saved_model(name)
+            if cur and cur not in static:
+                static = [cur] + static
+            self._model_choices = static
+            self._model_src = "static"
+            self._models_for = name
+            choices = static
+            self._fetch_models_async(name)   # upgrade to live in the background
+        return [ft.DropdownOption(key=m, text=m) for m in choices]
+
+    def _fetch_models_async(self, name):
+        """Fetch the live model catalogue off the UI thread, then re-render."""
+        if getattr(self, "_model_fetching", None) == name:
+            return  # a fetch for this provider is already in flight
+        self._model_fetching = name
+        def work():
             try:
+                key = self._saved_key(name)
                 models, src = E.list_models(provider=name, api_key=(key or None))
             except Exception:
                 models, src = (E.STATIC_MODELS.get(name, []), "static")
-            # always include the currently-saved model so it can be re-selected
+            # discard if the user switched provider again while we were fetching
+            if getattr(self, "_provider_choice", None) != name:
+                self._model_fetching = None
+                return
             cur = self._saved_model(name)
             if cur and cur not in models:
                 models = [cur] + list(models)
             self._model_choices = models
             self._model_src = src
             self._models_for = name
-            choices = models
-        return [ft.DropdownOption(key=m, text=m) for m in choices]
+            self._model_fetching = None
+            self.ui_safe(self.render)
+        self._bg(work)
 
     def _on_model_change(self, e):
         name = self._provider_choice
@@ -3950,9 +3972,22 @@ class QAStudio:
         self._auto_log.append({"msg": msg, "tone": tone})
         def upd():
             try:
-                if hasattr(self, "_auto_log_col"):
-                    self._auto_log_col.controls.append(self._auto_log_line(msg, tone))
-                    self._auto_log_col.update()
+                col = getattr(self, "_auto_log_col", None)
+                if col is not None:
+                    real = len(self._auto_log)
+                    have = len(col.controls)
+                    # render() rebuilds the column from self._auto_log, and this
+                    # incremental append can race it at run-end — appending a line
+                    # render already added (the duplicate "Stopped." etc.). Only
+                    # touch the column when it's actually behind self._auto_log.
+                    if real == 1 and have <= 1:
+                        # replace the empty-state placeholder with the first line
+                        col.controls = [self._auto_log_line(msg, tone)]
+                        col.update()
+                    elif have < real:
+                        col.controls.append(self._auto_log_line(msg, tone))
+                        col.update()
+                    # have >= real → render already has this line; skip (no dup)
                 ctl = getattr(self, "_auto_count_ctl", None)
                 if ctl:
                     c = self._auto_count()
@@ -4024,11 +4059,9 @@ class QAStudio:
     def _auto_on_ai_error(self, msg):
         """Engine calls this on a recoverable AI error (e.g. low credit). Auto-pause
         and wait: Resume (after switching provider) → 'retry'; Stop → 'stop'."""
-        try:
-            friendly = E.friendly_ai_error(msg)
-        except Exception:
-            friendly = str(msg)[:200]
-        self._auto_logmsg(friendly, "red")
+        # The engine already passes a friendly, provider-prefixed message — log it
+        # as-is (re-running friendly_ai_error here double-prefixed it: "Gemini: Gemini:…").
+        self._auto_logmsg(str(msg)[:300], "red")
         self._auto_logmsg("Paused on error. Switch the AI provider in Setup, then "
                           "Resume — or Stop to abort.", "warn")
         with self._auto_cond:
@@ -4042,7 +4075,7 @@ class QAStudio:
                 self._auto_cond.wait()
         if self._auto_stop:
             return "stop"
-        self._auto_logmsg("Retrying with the current provider…", "info")
+        # _resume_automation already logged "Resuming…"; no second "Retrying…" line.
         return "retry"
 
     def _auto_project_dir(self):
