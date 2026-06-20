@@ -822,9 +822,12 @@ class QAStudio:
     def _run_update_check(self):
         try:
             info = E.check_for_update()
-            prev = (self._update_info or {}).get("update")
             self._update_info = info
-            if info.get("update") and not self._update_dismissed and not prev:
+            # Repaint whenever an update is available and not dismissed, so the
+            # banner appears on the next interaction even if a prior check missed
+            # it or was still in flight. (render() rebuilds the banner from
+            # _update_info, so a repaint is all that's needed.)
+            if info.get("update") and not self._update_dismissed:
                 self.ui_safe(self.render)
         except Exception:
             pass
@@ -853,11 +856,13 @@ class QAStudio:
             pass
 
     def _maybe_check_update_on_nav(self):
-        """Throttled check fired on navigation — at most once every 2 minutes."""
+        """Throttled check fired on navigation — at most once every 30 seconds.
+        Keeps the banner current as the user moves around the app without
+        hammering GitHub on every single click."""
         import time as _t
         now = _t.time()
         last = getattr(self, "_last_nav_update_check", 0)
-        if now - last < 120:
+        if now - last < 30:
             return
         self._last_nav_update_check = now
         try:
