@@ -630,11 +630,12 @@ class QAStudio:
         if not _web:
             try:
                 if hasattr(self.page, "window") and self.page.window is not None:
-                    # Always intercept close (prevent_close=True) so our handler
-                    # runs on EVERY close and can hard-exit the process tree —
-                    # otherwise Flet's natural close can leave a background thread
-                    # (e.g. the update-check loop) keeping python.exe alive.
-                    self.page.window.prevent_close = True
+                    # Do NOT prevent_close while idle — let Flet's native close
+                    # handle the X button (always reliable). We only attach the
+                    # listener; prevent_close is turned on *only during a run* (see
+                    # _set_run_active) so we can confirm-before-quit then. A
+                    # background watchdog guarantees the process can't be orphaned.
+                    self.page.window.prevent_close = False
                     self.page.window.on_event = self._on_window_event
             except Exception:
                 pass
@@ -677,26 +678,42 @@ class QAStudio:
             pass
 
     def _set_run_active(self, active):
-        """Track whether a run is in progress. prevent_close stays True at all
-        times so the close handler always runs (idle → exit immediately; during a
-        run → confirm first); the 'active' flag is what the handler branches on."""
+        """Track whether a run is in progress. prevent_close is turned ON only
+        while a run/automation is active (so we can confirm-before-quit); when
+        idle it's OFF so the X button closes natively and reliably."""
         self._run_active = bool(active)
         try:
             if hasattr(self.page, "window") and self.page.window is not None:
-                self.page.window.prevent_close = True
+                self.page.window.prevent_close = bool(active)
                 self.page.update()
         except Exception:
             pass
 
     def _on_window_event(self, e):
         """Best-effort confirm-on-close while a run is active. If a run is NOT
-        active, we never block the close, so the X button always works."""
-        try:
-            etype = getattr(e, "data", None) or getattr(e, "type", None)
-        except Exception:
-            etype = None
-        if etype != "close":
+        active, we never block the close, so the X button always works.
+
+        Flet versions disagree on the close event's shape, so we detect it
+        broadly: the event's data/type may be the string 'close', or an enum
+        whose name/str contains 'close'. If we can't tell, we treat it as a close
+        (fail-safe), because leaving prevent_close=True with an unrecognized event
+        is what makes the X button do nothing."""
+        raw = None
+        for attr in ("data", "type"):
+            v = getattr(e, attr, None)
+            if v is not None:
+                raw = v
+                break
+        token = str(getattr(raw, "name", raw) or "").lower()
+        is_close = ("close" in token)
+        # Some 0.90 builds deliver focus/blur/move/resize events here too; only
+        # those are safe to ignore. Anything we don't recognize → treat as close.
+        known_noise = any(k in token for k in
+                          ("focus", "blur", "move", "resize", "restore",
+                           "maximize", "minimize", "enterfullscreen", "leavefullscreen"))
+        if not is_close and known_noise:
             return
+        # close (or unknown) → proceed to close logic
         running = bool(getattr(self, "_run_active", False)
                        or getattr(self, "_auto_running", False))
         if not running:
@@ -4077,6 +4094,12 @@ class QAStudio:
         self._auto_paused = False
         try: E.clear_stop()
         except Exception: pass
+        try:
+            if hasattr(self.page, "window") and self.page.window is not None:
+                self.page.window.prevent_close = True
+                self.page.update()
+        except Exception:
+            pass
         self._auto_built = False
         self._auto_log = []
         self.render()
@@ -4191,6 +4214,11 @@ class QAStudio:
             finally:
                 self._auto_running = False
                 self._auto_stop = False
+                try:
+                    if hasattr(self.page, "window") and self.page.window is not None:
+                        self.page.window.prevent_close = False
+                except Exception:
+                    pass
                 self._auto_paused = False
                 self.ui_safe(self.render)
 
