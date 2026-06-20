@@ -11,23 +11,29 @@ where py >nul 2>&1 || set "PY=python"
   exit /b 1
 )
 
+rem --- find pythonw (windowless) to launch the GUI without a console box ---
+set "PYW=pyw -3"
+where pyw >nul 2>&1 || set "PYW=pythonw"
+%PYW% --version >nul 2>&1 || set "PYW=%PY%"
+
 echo Preparing QA Studio installer...
 %PY% -m pip install --quiet --disable-pip-version-check --upgrade pip >nul 2>&1
 
-rem --- bootstrap the native-window backend BEFORE launching ---
-rem pywebview needs a backend. On Windows that is EdgeChromium (WebView2) via
-rem pythonnet. We install BOTH and do NOT hide errors, so a failed backend is
-rem visible instead of silently falling back to a browser tab.
+rem --- bootstrap the native-window backend BEFORE launching (visible so any
+rem     error is shown). pywebview needs the EdgeChromium/WebView2 backend via
+rem     pythonnet on Windows. ---
 echo Installing native window backend (pywebview)...
 %PY% -m pip install --disable-pip-version-check "pywebview>=5.0" pythonnet
 if errorlevel 1 (
   echo.
   echo [warn] Could not install the native-window backend. The installer will
-  echo        open in a chromeless app window or your browser instead.
+  echo        open in a chromeless app window instead.
   echo.
 )
 
-rem --- launch the installer ---
-%PY% "%~dp0installer.py"
+rem --- launch the installer GUI WITHOUT a console window (pythonw). The window
+rem     is native via pywebview; if that's unavailable it opens a chromeless
+rem     Edge/Chrome app window. No black console box is left behind. ---
+start "" %PYW% "%~dp0installer.py"
 
 endlocal

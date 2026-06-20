@@ -2249,6 +2249,16 @@ class QAStudio:
                     else:
                         self._err(f"{prov} key check failed: {kmsg}")
                     return
+                # key is VALID but soft-limited — connect, yet warn so the green
+                # status isn't misleading (generation would otherwise fail later).
+                if kmsg in ("credit", "ratelimited"):
+                    prov = E.T_disp(E.AI_PROVIDER)
+                    warn = (f"{prov} key is valid, but the account is out of credit/quota "
+                            f"— AI generation will fail until you top up or switch provider."
+                            if kmsg == "credit" else
+                            f"{prov} key is valid, but it's rate-limited right now — "
+                            f"generation may pause and retry.")
+                    self.ui_safe(lambda: self._toast(warn))
                 # 2) Validate the Azure PAT
                 self._connect_status = "Validating PAT & loading projects…"
                 self._safe_render()

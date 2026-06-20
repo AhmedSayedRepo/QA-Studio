@@ -203,12 +203,20 @@ _PAGE_TMPL = """<!doctype html><html lang="en"><head>
 }
 *{box-sizing:border-box}
 html,body{margin:0;height:100%}
-body{background:#E5E4EC;font-family:var(--ui);color:var(--ink);min-height:100vh;
-  display:flex;align-items:center;justify-content:center;padding:22px}
-.win{width:600px;max-width:96vw;background:var(--paper);border-radius:18px;overflow:hidden;
+/* transparent so only the rounded card shows — a true rounded popup */
+body{background:transparent;font-family:var(--ui);color:var(--ink);min-height:100vh;
+  display:flex;align-items:center;justify-content:center;padding:18px;box-sizing:border-box}
+.win{position:relative;width:600px;max-width:96vw;background:var(--paper);border-radius:18px;overflow:hidden;
   display:flex;flex-direction:column;
   box-shadow:0 30px 70px -25px rgba(20,16,40,.5),0 2px 6px -2px rgba(20,16,40,.18),0 0 0 1px rgba(20,16,40,.05)}
+/* the gradient bar + header double as the window drag handle (frameless) */
 .accent{height:4px;background:linear-gradient(90deg,var(--grad1),var(--violet),var(--grad2))}
+.winbar{position:absolute;top:0;left:0;right:0;height:46px;z-index:5}
+.wctl{position:absolute;top:11px;right:12px;z-index:9;display:flex;gap:4px}
+.wbtn{width:30px;height:30px;border:none;border-radius:9px;background:transparent;color:#9A9CAC;
+  cursor:pointer;font-size:15px;line-height:1;display:grid;place-items:center;transition:background .12s,color .12s}
+.wbtn:hover{background:rgba(20,16,40,.07);color:#3A3A46}
+.wbtn.close:hover{background:#FCE9EA;color:#E0474D}
 .head{text-align:center;padding:30px 40px 6px;display:flex;flex-direction:column;align-items:center}
 .head .tagline{font-size:13px;font-weight:600;color:var(--ink2);margin-top:10px}
 .divider{height:1px;background:var(--line);margin:22px 36px}
@@ -270,7 +278,12 @@ body{background:#E5E4EC;font-family:var(--ui);color:var(--ink);min-height:100vh;
 </style></head>
 <body>
 <div class="win">
-  <div class="accent"></div>
+  <div class="winbar pywebview-drag-region"></div>
+  <div class="wctl">
+    <button class="wbtn min" title="Minimize" onclick="winMin()">&#8211;</button>
+    <button class="wbtn close" title="Close" onclick="winClose()">&#10005;</button>
+  </div>
+  <div class="accent pywebview-drag-region"></div>
   <div class="head">__LOGO__<div class="tagline">AI-powered Azure DevOps test-case generator</div></div>
   <div class="divider"></div>
   <div class="body">
@@ -305,6 +318,13 @@ body{background:#E5E4EC;font-family:var(--ui);color:var(--ink);min-height:100vh;
 <script>
 const $=s=>document.querySelector(s);
 const APP="__APP__";
+function winClose(){
+  try{ if(window.pywebview&&pywebview.api&&pywebview.api.close){ pywebview.api.close(); return; } }catch(e){}
+  try{ window.close(); }catch(e){}
+}
+function winMin(){
+  try{ if(window.pywebview&&pywebview.api&&pywebview.api.minimize){ pywebview.api.minimize(); } }catch(e){}
+}
 function setStep(i,state,meta){
   const el=document.querySelector('.step[data-i="'+i+'"]'); if(!el)return;
   el.className='step '+state;
@@ -472,36 +492,99 @@ def _acquire_single_instance():
         return None
 
 
+def _log(msg):
+    """Print and also append to a log file, so diagnostics survive when the
+    installer is launched windowless (pythonw, no console)."""
+    line = f"[installer] {msg}"
+    try:
+        print(line)
+    except Exception:
+        pass
+    try:
+        import tempfile
+        with open(os.path.join(tempfile.gettempdir(), "qastudio_installer.log"),
+                  "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+
+
+def _ensure_pywebview():
+    """Make sure pywebview (and its Windows backend) is importable. If it isn't,
+    pip-install it on the fly so the native window works even when the installer
+    was launched directly rather than via install.bat. Returns True if usable."""
+    try:
+        import webview  # noqa: F401
+        return True
+    except Exception:
+        pass
+    _log("installing native-window backend (pywebview)…")
+    pkgs = ["pywebview>=5.0"]
+    if os.name == "nt":
+        pkgs.append("pythonnet")   # EdgeChromium/WebView2 backend on Windows
+    try:
+        flags = 0x08000000 if os.name == "nt" else 0
+        subprocess.run([sys.executable, "-m", "pip", "install",
+                        "--disable-pip-version-check", *pkgs],
+                       creationflags=flags, check=False)
+    except Exception as ex:
+        _log(f"pip install pywebview failed: {ex}")
+    try:
+        import webview  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
 def _open_app_window(url):
     """Open the installer as a true native desktop window.
 
     Order of preference:
-      1) pywebview — a real OS-native window (no browser chrome at all).
+      1) pywebview — a real OS-native window (no browser chrome at all). If it
+         isn't installed we try to install it on the fly first.
       2) Edge/Chrome `--app` mode — chromeless window if pywebview is unavailable.
       3) Default browser tab — last-resort fallback.
-    Prints what it's doing so failures are visible in the console.
     """
     W, H = 648, 760
 
-    # 1) Native window via pywebview (best path)
-    try:
-        import webview  # provided by pywebview
-        print("[installer] pywebview found — opening native window")
-        webview.create_window(
-            f"{APP_NAME} Setup", url,
-            width=W, height=H, resizable=False,
-            min_size=(W, H))
-        # webview.start() blocks until the window closes. On Windows it uses the
-        # EdgeChromium (WebView2) backend; gui='edgechromium' forces it.
+    # 1) Native window via pywebview (best path) — self-install if needed
+    if _ensure_pywebview():
         try:
-            webview.start(gui="edgechromium")
-        except Exception:
-            webview.start()   # let pywebview pick any available backend
-        os._exit(0)           # native window closed → stop the installer
-    except ImportError:
-        print("[installer] pywebview not installed — trying Edge/Chrome app window")
-    except Exception as ex:
-        print(f"[installer] pywebview failed ({ex}) — trying Edge/Chrome app window")
+            import webview
+
+            class _WinApi:
+                """Bridge so the custom ✕ / minimize buttons can drive the
+                frameless window (which has no OS title bar)."""
+                def set_window(self, w):
+                    self._w = w
+                def close(self):
+                    try:
+                        self._w.destroy()
+                    except Exception:
+                        os._exit(0)
+                def minimize(self):
+                    try:
+                        self._w.minimize()
+                    except Exception:
+                        pass
+
+            _log("opening native window (pywebview)")
+            _api = _WinApi()
+            _win = webview.create_window(
+                f"{APP_NAME} Setup", url,
+                width=W, height=H, resizable=False, min_size=(W, H),
+                frameless=True, easy_drag=True, transparent=True,
+                background_color="#00000000", js_api=_api)
+            _api.set_window(_win)
+            try:
+                webview.start(gui="edgechromium")
+            except Exception:
+                webview.start()   # let pywebview pick any available backend
+            os._exit(0)           # native window closed → stop the installer
+        except Exception as ex:
+            _log(f"pywebview failed ({ex}) — trying Edge/Chrome app window")
+    else:
+        _log("pywebview unavailable — trying Edge/Chrome app window")
 
     # 2) Chromium app-mode (chromeless) window
     exe = _find_chromium()
@@ -510,7 +593,7 @@ def _open_app_window(url):
             import tempfile
             prof = os.path.join(tempfile.gettempdir(), "qastudio_installer_profile")
             flags = 0x08000000 if os.name == "nt" else 0
-            print(f"[installer] opening chromeless app window via {os.path.basename(exe)}")
+            _log(f"opening chromeless app window via {os.path.basename(exe)}")
             subprocess.Popen(
                 [exe, f"--app={url}", f"--window-size={W},{H}",
                  f"--user-data-dir={prof}", "--no-first-run",
@@ -518,10 +601,10 @@ def _open_app_window(url):
                 creationflags=flags)
             return
         except Exception as ex:
-            print(f"[installer] app-window launch failed ({ex})")
+            _log(f"app-window launch failed ({ex})")
 
     # 3) Fallback: default browser tab
-    print("[installer] falling back to default browser tab")
+    _log("falling back to default browser tab")
     try:
         webbrowser.open(url)
     except Exception:
@@ -564,8 +647,8 @@ def main():
     # Serve on a daemon thread so the native window (pywebview) can own the main
     # thread — pywebview requires webview.start() to run on the main thread.
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    print(f"{APP_NAME} installer running at {url}")
-    print("If a window didn't open, paste that address into your browser.")
+    _log(f"installer running at {url}")
+    _log("If a window didn't open, paste that address into your browser.")
     try:
         _open_app_window(url)   # blocks for pywebview; returns immediately otherwise
     except Exception:

@@ -131,6 +131,14 @@ def classify_ai_error(exc):
         return ("credit", f"{prov}: account is out of credit/quota. Top up with the "
                           f"provider, or switch the AI Provider in Setup and Resume.")
 
+    # 0.5) expired / invalid key — some providers (e.g. Gemini) return this as a
+    # 400, so catch it by message BEFORE the generic bad_request branch below.
+    if (("api key expired" in low) or ("api_key_invalid" in low)
+            or ("api key not valid" in low) or ("api key is invalid" in low)
+            or ("expired" in low and "key" in low) or ("renew" in low and "key" in low)):
+        return ("auth", f"{prov}: API key expired/invalid. Renew or re-check the key "
+                        f"in Setup and Save it, then Resume — or switch provider.")
+
     # 1) typed-exception names from the SDKs (most reliable)
     if "authentication" in etype or "permissiondenied" in etype:
         return ("auth", f"{prov}: API key rejected. Re-check the key in Setup, Save it, then Resume.")
@@ -143,7 +151,7 @@ def classify_ai_error(exc):
             return ("context_length", f"{prov}: input too long for this model's context window.")
         if "model" in low and ("not" in low or "invalid" in low or "does not exist" in low):
             return ("bad_model", f"{prov}: invalid model. Pick a valid model for this provider in Setup.")
-        return ("bad_request", f"{prov}: request rejected — {re.sub(r'[ \\t\\n]+', ' ', raw).strip()[:160]}")
+        return ("bad_request", f"{prov}: request rejected — {re.sub(r'\s+', ' ', raw).strip()[:160]}")
     if "timeout" in etype or "timed out" in low:
         return ("timeout", f"{prov}: request timed out. Retrying…")
     if ("apiconnection" in etype or "connectionerror" in etype or "getaddrinfo" in low
@@ -183,15 +191,27 @@ def classify_ai_error(exc):
     if "context length" in low or "maximum context" in low:
         return ("context_length", f"{prov}: input too long for this model's context window.")
 
-    return ("unknown", (f"{prov}: {re.sub(r'[ \\t\\n]+', ' ', raw).strip()[:180]}"
+    return ("unknown", (f"{prov}: {re.sub(r'\s+', ' ', raw).strip()[:180]}"
                         if raw else f"{prov}: unknown error."))
+
+# Provider errors a user can fix by renewing a key, waiting, or switching provider
+# — these PAUSE the run (so the user can act + Resume). Everything else (a bad
+# JSON response, content filter, oversized context) falls back to raw steps.
+_RECOVERABLE_AI_CATS = {"auth", "credit", "rate_limit", "overloaded", "server",
+                        "network", "timeout", "bad_model", "not_found"}
+
+def _is_recoverable_ai_error(exc):
+    try:
+        cat, _ = classify_ai_error(exc)
+    except Exception:
+        return False
+    return cat in _RECOVERABLE_AI_CATS
 
 def _ai_cfg():
     cfg = AI_CONFIG.get(AI_PROVIDER)
     if not cfg:
         raise RuntimeError(f"Unknown AI_PROVIDER '{AI_PROVIDER}'.")
     return cfg
-
 def _is_credit_error(msg):
     m = msg.lower()
     return ("credit balance is too low" in m or "insufficient_quota" in m
@@ -199,21 +219,13 @@ def _is_credit_error(msg):
 
 def friendly_ai_error(msg):
     """Turn a raw provider error (often a long JSON 400/401) into one readable
-    line for the activity log."""
-    m = str(msg or "")
-    low = m.lower()
-    if _is_credit_error(m):
-        prov = T_disp(AI_PROVIDER)
-        return (f"{prov}: your account is out of credit/quota. Top up with that "
-                f"provider, or switch the AI Provider in Setup (e.g. DeepSeek / Qwen) "
-                f"and Resume.")
-    if "401" in low or "invalid api key" in low or "authentication" in low or "unauthorized" in low:
-        return (f"{T_disp(AI_PROVIDER)}: the API key was rejected (401). Re-check the "
-                f"key for this provider in Setup, Save it, then Resume.")
-    if "429" in low or "rate limit" in low:
-        return f"{T_disp(AI_PROVIDER)}: rate limited (429). Wait a moment, then Resume."
-    # generic: collapse whitespace and trim
-    return re.sub(r"\s+", " ", m).strip()[:200]
+    line for the activity log. Accepts an exception or a string."""
+    try:
+        exc = msg if isinstance(msg, BaseException) else Exception(str(msg or ""))
+        _cat, friendly = classify_ai_error(exc)
+        return friendly
+    except Exception:
+        return re.sub(r"\s+", " ", str(msg or "")).strip()[:200]
 
 def T_disp(name):
     """Pretty provider name without importing the UI theme."""
@@ -2950,7 +2962,13 @@ def compile_test_case(tc, story=None, log=None, case_type="interaction"):
     except CreditBalanceError:
         raise
     except Exception as e:
-        log(f"    compile failed ({str(e)[:60]}) — using raw steps", "warn")
+        # Recoverable provider errors (expired/invalid key, rate limit, outage)
+        # propagate so the run can PAUSE and let the user fix it + Resume.
+        if _is_recoverable_ai_error(e):
+            raise
+        # Genuine non-recoverable issues (e.g. a malformed JSON response) fall
+        # back to raw steps with a single clean line — no giant JSON dump.
+        log(f"    compile failed ({friendly_ai_error(e)}) — using raw steps", "warn")
         return []
 
 
@@ -4716,18 +4734,33 @@ def validate_and_sequence_suite(stories_payload, log=None, want_ai=True,
                     try:
                         intents = compile_test_case(tc, story, log, ctype) or []
                         break
-                    except CreditBalanceError as e:
-                        decision = on_error(str(e)) if on_error else "stop"
+                    except Exception as e:
+                        # compile_test_case only raises for RECOVERABLE provider
+                        # errors (credit, expired/invalid key, rate limit, outage).
+                        # Pause and let the user fix it / switch provider + Resume.
+                        decision = on_error(friendly_ai_error(e)) if on_error else "stop"
                         if decision == "retry":
+                            log("Retrying compile with the current provider…", "dim")
                             continue
                         return out   # user chose Stop (should_stop is now True)
             if not intents:
                 intents = _intents_from_raw_steps(tc)
             n_act = sum(1 for i in intents if i["role"] == "action")
-            if n_act == 0 and bucket != 2:
-                log(f"    skipping non-automatable case (no actions): "
-                    f"{tc.get('title','')[:40]}", "warn")
-                if not any(i["role"] == "assertion" for i in intents):
+            has_assert = any(i["role"] == "assertion" for i in intents)
+            if n_act == 0 and bucket != 2 and not has_assert:
+                # A presence case ("verify X exists") is still automatable as a
+                # single visibility check — synthesize one rather than drop it.
+                if ctype == "presence":
+                    title = tc.get("title", "")
+                    intents.append({
+                        "role": "assertion", "verb": "", "target": title,
+                        "keywords": [w for w in re.split(r"\s+", title) if len(w) > 1][:6],
+                        "kind": "any", "value": "", "check": "visible",
+                        "expected": "", "from_steps": []})
+                    has_assert = True
+                else:
+                    log(f"    skipping non-automatable case (no actions): "
+                        f"{tc.get('title','')[:40]}", "warn")
                     continue
             cases.append({"tc": tc, "title": tc.get("title", ""), "ctype": ctype,
                           "page_context": pctx, "bucket": bucket, "intents": intents})
