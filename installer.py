@@ -1,10 +1,11 @@
 """installer.py — QA Studio graphical installer (modern web UI).
 
-Zero external dependencies: uses only Python's standard library (http.server,
-webbrowser, subprocess), so it runs BEFORE `pip install` — it cannot depend on
-Flet/Qt/etc. because those aren't installed yet. Instead of tkinter, it spins up
-a tiny localhost web server and opens a polished HTML/CSS interface in the user's
-default browser, streaming live install progress over Server-Sent Events.
+Minimal dependencies: the install logic uses only Python's standard library
+(http.server, subprocess) so it runs BEFORE `pip install`. The UI is a small
+localhost web app rendered in a NATIVE desktop window via pywebview (pre-installed
+by install.bat). If pywebview isn't available it falls back to a chromeless
+Edge/Chrome `--app` window, and finally to the default browser. Live install
+progress streams over Server-Sent Events.
 
 Run:  python installer.py
 """
@@ -472,14 +473,36 @@ def _acquire_single_instance():
 
 
 def _open_app_window(url):
-    """Open the installer in a chromeless app window (Edge/Chrome --app mode) so
-    it looks like a native installer instead of a browser tab. Falls back to the
-    default browser if no Chromium browser is found."""
-    W, H = 648, 720
+    """Open the installer as a true native desktop window.
+
+    Order of preference:
+      1) pywebview — a real OS-native window (no browser chrome at all). The
+         launcher (install.bat) pre-installs it, so this is the normal path.
+      2) Edge/Chrome `--app` mode — chromeless window if pywebview is missing.
+      3) Default browser tab — last-resort fallback.
+    """
+    W, H = 648, 760
+
+    # 1) Native window via pywebview (best: looks like a real installer app)
+    try:
+        import webview  # provided by pywebview
+        win = webview.create_window(
+            f"{APP_NAME} Setup", url,
+            width=W, height=H, resizable=False,
+            min_size=(W, H), background_color="#0E0B16")
+        # webview.start() blocks until the window closes — that's fine because
+        # main() runs the HTTP server on a daemon thread before calling us.
+        webview.start()
+        # When the native window closes, stop the whole installer.
+        os._exit(0)
+    except Exception:
+        pass  # pywebview not available or failed → fall through
+
+    # 2) Chromium app-mode (chromeless) window
     candidates = []
     if os.name == "nt":
-        pf = os.environ.get("ProgramFiles", r"C:\\Program Files")
-        pf86 = os.environ.get("ProgramFiles(x86)", r"C:\\Program Files (x86)")
+        pf = os.environ.get("ProgramFiles", r"C:\Program Files")
+        pf86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
         local = os.environ.get("LocalAppData", "")
         candidates = [
             os.path.join(pf86, "Microsoft", "Edge", "Application", "msedge.exe"),
@@ -510,7 +533,8 @@ def _open_app_window(url):
             return
         except Exception:
             pass
-    # Fallback: default browser tab
+
+    # 3) Fallback: default browser tab
     try:
         webbrowser.open(url)
     except Exception:
@@ -524,11 +548,20 @@ def main():
     port = _free_port()
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     url = f"http://127.0.0.1:{port}/"
-    threading.Thread(target=lambda: _open_app_window(url), daemon=True).start()
+    # Serve on a daemon thread so the native window (pywebview) can own the main
+    # thread — pywebview requires webview.start() to run on the main thread.
+    threading.Thread(target=server.serve_forever, daemon=True).start()
     print(f"{APP_NAME} installer running at {url}")
     print("If a window didn't open, paste that address into your browser.")
     try:
-        server.serve_forever()
+        _open_app_window(url)   # blocks for pywebview; returns immediately otherwise
+    except Exception:
+        pass
+    # If we got here via the Chromium/browser fallback (non-blocking), keep the
+    # process alive to serve requests until the user closes the window/Ctrl-C.
+    try:
+        while True:
+            time.sleep(3600)
     except KeyboardInterrupt:
         pass
 

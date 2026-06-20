@@ -2,7 +2,7 @@
 Ported from the original QA tool scripts so the Flet UI can drive it directly.
 Configure provider keys in AI_CONFIG below, or pass them at runtime via set_credentials().
 """
-import os, re, json, base64, html as _html, requests
+import os, re, json, base64, html as _html, requests, time
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  CONFIG
@@ -59,12 +59,16 @@ GMAIL_APP_PASS = ""
 AZURE_PAT = ""
 
 def set_credentials(provider=None, api_key=None, pat=None, gmail=None,
-                    org=None, gmail_sender=None):
+                    org=None, gmail_sender=None, model=None):
     global AI_PROVIDER, AZURE_PAT, GMAIL_APP_PASS, AZURE_ORG, GMAIL_SENDER
     if provider:
         AI_PROVIDER = provider
     if api_key and AI_PROVIDER in AI_CONFIG:
         AI_CONFIG[AI_PROVIDER]["api_key"] = api_key
+    if model and AI_PROVIDER in AI_CONFIG:
+        # Azure routes by "deployment"; every other provider uses "model".
+        key = "deployment" if AI_PROVIDER == "azure_openai" else "model"
+        AI_CONFIG[AI_PROVIDER][key] = model.strip()
     if pat is not None:
         AZURE_PAT = pat
     if gmail is not None:
@@ -74,12 +78,113 @@ def set_credentials(provider=None, api_key=None, pat=None, gmail=None,
     if gmail_sender:
         GMAIL_SENDER = gmail_sender.strip()
 
+def current_model(provider=None):
+    """Return the configured model id for a provider (or the active one)."""
+    p = provider or AI_PROVIDER
+    cfg = AI_CONFIG.get(p, {})
+    return cfg.get("deployment") if p == "azure_openai" else cfg.get("model")
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  AI PROVIDER LAYER
 # ═══════════════════════════════════════════════════════════════════════════════
 class CreditBalanceError(Exception):
     pass
+
+# ── Error classification ──────────────────────────────────────────────────────
+# Categories returned by classify_ai_error(). The UI/log uses (category, message);
+# the orchestrators use TRANSIENT_CATEGORIES to decide whether to retry.
+TRANSIENT_CATEGORIES = {"rate_limit", "server", "overloaded", "timeout", "network"}
+
+def _status_of(exc):
+    """Best-effort HTTP status code from any provider SDK exception."""
+    for attr in ("status_code", "status", "http_status", "code"):
+        v = getattr(exc, attr, None)
+        if isinstance(v, int):
+            return v
+        if isinstance(v, str) and v.isdigit():
+            return int(v)
+    resp = getattr(exc, "response", None)
+    if resp is not None:
+        sc = getattr(resp, "status_code", None)
+        if isinstance(sc, int):
+            return sc
+    m = re.search(r"\b(4\d\d|5\d\d)\b", str(exc))
+    return int(m.group(1)) if m else None
+
+def classify_ai_error(exc):
+    """Map any provider exception to (category, friendly_message).
+
+    Categories: auth, credit, rate_limit, bad_model, not_found, context_length,
+    bad_request, content_filter, server, overloaded, network, timeout, unknown.
+    Reads typed SDK exception names first, then HTTP status, then message text,
+    so it works across the anthropic / openai / google SDKs.
+    """
+    prov = T_disp(AI_PROVIDER)
+    raw = str(exc or "")
+    low = raw.lower()
+    etype = type(exc).__name__.lower()
+    status = _status_of(exc)
+
+    # 0) credit / quota first (a 429 can mean either rate-limit OR out-of-quota)
+    if _is_credit_error(raw):
+        return ("credit", f"{prov}: account is out of credit/quota. Top up with the "
+                          f"provider, or switch the AI Provider in Setup and Resume.")
+
+    # 1) typed-exception names from the SDKs (most reliable)
+    if "authentication" in etype or "permissiondenied" in etype:
+        return ("auth", f"{prov}: API key rejected. Re-check the key in Setup, Save it, then Resume.")
+    if "ratelimit" in etype:
+        return ("rate_limit", f"{prov}: rate limited (429). Waiting before retry…")
+    if "notfound" in etype:
+        return ("bad_model", f"{prov}: model not found. Pick a valid model for this provider in Setup.")
+    if "badrequest" in etype or "unprocessable" in etype or "invalidargument" in etype:
+        if "context length" in low or "maximum context" in low or "too long" in low:
+            return ("context_length", f"{prov}: input too long for this model's context window.")
+        if "model" in low and ("not" in low or "invalid" in low or "does not exist" in low):
+            return ("bad_model", f"{prov}: invalid model. Pick a valid model for this provider in Setup.")
+        return ("bad_request", f"{prov}: request rejected — {re.sub(r'[ \\t\\n]+', ' ', raw).strip()[:160]}")
+    if "timeout" in etype or "timed out" in low:
+        return ("timeout", f"{prov}: request timed out. Retrying…")
+    if ("apiconnection" in etype or "connectionerror" in etype or "getaddrinfo" in low
+            or "name or service not known" in low or "ssl" in low
+            or "max retries" in low or "failed to establish" in low):
+        return ("network", f"{prov}: cannot reach the provider — check your network/firewall.")
+    if "overloaded" in etype or "overloaded" in low or status == 529:
+        return ("overloaded", f"{prov}: provider overloaded. Retrying…")
+    if "internalserver" in etype or "serviceunavailable" in etype:
+        return ("server", f"{prov}: provider error ({status or '5xx'}). Retrying…")
+    if "contentfilter" in etype or "content_filter" in low or ("blocked" in low and "safety" in low):
+        return ("content_filter", f"{prov}: the response was blocked by a safety filter.")
+
+    # 2) fall back to HTTP status code
+    if status == 401:
+        return ("auth", f"{prov}: API key rejected (401). Re-check the key in Setup, Save it, then Resume.")
+    if status == 403:
+        return ("auth", f"{prov}: access denied (403). Check the key's permissions/region for this model.")
+    if status == 404:
+        return ("bad_model", f"{prov}: model/endpoint not found (404). Pick a valid model in Setup.")
+    if status == 422:
+        return ("bad_request", f"{prov}: request rejected (422) — check the model and parameters.")
+    if status == 429:
+        return ("rate_limit", f"{prov}: rate limited (429). Waiting before retry…")
+    if status == 529:
+        return ("overloaded", f"{prov}: provider overloaded (529). Retrying…")
+    if status in (500, 502, 503, 504):
+        return ("server", f"{prov}: provider error ({status}). Retrying…")
+
+    # 3) message-text fallbacks
+    if "invalid api key" in low or "incorrect api key" in low or "unauthorized" in low or "x-api-key" in low:
+        return ("auth", f"{prov}: API key rejected. Re-check the key in Setup, Save it, then Resume.")
+    if "model" in low and ("not found" in low or "does not exist" in low or "unknown model" in low):
+        return ("bad_model", f"{prov}: model not found. Pick a valid model for this provider in Setup.")
+    if "rate limit" in low or "429" in low:
+        return ("rate_limit", f"{prov}: rate limited (429). Waiting before retry…")
+    if "context length" in low or "maximum context" in low:
+        return ("context_length", f"{prov}: input too long for this model's context window.")
+
+    return ("unknown", (f"{prov}: {re.sub(r'[ \\t\\n]+', ' ', raw).strip()[:180]}"
+                        if raw else f"{prov}: unknown error."))
 
 def _ai_cfg():
     cfg = AI_CONFIG.get(AI_PROVIDER)
@@ -125,84 +230,161 @@ def active_providers():
             out.append(name)
     return out
 
-def ai_complete(prompt_text, images=None, max_tokens=4096, timeout=None):
-    cfg = _ai_cfg(); provider = AI_PROVIDER; images = images or []
-    try:
-        if provider == "anthropic":
-            import anthropic
-            content = []
+class EmptyAIResponse(Exception):
+    """Raised when a provider returns no usable text (empty choices, None content,
+    content-filter block, or truncated/blocked output)."""
+    pass
+
+def _extract_openai_text(resp):
+    """Defensively pull text from an OpenAI-compatible chat completion."""
+    choices = getattr(resp, "choices", None) or []
+    if not choices:
+        raise EmptyAIResponse("provider returned no choices")
+    ch = choices[0]
+    fr = getattr(ch, "finish_reason", None)
+    msg = getattr(ch, "message", None)
+    text = getattr(msg, "content", None) if msg is not None else None
+    if text is None:
+        refusal = getattr(msg, "refusal", None) if msg is not None else None
+        if refusal:
+            raise EmptyAIResponse(f"model refused: {refusal}")
+        if fr == "content_filter":
+            raise EmptyAIResponse("response blocked by content filter")
+        raise EmptyAIResponse("empty content from provider")
+    if fr == "length" and not str(text).strip():
+        raise EmptyAIResponse("response truncated (max_tokens) with no content")
+    return text
+
+def _ai_call_once(provider, cfg, prompt_text, images, max_tokens, timeout):
+    """One provider call. Returns text or raises (EmptyAIResponse / SDK error)."""
+    if provider == "anthropic":
+        import anthropic
+        content = []
+        for im in images:
+            content.append({"type": "image", "source": {"type": "base64",
+                "media_type": im["media_type"], "data": im["data"]}})
+        content.append({"type": "text", "text": prompt_text})
+        resp = anthropic.Anthropic(api_key=cfg["api_key"]).messages.create(
+            model=cfg["model"], max_tokens=max_tokens, timeout=timeout,
+            messages=[{"role": "user", "content": content}])
+        blocks = getattr(resp, "content", None) or []
+        texts = [getattr(b, "text", "") for b in blocks if getattr(b, "type", "") == "text"]
+        out = "".join(texts).strip()
+        if not out:
+            sr = getattr(resp, "stop_reason", None)
+            raise EmptyAIResponse(f"empty response (stop_reason={sr})")
+        return out
+
+    if provider in ("openai", "nvidia", "deepseek", "qwen"):
+        from openai import OpenAI
+        client = OpenAI(api_key=cfg["api_key"], base_url=cfg.get("base_url")) if cfg.get("base_url") \
+                 else OpenAI(api_key=cfg["api_key"])
+        if images:
+            content = [{"type": "text", "text": prompt_text}]
             for im in images:
-                content.append({"type": "image", "source": {"type": "base64",
-                    "media_type": im["media_type"], "data": im["data"]}})
-            content.append({"type": "text", "text": prompt_text})
-            resp = anthropic.Anthropic(api_key=cfg["api_key"]).messages.create(
-                model=cfg["model"], max_tokens=max_tokens, timeout=timeout,
-                messages=[{"role": "user", "content": content}])
-            return resp.content[0].text
-
-        elif provider in ("openai", "nvidia", "deepseek", "qwen"):
-            from openai import OpenAI
-            client = OpenAI(api_key=cfg["api_key"], base_url=cfg.get("base_url")) if cfg.get("base_url") \
-                     else OpenAI(api_key=cfg["api_key"])
-            if images:
-                content = [{"type": "text", "text": prompt_text}]
-                for im in images:
-                    content.append({"type": "image_url", "image_url": {
-                        "url": f"data:{im['media_type']};base64,{im['data']}"}})
-            else:
-                # text-only: send a plain string. Some providers (DeepSeek, Qwen,
-                # certain NVIDIA models) reject the [{"type":"text",...}] array form
-                # for non-vision models, which made every non-Anthropic provider
-                # fail at Connect.
-                content = prompt_text
-            kwargs = {"model": cfg["model"], "max_tokens": max_tokens,
-                      "messages": [{"role": "user", "content": content}]}
-            if timeout is not None:
-                kwargs["timeout"] = timeout
-            resp = client.chat.completions.create(**kwargs)
-            return resp.choices[0].message.content
-
-        elif provider == "azure_openai":
-            from openai import AzureOpenAI
-            client = AzureOpenAI(api_key=cfg["api_key"], azure_endpoint=cfg["endpoint"],
-                                 api_version=cfg["api_version"])
-            if images:
-                content = [{"type": "text", "text": prompt_text}]
-                for im in images:
-                    content.append({"type": "image_url", "image_url": {
-                        "url": f"data:{im['media_type']};base64,{im['data']}"}})
-            else:
-                content = prompt_text
-            kwargs = {"model": cfg["deployment"], "max_tokens": max_tokens,
-                      "messages": [{"role": "user", "content": content}]}
-            if timeout is not None:
-                kwargs["timeout"] = timeout
-            resp = client.chat.completions.create(**kwargs)
-            return resp.choices[0].message.content
-
-        elif provider == "gemini":
-            import google.generativeai as genai
-            genai.configure(api_key=cfg["api_key"])
-            model = genai.GenerativeModel(cfg["model"])
-            parts = [prompt_text]
-            for im in images:
-                parts.append({"mime_type": im["media_type"], "data": base64.b64decode(im["data"])})
-            resp = model.generate_content(parts, generation_config={"max_output_tokens": max_tokens})
-            return resp.text
-
-        elif provider == "ollama":
-            payload = {"model": cfg["model"], "messages": [{"role": "user", "content": prompt_text}], "stream": False}
-            r = requests.post(f"{cfg['base_url']}/api/chat", json=payload, timeout=180)
-            r.raise_for_status()
-            return r.json()["message"]["content"]
+                content.append({"type": "image_url", "image_url": {
+                    "url": f"data:{im['media_type']};base64,{im['data']}"}})
         else:
-            raise RuntimeError(f"Unhandled provider '{provider}'")
-    except CreditBalanceError:
-        raise
-    except Exception as e:
-        if _is_credit_error(str(e)):
-            raise CreditBalanceError(str(e))
-        raise
+            # text-only: plain string. Some providers reject the typed-array form
+            # for non-vision models.
+            content = prompt_text
+        kwargs = {"model": cfg["model"], "max_tokens": max_tokens,
+                  "messages": [{"role": "user", "content": content}]}
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        resp = client.chat.completions.create(**kwargs)
+        return _extract_openai_text(resp)
+
+    if provider == "azure_openai":
+        from openai import AzureOpenAI
+        client = AzureOpenAI(api_key=cfg["api_key"], azure_endpoint=cfg["endpoint"],
+                             api_version=cfg["api_version"])
+        if images:
+            content = [{"type": "text", "text": prompt_text}]
+            for im in images:
+                content.append({"type": "image_url", "image_url": {
+                    "url": f"data:{im['media_type']};base64,{im['data']}"}})
+        else:
+            content = prompt_text
+        kwargs = {"model": cfg["deployment"], "max_tokens": max_tokens,
+                  "messages": [{"role": "user", "content": content}]}
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        resp = client.chat.completions.create(**kwargs)
+        return _extract_openai_text(resp)
+
+    if provider == "gemini":
+        import google.generativeai as genai
+        genai.configure(api_key=cfg["api_key"])
+        model = genai.GenerativeModel(cfg["model"])
+        parts = [prompt_text]
+        for im in images:
+            parts.append({"mime_type": im["media_type"], "data": base64.b64decode(im["data"])})
+        resp = model.generate_content(parts, generation_config={"max_output_tokens": max_tokens})
+        # Gemini raises on .text if the candidate was blocked; surface that cleanly
+        try:
+            txt = resp.text
+        except Exception:
+            fb = getattr(getattr(resp, "prompt_feedback", None), "block_reason", None)
+            cands = getattr(resp, "candidates", None) or []
+            fr = getattr(cands[0], "finish_reason", None) if cands else None
+            raise EmptyAIResponse(f"blocked by Gemini (block_reason={fb}, finish_reason={fr})")
+        if not (txt or "").strip():
+            raise EmptyAIResponse("empty response from Gemini")
+        return txt
+
+    if provider == "ollama":
+        payload = {"model": cfg["model"],
+                   "messages": [{"role": "user", "content": prompt_text}], "stream": False}
+        r = requests.post(f"{cfg['base_url']}/api/chat", json=payload, timeout=timeout or 180)
+        r.raise_for_status()
+        data = r.json()
+        txt = (data.get("message") or {}).get("content")
+        if not (txt or "").strip():
+            raise EmptyAIResponse("empty response from Ollama")
+        return txt
+
+    raise RuntimeError(f"Unhandled provider '{provider}'")
+
+def ai_complete(prompt_text, images=None, max_tokens=4096, timeout=None,
+                retries=3, on_retry=None):
+    """Call the active AI provider with defensive extraction + retry on transient
+    errors (rate limit / 5xx / overloaded / timeout / network).
+
+    Raises CreditBalanceError for out-of-credit, or a RuntimeError carrying the
+    friendly classified message for non-transient failures. `on_retry(msg)` (if
+    given) is called before each retry so the UI can log "retrying…".
+    """
+    cfg = _ai_cfg(); provider = AI_PROVIDER; images = images or []
+    attempt = 0
+    last_friendly = None
+    while True:
+        attempt += 1
+        try:
+            return _ai_call_once(provider, cfg, prompt_text, images, max_tokens, timeout)
+        except CreditBalanceError:
+            raise
+        except EmptyAIResponse as e:
+            # empty/blocked: retry a couple of times (often transient), then give up
+            cat, friendly = "empty", f"{T_disp(provider)}: {e}"
+            last_friendly = friendly
+            if attempt <= retries:
+                _delay = min(2 * attempt, 8)
+                if on_retry: on_retry(f"{friendly} — retrying ({attempt}/{retries})…")
+                time.sleep(_delay); continue
+            raise RuntimeError(friendly)
+        except Exception as e:
+            if _is_credit_error(str(e)):
+                raise CreditBalanceError(str(e))
+            cat, friendly = classify_ai_error(e)
+            last_friendly = friendly
+            if cat in TRANSIENT_CATEGORIES and attempt <= retries:
+                # exponential-ish backoff; rate-limit waits a touch longer
+                _delay = (5 if cat == "rate_limit" else 2) * attempt
+                _delay = min(_delay, 20)
+                if on_retry: on_retry(f"{friendly} — retrying ({attempt}/{retries})…")
+                time.sleep(_delay); continue
+            raise RuntimeError(friendly)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -237,37 +419,137 @@ def validate_pat(pat):
 
 def validate_api_key():
     """Cheap check that the configured AI provider key works.
-    Returns (ok, message). Uses a tiny ai_complete call and maps auth errors.
-    The raw error text is preserved in `message` for non-auth failures so the UI
-    can show why a provider failed (wrong model, missing package, bad base_url…)."""
+    Returns (ok, category). category is one of: ok, credit, ratelimited, auth,
+    bad_model, network, timeout, content_filter, server, overloaded,
+    missing-package:<pkg>, or error:<message>. The UI maps these to friendly text.
+    Uses a single direct call (no retry) so Connect is fast.
+    """
+    cfg = _ai_cfg(); provider = AI_PROVIDER
     try:
-        out = ai_complete("ping", max_tokens=8)
-        if out is None:
-            out = ai_complete("Reply with: ok", max_tokens=8)
+        _ai_call_once(provider, cfg, "ping", [], 8, None)
         return True, "ok"
     except CreditBalanceError:
-        # key is valid but out of credits — let the user proceed/decide
-        return True, "credit"
+        return True, "credit"          # key valid, just out of credit
     except ModuleNotFoundError as e:
-        # the provider's SDK isn't installed (e.g. openai / google-generativeai)
         missing = str(e).split("'")[-2] if "'" in str(e) else str(e)
         return False, f"missing-package:{missing}"
+    except EmptyAIResponse:
+        # got a (blocked/empty) response — that still means the key authenticated
+        return True, "ok"
     except Exception as e:
-        m = str(e).lower()
-        # Only treat clear authentication signals as an auth failure. Anything else
-        # (invalid model, bad base_url, 404, JSON decode) is reported verbatim so
-        # the user can see the actual reason instead of a misleading 'key rejected'.
-        if ("401" in m or "invalid api key" in m or "incorrect api key" in m
-                or "unauthorized" in m or "authentication" in m
-                or "x-api-key" in m or "no api key" in m or "api key not" in m):
-            return False, "auth"
-        if "429" in m or "rate limit" in m:
+        cat, friendly = classify_ai_error(e)
+        if cat == "credit":
+            return True, "credit"
+        if cat == "rate_limit":
             return True, "ratelimited"  # key valid, just throttled
-        if ("connect" in m or "timed out" in m or "timeout" in m
-                or "ssl" in m or "getaddrinfo" in m or "name or service" in m):
-            return False, "network"
-        # surface the real error (model not found, 404, base_url, etc.)
-        return False, "error:" + re.sub(r"\s+", " ", str(e)).strip()[:160]
+        if cat in ("auth",):
+            return False, "auth"
+        if cat in ("network", "timeout", "server", "overloaded", "content_filter"):
+            return False, cat
+        if cat == "bad_model":
+            return False, "error:" + friendly
+        return False, "error:" + friendly
+
+# ── Model discovery ───────────────────────────────────────────────────────────
+# Curated fallbacks shown when a live /models fetch fails or returns nothing.
+# Chat/vision-capable text models only (no embeddings / audio / image-gen).
+STATIC_MODELS = {
+    "anthropic": ["claude-sonnet-4-6", "claude-opus-4-7", "claude-haiku-4-5",
+                  "claude-3-7-sonnet-latest", "claude-3-5-sonnet-latest"],
+    "openai":    ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "o4-mini"],
+    "gemini":    ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-1.5-pro", "gemini-1.5-flash"],
+    "nvidia":    ["meta/llama-3.1-70b-instruct", "meta/llama-3.1-405b-instruct",
+                  "qwen/qwen2.5-72b-instruct", "deepseek-ai/deepseek-r1",
+                  "nvidia/llama-3.1-nemotron-70b-instruct"],
+    "deepseek":  ["deepseek-chat", "deepseek-reasoner"],
+    "qwen":      ["qwen-plus", "qwen-max", "qwen-turbo", "qwen-vl-max", "qwen-vl-plus"],
+    "azure_openai": ["gpt-4o", "gpt-4o-mini", "gpt-4.1"],
+    "ollama":    ["llama3.1", "llama3.2", "qwen2.5", "mistral", "gemma2"],
+}
+
+def _is_chat_model_id(provider, mid):
+    """Filter out non-chat model ids (embeddings, tts, image, moderation, …)."""
+    s = mid.lower()
+    bad = ("embedding", "embed", "whisper", "tts", "audio", "moderation",
+           "dall-e", "image", "vision-instruct-embed", "rerank", "guard",
+           "search", "similarity", "code-search", "davinci", "babbage", "ada",
+           "realtime", "transcribe")
+    if any(b in s for b in bad):
+        return False
+    if provider == "openai":
+        # keep gpt-*/o*-family chat models
+        return s.startswith(("gpt-", "o1", "o3", "o4", "chatgpt"))
+    return True
+
+def list_models(provider=None, api_key=None, base_url=None, timeout=15):
+    """Return (models, source) where source is 'live' or 'static'.
+    Fetches the provider's model catalogue with the SELECTED provider's key.
+    Falls back to STATIC_MODELS on any error so the dropdown is never empty.
+    """
+    p = provider or AI_PROVIDER
+    cfg = AI_CONFIG.get(p, {})
+    key = (api_key or cfg.get("api_key") or "").strip()
+    burl = base_url or cfg.get("base_url")
+    static = STATIC_MODELS.get(p, [])
+
+    def _ok(lst):
+        # de-dupe, keep order, drop obvious non-chat ids, cap length
+        seen, out = set(), []
+        for m in lst:
+            m = (m or "").strip()
+            if not m or m in seen:
+                continue
+            if not _is_chat_model_id(p, m):
+                continue
+            seen.add(m); out.append(m)
+        return out
+
+    try:
+        if p == "anthropic":
+            import anthropic
+            res = anthropic.Anthropic(api_key=key).models.list(limit=100)
+            ids = [getattr(m, "id", None) for m in getattr(res, "data", []) or []]
+            ids = _ok([i for i in ids if i])
+            return (ids or static), ("live" if ids else "static")
+
+        if p in ("openai", "nvidia", "deepseek", "qwen"):
+            from openai import OpenAI
+            client = OpenAI(api_key=key, base_url=burl) if burl else OpenAI(api_key=key)
+            res = client.models.list()
+            ids = [getattr(m, "id", None) for m in getattr(res, "data", []) or []]
+            ids = _ok([i for i in ids if i])
+            ids.sort()
+            return (ids or static), ("live" if ids else "static")
+
+        if p == "azure_openai":
+            from openai import AzureOpenAI
+            client = AzureOpenAI(api_key=key, azure_endpoint=cfg.get("endpoint"),
+                                 api_version=cfg.get("api_version", "2024-06-01"))
+            res = client.models.list()
+            ids = _ok([getattr(m, "id", None) for m in getattr(res, "data", []) or [] if getattr(m, "id", None)])
+            return (ids or static), ("live" if ids else "static")
+
+        if p == "gemini":
+            import google.generativeai as genai
+            genai.configure(api_key=key)
+            ids = []
+            for m in genai.list_models():
+                methods = getattr(m, "supported_generation_methods", []) or []
+                if "generateContent" in methods:
+                    nm = getattr(m, "name", "") or ""
+                    ids.append(nm.split("/", 1)[1] if nm.startswith("models/") else nm)
+            ids = _ok(ids)
+            return (ids or static), ("live" if ids else "static")
+
+        if p == "ollama":
+            r = requests.get(f"{(burl or 'http://localhost:11434')}/api/tags", timeout=timeout)
+            r.raise_for_status()
+            ids = _ok([m.get("name") for m in (r.json().get("models") or [])])
+            return (ids or static), ("live" if ids else "static")
+
+    except Exception:
+        return static, "static"
+    return static, "static"
 
 
 def fetch_projects(pat=None):
@@ -4226,6 +4508,20 @@ GITHUB_OWNER  = "AhmedSayedRepo"
 GITHUB_REPO   = "qa-studio"
 GITHUB_BRANCH = "main"
 
+def _github_token():
+    """Optional token for private-repo update checks. Read from the env var
+    QA_STUDIO_GH_TOKEN or GITHUB_TOKEN, or a 'gh_token.txt' file next to the app.
+    Without it, update checks only work for a PUBLIC repo."""
+    for var in ("QA_STUDIO_GH_TOKEN", "GITHUB_TOKEN"):
+        t = (os.environ.get(var) or "").strip()
+        if t:
+            return t
+    try:
+        with open(os.path.join(_app_dir(), "gh_token.txt"), "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except Exception:
+        return ""
+
 def _app_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
@@ -4250,29 +4546,41 @@ def _ver_newer(remote, local):
 
 def check_for_update(timeout=6):
     """Fetch the repo's VERSION file and compare to local.
-    Returns dict: {"update": bool, "local": str, "remote": str, "error": str|None}.
+    Returns dict: {"update": bool, "local": str, "remote": str|None, "error": str|None}.
     Network failures are swallowed (update=False) so startup is never blocked.
 
-    Primary source is the GitHub *API* (api.github.com), which returns the live
-    file content and is not subject to the raw-CDN caching that delayed detection.
-    Falls back to the cache-busted raw URL if the API is unavailable.
+    Sources tried in order:
+      1) GitHub API contents endpoint (works for private repos when a token is set)
+      2) Cache-busted raw.githubusercontent.com URL (public repos)
+    A token (see _github_token) is sent when available so PRIVATE repos work.
     """
     import time as _t, base64 as _b64
     local = local_version()
     bust = int(_t.time())
+    token = _github_token()
+
+    def _auth_headers(extra):
+        h = dict(extra)
+        if token:
+            h["Authorization"] = f"Bearer {token}"
+            h["X-GitHub-Api-Version"] = "2022-11-28"
+        return h
 
     def _via_api():
         url = (f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/"
                f"contents/VERSION?ref={GITHUB_BRANCH}")
-        r = requests.get(url, timeout=timeout, headers={
+        r = requests.get(url, timeout=timeout, headers=_auth_headers({
             "Accept": "application/vnd.github.raw+json",
             "Cache-Control": "no-cache",
-        })
+        }))
+        if r.status_code == 404:
+            raise RuntimeError("API 404 — repo or VERSION file not found "
+                               "(private repo needs a token; or commit a VERSION file).")
+        if r.status_code in (401, 403):
+            raise RuntimeError(f"API {r.status_code} — auth/rate-limit; set a valid token.")
         if r.status_code != 200:
             raise RuntimeError(f"API HTTP {r.status_code}")
         txt = r.text or ""
-        # With the raw+json Accept header GitHub returns the file content directly.
-        # If it returned JSON (older behavior), decode the base64 content field.
         if txt.lstrip().startswith("{"):
             import json as _json
             data = _json.loads(txt)
@@ -4282,8 +4590,10 @@ def check_for_update(timeout=6):
     def _via_raw():
         url = (f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_REPO}/"
                f"{GITHUB_BRANCH}/VERSION?cb={bust}")
-        r = requests.get(url, timeout=timeout,
-                         headers={"Cache-Control": "no-cache", "Pragma": "no-cache"})
+        r = requests.get(url, timeout=timeout, headers=_auth_headers(
+            {"Cache-Control": "no-cache", "Pragma": "no-cache"}))
+        if r.status_code == 404:
+            raise RuntimeError("raw 404 — VERSION file missing at repo root (or private repo).")
         if r.status_code != 200:
             raise RuntimeError(f"raw HTTP {r.status_code}")
         return (r.text or "").strip()
@@ -4296,7 +4606,7 @@ def check_for_update(timeout=6):
             if remote:
                 break
         except Exception as e:
-            err = str(e)[:120]
+            err = str(e)[:160]
             continue
     if not remote:
         return {"update": False, "local": local, "remote": None, "error": err}

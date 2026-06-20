@@ -342,6 +342,28 @@ class QAStudio:
             return k
         return ""
 
+    def _saved_model(self, name):
+        """The user's chosen model for a provider, or the engine default."""
+        m = (self.creds.get("models", {}).get(name) or "").strip()
+        if m:
+            return m
+        return E.current_model(name) or ""
+
+    def _disconnect(self, reason=None):
+        """Drop the active connection so the user must reconnect. Called when the
+        provider or model changes while connected (running against a stale
+        provider/model would be wrong)."""
+        if not getattr(self, "connected", False):
+            return
+        self.connected = False
+        self._projects = []
+        self.project = None
+        self.plan_id = None
+        self._connect_status = ""
+        # keep last_report so the Report tab still works; only the live link drops
+        if reason:
+            self._toast(reason)
+
     def _provider_active(self, name):
         # A provider is "active" only if it has a saved key in the credential store.
         # "Connected" status is tracked separately via self.connected.
@@ -412,7 +434,11 @@ class QAStudio:
                                      alignment=ft.Alignment.CENTER),
                         ft.Column([
                             ft.Text("QA Studio", size=15, weight=ft.FontWeight.BOLD, color=T.RAIL_INK),
-                            ft.Text("Azure DevOps · AI", size=11, color=T.RAIL_DIM, weight=ft.FontWeight.BOLD),
+                            ft.Container(
+                                ft.Text(f"v{E.local_version()}  ·  check updates",
+                                        size=10, color=T.RAIL_DIM, weight=ft.FontWeight.BOLD),
+                                on_click=lambda e: self._manual_update_check(),
+                                tooltip="Check for a newer version"),
                         ], spacing=1),
                     ], spacing=11), padding=ft.Padding.symmetric(vertical=16, horizontal=6)),
                 ft.Container(ft.Text("PIPELINE", size=10, weight=ft.FontWeight.BOLD,
@@ -701,6 +727,29 @@ class QAStudio:
             self._update_info = info
             if info.get("update") and not self._update_dismissed and not prev:
                 self.ui_safe(self.render)
+        except Exception:
+            pass
+
+    def _manual_update_check(self):
+        """User-triggered check. Always reports the outcome (up-to-date / newer /
+        why it couldn't check), unlike the silent background check."""
+        self._toast("Checking for updates…")
+        def work():
+            info = E.check_for_update()
+            self._update_info = info
+            local = info.get("local", "?")
+            remote = info.get("remote")
+            if info.get("update"):
+                self._update_dismissed = False
+                self.ui_safe(self.render)   # the banner will appear
+            elif info.get("error"):
+                self.ui_safe(lambda: self._toast(f"Couldn't check: {info['error']}"))
+            elif remote:
+                self.ui_safe(lambda: self._toast(f"Up to date (v{local}, latest v{remote})."))
+            else:
+                self.ui_safe(lambda: self._toast(f"Up to date (v{local})."))
+        try:
+            self._bg(work)
         except Exception:
             pass
 
@@ -1045,6 +1094,18 @@ class QAStudio:
 
     # ---- credential help content ----
     HELP = {
+        "model": {
+            "title": "Choosing a model",
+            "steps": [
+                "The list is fetched live from your provider using the saved key.",
+                "Pick a chat/vision model (e.g. a Claude, GPT, Gemini or Qwen model).",
+                "You can also type an exact model id if it isn't in the list.",
+                "Each provider remembers its own model. Changing it disconnects so "
+                "you reconnect against the new model.",
+                "Use Refresh to reload the list after adding access to new models.",
+            ],
+            "url": None, "url_label": None,
+        },
         "provider": {
             "title": "Activating an AI Provider",
             "steps": [
@@ -1225,6 +1286,26 @@ class QAStudio:
             content_padding=ft.Padding.symmetric(vertical=12, horizontal=12), text_size=13, expand=True)
         self.api_btn = green_btn("Save", on_click=self._save_key) if key_editable                   else ghost_btn("Update", on_click=self._unlock_key)
 
+        # Model dropdown — populated live from the provider (falls back to a
+        # curated list). Editable so an exact model id can also be typed.
+        cur_model = self._saved_model(name)
+        # Build with only the args this Flet version supports. on_select is the
+        # event that works on this build (on_change raises TypeError here);
+        # editable/enable_filter are newer and added only if accepted.
+        _dd_kwargs = dict(
+            value=cur_model or None, options=self._model_options(name),
+            on_select=self._on_model_change,
+            hint_text="Select or type a model",
+            border_color=T.BORDER, focused_border_color=T.VIOLET,
+            border_radius=T.R, content_padding=ft.Padding.symmetric(vertical=12, horizontal=8),
+            text_size=13, filled=True, bgcolor=T.CARD, expand=True)
+        try:
+            self.model_dd = ft.Dropdown(editable=True, enable_filter=True, **_dd_kwargs)
+        except TypeError:
+            # older Flet: no editable/enable_filter — plain selectable dropdown
+            self.model_dd = ft.Dropdown(**_dd_kwargs)
+        self.model_refresh_btn = ghost_btn("Refresh", on_click=self._refresh_models)
+
         # PAT field
         pat_has = bool(self.creds.get("pat"))
         pat_editable = (not pat_has) or self._pat_unlocked
@@ -1279,6 +1360,11 @@ class QAStudio:
                         on_info=lambda e: self._show_help("api_key")),
             ft.Container(ft.Row([self.api_key_field, self.api_btn], spacing=8),
                         padding=ft.Padding.only(top=4, bottom=12)),
+            field_label("Model", req=False, hint=self._model_src_hint(),
+                        info="Which model this provider should use",
+                        on_info=lambda e: self._show_help("model")),
+            ft.Container(ft.Row([self.model_dd, self.model_refresh_btn], spacing=8),
+                        padding=ft.Padding.only(top=4, bottom=12)),
             field_label("Azure Organization", req=True,
                         info="How to find your Azure organization name",
                         on_info=lambda e: self._show_help("org")),
@@ -1328,8 +1414,10 @@ class QAStudio:
         gm = self.creds.get("gmail", "")
         masked_gm = ("•••• •••• ••••" if gm else "—")
         div = ft.Container(height=1, bgcolor=T.BORDER_2, margin=ft.Margin.symmetric(vertical=8))
+        _model = self._saved_model(name)
+        prov_val = f"{T.disp_name(name)}  ·  {_model}" if _model else T.disp_name(name)
         return ft.Column([
-            self._cred_saved_row(ft.Icons.AUTO_AWESOME, "AI Provider", T.disp_name(name),
+            self._cred_saved_row(ft.Icons.AUTO_AWESOME, "AI Provider", prov_val,
                                  badge("Active", "green", ft.Icons.CHECK)),
             div,
             self._cred_saved_row(ft.Icons.KEY_OUTLINED, "Azure DevOps PAT", masked_pat,
@@ -1397,20 +1485,27 @@ class QAStudio:
 
     # ---- credential handlers ----
     def _on_provider_change(self, e):
+        prev = getattr(self, "_provider_choice", None)
         self._provider_choice = self.prov_dd.value
         name = self._provider_choice
+        # changing provider while connected invalidates the connection
+        if prev and prev != name and getattr(self, "connected", False):
+            self._disconnect(f"Provider changed to {T.disp_name(name)} — reconnect to continue.")
+        # reset the model list so it refetches for the newly selected provider
+        self._models_for = None
+        self._model_choices = None
         active = self._provider_active(name)
         self.api_key_field.value = self._saved_key(name)
         self.api_key_field.read_only = active
         self.api_key_field.bgcolor = T.CARD_2 if active else T.CARD
         self.api_key_field.hint_text = f"Paste key for {T.disp_name(name)}"
-        # switch the live engine provider (+ its saved key, if any) so a PAUSED
-        # automation can Resume on this provider without re-running Connect
+        # switch the live engine provider (+ its saved key & model, if any) so a
+        # PAUSED automation can Resume on this provider without re-running Connect
         try:
-            E.set_credentials(provider=name, api_key=(self._saved_key(name) or None))
+            E.set_credentials(provider=name, api_key=(self._saved_key(name) or None),
+                              model=(self._saved_model(name) or None))
         except Exception:
             pass
-        # rebuild the button
         self.render()
 
     def _save_key(self, e=None):
@@ -1422,11 +1517,80 @@ class QAStudio:
         # apply to the engine immediately so a PAUSED automation can Resume on the
         # newly chosen provider/key without re-running Connect
         try:
-            E.set_credentials(provider=name, api_key=val)
+            E.set_credentials(provider=name, api_key=val,
+                              model=(self._saved_model(name) or None))
         except Exception:
             pass
         self._key_unlocked = False
-        self._toast(f"API key saved & {T.disp_name(name)} activated."); self.render()
+        # a new key may unlock a different model catalogue → refetch
+        self._models_for = None
+        self._model_choices = None
+        self._toast(f"API key saved & {T.disp_name(name)} activated.")
+        self.render()
+
+    def _model_src_hint(self):
+        """Small label next to the Model field: 'live' or 'fallback list'."""
+        src = getattr(self, "_model_src", None)
+        if src == "live":
+            return "live"
+        if src == "static":
+            return "fallback list"
+        return None
+
+    # ---- model selection ----
+    def _model_options(self, name):
+        """Build dropdown options for the current provider, fetching live models
+        the first time (cached per provider on self._model_choices)."""
+        if getattr(self, "_models_for", None) != name:
+            self._model_choices = None  # provider changed → invalidate cache
+        choices = getattr(self, "_model_choices", None)
+        if choices is None:
+            key = self._saved_key(name)
+            try:
+                models, src = E.list_models(provider=name, api_key=(key or None))
+            except Exception:
+                models, src = (E.STATIC_MODELS.get(name, []), "static")
+            # always include the currently-saved model so it can be re-selected
+            cur = self._saved_model(name)
+            if cur and cur not in models:
+                models = [cur] + list(models)
+            self._model_choices = models
+            self._model_src = src
+            self._models_for = name
+            choices = models
+        return [ft.DropdownOption(key=m, text=m) for m in choices]
+
+    def _on_model_change(self, e):
+        name = self._provider_choice
+        val = (self.model_dd.value or "").strip()
+        if not val:
+            return
+        prev = self._saved_model(name)
+        if val == prev:
+            return  # no real change (avoids churn from on_change while filtering)
+        self.creds.setdefault("models", {})[name] = val
+        store.save(self.creds)
+        try:
+            E.set_credentials(provider=name, model=val)
+        except Exception:
+            pass
+        # changing the model while connected invalidates the connection
+        if getattr(self, "connected", False):
+            self._disconnect(f"Model changed to {val} — reconnect to continue.")
+        self._toast(f"Model set to {val}.")
+        self.render()
+
+    def _refresh_models(self, e=None):
+        """Force a live re-fetch of the model list for the current provider."""
+        self._model_choices = None
+        self._models_for = None
+        name = self._provider_choice
+        key = self._saved_key(name)
+        if not key:
+            self._err("Save an API key first to load this provider's models.")
+            return
+        self._toast("Refreshing models…")
+        self.render()
 
     def _unlock_key(self, e=None):
         self._key_unlocked = True; self.render()
@@ -1977,7 +2141,8 @@ class QAStudio:
         store.save(self.creds)
 
         E.set_credentials(provider=name, api_key=key, pat=pat, gmail=gmail,
-                          org=org, gmail_sender=sender)
+                          org=org, gmail_sender=sender,
+                          model=(self._saved_model(name) or None))
         self._err("")
         self._connecting = True
         self._connect_status = "Validating PAT & loading projects…"
@@ -2009,12 +2174,19 @@ class QAStudio:
                         self._err(f"{prov}: API key rejected. Check the key is correct and active.")
                     elif kmsg == "network":
                         self._err(f"{prov}: cannot reach the provider — check your network/firewall.")
+                    elif kmsg == "timeout":
+                        self._err(f"{prov}: the provider timed out. Try again in a moment.")
+                    elif kmsg in ("server", "overloaded"):
+                        self._err(f"{prov}: the provider is temporarily unavailable. Try again shortly.")
+                    elif kmsg == "content_filter":
+                        self._err(f"{prov}: the test request was blocked by a safety filter. Try a different model.")
                     elif kmsg.startswith("missing-package:"):
                         pkg = kmsg.split(":", 1)[1]
                         self._err(f"{prov}: the '{pkg}' package isn't installed. "
                                   f"Re-run the installer or: pip install {pkg}")
                     elif kmsg.startswith("error:"):
-                        self._err(f"{prov}: {kmsg.split(':', 1)[1]}")
+                        # already a friendly classified message (e.g. bad model)
+                        self._err(kmsg.split(":", 1)[1].strip())
                     else:
                         self._err(f"{prov} key check failed: {kmsg}")
                     return
