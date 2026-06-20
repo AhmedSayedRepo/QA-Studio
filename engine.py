@@ -47,6 +47,14 @@ AI_CONFIG = {
     "qwen":         {"api_key": "your-qwen-key-here",
                      "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
                      "model": "qwen-plus", "vision": False},
+    # Manus — an AGENT API (not chat-completions). It speaks the OpenAI *Responses*
+    # API at https://api.manus.im, authenticated by an "API_KEY" HEADER (the
+    # openai client's api_key arg is just a placeholder). Tasks run ASYNCHRONOUSLY
+    # and are billed in credits, so each call creates+polls a task. "models" are
+    # agent profiles: manus-1.6 (general), -lite (cheap/fast), -max (deep). We use
+    # task_mode "chat" (lightest) by default. See engine's `manus` call branch.
+    "manus":        {"api_key": "your-manus-key-here", "base_url": "https://api.manus.im",
+                     "model": "manus-1.6", "task_mode": "chat", "vision": True},
 }
 
 FEATURE_DESCRIPTION = ""   # optional global feature context for step generation
@@ -234,7 +242,7 @@ def T_disp(name):
     """Pretty provider name without importing the UI theme."""
     return {"anthropic": "Anthropic", "openai": "OpenAI", "gemini": "Gemini",
             "azure_openai": "Azure OpenAI", "ollama": "Ollama", "nvidia": "NVIDIA",
-            "deepseek": "DeepSeek", "qwen": "Qwen"}.get(name, str(name).title())
+            "deepseek": "DeepSeek", "qwen": "Qwen", "manus": "Manus"}.get(name, str(name).title())
 
 def active_providers():
     """Provider names that have a usable key."""
@@ -366,6 +374,52 @@ def _ai_call_once(provider, cfg, prompt_text, images, max_tokens, timeout, want_
         if not (txt or "").strip():
             raise EmptyAIResponse("empty response from Ollama")
         return txt
+
+    if provider == "manus":
+        # Manus speaks the OpenAI *Responses* API and runs tasks ASYNCHRONOUSLY:
+        # create → poll until status leaves "running" → read the assistant text.
+        # Auth is via the API_KEY header (the api_key arg is just a placeholder).
+        from openai import OpenAI
+        import time as _t
+        base = cfg.get("base_url") or "https://api.manus.im"
+        client = OpenAI(base_url=base, api_key="placeholder",
+                        default_headers={"API_KEY": cfg["api_key"]})
+        content = [{"type": "input_text", "text": prompt_text}]
+        for im in images:
+            content.append({"type": "input_image",
+                            "image_url": f"data:{im['media_type']};base64,{im['data']}"})
+        resp = client.responses.create(
+            input=[{"role": "user", "content": content}],
+            extra_body={"task_mode": cfg.get("task_mode") or "chat",
+                        "agent_profile": cfg["model"]})
+        rid = getattr(resp, "id", None)
+        status = getattr(resp, "status", None)
+        # poll (Manus tasks are slow); honor Stop via the interruptible sleep
+        deadline = _t.time() + (timeout if timeout else 600)
+        while status == "running" and _t.time() < deadline:
+            _interruptible_sleep(5)
+            if _STOP_EVENT.is_set():
+                break
+            try:
+                resp = client.responses.retrieve(response_id=rid)
+            except Exception:
+                break
+            status = getattr(resp, "status", None)
+        if status == "error":
+            raise RuntimeError(f"Manus task failed (id {rid})")
+        # assistant text lives in output[].content[].text (skip files/empties)
+        texts = []
+        for msg in (getattr(resp, "output", None) or []):
+            if getattr(msg, "role", None) != "assistant":
+                continue
+            for part in (getattr(msg, "content", None) or []):
+                t = getattr(part, "text", None)
+                if t:
+                    texts.append(t)
+        out = "\n".join(texts).strip()
+        if not out:
+            raise EmptyAIResponse(f"Manus returned no assistant text (status={status})")
+        return out
 
     raise RuntimeError(f"Unhandled provider '{provider}'")
 
@@ -510,6 +564,29 @@ def validate_api_key():
     Uses a single direct call (no retry) so Connect is fast.
     """
     cfg = _ai_cfg(); provider = AI_PROVIDER
+    if provider == "manus":
+        # A normal "ping" would create a real (billed, slow) Manus task. Instead
+        # verify the key cheaply by listing tasks (no task creation, no credits).
+        try:
+            from openai import OpenAI
+            client = OpenAI(base_url=cfg.get("base_url") or "https://api.manus.im",
+                            api_key="placeholder", default_headers={"API_KEY": cfg["api_key"]})
+            client.get("/v1/tasks?limit=1", cast_to=object)
+            return True, "ok"
+        except ModuleNotFoundError as e:
+            missing = str(e).split("'")[-2] if "'" in str(e) else str(e)
+            return False, f"missing-package:{missing}"
+        except Exception as e:
+            cat, friendly = classify_ai_error(e)
+            if cat == "auth":
+                return False, "auth"
+            if cat == "credit":
+                return True, "credit"
+            if cat == "rate_limit":
+                return True, "ratelimited"
+            if cat in ("network", "timeout", "server", "overloaded"):
+                return False, cat
+            return False, "error:" + friendly
     try:
         _ai_call_once(provider, cfg, "ping", [], 8, None)
         return True, "ok"
@@ -550,6 +627,8 @@ STATIC_MODELS = {
     "qwen":      ["qwen-plus", "qwen-max", "qwen-turbo", "qwen-vl-max", "qwen-vl-plus"],
     "azure_openai": ["gpt-4o", "gpt-4o-mini", "gpt-4.1"],
     "ollama":    ["llama3.1", "llama3.2", "qwen2.5", "mistral", "gemma2"],
+    # Manus "models" are agent profiles, not chat models (no live /models list).
+    "manus":     ["manus-1.6", "manus-1.6-lite", "manus-1.6-max"],
 }
 
 def _is_chat_model_id(provider, mid):
@@ -576,6 +655,10 @@ def list_models(provider=None, api_key=None, base_url=None, timeout=15):
     key = (api_key or cfg.get("api_key") or "").strip()
     burl = base_url or cfg.get("base_url")
     static = STATIC_MODELS.get(p, [])
+
+    # Manus has no live model list — the "models" are fixed agent profiles.
+    if p == "manus":
+        return (static, "static")
 
     def _ok(lst):
         # de-dupe, keep order, drop obvious non-chat ids, cap length
