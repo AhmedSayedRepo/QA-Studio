@@ -1690,8 +1690,33 @@ class QAStudio:
             self._model_src = src
             self._models_for = name
             self._model_fetching = None
-            self.ui_safe(self.render)
+            self.ui_safe(lambda: self._apply_live_models(name))
         self._bg(work)
+
+    def _apply_live_models(self, name):
+        """Update ONLY the model dropdown's options when the background fetch
+        returns. A full render() here would rebuild every Setup control and snap
+        shut whichever dropdown (provider OR model) the user just opened — this
+        targeted update leaves both dropdowns' open/closed state alone."""
+        if getattr(self, "_provider_choice", None) != name:
+            return  # user switched provider again; this result is stale
+        dd = getattr(self, "model_dd", None)
+        if dd is None:
+            return
+        new_opts = [ft.DropdownOption(key=m, text=m) for m in (self._model_choices or [])]
+        # nothing changed (live == static) → don't touch the control at all
+        try:
+            cur = [getattr(o, "key", None) for o in (dd.options or [])]
+            if cur == [getattr(o, "key", None) for o in new_opts]:
+                return
+        except Exception:
+            pass
+        try:
+            dd.options = new_opts
+            dd.update()
+        except Exception:
+            # dropdown isn't mounted (user navigated away) — next render shows it
+            pass
 
     def _on_model_change(self, e):
         name = self._provider_choice
