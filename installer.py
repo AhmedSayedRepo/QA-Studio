@@ -203,12 +203,12 @@ _PAGE_TMPL = """<!doctype html><html lang="en"><head>
 }
 *{box-sizing:border-box}
 html,body{margin:0;height:100%}
-/* transparent so only the rounded card shows — a true rounded popup */
-body{background:transparent;font-family:var(--ui);color:var(--ink);min-height:100vh;
-  display:flex;align-items:center;justify-content:center;padding:18px;box-sizing:border-box}
-.win{position:relative;width:600px;max-width:96vw;background:var(--paper);border-radius:18px;overflow:hidden;
-  display:flex;flex-direction:column;
-  box-shadow:0 30px 70px -25px rgba(20,16,40,.5),0 2px 6px -2px rgba(20,16,40,.18),0 0 0 1px rgba(20,16,40,.05)}
+/* The frameless window IS the card — fill it edge-to-edge with a solid bg so it
+   looks clean even where OS-level transparency isn't supported. */
+body{background:var(--paper);font-family:var(--ui);color:var(--ink);min-height:100vh;
+  display:flex;flex-direction:column;padding:0;box-sizing:border-box}
+.win{position:relative;width:100%;min-height:100vh;background:var(--paper);overflow:hidden;
+  display:flex;flex-direction:column}
 /* the gradient bar + header double as the window drag handle (frameless) */
 .accent{height:4px;background:linear-gradient(90deg,var(--grad1),var(--violet),var(--grad2))}
 .winbar{position:absolute;top:0;left:0;right:0;height:46px;z-index:5}
@@ -578,9 +578,13 @@ def _open_app_window(url):
             # transparent → frameless → plain. NEVER fall through to a browser just
             # because transparency/frameless isn't available. (background_color must
             # be a 6-digit hex — passing an 8-digit #RRGGBBAA crashes pywebview.)
+            # NOTE: we no longer request transparent=True — on machines where the
+            # WebView2 backend can't actually render transparency it still creates
+            # the window but paints the "transparent" area opaque, leaving an ugly
+            # background slab around the card. A solid frameless card is reliable
+            # everywhere; the CSS makes the card fill the window edge-to-edge.
             _win = None
-            for _opts in (dict(frameless=True, easy_drag=True, transparent=True),
-                          dict(frameless=True, easy_drag=True),
+            for _opts in (dict(frameless=True, easy_drag=True),
                           dict()):
                 try:
                     _win = webview.create_window(

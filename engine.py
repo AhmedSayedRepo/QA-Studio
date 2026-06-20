@@ -389,6 +389,7 @@ def _ai_call_once(provider, cfg, prompt_text, images, max_tokens, timeout, want_
             content.append({"type": "input_image",
                             "image_url": f"data:{im['media_type']};base64,{im['data']}"})
         resp = client.responses.create(
+            model=cfg["model"],
             input=[{"role": "user", "content": content}],
             extra_body={"task_mode": cfg.get("task_mode") or "chat",
                         "agent_profile": cfg["model"]})
@@ -1977,8 +1978,16 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
                     cb("done", {"summary": "Stopped — out of AI credits", "reason": "credit",
                                 "action_items": action_items}); return
                 except Exception as e:
+                    cat, friendly = classify_ai_error(e)
+                    # A provider/config error (bad key, wrong/unknown model) hits
+                    # EVERY case identically — stop now with one clear message
+                    # instead of failing the whole suite one case at a time.
+                    if cat in ("auth", "bad_model", "not_found"):
+                        cb("log", {"msg": friendly, "tone": "err"})
+                        cb("done", {"summary": f"Stopped — {friendly}", "reason": cat,
+                                    "action_items": action_items}); return
                     err += 1; done += 1; err_by_story[story_id] += 1
-                    cb("log", {"msg": tc_title + f" — {e}", "tone": "err", "id": tc_id,
+                    cb("log", {"msg": tc_title + f" — {friendly}", "tone": "err", "id": tc_id,
                                "ar": True, "replace_wip": tc_id})
 
         # update per-story progress snapshot
