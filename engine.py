@@ -47,13 +47,13 @@ AI_CONFIG = {
     "qwen":         {"api_key": "your-qwen-key-here",
                      "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
                      "model": "qwen-plus", "vision": False},
-    # Manus — an AGENT API (not chat-completions). It speaks the OpenAI *Responses*
-    # API at https://api.manus.im, authenticated by an "API_KEY" HEADER (the
-    # openai client's api_key arg is just a placeholder). Tasks run ASYNCHRONOUSLY
-    # and are billed in credits, so each call creates+polls a task. "models" are
-    # agent profiles: manus-1.6 (general), -lite (cheap/fast), -max (deep). We use
-    # task_mode "chat" (lightest) by default. See engine's `manus` call branch.
-    "manus":        {"api_key": "your-manus-key-here", "base_url": "https://api.manus.im",
+    # Manus — an ASYNC AGENT API (not chat-completions). Native v2 REST flow:
+    # POST https://api.manus.ai/v2/task.create then poll task.listMessages until
+    # agent_status=stopped. Auth header: x-manus-api-key. Tasks run asynchronously
+    # and are billed in credits. "models" are agent profiles: manus-1.6 (general),
+    # -lite (cheap/fast), -max (deep). task_mode "chat" is lightest. Docs:
+    # open.manus.ai/docs/v2
+    "manus":        {"api_key": "your-manus-key-here", "base_url": "https://api.manus.ai",
                      "model": "manus-1.6", "task_mode": "chat", "vision": True},
 }
 
@@ -376,53 +376,109 @@ def _ai_call_once(provider, cfg, prompt_text, images, max_tokens, timeout, want_
         return txt
 
     if provider == "manus":
-        # Manus speaks the OpenAI *Responses* API and runs tasks ASYNCHRONOUSLY:
-        # create → poll until status leaves "running" → read the assistant text.
-        # Auth is via the API_KEY header (the api_key arg is just a placeholder).
-        from openai import OpenAI
+        # Manus is an ASYNC AGENT API (not chat-completions). Real v2 flow:
+        #   POST /v2/task.create            → returns task_id
+        #   GET  /v2/task.listMessages      → poll until agent_status == stopped
+        #   read assistant_message events   → the text result
+        # Auth header is x-manus-api-key. Docs: open.manus.ai/docs/v2
         import time as _t
-        base = cfg.get("base_url") or "https://api.manus.im"
-        client = OpenAI(base_url=base, api_key="placeholder",
-                        default_headers={"API_KEY": cfg["api_key"]})
-        content = [{"type": "input_text", "text": prompt_text}]
-        for im in images:
-            content.append({"type": "input_image",
-                            "image_url": f"data:{im['media_type']};base64,{im['data']}"})
-        resp = client.responses.create(
-            model=cfg["model"],
-            input=[{"role": "user", "content": content}],
-            extra_body={"task_mode": cfg.get("task_mode") or "chat",
-                        "agent_profile": cfg["model"]})
-        rid = getattr(resp, "id", None)
-        status = getattr(resp, "status", None)
-        # poll (Manus tasks are slow); honor Stop via the interruptible sleep
+        base = (cfg.get("base_url") or "https://api.manus.ai").rstrip("/")
+        hdr = {"x-manus-api-key": cfg["api_key"], "Content-Type": "application/json"}
+
+        # Build the prompt (text + optional images as data URLs in the prompt).
+        prompt_payload = {"prompt": prompt_text}
+        # agent profile (manus-1.6 / -lite / -max) and lightest task mode
+        if cfg.get("model"):
+            prompt_payload["agent_profile"] = cfg["model"]
+        if cfg.get("task_mode"):
+            prompt_payload["task_mode"] = cfg["task_mode"]
+        if images:
+            prompt_payload["attachments"] = [
+                {"type": "image", "data_url": f"data:{im['media_type']};base64,{im['data']}"}
+                for im in images]
+
+        cr = requests.post(f"{base}/v2/task.create", headers=hdr,
+                           json=prompt_payload, timeout=60)
+        # Surface Manus's own error envelope clearly
+        if cr.status_code >= 400:
+            _raise_manus_http(cr)
+        data = cr.json()
+        task_id = (data.get("task_id") or data.get("id")
+                   or (data.get("task") or {}).get("id"))
+        if not task_id:
+            raise EmptyAIResponse(f"Manus task.create returned no task_id: {str(data)[:160]}")
+
+        # Poll listMessages until stopped/error (honor Stop via interruptible sleep)
         deadline = _t.time() + (timeout if timeout else 600)
-        while status == "running" and _t.time() < deadline:
-            _interruptible_sleep(5)
+        agent_status = "running"
+        texts = []
+        seen = set()
+        while _t.time() < deadline:
             if _STOP_EVENT.is_set():
                 break
             try:
-                resp = client.responses.retrieve(response_id=rid)
+                lm = requests.get(f"{base}/v2/task.listMessages",
+                                  headers=hdr,
+                                  params={"task_id": task_id, "order": "asc", "limit": 50},
+                                  timeout=30)
             except Exception:
+                _interruptible_sleep(4); continue
+            if lm.status_code >= 400:
+                _raise_manus_http(lm)
+            body = lm.json()
+            events = body.get("messages") or body.get("events") or body.get("data") or []
+            for ev in events:
+                et = ev.get("type")
+                eid = ev.get("id") or ev.get("event_id")
+                if et == "assistant_message" and eid not in seen:
+                    seen.add(eid)
+                    msg = ev.get("assistant_message") or ev.get("message") or {}
+                    t = msg.get("text") if isinstance(msg, dict) else None
+                    t = t or ev.get("text")
+                    if t:
+                        texts.append(t)
+                if et == "status_update":
+                    su = ev.get("status_update") or {}
+                    agent_status = su.get("agent_status", agent_status)
+            if agent_status in ("stopped", "error"):
                 break
-            status = getattr(resp, "status", None)
-        if status == "error":
-            raise RuntimeError(f"Manus task failed (id {rid})")
-        # assistant text lives in output[].content[].text (skip files/empties)
-        texts = []
-        for msg in (getattr(resp, "output", None) or []):
-            if getattr(msg, "role", None) != "assistant":
-                continue
-            for part in (getattr(msg, "content", None) or []):
-                t = getattr(part, "text", None)
-                if t:
-                    texts.append(t)
+            _interruptible_sleep(5)
+
+        if agent_status == "error":
+            raise RuntimeError(f"{T_disp('manus')}: task failed (id {task_id}).")
         out = "\n".join(texts).strip()
         if not out:
-            raise EmptyAIResponse(f"Manus returned no assistant text (status={status})")
+            raise EmptyAIResponse(
+                f"Manus returned no assistant text (status={agent_status}, id={task_id})")
         return out
 
     raise RuntimeError(f"Unhandled provider '{provider}'")
+
+def _raise_manus_http(resp):
+    """Translate a Manus HTTP error envelope {ok:false,error:{code,message}} into
+    an exception classify_ai_error understands."""
+    code = None; message = None
+    try:
+        j = resp.json()
+        err = j.get("error") or {}
+        code = err.get("code"); message = err.get("message")
+    except Exception:
+        pass
+    sc = resp.status_code
+    text = message or resp.text[:160]
+    # Map Manus error codes to HTTP-ish semantics the classifier knows.
+    if code == "permission_denied" or sc in (401, 403):
+        raise RuntimeError(f"Manus: API key rejected ({code or sc}). {text}")
+    if code == "rate_limited" or sc == 429:
+        e = RuntimeError(f"Manus: rate limited. {text}"); e.status_code = 429; raise e
+    if code == "not_found" or sc == 404:
+        raise RuntimeError(f"Manus: not found ({code or sc}). {text}")
+    if code == "invalid_argument" or sc == 400:
+        raise RuntimeError(f"Manus: invalid request. {text}")
+    e = RuntimeError(f"Manus: HTTP {sc}. {text}")
+    try: e.status_code = sc
+    except Exception: pass
+    raise e
 
 # Module-level cooperative stop: run loops set this so long backoff sleeps inside
 # ai_complete can bail out promptly when the user clicks Stop.
@@ -567,12 +623,24 @@ def validate_api_key():
     cfg = _ai_cfg(); provider = AI_PROVIDER
     if provider == "manus":
         # A normal "ping" would create a real (billed, slow) Manus task. Instead
-        # verify the key cheaply by listing tasks (no task creation, no credits).
+        # verify the key cheaply with a native GET that creates no task / credits.
         try:
-            from openai import OpenAI
-            client = OpenAI(base_url=cfg.get("base_url") or "https://api.manus.im",
-                            api_key="placeholder", default_headers={"API_KEY": cfg["api_key"]})
-            client.get("/v1/tasks?limit=1", cast_to=object)
+            base = (cfg.get("base_url") or "https://api.manus.ai").rstrip("/")
+            r = requests.get(f"{base}/v2/browser.onlineList",
+                             headers={"x-manus-api-key": cfg["api_key"]}, timeout=20)
+            if r.status_code in (200, 204):
+                return True, "ok"
+            # translate the error envelope
+            try:
+                _raise_manus_http(r)
+            except Exception as e:
+                cat, friendly = classify_ai_error(e)
+                if cat == "auth": return False, "auth"
+                if cat == "credit": return True, "credit"
+                if cat == "rate_limit": return True, "ratelimited"
+                if cat in ("network", "timeout", "server", "overloaded"):
+                    return False, cat
+                return False, "error:" + friendly
             return True, "ok"
         except ModuleNotFoundError as e:
             missing = str(e).split("'")[-2] if "'" in str(e) else str(e)

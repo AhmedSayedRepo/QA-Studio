@@ -159,13 +159,98 @@ def _work():
     _STATE["ok"] = True
 
 
+def _kill_existing_app():
+    """Terminate any already-running QA Studio instances (python/pythonw running
+    this folder's main.py) before launching a fresh one — so the user never ends
+    up with stacked windows or orphaned processes. Never kills this installer.
+    Windows-focused; best-effort and silent on failure."""
+    if os.name != "nt":
+        # POSIX: match on the main.py path via pkill, excluding our own PID.
+        try:
+            subprocess.run(["pkill", "-f", MAIN_PY], check=False)
+        except Exception:
+            pass
+        return
+    me = os.getpid()
+    target = os.path.basename(MAIN_PY).lower()        # main.py
+    folder = os.path.dirname(MAIN_PY).lower()         # this install folder
+    flags = 0x08000000  # CREATE_NO_WINDOW
+    try:
+        # Query python/pythonw processes with their command lines via WMIC.
+        out = subprocess.run(
+            ["wmic", "process", "where",
+             "name='python.exe' or name='pythonw.exe'",
+             "get", "ProcessId,CommandLine", "/format:list"],
+            capture_output=True, text=True, creationflags=flags, timeout=15).stdout
+    except Exception:
+        out = ""
+    if not out.strip():
+        # WMIC is removed on newer Windows 11 — fall back to PowerShell/CIM.
+        try:
+            ps = ("Get-CimInstance Win32_Process -Filter "
+                  "\"Name='python.exe' or Name='pythonw.exe'\" | "
+                  "ForEach-Object { 'CommandLine='+$_.CommandLine; "
+                  "'ProcessId='+$_.ProcessId; '' }")
+            out = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", ps],
+                capture_output=True, text=True, creationflags=flags, timeout=20).stdout
+        except Exception:
+            out = ""
+    # Parse blank-line-separated blocks; field order within a block isn't
+    # guaranteed, so collect both then decide at the block boundary.
+    blocks = []
+    cur = {}
+    for line in out.splitlines():
+        line = line.strip()
+        if not line:
+            if cur:
+                blocks.append(cur); cur = {}
+            continue
+        if "=" in line:
+            k, v = line.split("=", 1)
+            cur[k.strip().lower()] = v.strip()
+    if cur:
+        blocks.append(cur)
+    to_kill = []
+    for b in blocks:
+        cmd = (b.get("commandline") or "").lower()
+        val = (b.get("processid") or "").strip()
+        pid = int(val) if val.isdigit() else None
+        if pid and pid != me and target in cmd and folder in cmd:
+            to_kill.append(pid)
+    for p in to_kill:
+        try:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(p)],
+                           creationflags=flags, check=False, timeout=10)
+        except Exception:
+            pass
+
+
 def _launch_app():
+    # Close any old instances first so launch always gives a single fresh window.
+    try:
+        _kill_existing_app()
+    except Exception:
+        pass
     try:
         pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
         if not os.path.exists(pythonw):
             pythonw = sys.executable
-        flags = 0x08000000 if os.name == "nt" else 0
-        subprocess.Popen([pythonw, MAIN_PY], cwd=HERE, creationflags=flags)
+        if os.name == "nt":
+            # DETACHED_PROCESS (0x8) + CREATE_NEW_PROCESS_GROUP (0x200) so the new
+            # app is NOT a child of the installer — otherwise the installer's own
+            # shutdown/exit would take the freshly-launched window down with it.
+            # (CREATE_NO_WINDOW is intentionally omitted: it's mutually exclusive
+            # with DETACHED_PROCESS, and pythonw.exe has no console anyway.)
+            DETACHED = 0x00000008
+            NEW_GROUP = 0x00000200
+            subprocess.Popen([pythonw, MAIN_PY], cwd=HERE,
+                             creationflags=DETACHED | NEW_GROUP,
+                             close_fds=True)
+        else:
+            # POSIX: start a new session so it survives the installer exiting.
+            subprocess.Popen([pythonw, MAIN_PY], cwd=HERE,
+                             start_new_session=True, close_fds=True)
     except Exception:
         pass
 
@@ -174,7 +259,7 @@ def _launch_app():
 def _page():
     P = PALETTE
     logo = _logo_data_uri()
-    logo_html = ("<img src='" + logo + "' alt='QA Studio' style='height:118px;display:block'/>"
+    logo_html = ("<img src='" + logo + "' alt='QA Studio' style='height:84px;display:block'/>"
                  if logo else
                  "<div style='font:800 26px Segoe UI;color:" + P["violetInk"] + "'>QA STUDIO</div>")
     html = _PAGE_TMPL
@@ -205,25 +290,26 @@ _PAGE_TMPL = """<!doctype html><html lang="en"><head>
 html,body{margin:0;height:100%}
 /* The frameless window IS the card — fill it edge-to-edge with a solid bg so it
    looks clean even where OS-level transparency isn't supported. */
-body{background:var(--paper);font-family:var(--ui);color:var(--ink);min-height:100vh;
+body{background:var(--paper);font-family:var(--ui);color:var(--ink);
   display:flex;flex-direction:column;padding:0;box-sizing:border-box}
-.win{position:relative;width:100%;min-height:100vh;background:var(--paper);overflow:hidden;
-  display:flex;flex-direction:column}
+.win{position:relative;width:100%;background:var(--paper);overflow:hidden;
+  display:flex;flex-direction:column;border-radius:20px}
 /* the gradient bar + header double as the window drag handle (frameless) */
-.accent{height:4px;background:linear-gradient(90deg,var(--grad1),var(--violet),var(--grad2))}
+.accent{height:4px;background:linear-gradient(90deg,var(--grad1),var(--violet),var(--grad2));
+  border-radius:20px 20px 0 0}
 .winbar{position:absolute;top:0;left:0;right:0;height:46px;z-index:5}
 .wctl{position:absolute;top:11px;right:12px;z-index:9;display:flex;gap:4px}
 .wbtn{width:30px;height:30px;border:none;border-radius:9px;background:transparent;color:#9A9CAC;
   cursor:pointer;font-size:15px;line-height:1;display:grid;place-items:center;transition:background .12s,color .12s}
 .wbtn:hover{background:rgba(20,16,40,.07);color:#3A3A46}
 .wbtn.close:hover{background:#FCE9EA;color:#E0474D}
-.head{text-align:center;padding:30px 40px 6px;display:flex;flex-direction:column;align-items:center}
+.head{text-align:center;padding:22px 36px 4px;display:flex;flex-direction:column;align-items:center}
 .head .tagline{font-size:13px;font-weight:600;color:var(--ink2);margin-top:10px}
-.divider{height:1px;background:var(--line);margin:22px 36px}
-.body{padding:0 40px 34px;flex:1;display:flex;flex-direction:column}
+.divider{height:1px;background:var(--line);margin:16px 36px}
+.body{padding:0 36px 28px;display:flex;flex-direction:column}
 .lead{font-size:17px;font-weight:800;color:var(--ink);margin:0}
 .leadsub{font-size:13px;font-weight:500;color:var(--ink2);margin:7px 0 0;line-height:1.55}
-.steps{margin:20px 0 4px;border:1px solid var(--line);border-radius:12px;background:var(--card);overflow:hidden}
+.steps{margin:16px 0 4px;border:1px solid var(--line);border-radius:16px;background:var(--card);overflow:hidden}
 .step{display:flex;align-items:center;gap:13px;padding:13px 16px;border-top:1px solid var(--line2)}
 .step:first-child{border-top:0}
 .step .dot{width:24px;height:24px;border-radius:50%;flex:0 0 24px;display:grid;place-items:center;
@@ -262,7 +348,7 @@ body{background:var(--paper);font-family:var(--ui);color:var(--ink);min-height:1
 .console .lines::-webkit-scrollbar-thumb{background:#34343F;border-radius:8px}
 .cl{white-space:pre-wrap;color:#B7B5C4}
 .cl.ok{color:#5BD99A}.cl.err{color:#FF8A8F}.cl.warn{color:#F2C94C}.cl.dim{color:#6B6979}
-.actions{display:flex;gap:12px;margin-top:auto;padding-top:26px;align-items:center}
+.actions{display:flex;gap:12px;margin-top:20px;padding-top:6px;align-items:center}
 .btn{height:48px;border-radius:12px;border:0;cursor:pointer;font:800 14px var(--ui);
   display:inline-flex;align-items:center;justify-content:center;gap:9px;transition:background .15s,transform .05s}
 .btn:active{transform:translateY(1px)}
@@ -421,7 +507,9 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/launch":
             _launch_app()
             self._send(200, "ok", "text/plain")
-            threading.Thread(target=self._delayed_shutdown, args=(0.8,), daemon=True).start()
+            # Give the detached app a moment to come up before we tear down the
+            # installer window/server.
+            threading.Thread(target=self._delayed_shutdown, args=(1.5,), daemon=True).start()
         elif self.path == "/shutdown":
             self._send(200, "ok", "text/plain")
             # Only shut down once the install is finished, so an accidental
@@ -549,7 +637,7 @@ def _open_app_window(url):
       2) Edge/Chrome `--app` mode — chromeless window if pywebview is unavailable.
       3) Default browser tab — last-resort fallback.
     """
-    W, H = 648, 760
+    W, H = 540, 600
 
     # 1) Native window via pywebview (best path) — self-install if needed
     if _ensure_pywebview():
