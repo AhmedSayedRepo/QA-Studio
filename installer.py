@@ -365,7 +365,11 @@ function onFail(msg){
 }
 function launch(){
   fetch('/launch',{method:'POST'});
-  setTimeout(function(){document.body.innerHTML='<div style="font:600 15px var(--ui);color:#6B6975;text-align:center">QA Studio is launching&hellip; you can close this tab.</div>';},400);
+  setTimeout(function(){
+    try{ if(window.pywebview&&pywebview.api&&pywebview.api.close){ pywebview.api.close(); return; } }catch(e){}
+    try{ window.close(); }catch(e){}
+    document.body.innerHTML='<div style="font:600 15px var(--ui);color:#6B6975;text-align:center;padding-top:60px">QA Studio is launching&hellip; you can close this window.</div>';
+  },500);
 }
 function retry(){location.reload();}
 window.addEventListener('beforeunload',function(){try{navigator.sendBeacon('/shutdown');}catch(e){}});
@@ -570,11 +574,24 @@ def _open_app_window(url):
 
             _log("opening native window (pywebview)")
             _api = _WinApi()
-            _win = webview.create_window(
-                f"{APP_NAME} Setup", url,
-                width=W, height=H, resizable=False, min_size=(W, H),
-                frameless=True, easy_drag=True, transparent=True,
-                background_color="#00000000", js_api=_api)
+            # Create the window with the best look the backend supports, degrading
+            # transparent → frameless → plain. NEVER fall through to a browser just
+            # because transparency/frameless isn't available. (background_color must
+            # be a 6-digit hex — passing an 8-digit #RRGGBBAA crashes pywebview.)
+            _win = None
+            for _opts in (dict(frameless=True, easy_drag=True, transparent=True),
+                          dict(frameless=True, easy_drag=True),
+                          dict()):
+                try:
+                    _win = webview.create_window(
+                        f"{APP_NAME} Setup", url,
+                        width=W, height=H, resizable=False, min_size=(W, H),
+                        js_api=_api, **_opts)
+                    break
+                except Exception as _e:
+                    _log(f"create_window {_opts or 'plain'} failed: {_e}")
+            if _win is None:
+                raise RuntimeError("could not create a native window")
             _api.set_window(_win)
             try:
                 webview.start(gui="edgechromium")

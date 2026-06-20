@@ -587,6 +587,14 @@ class QAStudio:
         self.page.title = "QA Studio"
         self.page.bgcolor = T.RAIL
         self.page.padding = 0
+        # Give Windows a distinct app identity BEFORE the window shows, so the
+        # taskbar groups us as "QA Studio" and uses our icon instead of inheriting
+        # the generic Flet/Python client icon.
+        try:
+            import ctypes  # Windows only; no-op elsewhere
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("QAStudio.Desktop.App")
+        except Exception:
+            pass
         # Window icon (taskbar + title bar) — points to the bundled app.ico
         try:
             import os as _os
