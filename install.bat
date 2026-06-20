@@ -11,13 +11,23 @@ where py >nul 2>&1 || set "PY=python"
   exit /b 1
 )
 
-rem --- bootstrap the native-window backend BEFORE launching ---
 echo Preparing QA Studio installer...
 %PY% -m pip install --quiet --disable-pip-version-check --upgrade pip >nul 2>&1
-%PY% -m pip install --quiet --disable-pip-version-check pywebview >nul 2>&1
 
-rem --- launch the installer (opens a native window; falls back to a browser
-rem     window only if the native backend is unavailable) ---
+rem --- bootstrap the native-window backend BEFORE launching ---
+rem pywebview needs a backend. On Windows that is EdgeChromium (WebView2) via
+rem pythonnet. We install BOTH and do NOT hide errors, so a failed backend is
+rem visible instead of silently falling back to a browser tab.
+echo Installing native window backend (pywebview)...
+%PY% -m pip install --disable-pip-version-check "pywebview>=5.0" pythonnet
+if errorlevel 1 (
+  echo.
+  echo [warn] Could not install the native-window backend. The installer will
+  echo        open in a chromeless app window or your browser instead.
+  echo.
+)
+
+rem --- launch the installer ---
 %PY% "%~dp0installer.py"
 
 endlocal

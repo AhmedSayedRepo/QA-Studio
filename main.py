@@ -95,6 +95,29 @@ def _wrap_btn(btn, expand):
 
 # ── Brand logo (loaded once as base64 so it works without an assets_dir) ──────
 _LOGO_B64 = None
+def _logo_path():
+    """Absolute path to the logo file on disk, or '' if none is present.
+    A file-path image is cached by Flet's renderer and does NOT flash on
+    re-mount (unlike base64), which is what caused the logo to flicker on
+    every button click that rebuilds the page."""
+    global _LOGO_PATH
+    try:
+        return _LOGO_PATH
+    except NameError:
+        pass
+    _LOGO_PATH = ""
+    try:
+        import os
+        here = os.path.dirname(os.path.abspath(__file__))
+        for name in ("app.png", "qa-logo.png"):
+            p = os.path.join(here, name)
+            if os.path.exists(p):
+                _LOGO_PATH = p
+                break
+    except Exception:
+        _LOGO_PATH = ""
+    return _LOGO_PATH
+
 def _logo_b64():
     global _LOGO_B64
     if _LOGO_B64 is None:
@@ -123,16 +146,23 @@ def logo_img(size=38, fallback_icon=None, fallback_color="#FFFFFF"):
     if cached is not None:
         return cached
     b = _logo_b64()
-    if b:
+    path = _logo_path()
+    if path or b:
         img = None
-        # Prefer a data: URI in `src` — Flet caches images by their src string and
-        # does NOT re-decode on re-mount, so the logo no longer flickers when the
-        # page is rebuilt on each button click. src_base64 re-decodes every mount.
-        try:
-            img = ft.Image(src=f"data:image/png;base64,{b}", width=size, height=size)
-        except Exception:
+        # Prefer a FILE PATH src: Flet's renderer caches file-path images and does
+        # not re-fetch/flash them when the page is rebuilt on each click. Fall back
+        # to a data: URI, then src_base64, for environments where the file isn't
+        # reachable (e.g. web mode serving from a different working dir).
+        for attempt in (
+            (lambda: ft.Image(src=path, width=size, height=size)) if path else None,
+            (lambda: ft.Image(src=f"data:image/png;base64,{b}", width=size, height=size)) if b else None,
+            (lambda: ft.Image(src_base64=b, width=size, height=size)) if b else None,
+        ):
+            if attempt is None:
+                continue
             try:
-                img = ft.Image(src_base64=b, width=size, height=size)
+                img = attempt()
+                break
             except Exception:
                 img = None
         if img is not None:
@@ -597,9 +627,43 @@ class QAStudio:
                     self.page.window.on_event = self._on_window_event
             except Exception:
                 pass
+        else:
+            # WEB MODE: closing the browser tab does NOT raise a window event, so
+            # the Python server would keep running forever (this is what leaves
+            # many orphaned python.exe processes in Task Manager). Exit the process
+            # shortly after the browser client disconnects.
+            try:
+                self.page.on_disconnect = self._on_web_disconnect
+            except Exception:
+                pass
         self.render()
         # Check for a newer version in the background (never blocks startup)
         self._kickoff_update_check()
+
+    def _on_web_disconnect(self, e=None):
+        """Web client (browser tab) closed → terminate the server process after a
+        short grace period (a refresh reconnects within that window)."""
+        def _later():
+            import os, time
+            time.sleep(2.0)  # grace period: a page refresh reconnects quickly
+            # If the client reconnected, a new session is active; still safe to
+            # exit this orphaned one. Kill the whole process tree on Windows.
+            try:
+                if os.name == "nt":
+                    import subprocess
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(os.getpid())],
+                                   creationflags=0x08000000, check=False)
+                    return
+            except Exception:
+                pass
+            try:
+                os._exit(0)
+            except Exception:
+                pass
+        try:
+            threading.Thread(target=_later, daemon=True).start()
+        except Exception:
+            pass
 
     def _set_run_active(self, active):
         """Track whether a run is in progress, and toggle the OS window's
@@ -1289,22 +1353,30 @@ class QAStudio:
         # Model dropdown — populated live from the provider (falls back to a
         # curated list). Editable so an exact model id can also be typed.
         cur_model = self._saved_model(name)
+        # Disable the model picker once connected (it can't change mid-connection;
+        # changing the model requires reconnecting anyway).
+        _model_locked = bool(getattr(self, "connected", False))
         # Build with only the args this Flet version supports. on_select is the
         # event that works on this build (on_change raises TypeError here);
-        # editable/enable_filter are newer and added only if accepted.
+        # editable/enable_filter/menu_height are newer and added only if accepted.
         _dd_kwargs = dict(
             value=cur_model or None, options=self._model_options(name),
             on_select=self._on_model_change,
-            hint_text="Select or type a model",
+            hint_text="Select a model",
+            disabled=_model_locked,
             border_color=T.BORDER, focused_border_color=T.VIOLET,
-            border_radius=T.R, content_padding=ft.Padding.symmetric(vertical=12, horizontal=8),
-            text_size=13, filled=True, bgcolor=T.CARD, expand=True)
+            border_radius=T.R, content_padding=ft.Padding.symmetric(vertical=12, horizontal=12),
+            text_size=13, filled=True,
+            bgcolor=(T.CARD_2 if _model_locked else T.CARD), expand=True)
+        # Try the richest control first, then degrade gracefully on older Flet.
         try:
-            self.model_dd = ft.Dropdown(editable=True, enable_filter=True, **_dd_kwargs)
+            self.model_dd = ft.Dropdown(editable=True, enable_filter=True,
+                                        menu_height=300, **_dd_kwargs)
         except TypeError:
-            # older Flet: no editable/enable_filter — plain selectable dropdown
-            self.model_dd = ft.Dropdown(**_dd_kwargs)
-        self.model_refresh_btn = ghost_btn("Refresh", on_click=self._refresh_models)
+            try:
+                self.model_dd = ft.Dropdown(menu_height=300, **_dd_kwargs)
+            except TypeError:
+                self.model_dd = ft.Dropdown(**_dd_kwargs)
 
         # PAT field
         pat_has = bool(self.creds.get("pat"))
@@ -1356,14 +1428,13 @@ class QAStudio:
             field_label("AI Provider", req=True, info="How to make a provider active",
                         on_info=lambda e: self._show_help("provider")),
             ft.Container(self.prov_dd, padding=ft.Padding.only(top=4, bottom=12)),
-            field_label("API Key", req=True, info="How to get your AI provider API key",
-                        on_info=lambda e: self._show_help("api_key")),
-            ft.Container(ft.Row([self.api_key_field, self.api_btn], spacing=8),
-                        padding=ft.Padding.only(top=4, bottom=12)),
             field_label("Model", req=False, hint=self._model_src_hint(),
                         info="Which model this provider should use",
                         on_info=lambda e: self._show_help("model")),
-            ft.Container(ft.Row([self.model_dd, self.model_refresh_btn], spacing=8),
+            ft.Container(self.model_dd, padding=ft.Padding.only(top=4, bottom=12)),
+            field_label("API Key", req=True, info="How to get your AI provider API key",
+                        on_info=lambda e: self._show_help("api_key")),
+            ft.Container(ft.Row([self.api_key_field, self.api_btn], spacing=8),
                         padding=ft.Padding.only(top=4, bottom=12)),
             field_label("Azure Organization", req=True,
                         info="How to find your Azure organization name",
@@ -1578,18 +1649,6 @@ class QAStudio:
         if getattr(self, "connected", False):
             self._disconnect(f"Model changed to {val} — reconnect to continue.")
         self._toast(f"Model set to {val}.")
-        self.render()
-
-    def _refresh_models(self, e=None):
-        """Force a live re-fetch of the model list for the current provider."""
-        self._model_choices = None
-        self._models_for = None
-        name = self._provider_choice
-        key = self._saved_key(name)
-        if not key:
-            self._err("Save an API key first to load this provider's models.")
-            return
-        self._toast("Refreshing models…")
         self.render()
 
     def _unlock_key(self, e=None):

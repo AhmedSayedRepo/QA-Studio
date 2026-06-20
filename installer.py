@@ -476,29 +476,60 @@ def _open_app_window(url):
     """Open the installer as a true native desktop window.
 
     Order of preference:
-      1) pywebview — a real OS-native window (no browser chrome at all). The
-         launcher (install.bat) pre-installs it, so this is the normal path.
-      2) Edge/Chrome `--app` mode — chromeless window if pywebview is missing.
+      1) pywebview — a real OS-native window (no browser chrome at all).
+      2) Edge/Chrome `--app` mode — chromeless window if pywebview is unavailable.
       3) Default browser tab — last-resort fallback.
+    Prints what it's doing so failures are visible in the console.
     """
     W, H = 648, 760
 
-    # 1) Native window via pywebview (best: looks like a real installer app)
+    # 1) Native window via pywebview (best path)
     try:
         import webview  # provided by pywebview
-        win = webview.create_window(
+        print("[installer] pywebview found — opening native window")
+        webview.create_window(
             f"{APP_NAME} Setup", url,
             width=W, height=H, resizable=False,
-            min_size=(W, H), background_color="#0E0B16")
-        # webview.start() blocks until the window closes — that's fine because
-        # main() runs the HTTP server on a daemon thread before calling us.
-        webview.start()
-        # When the native window closes, stop the whole installer.
-        os._exit(0)
-    except Exception:
-        pass  # pywebview not available or failed → fall through
+            min_size=(W, H))
+        # webview.start() blocks until the window closes. On Windows it uses the
+        # EdgeChromium (WebView2) backend; gui='edgechromium' forces it.
+        try:
+            webview.start(gui="edgechromium")
+        except Exception:
+            webview.start()   # let pywebview pick any available backend
+        os._exit(0)           # native window closed → stop the installer
+    except ImportError:
+        print("[installer] pywebview not installed — trying Edge/Chrome app window")
+    except Exception as ex:
+        print(f"[installer] pywebview failed ({ex}) — trying Edge/Chrome app window")
 
     # 2) Chromium app-mode (chromeless) window
+    exe = _find_chromium()
+    if exe:
+        try:
+            import tempfile
+            prof = os.path.join(tempfile.gettempdir(), "qastudio_installer_profile")
+            flags = 0x08000000 if os.name == "nt" else 0
+            print(f"[installer] opening chromeless app window via {os.path.basename(exe)}")
+            subprocess.Popen(
+                [exe, f"--app={url}", f"--window-size={W},{H}",
+                 f"--user-data-dir={prof}", "--no-first-run",
+                 "--no-default-browser-check"],
+                creationflags=flags)
+            return
+        except Exception as ex:
+            print(f"[installer] app-window launch failed ({ex})")
+
+    # 3) Fallback: default browser tab
+    print("[installer] falling back to default browser tab")
+    try:
+        webbrowser.open(url)
+    except Exception:
+        pass
+
+
+def _find_chromium():
+    """Locate an Edge or Chrome executable for chromeless --app mode."""
     candidates = []
     if os.name == "nt":
         pf = os.environ.get("ProgramFiles", r"C:\Program Files")
@@ -507,6 +538,7 @@ def _open_app_window(url):
         candidates = [
             os.path.join(pf86, "Microsoft", "Edge", "Application", "msedge.exe"),
             os.path.join(pf, "Microsoft", "Edge", "Application", "msedge.exe"),
+            os.path.join(local, "Microsoft", "Edge", "Application", "msedge.exe"),
             os.path.join(pf, "Google", "Chrome", "Application", "chrome.exe"),
             os.path.join(pf86, "Google", "Chrome", "Application", "chrome.exe"),
             os.path.join(local, "Google", "Chrome", "Application", "chrome.exe"),
@@ -519,26 +551,7 @@ def _open_app_window(url):
     else:
         candidates = ["/usr/bin/google-chrome", "/usr/bin/microsoft-edge",
                       "/usr/bin/chromium", "/usr/bin/chromium-browser"]
-
-    exe = next((c for c in candidates if os.path.exists(c)), None)
-    if exe:
-        try:
-            import tempfile
-            prof = os.path.join(tempfile.gettempdir(), "qastudio_installer_profile")
-            flags = 0x08000000 if os.name == "nt" else 0
-            subprocess.Popen(
-                [exe, f"--app={url}", f"--window-size={W},{H}",
-                 f"--user-data-dir={prof}", "--no-first-run", "--no-default-browser-check"],
-                creationflags=flags)
-            return
-        except Exception:
-            pass
-
-    # 3) Fallback: default browser tab
-    try:
-        webbrowser.open(url)
-    except Exception:
-        pass
+    return next((c for c in candidates if os.path.exists(c)), None)
 
 
 def main():
