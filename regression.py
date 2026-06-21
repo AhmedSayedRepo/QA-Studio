@@ -146,37 +146,163 @@ def plan_payload(app):
 # ═══════════════════════════════════════════════════════════════════════════════
 #  EXPORTERS
 # ═══════════════════════════════════════════════════════════════════════════════
+# ── email visual helpers ───────────────────────────────────────────────────────
+_AV_COLORS = ["#3A57D6", "#1F9D57", "#6A52F0", "#1C80E0", "#C2860C", "#6A33A8"]
+
+def _av(name):
+    """Return (initial, color) for an assignee avatar."""
+    nm = (name or "").strip()
+    if not nm:
+        return "—", "#9FA2B2"
+    return nm[0].upper(), _AV_COLORS[sum(ord(c) for c in nm) % len(_AV_COLORS)]
+
+def _email_pri(p):
+    """Return (bg, fg, label) for a priority chip in the email."""
+    return {1: ("#FCEBEC", "#E0474D"), 2: ("#FAF1DD", "#C2860C"),
+            4: ("#E5F6EC", "#1F9D57")}.get(p, ("#F4F6FB", "#6E7180")) + (f"P{p}",)
+
+
 def _plan_html(d):
-    """Compact HTML summary of the plan for the email body."""
-    rows = "".join(
-        f"<tr><td style='padding:4px 10px;border-bottom:1px solid #eee'>{r['id']}</td>"
-        f"<td style='padding:4px 10px;border-bottom:1px solid #eee'>{(r['title'] or '')}</td>"
-        f"<td style='padding:4px 10px;border-bottom:1px solid #eee'>P{r['priority']}</td>"
-        f"<td style='padding:4px 10px;border-bottom:1px solid #eee;text-align:right'>{r['cases']}</td>"
-        f"<td style='padding:4px 10px;border-bottom:1px solid #eee;text-align:right'>{r['hours']}</td>"
-        f"<td style='padding:4px 10px;border-bottom:1px solid #eee'>{r.get('assignee','') or '—'}</td></tr>"
-        for r in d["stories"])
-    wl = "".join(
-        f"<li>{w['name']}: {w['stories']} stories · {w['hours']} h</li>"
-        for w in d.get("workload", []))
+    """Polished, Outlook-safe HTML summary of the plan for the email body.
+
+    Table-based with inline styles so it renders across Outlook / Gmail / Apple
+    Mail. Colours track theme.py. The external-sender warning some inboxes show
+    is injected by the mail server, not here.
+    """
+    # KPI tiles
+    def _kpi(label, val, unit, fg, bg, bd):
+        u = (f"<span style='font-size:12px;color:#9aa4b8;font-weight:600'> {unit}</span>"
+             if unit else "")
+        return (
+            f"<td width='25%' valign='top' style='padding:0 5px'>"
+            f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0' "
+            f"style='background:{bg};border:1px solid {bd};border-radius:12px'><tr>"
+            f"<td style='padding:13px 14px'>"
+            f"<div style='font-size:10px;letter-spacing:.6px;text-transform:uppercase;"
+            f"color:{fg};font-weight:700'>{label}</div>"
+            f"<div style='font-family:Consolas,monospace;font-size:23px;font-weight:700;"
+            f"color:{fg};margin-top:4px'>{val}{u}</div></td></tr></table></td>")
+
+    kpis = (
+        f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0'><tr>"
+        + _kpi("Stories", d["total_stories"], "", "#181A24", "#F6F8FC", "#EBEFF7")
+        + _kpi("Test cases", d["total_cases"], "", "#181A24", "#F6F8FC", "#EBEFF7")
+        + _kpi("Total effort", d["total_hours"], "h", "#2940C2", "#E7ECFF", "#D6DEFF")
+        + _kpi("Per person", d["hours_per_person"], "h", "#1F9D57", "#E5F6EC", "#D2EEDF")
+        + "</tr></table>")
+
+    # story rows
+    srows = []
+    for r in d["stories"]:
+        bg, fg, lab = _email_pri(r["priority"])
+        init, acol = _av(r.get("assignee", ""))
+        who = (r.get("assignee") or "").strip()
+        asg = (
+            f"<table role='presentation' cellpadding='0' cellspacing='0'><tr>"
+            f"<td width='24' height='24' style='border-radius:50%;background:{acol};"
+            f"color:#fff;text-align:center;font-size:10px;font-weight:700'>{init}</td>"
+            f"<td style='padding-left:9px;font-size:13px;font-weight:600;color:#39435c;"
+            f"white-space:nowrap'>{who or '—'}</td></tr></table>")
+        srows.append(
+            f"<tr style='border-top:1px solid #f0f3f9'>"
+            f"<td style='padding:12px 14px;font-family:Consolas,monospace;font-size:13px;"
+            f"font-weight:600;color:#3A57D6;white-space:nowrap'>{r['id']}</td>"
+            f"<td style='padding:12px 8px;font-size:13.5px;font-weight:600;color:#1f2940'>"
+            f"{(r['title'] or '—')}</td>"
+            f"<td style='padding:12px 8px;text-align:center'>"
+            f"<span style='font-family:Consolas,monospace;font-size:11px;font-weight:700;"
+            f"padding:3px 8px;border-radius:6px;background:{bg};color:{fg}'>{lab}</span></td>"
+            f"<td style='padding:12px 8px;text-align:right;font-family:Consolas,monospace;"
+            f"font-size:13.5px;color:#46506a'>{r['cases']}</td>"
+            f"<td style='padding:12px 8px;text-align:right;font-family:Consolas,monospace;"
+            f"font-size:13.5px;font-weight:700;color:#1f2940'>{r['hours']}</td>"
+            f"<td style='padding:12px 14px'>{asg}</td></tr>")
+    story_tbl = (
+        f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0' "
+        f"style='border:1px solid #EBEFF7;border-radius:12px'>"
+        f"<tr style='background:#F6F8FC'>"
+        + "".join(f"<td style='padding:10px {p};font-size:10.5px;letter-spacing:.5px;"
+                  f"text-transform:uppercase;color:#98a1b5;font-weight:700;{a}'>{h}</td>"
+                  for h, p, a in (("Story", "14px", ""), ("Title", "8px", ""),
+                                  ("Pri", "8px", "text-align:center"),
+                                  ("Cases", "8px", "text-align:right"),
+                                  ("Hours", "8px", "text-align:right"),
+                                  ("Assignee", "14px", "")))
+        + "</tr>" + "".join(srows) + "</table>")
+
+    # workload bars
+    wl_block = ""
+    wl = d.get("workload", [])
+    if wl:
+        maxw = max((w["hours"] for w in wl), default=0) or 1
+        wrows = []
+        for w in wl:
+            init, acol = _av(w["name"])
+            pct = max(4, int(round(w["hours"] / maxw * 100)))
+            wrows.append(
+                f"<tr><td width='118' style='padding:7px 0'>"
+                f"<table role='presentation' cellpadding='0' cellspacing='0'><tr>"
+                f"<td width='22' height='22' style='border-radius:6px;background:{acol};"
+                f"color:#fff;text-align:center;font-size:10px;font-weight:700'>{init}</td>"
+                f"<td style='padding-left:9px;font-size:13px;font-weight:700;color:#1f2940'>"
+                f"{w['name']}</td></tr></table></td>"
+                f"<td style='padding:7px 14px'>"
+                f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0' "
+                f"style='background:#eef1f7;border-radius:99px'><tr>"
+                f"<td height='8' style='background:{acol};border-radius:99px;width:{pct}%;"
+                f"font-size:0;line-height:0'>&nbsp;</td>"
+                f"<td style='font-size:0;line-height:0'>&nbsp;</td></tr></table></td>"
+                f"<td width='118' align='right' style='padding:7px 0;white-space:nowrap'>"
+                f"<span style='font-size:11.5px;color:#8a93a8'>{w['stories']} stories</span>"
+                f"<span style='font-family:Consolas,monospace;font-size:14px;font-weight:700;"
+                f"color:#1f2940;padding-left:8px'>{w['hours']} h</span></td></tr>")
+        wl_block = (
+            f"<tr><td style='padding:22px 32px 4px'>"
+            f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0'><tr>"
+            f"<td style='font-size:11px;letter-spacing:.7px;text-transform:uppercase;"
+            f"color:#8a93a8;font-weight:700'>Resource workload</td>"
+            f"<td align='right'><span style='font-size:11.5px;font-weight:600;color:#1F9D57;"
+            f"background:#E5F6EC;padding:5px 11px;border-radius:999px'>"
+            f"&#8776; {d['hours_per_person']} h / person</span></td></tr></table>"
+            f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0' "
+            f"style='margin-top:12px'>" + "".join(wrows) + "</table></td></tr>")
+
+    scope = d["plan_name"] or d["project"]
     return (
-        f"<div style='font-family:Segoe UI,Arial,sans-serif;color:#1d1b2e'>"
-        f"<h2 style='margin:0 0 4px'>Regression Test Plan</h2>"
-        f"<p style='color:#555;margin:0 0 14px'>{d['plan_name'] or d['project']}"
-        f" &middot; generated {d['generated']}</p>"
-        f"<p><b>{d['total_stories']}</b> stories &middot; <b>{d['total_cases']}</b> test cases"
-        f" &middot; <b>{d['total_hours']} h</b> total &middot; ~{d['hours_per_person']} h/person</p>"
-        f"<table style='border-collapse:collapse;font-size:13px;margin-top:6px'>"
-        f"<tr style='background:#f4f3fb'>"
-        f"<th style='padding:6px 10px;text-align:left'>Story</th>"
-        f"<th style='padding:6px 10px;text-align:left'>Title</th>"
-        f"<th style='padding:6px 10px;text-align:left'>Pri</th>"
-        f"<th style='padding:6px 10px;text-align:right'>Cases</th>"
-        f"<th style='padding:6px 10px;text-align:right'>Hours</th>"
-        f"<th style='padding:6px 10px;text-align:left'>Assignee</th></tr>{rows}</table>"
-        + (f"<h4 style='margin:16px 0 4px'>Resource workload</h4><ul>{wl}</ul>" if wl else "")
-        + f"<p style='color:#888;font-size:12px;margin-top:18px'>Sent from QA Studio. "
-          f"Full plan attached.</p></div>")
+        f"<div style='background:#e9edf4;padding:28px 12px;"
+        f"font-family:Segoe UI,Arial,sans-serif'>"
+        f"<table role='presentation' align='center' width='680' cellpadding='0' "
+        f"cellspacing='0' style='max-width:680px;width:100%;margin:0 auto;background:#fff;"
+        f"border-radius:16px;overflow:hidden;border:1px solid #e4e9f2'>"
+        # header band
+        f"<tr><td style='padding:26px 32px 22px;background:#3A57D6;"
+        f"background-image:linear-gradient(125deg,#1C80E0 0%,#3A57D6 55%,#6A33A8 100%)'>"
+        f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0'><tr>"
+        f"<td style='color:#fff;font-weight:800;font-size:15px;letter-spacing:.2px'>"
+        f"QA&nbsp;Studio</td>"
+        f"<td align='right'><span style='font-family:Consolas,monospace;font-size:11px;"
+        f"color:#d6ddf6;background:rgba(255,255,255,.14);padding:6px 11px;"
+        f"border-radius:8px'>generated {d['generated']}</span></td></tr></table>"
+        f"<div style='margin-top:20px;color:#fff;font-size:25px;font-weight:800;"
+        f"letter-spacing:-.5px'>Regression Test Plan</div>"
+        f"<div style='margin-top:6px;color:#cdd5f0;font-size:13.5px;font-weight:500'>"
+        f"{scope}</div></td></tr>"
+        # KPI strip
+        f"<tr><td style='padding:22px 27px 6px'>{kpis}</td></tr>"
+        # story table
+        f"<tr><td style='padding:16px 32px 6px'>"
+        f"<div style='font-size:11px;letter-spacing:.7px;text-transform:uppercase;"
+        f"color:#8a93a8;font-weight:700;margin-bottom:12px'>Stories in scope</div>"
+        f"{story_tbl}</td></tr>"
+        + wl_block +
+        # footer
+        f"<tr><td style='padding:22px 32px 26px'>"
+        f"<div style='border-top:1px solid #eef1f7;padding-top:18px;font-size:12px;"
+        f"color:#9aa4b8;line-height:1.6'>Sent automatically from "
+        f"<b style='color:#6b7790'>QA Studio</b>. The full plan is attached as a Word "
+        f"document.<br>Estimates use {d['avg_minutes_per_case']}&nbsp;min / test case "
+        f"weighted by Azure DevOps priority.</div></td></tr>"
+        f"</table></div>")
 
 
 
@@ -450,28 +576,101 @@ def _pri_pill(pri):
     return _pill(f"P{pri}", T.INK_2, T.CARD_2)
 
 
-def locked_state(app, title, sub, msg, icon=None):
-    """Shared centered 'connect / select first' screen (also used by Automation)."""
+def _avatar(name, size=26):
+    """Round initial-avatar; colour is stable per name."""
+    init, col = _av(name)
+    return ft.Container(
+        ft.Text(init, size=int(size * 0.42), weight=ft.FontWeight.BOLD, color="#FFFFFF"),
+        width=size, height=size, bgcolor=col, border_radius=size,
+        alignment=ft.Alignment.CENTER)
+
+
+def _bar(frac, color=T.VIOLET, h=7):
+    """Proportional fill bar (animates smoothly when its weight changes)."""
+    f = max(1, int(round((frac or 0) * 100)))
+    e = max(0, 100 - f)
+    fill = ft.Container(height=h, bgcolor=color, border_radius=4, expand=f,
+                        animate=ft.Animation(700, ft.AnimationCurve.EASE_OUT))
+    inner = [fill] + ([ft.Container(expand=e)] if e > 0 else [])
+    return ft.Container(ft.Row(inner, spacing=0), bgcolor=T.BORDER_2,
+                        border_radius=4, height=h, clip_behavior=ft.ClipBehavior.HARD_EDGE)
+
+
+def _kpi_tile(label, value, accent=T.INK):
+    return ft.Container(
+        ft.Column([
+            ft.Text(label, size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
+            ft.Text(value, size=23, weight=ft.FontWeight.BOLD, color=accent,
+                    font_family=T.F_MONO),
+        ], spacing=4),
+        expand=True, padding=14, bgcolor=T.CARD_2, border_radius=T.R,
+        border=ft.Border.all(1, T.BORDER_2))
+
+
+def locked_state(app, title, sub, msg, icon=None, steps=None):
+    """Shared centered 'connect / select first' screen (also used by Automation).
+
+    `steps` is an optional list of (icon, label) tuples shown as a 3-step path.
+    """
     from main import primary_btn
     icon = icon or ft.Icons.LINK_OFF
+    steps = steps or [(ft.Icons.TUNE, "Connect"),
+                      (ft.Icons.CHECKLIST, "Select"),
+                      (ft.Icons.AUTO_AWESOME, "Generate")]
+
+    # animated "scanning for a connection" ring around the icon tile
+    ring = ft.Container(
+        ft.Stack([
+            ft.ProgressRing(width=104, height=104, stroke_width=2,
+                            color=ft.Colors.with_opacity(0.45, T.VIOLET)),
+            ft.Container(ft.Icon(icon, size=32, color=T.VIOLET),
+                         width=78, height=78, bgcolor=T.VIOLET_SOFT,
+                         border_radius=22, alignment=ft.Alignment.CENTER,
+                         left=13, top=13),
+        ], width=104, height=104),
+        width=104, height=104, alignment=ft.Alignment.CENTER)
+
+    pill = ft.Container(
+        ft.Row([ft.Container(width=7, height=7, border_radius=7, bgcolor=T.STORY),
+                ft.Text("Awaiting connection", size=11, weight=ft.FontWeight.BOLD,
+                        color=T.STORY)], spacing=7, tight=True),
+        padding=ft.Padding.symmetric(vertical=6, horizontal=12),
+        bgcolor=T.VIOLET_SOFT, border_radius=999,
+        border=ft.Border.all(1, "#E0E5FF"))
+
+    def _step(ic, label):
+        return ft.Container(ft.Column([
+            ft.Container(ft.Icon(ic, size=18, color=T.VIOLET), width=44, height=44,
+                         bgcolor=T.VIOLET_SOFT, border_radius=13,
+                         alignment=ft.Alignment.CENTER,
+                         border=ft.Border.all(1, "#E0E5FF")),
+            ft.Text(label, size=12, weight=ft.FontWeight.BOLD, color=T.INK_2),
+        ], spacing=8, horizontal_alignment=ft.CrossAxisAlignment.CENTER), width=110)
+
+    path = ft.Row([_step(ic, lab) for ic, lab in steps],
+                  alignment=ft.MainAxisAlignment.CENTER, spacing=0)
+
     body = ft.Container(
         ft.Column([
-            ft.Container(ft.Icon(icon, size=30, color=T.VIOLET),
-                         width=72, height=72, bgcolor=T.VIOLET_SOFT,
-                         border_radius=20, alignment=ft.Alignment.CENTER),
-            ft.Container(height=18),
-            ft.Text("A few things first", size=17, weight=ft.FontWeight.BOLD,
+            ring,
+            ft.Container(height=16), pill,
+            ft.Container(height=14),
+            ft.Text("A few things first", size=20, weight=ft.FontWeight.BOLD,
                     color=T.INK),
-            ft.Container(height=6),
-            ft.Container(ft.Text(msg, size=13, color=T.INK_2,
-                                 text_align=ft.TextAlign.CENTER), width=480),
-            ft.Container(height=20),
+            ft.Container(height=8),
+            ft.Container(ft.Text(msg, size=13.5, color=T.INK_2,
+                                 text_align=ft.TextAlign.CENTER), width=470),
+            ft.Container(height=28), path,
+            ft.Container(height=30),
             primary_btn("Go to Setup", icon=ft.Icons.ARROW_FORWARD,
                         on_click=lambda e: app.goto("setup")),
+            ft.Container(height=14),
+            ft.Text("Takes about a minute · your credentials stay on this device",
+                    size=12, color=T.INK_3, weight=ft.FontWeight.W_500),
         ], horizontal_alignment=ft.CrossAxisAlignment.CENTER,
            alignment=ft.MainAxisAlignment.CENTER),
         alignment=ft.Alignment.CENTER, expand=True,
-        padding=ft.Padding.symmetric(vertical=60, horizontal=20))
+        padding=ft.Padding.symmetric(vertical=50, horizontal=20))
     return app.shell(title, sub, body)
 
 
@@ -922,29 +1121,36 @@ def screen(app):
                                  color=T.INK_3), expand=expand)
 
         header = ft.Container(
-            ft.Row([_hd("STORY", 64), _hd("TITLE", 0, expand=True), _hd("STATE", 72),
-                    _hd("PRI", 44), _hd("CASES", 50), _hd("HOURS", 56),
-                    _hd("ASSIGNEE", 110)], spacing=4),
+            ft.Row([_hd("STORY", 64), _hd("TITLE", 0, expand=True), _hd("STATE", 84),
+                    _hd("PRI", 44), _hd("CASES", 52), _hd("HOURS", 128),
+                    _hd("ASSIGNEE", 140)], spacing=4),
             padding=ft.Padding.symmetric(vertical=9, horizontal=8), bgcolor=T.CARD_2,
             border=ft.Border.only(bottom=ft.BorderSide(1, T.BORDER)))
 
+        maxh_story = max((x["hours"] for x in d["stories"]), default=0) or 1
         body_rows = []
         for i, s in enumerate(d["stories"]):
             bg = "#FFFFFF" if i % 2 == 0 else ft.Colors.with_opacity(0.5, T.BG)
             asg = s.get("assignee")
-            asg_ctl = (_pill(asg, T.VIOLET_INK, T.VIOLET_SOFT) if asg
-                       else _txt("—", color=T.INK_3))
+            asg_ctl = (ft.Row([_avatar(asg, 24),
+                               _txt(asg, color=T.INK, weight=ft.FontWeight.W_500)],
+                              spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+                       if asg else _txt("—", color=T.INK_3))
+            hours_ctl = ft.Row([
+                ft.Container(_bar(s["hours"] / maxh_story), width=70),
+                _txt(str(s["hours"]), color=T.INK, weight=ft.FontWeight.BOLD),
+            ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER)
             body_rows.append(ft.Container(
                 ft.Row([
                     _cell(64, _txt(str(s["id"]), font_family=T.F_MONO,
                                    color=T.VIOLET_INK, weight=ft.FontWeight.BOLD)),
                     _cell(0, _txt(s["title"] or "—", color=T.INK, no_wrap=False),
                           expand=True),
-                    _cell(72, _state_pill(s["state"])),
+                    _cell(84, _state_pill(s["state"])),
                     _cell(44, _pri_pill(s["priority"])),
-                    _cell(50, _txt(str(s["cases"]), color=T.INK_2)),
-                    _cell(56, _txt(str(s["hours"]), color=T.INK, weight=ft.FontWeight.BOLD)),
-                    _cell(110, asg_ctl),
+                    _cell(52, _txt(str(s["cases"]), color=T.INK_2)),
+                    _cell(128, hours_ctl),
+                    _cell(140, asg_ctl),
                 ], spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                 padding=ft.Padding.symmetric(vertical=9, horizontal=8), bgcolor=bg))
 
@@ -952,37 +1158,38 @@ def screen(app):
                              border=ft.Border.all(1, T.BORDER), border_radius=T.R,
                              clip_behavior=ft.ClipBehavior.HARD_EDGE)
 
-        totals = ft.Row([
-            ft.Container(_txt(f"{d['total_stories']} stories",
-                              weight=ft.FontWeight.BOLD, color=T.INK), expand=True),
-            _txt(f"{d['total_cases']} cases", color=T.INK_2, weight=ft.FontWeight.BOLD),
-            ft.Container(width=14),
-            _txt(f"{d['total_hours']} h total", color=T.INK, weight=ft.FontWeight.BOLD),
-            ft.Container(width=14),
-            ft.Container(_txt(f"≈ {d['hours_per_person']} h / person", color=T.GREEN,
-                              weight=ft.FontWeight.BOLD),
-                         padding=ft.Padding.symmetric(vertical=4, horizontal=10),
-                         bgcolor=T.GREEN_SOFT, border_radius=T.R_SM),
-        ], spacing=4)
+        kpi_strip = ft.Row([
+            _kpi_tile("STORIES", str(d["total_stories"])),
+            _kpi_tile("TEST CASES", str(d["total_cases"])),
+            _kpi_tile("TOTAL EFFORT", f"{d['total_hours']} h", T.VIOLET),
+            _kpi_tile("PER PERSON", f"{d['hours_per_person']} h", T.GREEN),
+        ], spacing=10)
 
         workload_ui = ft.Container()
         if d["workload"]:
-            maxh = max((w["hours"] for w in d["workload"]), default=0) or 1
-            rows_wl = [ft.Row([
-                ft.Container(_pill(w["name"], T.VIOLET_INK, T.VIOLET_SOFT), width=140),
-                ft.Container(ft.Container(width=max(6, int(160 * w["hours"] / maxh)),
-                                          height=8, bgcolor=T.VIOLET, border_radius=4),
-                             expand=True, alignment=ft.Alignment.CENTER_LEFT),
-                _txt(f"{w['stories']} stories", color=T.INK_3),
-                ft.Container(width=12),
-                _txt(f"{w['hours']} h", color=T.INK, weight=ft.FontWeight.BOLD),
-            ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+            maxw = max((w["hours"] for w in d["workload"]), default=0) or 1
+            cards_wl = [ft.Container(ft.Column([
+                ft.Row([_avatar(w["name"], 32),
+                        ft.Column([_txt(w["name"], color=T.INK, weight=ft.FontWeight.BOLD,
+                                        size=14),
+                                   _txt(f"{w['stories']} stories", color=T.INK_3,
+                                        size=11)], spacing=1, tight=True),
+                        ft.Container(expand=True),
+                        _txt(f"{w['hours']} h", color=T.INK, weight=ft.FontWeight.BOLD,
+                             size=16, font_family=T.F_MONO)],
+                       spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                ft.Container(height=12),
+                _bar(w["hours"] / maxw, T.VIOLET, 8),
+            ], spacing=0), expand=True, padding=14, bgcolor=T.CARD,
+                border=ft.Border.all(1, T.BORDER_2), border_radius=T.R)
                 for w in d["workload"]]
             workload_ui = ft.Column([
-                ft.Container(height=14),
+                ft.Container(height=16),
                 ft.Text("RESOURCE WORKLOAD", size=10.5, weight=ft.FontWeight.BOLD,
                         color=T.INK_3),
-                ft.Container(height=8), ft.Column(rows_wl, spacing=8)], spacing=0)
+                ft.Container(height=10),
+                ft.Row(cards_wl, spacing=12,
+                       vertical_alignment=ft.CrossAxisAlignment.START)], spacing=0)
 
         if mismatch:
             exports = ft.Container(
@@ -1032,8 +1239,8 @@ def screen(app):
         ], spacing=6)
 
         results = card(ft.Column([
-            sec_head("4", "Plan"), ft.Container(height=10), table,
-            ft.Container(totals, padding=ft.Padding.only(top=12, bottom=2)),
+            sec_head("4", "Plan"), ft.Container(height=12), kpi_strip,
+            ft.Container(height=14), table,
             workload_ui, ft.Divider(height=22, color=T.BORDER),
             ft.Text("EXPORT", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
             ft.Container(height=8), exports, email_row, status,
