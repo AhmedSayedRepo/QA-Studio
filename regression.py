@@ -193,6 +193,37 @@ def _stamp(app):
     return f"RegressionPlan_{base}_{datetime.now():%Y%m%d-%H%M}"
 
 
+def _ask_save_path(fmt, default_name):
+    """Open a native OS 'Save As' dialog (tkinter) and return the chosen path.
+        str   -> the path the user picked
+        None  -> the user cancelled
+        False -> no native dialog available (caller should fall back)
+    Must be called OFF the UI thread — it spins up its own hidden Tk root."""
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except Exception:
+        return False
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            root.attributes("-topmost", True)
+        except Exception:
+            pass
+        path = filedialog.asksaveasfilename(
+            parent=root, title="Save regression plan",
+            initialfile=default_name, defaultextension="." + fmt,
+            filetypes=[(f"{fmt.upper()} file", f"*.{fmt}"), ("All files", "*.*")])
+        try:
+            root.update(); root.destroy()
+        except Exception:
+            pass
+        return path or None
+    except Exception:
+        return False
+
+
 def export_json(app):
     p = os.path.join(_out_dir(), _stamp(app) + ".json")
     with open(p, "w", encoding="utf-8") as f:
@@ -666,39 +697,22 @@ def screen(app):
             pass
         return path
 
-    def _on_pick(e):
-        fmt = getattr(app, "_reg_pending_fmt", None)
-        app._reg_pending_fmt = None
-        if not fmt or not getattr(e, "path", None):
-            return                      # user cancelled the dialog
-        _do_export_to(fmt, e.path)
-        app.ui_safe(app.render)
-
-    # Windows save dialog — added to the page overlay exactly once.
-    if not hasattr(app, "_reg_file_picker"):
-        app._reg_file_picker = ft.FilePicker(on_result=_on_pick)
-        try:
-            app.page.overlay.append(app._reg_file_picker)
-            app.page.update()
-        except Exception:
-            pass
-
     def _export(fmt):
         def _do(e):
             if not app._reg_selected_rows:
                 app._reg_export_msg = ("err", "Calculate the plan first.")
                 app.render(); return
-            app._reg_pending_fmt = fmt
-            try:
-                # let the user choose where to save (Windows save dialog)
-                app._reg_file_picker.save_file(
-                    dialog_title="Save regression plan",
-                    file_name=_stamp(app) + "." + fmt,
-                    allowed_extensions=[fmt])
-            except Exception:
-                # no native dialog available → fall back to the default folder
-                _do_export_to(fmt)
-                app.render()
+
+            def work():
+                dest = _ask_save_path(fmt, _stamp(app) + "." + fmt)
+                if dest is False:        # no native dialog available → default folder
+                    _do_export_to(fmt)
+                elif dest:               # a path was chosen
+                    _do_export_to(fmt, dest)
+                else:                    # user cancelled
+                    return
+                app.ui_safe(app.render)
+            threading.Thread(target=work, daemon=True).start()
         return _do
 
     def _on_email_to(e):
