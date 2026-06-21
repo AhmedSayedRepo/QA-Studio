@@ -4987,6 +4987,88 @@ def _apply_update_exe(cb):
     return (True, "Update downloaded. Close QA Studio and it will reopen on the "
                   "new version automatically.")
 
+def _latest_zipball(timeout=6):
+    """Return (tag_name, zipball_url) for the newest release (source archive)."""
+    headers = {"Accept": "application/vnd.github+json"}
+    token = _github_token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+        headers["X-GitHub-Api-Version"] = "2022-11-28"
+    url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
+    r = requests.get(url, timeout=timeout, headers=headers)
+    r.raise_for_status()
+    data = r.json()
+    return (data.get("tag_name") or ""), (data.get("zipball_url") or "")
+
+def _apply_update_zip(cb):
+    """Source (non-git) updater: download the latest release's source zip and copy
+    it over the app folder in place, then reinstall deps. Used by ZIP/.bat
+    installs that aren't git clones and aren't frozen exes."""
+    import sys, tempfile, zipfile, shutil, subprocess
+    cb = cb or (lambda *a, **k: None)
+    try:
+        tag, zb = _latest_zipball()
+    except Exception as e:
+        return (False, f"Couldn't reach GitHub releases: {str(e)[:160]}")
+    if not zb:
+        return (False, "No release archive found — publish a release on GitHub first.")
+    headers = {"Accept": "application/vnd.github+json"}
+    token = _github_token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    tmp = tempfile.mkdtemp(prefix="qastudio_up_")
+    zpath = os.path.join(tmp, "src.zip")
+    cb("Downloading the latest version…", "dim")
+    try:
+        with requests.get(zb, headers=headers, stream=True, timeout=180,
+                          allow_redirects=True) as r:
+            r.raise_for_status()
+            with open(zpath, "wb") as f:
+                for chunk in r.iter_content(65536):
+                    if chunk:
+                        f.write(chunk)
+    except Exception as e:
+        shutil.rmtree(tmp, ignore_errors=True)
+        return (False, f"Download failed: {str(e)[:160]}")
+    cb("Installing…", "dim")
+    try:
+        with zipfile.ZipFile(zpath) as z:
+            z.extractall(tmp)
+    except Exception as e:
+        shutil.rmtree(tmp, ignore_errors=True)
+        return (False, f"Couldn't unpack the update: {str(e)[:160]}")
+    roots = [os.path.join(tmp, d) for d in os.listdir(tmp)
+             if os.path.isdir(os.path.join(tmp, d))]
+    if not roots:
+        shutil.rmtree(tmp, ignore_errors=True)
+        return (False, "Update archive was empty.")
+    src_root, dst = roots[0], _app_dir()
+    try:
+        for name in os.listdir(src_root):
+            s = os.path.join(src_root, name)
+            d = os.path.join(dst, name)
+            if os.path.isdir(s):
+                shutil.copytree(s, d, dirs_exist_ok=True)
+            else:
+                shutil.copy2(s, d)
+    except Exception as e:
+        shutil.rmtree(tmp, ignore_errors=True)
+        return (False, f"Couldn't write update files: {str(e)[:160]}. "
+                       f"Close the app and try again.")
+    shutil.rmtree(tmp, ignore_errors=True)
+    # best-effort: install any new dependencies the update introduced
+    try:
+        req = os.path.join(dst, "requirements.txt")
+        if os.path.exists(req):
+            cb("Updating dependencies…", "dim")
+            subprocess.run([sys.executable, "-m", "pip", "install", "-r", req,
+                            "--disable-pip-version-check"],
+                           creationflags=0x08000000, timeout=300)
+    except Exception:
+        pass
+    cb("Update installed.", "ok")
+    return (True, "Updated to the latest version. Please restart QA Studio.")
+
 def apply_update(cb=None):
     """Self-update. For a frozen .exe build, download + swap the binary; for a
     source/git clone, `git pull`. Returns (ok, message).
@@ -4998,8 +5080,7 @@ def apply_update(cb=None):
     import subprocess
     d = _app_dir()
     if not os.path.isdir(os.path.join(d, ".git")):
-        return (False, "This install isn't a git clone, so it can't self-update. "
-                       "Please download the latest version from GitHub.")
+        return _apply_update_zip(cb)
     try:
         v = subprocess.run(["git", "--version"], capture_output=True, text=True)
         if v.returncode != 0:
