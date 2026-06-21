@@ -225,6 +225,17 @@ def danger_btn(text, icon=None, on_click=None):
     # design shadow: 0 6px 16px -6px rgba(224,71,77,.6)
     return _shadow_wrap(btn, T.RED, 0.55, False)
 
+def searchable_dropdown(**kwargs):
+    """ft.Dropdown that is type-to-filter on newer Flet, degrading gracefully."""
+    try:
+        return ft.Dropdown(editable=True, enable_filter=True, menu_height=320, **kwargs)
+    except TypeError:
+        try:
+            return ft.Dropdown(menu_height=320, **kwargs)
+        except TypeError:
+            return ft.Dropdown(**kwargs)
+
+
 def progress_ring(pct, color, size=44, label=None):
     """A circular progress ring with a percentage in the center."""
     pct = max(0, min(100, int(pct)))
@@ -311,6 +322,8 @@ class QAStudio:
         # cached azure lookups
         self._projects = []
         self._plans = []
+        self._setup_stories = None        # stories of the selected plan's sprint
+        self._setup_stories_loading = False
         # unlock flags (survive re-render)
         self._key_unlocked = False
         self._pat_unlocked = False
@@ -1822,6 +1835,24 @@ class QAStudio:
 
     # ---- task card (connected) ----
     def _task_card(self):
+        # Lazily load the selected plan's sprint stories for the searchable picker.
+        if self.plan_id and self._setup_stories is None and not self._setup_stories_loading:
+            self._setup_stories_loading = True
+
+            def _load_ss():
+                try:
+                    plan = E._azure_get(
+                        f"https://dev.azure.com/{E.AZURE_ORG}/{self.project}"
+                        f"/_apis/testplan/plans/{self.plan_id}?api-version=7.0")
+                    itr = plan.get("iteration")
+                    ss = E.fetch_stories_in_iteration(self.project, itr) if itr else []
+                except Exception:
+                    ss = []
+                self._setup_stories = ss
+                self._setup_stories_loading = False
+                self.ui_safe(self.render)
+            threading.Thread(target=_load_ss, daemon=True).start()
+
         self.project_dd = ft.Dropdown(
             value=self.project, hint_text="Select project",
             options=[ft.DropdownOption(p) for p in self._projects],
@@ -1832,7 +1863,7 @@ class QAStudio:
             bgcolor=T.CARD, expand=True)
 
         _plan_tip = next((f"[{p['id']}] {p['name']}" for p in self._plans if p["id"] == self.plan_id), None)
-        self.plan_dd = ft.Dropdown(
+        self.plan_dd = searchable_dropdown(
             value=(str(self.plan_id) if self.plan_id else None), hint_text="Select test plan",
             options=[ft.DropdownOption(key=str(p["id"]), text=f"[{p['id']}] {p['name']}") for p in self._plans],
             on_select=self._on_plan_change,
@@ -1954,8 +1985,39 @@ class QAStudio:
             content_padding=ft.Padding.symmetric(vertical=12, horizontal=12),
             text_size=13, expand=True, on_submit=_commit_stories,
             on_change=_on_story_change)
+        def _add_from_dd(e):
+            v = self._setup_story_dd.value
+            if v and str(v).strip().isdigit():
+                i = int(v)
+                if i not in self.story_ids:
+                    self.story_ids.append(i)
+                    self._err_msg = ""
+                    _build_chips()
+                    self._estimated_tc = None
+                    try:
+                        self._chip_row.update(); self._chip_wrap.update()
+                    except Exception:
+                        pass
+                    _update_summary_inplace()
+                    self._fetch_estimate()
+            self.render()
+
+        _ss = self._setup_stories or []
+        self._setup_story_dd = searchable_dropdown(
+            hint_text=("Search & add a story from this plan's sprint" if _ss
+                       else ("Loading stories…" if (self.plan_id and self._setup_stories_loading)
+                             else "Select a test plan to list its stories")),
+            options=[ft.DropdownOption(key=str(s["id"]),
+                                       text=f"[{s['id']}] {(s['title'] or '')[:48]}")
+                     for s in _ss if s["id"] not in self.story_ids],
+            on_select=_add_from_dd, disabled=not _ss,
+            border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
+            content_padding=ft.Padding.symmetric(vertical=12, horizontal=8),
+            text_size=13, filled=True, bgcolor=T.CARD, expand=True)
+
         _build_chips()
-        story_box = ft.Column([self.story_field, self._chip_wrap], spacing=0, tight=True)
+        story_box = ft.Column([self._setup_story_dd, ft.Container(height=8),
+                               self.story_field, self._chip_wrap], spacing=0, tight=True)
 
         self.email_field = ft.TextField(
             value=self.emails, hint_text="qa-leads@wss.com  (optional)",
@@ -2070,6 +2132,7 @@ class QAStudio:
         for p in self._plans:
             if p["id"] == self.plan_id:
                 self.plan_name = p["name"]
+        self._setup_stories = None        # reload the plan's sprint stories
         # Update only the affected controls in place so the scroll position
         # doesn't jump to the top on every selection.
         updated_any = False
@@ -3789,6 +3852,13 @@ class QAStudio:
                          spacing=0)
 
     def automation_screen(self):
+        if not (self.connected and self.project and self.plan_id and self.story_ids):
+            return regression.locked_state(
+                self, "Automation",
+                "Generate self-healing Selenium tests from your stories",
+                "Connect your account, then pick a project, test plan, and user "
+                "stories on the Setup screen — automation runs on that same "
+                "selection.")
         # ── left: config form ──
         ready = bool(self.story_ids and self.project and self.plan_id)
         setup_hint = None
