@@ -8,6 +8,7 @@ import flet as ft
 import theme as T
 import store
 import engine as E
+import regression
 
 # ── Flet version-compatibility shim ───────────────────────────────────────────
 # Flet renamed ft.icons→ft.Icons and ft.colors→ft.Colors around 0.25+. Support both.
@@ -346,6 +347,12 @@ class QAStudio:
         self._update_dismissed = False
         self._closing = False        # set on close to stop background loops
 
+        # Regression Plan tab (registered at runtime so theme.py needn't change)
+        if not any(n.get("id") == "regression" for n in T.NAV):
+            _ri = next((i for i, n in enumerate(T.NAV) if n.get("id") == "report"), len(T.NAV))
+            T.NAV.insert(_ri, {"id": "regression", "label": "Regression Plan",
+                               "icon": "FACT_CHECK", "ix": "R"})
+
         self._build()
 
     # ---- credential helpers ----
@@ -422,6 +429,7 @@ class QAStudio:
                          or (n["id"] == "report" and self.last_report is not None)
                          or (n["id"] == "setup")
                          or (n["id"] == "automation")
+                         or (n["id"] == "regression")
                          or (n["id"] == "run" and (getattr(self, "_run_active", False)
                                                    or st == "active"
                                                    or self.last_report is not None)))
@@ -546,6 +554,8 @@ class QAStudio:
                 view = self.run_screen()
             elif self.active == "automation":
                 view = self.automation_screen()
+            elif self.active == "regression":
+                view = regression.screen(self)
             else:
                 view = self.report_screen()
             self.page.controls.clear()
