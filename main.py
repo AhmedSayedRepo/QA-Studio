@@ -1841,11 +1841,17 @@ class QAStudio:
 
             def _load_ss():
                 try:
-                    plan = E._azure_get(
-                        f"https://dev.azure.com/{E.AZURE_ORG}/{self.project}"
-                        f"/_apis/testplan/plans/{self.plan_id}?api-version=7.0")
-                    itr = plan.get("iteration")
-                    ss = E.fetch_stories_in_iteration(self.project, itr) if itr else []
+                    # Primary: stories actually in this test plan (its requirement
+                    # suites) — works even when the plan has no iteration, which is
+                    # why the picker used to stay empty/disabled.
+                    ss = E.fetch_stories_in_plan(self.project, self.plan_id)
+                    if not ss:
+                        # Fallback: the plan's sprint/iteration stories.
+                        plan = E._azure_get(
+                            f"https://dev.azure.com/{E.AZURE_ORG}/{self.project}"
+                            f"/_apis/testplan/plans/{self.plan_id}?api-version=7.0")
+                        itr = plan.get("iteration")
+                        ss = E.fetch_stories_in_iteration(self.project, itr) if itr else []
                 except Exception:
                     ss = []
                 self._setup_stories = ss

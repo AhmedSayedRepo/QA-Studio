@@ -54,37 +54,48 @@ def _fetch_meta(app, ids):
     return meta
 
 
-def _count_cases(app, ids):
-    counts = {int(s): 0 for s in ids}
-    try:
-        smap = E.discover_suites_for_stories(app.project, app.plan_id,
-                                             set(int(s) for s in ids),
-                                             create_missing=False)
-    except Exception:
-        smap = {}
-    for sid, suite_id in smap.items():
+def _count_cases(app, selected):
+    """selected = [{"id","title","plan_id"}]. Count existing test cases for each
+    story in ITS OWN plan, so multiple selected plans work correctly."""
+    counts = {int(s["id"]): 0 for s in selected}
+    by_plan = {}
+    for s in selected:
+        by_plan.setdefault(s.get("plan_id"), []).append(int(s["id"]))
+    for pid, sids in by_plan.items():
+        if not pid:
+            continue
         try:
-            counts[int(sid)] = len(E.fetch_test_cases_for_suite(
-                app.project, app.plan_id, suite_id))
+            smap = E.discover_suites_for_stories(app.project, pid, set(sids),
+                                                 create_missing=False)
         except Exception:
-            counts[int(sid)] = 0
+            smap = {}
+        for sid in sids:
+            suite_id = smap.get(sid)
+            if not suite_id:
+                continue
+            try:
+                counts[sid] = len(E.fetch_test_cases_for_suite(app.project, pid, suite_id))
+            except Exception:
+                counts[sid] = 0
     return counts
 
 
-def build_rows(app, ids):
+def build_rows(app, selected):
+    ids = [int(s["id"]) for s in selected]
     meta = _fetch_meta(app, ids)
-    counts = _count_cases(app, ids)
+    counts = _count_cases(app, selected)
     rows = []
-    for sid in ids:
-        m = meta.get(int(sid), {})
+    for s in selected:
+        sid = int(s["id"])
+        m = meta.get(sid, {})
         pri = m.get("priority", DEFAULT_PRIORITY)
-        cases = counts.get(int(sid), 0)
+        cases = counts.get(sid, 0)
         boost = PRIORITY_BOOST.get(pri, 1.0)
         hours = round(cases * (AVG_MINUTES_PER_CASE / 60.0) * boost, 2)
-        rows.append({"id": int(sid), "title": m.get("title", ""),
+        rows.append({"id": sid, "title": m.get("title", "") or s.get("title", ""),
                      "state": m.get("state", "Unknown"), "priority": pri,
                      "cases": cases, "boost": boost, "hours": hours,
-                     "assignee": ""})
+                     "plan_id": s.get("plan_id"), "assignee": ""})
     return rows
 
 
@@ -119,11 +130,13 @@ def plan_payload(app):
                 cnt[r["assignee"]] += 1
         workload = [{"name": n, "stories": cnt[n], "hours": round(load.get(n, 0.0), 2)}
                     for n in names]
-    sprint = (app._reg_sprint_path or "").split("\\")[-1]
+    plans = list(app._reg_plans_selected or [])
+    plan_names = ", ".join(p["name"] for p in plans) or (getattr(app, "plan_name", "") or "")
+    plan_ids = ", ".join(str(p["id"]) for p in plans)
     return {"generated": datetime.now().strftime("%Y-%m-%d %H:%M"),
-            "project": app.project, "plan_id": app.plan_id,
-            "plan_name": getattr(app, "plan_name", "") or "",
-            "sprint": sprint, "avg_minutes_per_case": AVG_MINUTES_PER_CASE,
+            "project": app.project, "plan_id": plan_ids,
+            "plan_name": plan_names, "plans": plans,
+            "avg_minutes_per_case": AVG_MINUTES_PER_CASE,
             "priority_boost": PRIORITY_BOOST, "resources_count": count,
             "resource_names": names, "stories": rows, "workload": workload,
             "total_stories": len(rows), "total_cases": total_cases,
@@ -141,7 +154,7 @@ def _out_dir():
 
 def _stamp(app):
     base = ((getattr(app, "plan_name", "") or "")
-            or (app._reg_sprint_path or "plan").split("\\")[-1])
+            or (", ".join(p["name"] for p in (app._reg_plans_selected or [])) or "plan"))
     base = re.sub(r"[^A-Za-z0-9_-]+", "_", base).strip("_") or "plan"
     return f"RegressionPlan_{base}_{datetime.now():%Y%m%d-%H%M}"
 
@@ -165,7 +178,7 @@ def export_xlsx(app):
     thin = Border(*[Side(style="thin", color="E3E0EC")] * 4)
     r = 1
     for k, v in (("Project", d["project"]), ("Test plan", d["plan_name"]),
-                 ("Plan ID", d["plan_id"]), ("Sprint", d["sprint"]),
+                 ("Plan ID", d["plan_id"]),
                  ("Generated", d["generated"]),
                  ("Avg min / case", d["avg_minutes_per_case"]),
                  ("Resources", d["resources_count"]),
@@ -221,13 +234,13 @@ def export_docx(app):
     h.alignment = WD_ALIGN_PARAGRAPH.CENTER
     sub = doc.add_paragraph()
     sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    rn = sub.add_run(f"{d['plan_name'] or d['project']}  ·  {d['sprint'] or '—'}")
+    rn = sub.add_run(f"{d['plan_name'] or d['project']}")
     rn.font.size = Pt(11)
     rn.font.color.rgb = RGBColor(0x6A, 0x4D, 0xFF)
     meta = doc.add_table(rows=0, cols=2)
     meta.style = "Light List Accent 1"
     for k, v in (("Project", d["project"]), ("Test plan", d["plan_name"]),
-                 ("Plan ID", str(d["plan_id"])), ("Sprint", d["sprint"]),
+                 ("Plan ID", str(d["plan_id"])),
                  ("Generated", d["generated"]),
                  ("Resources", str(d["resources_count"])),
                  ("Resource names", ", ".join(d["resource_names"]) or "—"),
@@ -300,8 +313,8 @@ def export_pdf(app):
     doc = SimpleDocTemplate(p, pagesize=A4, topMargin=18 * mm, bottomMargin=18 * mm)
     styles = getSampleStyleSheet()
     elems = [Paragraph("Regression Test Plan", styles["Title"]),
-             Paragraph(f"{d['plan_name'] or d['project']} &middot; "
-                       f"{d['sprint'] or '—'}", styles["Normal"]),
+             Paragraph(f"{d['plan_name'] or d['project']}",
+                       styles["Normal"]),
              Spacer(1, 8 * mm)]
     data = [["Story", "Title", "State", "Pri", "Cases", "Hours", "Assignee"]]
     for s in d["stories"]:
@@ -401,8 +414,8 @@ def locked_state(app, title, sub, msg, icon=None):
 #  SCREEN
 # ═══════════════════════════════════════════════════════════════════════════════
 def _init(app):
-    for k, v in (("_reg_sprints", None), ("_reg_sprint_path", None),
-                 ("_reg_sprint_stories", []), ("_reg_selected", []),
+    for k, v in (("_reg_plans_selected", []), ("_reg_plan_stories", []),
+                 ("_reg_stories_loading", False), ("_reg_selected", []),
                  ("_reg_selected_rows", []), ("_reg_res_names", []),
                  ("_reg_res_count", None), ("_reg_busy", False),
                  ("_reg_export_msg", None), ("_reg_calc_msg", None),
@@ -411,9 +424,34 @@ def _init(app):
             setattr(app, k, v)
 
 
-def _is_sprint(name):
-    n = (name or "").lower()
-    return "sprint" in n
+def _reload_plan_stories(app):
+    """Aggregate the user stories that live in the currently-selected test plans
+    (their requirement suites). Runs off the UI thread."""
+    plans = list(app._reg_plans_selected or [])
+    if not plans:
+        app._reg_plan_stories = []
+        app.ui_safe(app.render)
+        return
+    app._reg_stories_loading = True
+    app.ui_safe(app.render)
+
+    def _work():
+        agg, seen = [], set()
+        for p in plans:
+            try:
+                stories = E.fetch_stories_in_plan(app.project, p["id"])
+            except Exception:
+                stories = []
+            for s in stories:
+                key = (p["id"], s["id"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                agg.append({"id": s["id"], "title": s.get("title", ""), "plan_id": p["id"]})
+        app._reg_plan_stories = agg
+        app._reg_stories_loading = False
+        app.ui_safe(app.render)
+    threading.Thread(target=_work, daemon=True).start()
 
 
 def screen(app):
@@ -421,15 +459,15 @@ def screen(app):
     from main import (card, sec_head, field_label, green_btn, ghost_btn,
                       primary_btn, searchable_dropdown)
 
-    # ── gate: only needs a connection + a project (NOT a test plan) ──
+    # ── gate: only needs a connection + a project ──
     if not (app.connected and app.project):
         return locked_state(
             app, "Regression Plan",
-            "Build a regression plan from existing sprints & stories",
+            "Build a regression plan from your test plans & their stories",
             "Connect your Azure DevOps account on the Setup screen. You can pick "
-            "the test plan and sprint right here once connected.")
+            "the test plans right here once connected.")
 
-    # lazy-load test plans + sprints
+    # lazy-load test plans
     if not app._plans and not app._reg_plans_loading:
         app._reg_plans_loading = True
 
@@ -442,46 +480,38 @@ def screen(app):
             app.ui_safe(app.render)
         threading.Thread(target=_lp, daemon=True).start()
 
-    if app._reg_sprints is None and not app._reg_busy:
-        app._reg_busy = True
-
-        def _ls():
-            try:
-                sp = E.fetch_iterations(app.project)
-            except Exception:
-                sp = []
-            app._reg_sprints = sp
-            app._reg_busy = False
-            app.ui_safe(app.render)
-        threading.Thread(target=_ls, daemon=True).start()
-
     selected_ids = [s["id"] for s in app._reg_selected]
+    selected_plan_ids = [p["id"] for p in app._reg_plans_selected]
 
     # ── handlers ──
-    def _on_plan(e):
+    def _add_plan(e):
         v = plan_dd.value
-        app.plan_id = int(v) if v and str(v).isdigit() else None
-        app.plan_name = next((p["name"] for p in app._plans
-                              if p["id"] == app.plan_id), "")
+        if not v or not str(v).strip().isdigit():
+            return
+        pid = int(v)
+        if pid not in selected_plan_ids:
+            name = next((p["name"] for p in (app._plans or []) if p["id"] == pid), str(pid))
+            app._reg_plans_selected.append({"id": pid, "name": name})
+            # keep app.plan_id pointing at the first selected plan (Setup/back-compat)
+            if not app.plan_id:
+                app.plan_id = pid
+                app.plan_name = name
+            app._reg_selected_rows = []
+            app._reg_export_msg = app._reg_calc_msg = None
+            _reload_plan_stories(app)
+        app.render()
+
+    def _remove_plan(pid):
+        app._reg_plans_selected = [p for p in app._reg_plans_selected if p["id"] != pid]
+        # drop any selected stories that belonged to the removed plan
+        app._reg_selected = [s for s in app._reg_selected if s.get("plan_id") != pid]
+        if app.plan_id == pid:
+            app.plan_id = (app._reg_plans_selected[0]["id"] if app._reg_plans_selected else None)
+            app.plan_name = (app._reg_plans_selected[0]["name"] if app._reg_plans_selected else "")
         app._reg_selected_rows = []
         app._reg_export_msg = app._reg_calc_msg = None
+        _reload_plan_stories(app)
         app.render()
-
-    def _on_sprint(e):
-        app._reg_sprint_path = sprint_dd.value
-        app._reg_sprint_stories = []
-        app._reg_busy = True
-        app.render()
-
-        def _load():
-            try:
-                st = E.fetch_stories_in_iteration(app.project, app._reg_sprint_path)
-            except Exception:
-                st = []
-            app._reg_sprint_stories = st
-            app._reg_busy = False
-            app.ui_safe(app.render)
-        threading.Thread(target=_load, daemon=True).start()
 
     def _add_story(e):
         v = story_dd.value
@@ -489,11 +519,12 @@ def screen(app):
             return
         sid = int(v)
         if sid not in selected_ids:
-            title = next((s["title"] for s in app._reg_sprint_stories
-                          if s["id"] == sid), "")
-            app._reg_selected.append({"id": sid, "title": title})
-            app._reg_selected_rows = []
-            app._reg_export_msg = app._reg_calc_msg = None
+            src = next((s for s in app._reg_plan_stories if s["id"] == sid), None)
+            if src:
+                app._reg_selected.append({"id": sid, "title": src.get("title", ""),
+                                          "plan_id": src.get("plan_id")})
+                app._reg_selected_rows = []
+                app._reg_export_msg = app._reg_calc_msg = None
         app.render()
 
     def _remove_story(sid):
@@ -503,9 +534,14 @@ def screen(app):
         app.render()
 
     def _use_setup_selection(e):
+        # ensure the Setup plan is among the selected plans so its cases count
+        if app.plan_id and app.plan_id not in selected_plan_ids:
+            app._reg_plans_selected.append(
+                {"id": app.plan_id, "name": getattr(app, "plan_name", "") or str(app.plan_id)})
+            _reload_plan_stories(app)
         for sid in (app.story_ids or []):
             if int(sid) not in [s["id"] for s in app._reg_selected]:
-                app._reg_selected.append({"id": int(sid), "title": ""})
+                app._reg_selected.append({"id": int(sid), "title": "", "plan_id": app.plan_id})
         app._reg_selected_rows = []
         app._reg_export_msg = app._reg_calc_msg = None
         app.render()
@@ -530,9 +566,9 @@ def screen(app):
         app.render()
 
     def _calculate(e):
-        if not app.plan_id:
-            app._reg_calc_msg = "Select a test plan first so effort can be read " \
-                                "from its existing test cases."
+        if not app._reg_plans_selected:
+            app._reg_calc_msg = "Add at least one test plan first so effort can be " \
+                                "read from its existing test cases."
             app.render()
             return
         if not app._reg_selected:
@@ -544,9 +580,8 @@ def screen(app):
         app.render()
 
         def _work():
-            ids = [s["id"] for s in app._reg_selected]
             try:
-                rows = build_rows(app, ids)
+                rows = build_rows(app, app._reg_selected)
             except Exception as ex:
                 rows = []
                 app._reg_calc_msg = f"Couldn't read plan: {ex}"
@@ -587,39 +622,28 @@ def screen(app):
 
     # ── Card 1: source + stories ──
     plan_dd = searchable_dropdown(
-        value=(str(app.plan_id) if app.plan_id else None),
         hint_text=("Loading test plans…" if app._reg_plans_loading
-                   else "Select test plan"),
+                   else "Search & add a test plan"),
         options=[ft.DropdownOption(key=str(p["id"]), text=f"[{p['id']}] {p['name']}")
-                 for p in (app._plans or [])],
-        on_select=_on_plan, border_color=T.BORDER, focused_border_color=T.VIOLET,
+                 for p in (app._plans or []) if p["id"] not in selected_plan_ids],
+        on_select=_add_plan, border_color=T.BORDER, focused_border_color=T.VIOLET,
         border_radius=T.R,
         content_padding=ft.Padding.symmetric(vertical=12, horizontal=8),
         text_size=13, filled=True, bgcolor=T.CARD, expand=True)
 
-    raw_sprints = app._reg_sprints or []
-    sprints = [s for s in raw_sprints if _is_sprint(s["name"])] or raw_sprints
-    sprint_dd = searchable_dropdown(
-        value=app._reg_sprint_path,
-        hint_text=("Loading sprints…" if app._reg_sprints is None
-                   else "Select sprint"),
-        options=[ft.DropdownOption(key=s["path"], text=s["name"]) for s in sprints],
-        on_select=_on_sprint, border_color=T.BORDER, focused_border_color=T.VIOLET,
-        border_radius=T.R,
-        content_padding=ft.Padding.symmetric(vertical=12, horizontal=8),
-        text_size=13, filled=True, bgcolor=T.CARD, expand=True)
-
+    _have_plans = bool(app._reg_plans_selected)
     story_dd = searchable_dropdown(
-        hint_text=("Loading…" if (app._reg_busy and app._reg_sprint_path)
-                   else "Search & pick a story"),
+        hint_text=("Loading stories…" if app._reg_stories_loading
+                   else ("Search & add a story" if _have_plans
+                         else "Add a test plan first")),
         options=[ft.DropdownOption(key=str(s["id"]),
                                    text=f"[{s['id']}] {(s['title'] or '')[:48]}")
-                 for s in app._reg_sprint_stories if s["id"] not in selected_ids],
+                 for s in app._reg_plan_stories if s["id"] not in selected_ids],
         on_select=_add_story, border_color=T.BORDER, focused_border_color=T.VIOLET,
         border_radius=T.R,
         content_padding=ft.Padding.symmetric(vertical=12, horizontal=8),
         text_size=13, filled=True, bgcolor=T.CARD, expand=True,
-        disabled=not app._reg_sprint_stories)
+        disabled=not app._reg_plan_stories)
 
     def _chip(label, on_close):
         return ft.Container(
@@ -633,6 +657,10 @@ def screen(app):
             bgcolor=T.VIOLET_SOFT, border_radius=T.R_SM,
             border=ft.Border.all(1, "#D9D2FF"))
 
+    plan_chips = ft.Row(
+        [_chip(f"[{p['id']}] {p['name'][:24]}", (lambda e, x=p["id"]: _remove_plan(x)))
+         for p in app._reg_plans_selected], wrap=True, spacing=6, run_spacing=6)
+
     story_chips = ft.Row(
         [_chip(str(s["id"]), (lambda e, x=s["id"]: _remove_story(x)))
          for s in app._reg_selected], wrap=True, spacing=6, run_spacing=6)
@@ -642,12 +670,14 @@ def screen(app):
                  right=ghost_btn("Use Setup selection", icon=ft.Icons.DOWNLOAD,
                                  on_click=_use_setup_selection)),
         ft.Container(height=10),
-        ft.Column([field_label("Test plan", req=True), plan_dd], spacing=6),
+        ft.Column([field_label("Test plans", req=True), plan_dd], spacing=6),
+        ft.Container(plan_chips, padding=ft.Padding.only(top=10),
+                     visible=bool(app._reg_plans_selected)),
+        ft.Text(f"{len(app._reg_plans_selected)} plan(s) selected", size=11,
+                color=T.INK_3, weight=ft.FontWeight.BOLD,
+                visible=bool(app._reg_plans_selected)),
         ft.Container(height=12),
-        ft.Row([
-            ft.Column([field_label("Sprint"), sprint_dd], spacing=6, expand=True),
-            ft.Column([field_label("Add story"), story_dd], spacing=6, expand=True),
-        ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.START),
+        ft.Column([field_label("Add story"), story_dd], spacing=6),
         ft.Container(story_chips, padding=ft.Padding.only(top=10),
                      visible=bool(app._reg_selected)),
         ft.Text(f"{len(app._reg_selected)} stories selected", size=11,
