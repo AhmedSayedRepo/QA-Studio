@@ -9,14 +9,6 @@ import theme as T
 import store
 import engine as E
 import regression
-import sys
-import os
-
-def resource_path(relative_path):
-    """ Get absolute path to resource, works for dev and for PyInstaller """
-    base_path = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
-    return os.path.join(base_path, relative_path)
-
 
 # ── Flet version-compatibility shim ───────────────────────────────────────────
 # Flet renamed ft.icons→ft.Icons and ft.colors→ft.Colors around 0.25+. Support both.
@@ -626,11 +618,18 @@ class QAStudio:
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("QAStudio.Desktop.App")
         except Exception:
             pass
-        # Window icon (taskbar + title bar) — points to the bundled app.ico
+        # Window icon (taskbar + title bar) — look in the bundle dir (frozen exe),
+        # the exe's folder, and the source folder so it works packaged or not.
         try:
-            import os as _os
-            _icon = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "app.ico")
-            if _os.path.exists(_icon):
+            import os as _os, sys as _sys
+            _cands = []
+            if getattr(_sys, "frozen", False):
+                _cands.append(getattr(_sys, "_MEIPASS", ""))
+                _cands.append(_os.path.dirname(_os.path.abspath(_sys.executable)))
+            _cands.append(_os.path.dirname(_os.path.abspath(__file__)))
+            _icon = next((_os.path.join(d, "app.ico") for d in _cands
+                          if d and _os.path.exists(_os.path.join(d, "app.ico"))), "")
+            if _icon:
                 if hasattr(self.page, "window") and self.page.window is not None:
                     self.page.window.icon = _icon
                 else:
@@ -969,14 +968,28 @@ class QAStudio:
                     self._show_restart_dialog(msg)
                 else:
                     self.render()
-                    try:
-                        self.page.snack_bar = ft.SnackBar(ft.Text(msg), bgcolor=T.RED, duration=8000)
-                        self.page.snack_bar.open = True
-                        self.page.update()
-                    except Exception:
-                        pass
+                    self._show_update_error(msg)
             self.ui_safe(finish)
         self._bg(work)
+
+    def _show_update_error(self, msg):
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Row([ft.Icon(ft.Icons.ERROR_OUTLINE, color=T.RED, size=20),
+                          ft.Text("Update failed", weight=ft.FontWeight.BOLD, size=16)],
+                         spacing=8, tight=True),
+            content=ft.Container(
+                ft.Column([
+                    ft.Text(msg, size=12.5, color=T.INK, selectable=True),
+                    ft.Container(height=6),
+                    ft.Text("If a new .exe isn't attached to the latest GitHub "
+                            "release, the app can't self-update — attach it as a "
+                            "release asset and try again.",
+                            size=11.5, color=T.INK_3, weight=ft.FontWeight.W_500),
+                ], spacing=2, tight=True), width=460),
+            actions=[green_btn("OK", on_click=lambda e: self._close_dialog())],
+            actions_alignment=ft.MainAxisAlignment.END)
+        self._show_dialog(dlg)
 
     def _show_restart_dialog(self, msg):
         dlg = ft.AlertDialog(
@@ -2008,17 +2021,30 @@ class QAStudio:
                     self._err_msg = ""
                     _build_chips()
                     self._estimated_tc = None
+                    # Patch the dropdown IN PLACE (drop the picked story, clear the
+                    # value) instead of a full render, so the scroll stays put.
+                    try:
+                        _ss2 = self._setup_stories or []
+                        self._setup_story_dd.options = [
+                            ft.DropdownOption(key=str(s["id"]),
+                                              text=f"[{s['id']}] {(s['title'] or '')[:48]}")
+                            for s in _ss2 if s["id"] not in self.story_ids]
+                        self._setup_story_dd.value = None
+                        self._setup_story_dd.update()
+                    except Exception:
+                        pass
                     try:
                         self._chip_row.update(); self._chip_wrap.update()
                     except Exception:
                         pass
                     _update_summary_inplace()
                     self._fetch_estimate()
-            self.render()
+            # NOTE: no self.render() here — the in-place updates above keep the
+            # scroll where it was (a full render snapped it back to the top).
 
         _ss = self._setup_stories or []
         self._setup_story_dd = searchable_dropdown(
-            hint_text=("Search & add a story from this plan's sprint" if _ss
+            hint_text=("Search & add a story from this plan" if _ss
                        else ("Loading stories…" if (self.plan_id and self._setup_stories_loading)
                              else "Select a test plan to list its stories")),
             options=[ft.DropdownOption(key=str(s["id"]),
@@ -2146,7 +2172,10 @@ class QAStudio:
         for p in self._plans:
             if p["id"] == self.plan_id:
                 self.plan_name = p["name"]
-        self._setup_stories = None        # reload the plan's sprint stories
+        # Load this plan's stories right now and patch the picker in place, so the
+        # dropdown fills immediately on selection (it used to wait for an unrelated
+        # re-render because this handler patches controls in place, never rendering).
+        self._load_setup_stories_inplace()
         # Update only the affected controls in place so the scroll position
         # doesn't jump to the top on every selection.
         updated_any = False
@@ -2196,6 +2225,56 @@ class QAStudio:
         # Fall back to a full render only if we couldn't patch in place
         if not updated_any:
             self.render()
+
+    def _load_setup_stories_inplace(self):
+        """Load the selected plan's stories (from its requirement suites) and patch
+        the story dropdown IN PLACE — fills the picker the instant a plan is chosen,
+        with no full re-render (so the scroll position is preserved)."""
+        if not (self.connected and self.project and self.plan_id):
+            return
+        self._setup_stories = None
+        self._setup_stories_loading = True
+        dd = getattr(self, "_setup_story_dd", None)
+        if dd is not None:
+            try:
+                dd.options = []; dd.value = None; dd.disabled = True
+                dd.hint_text = "Loading stories…"; dd.update()
+            except Exception:
+                pass
+        pid = self.plan_id
+
+        def work():
+            try:
+                ss = E.fetch_stories_in_plan(self.project, pid)
+                if not ss:
+                    plan = E._azure_get(
+                        f"https://dev.azure.com/{E.AZURE_ORG}/{self.project}"
+                        f"/_apis/testplan/plans/{pid}?api-version=7.0")
+                    itr = plan.get("iteration")
+                    ss = E.fetch_stories_in_iteration(self.project, itr) if itr else []
+            except Exception:
+                ss = []
+            if pid != self.plan_id:   # plan changed again mid-load — drop stale result
+                return
+            self._setup_stories = ss
+            self._setup_stories_loading = False
+
+            def apply():
+                d = getattr(self, "_setup_story_dd", None)
+                if d is None:
+                    self.render(); return
+                try:
+                    d.options = [ft.DropdownOption(key=str(s["id"]),
+                                     text=f"[{s['id']}] {(s['title'] or '')[:48]}")
+                                 for s in ss if s["id"] not in self.story_ids]
+                    d.disabled = not ss
+                    d.hint_text = ("Search & add a story from this plan" if ss
+                                   else "No stories found in this plan")
+                    d.update()
+                except Exception:
+                    self.render()
+            self.ui_safe(apply)
+        self._bg(work)
 
     def _fetch_estimate(self):
         """Fetch the real number of test cases across selected stories (steps mode).

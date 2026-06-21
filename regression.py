@@ -146,6 +146,40 @@ def plan_payload(app):
 # ═══════════════════════════════════════════════════════════════════════════════
 #  EXPORTERS
 # ═══════════════════════════════════════════════════════════════════════════════
+def _plan_html(d):
+    """Compact HTML summary of the plan for the email body."""
+    rows = "".join(
+        f"<tr><td style='padding:4px 10px;border-bottom:1px solid #eee'>{r['id']}</td>"
+        f"<td style='padding:4px 10px;border-bottom:1px solid #eee'>{(r['title'] or '')}</td>"
+        f"<td style='padding:4px 10px;border-bottom:1px solid #eee'>P{r['priority']}</td>"
+        f"<td style='padding:4px 10px;border-bottom:1px solid #eee;text-align:right'>{r['cases']}</td>"
+        f"<td style='padding:4px 10px;border-bottom:1px solid #eee;text-align:right'>{r['hours']}</td>"
+        f"<td style='padding:4px 10px;border-bottom:1px solid #eee'>{r.get('assignee','') or '—'}</td></tr>"
+        for r in d["stories"])
+    wl = "".join(
+        f"<li>{w['name']}: {w['stories']} stories · {w['hours']} h</li>"
+        for w in d.get("workload", []))
+    return (
+        f"<div style='font-family:Segoe UI,Arial,sans-serif;color:#1d1b2e'>"
+        f"<h2 style='margin:0 0 4px'>Regression Test Plan</h2>"
+        f"<p style='color:#555;margin:0 0 14px'>{d['plan_name'] or d['project']}"
+        f" &middot; generated {d['generated']}</p>"
+        f"<p><b>{d['total_stories']}</b> stories &middot; <b>{d['total_cases']}</b> test cases"
+        f" &middot; <b>{d['total_hours']} h</b> total &middot; ~{d['hours_per_person']} h/person</p>"
+        f"<table style='border-collapse:collapse;font-size:13px;margin-top:6px'>"
+        f"<tr style='background:#f4f3fb'>"
+        f"<th style='padding:6px 10px;text-align:left'>Story</th>"
+        f"<th style='padding:6px 10px;text-align:left'>Title</th>"
+        f"<th style='padding:6px 10px;text-align:left'>Pri</th>"
+        f"<th style='padding:6px 10px;text-align:right'>Cases</th>"
+        f"<th style='padding:6px 10px;text-align:right'>Hours</th>"
+        f"<th style='padding:6px 10px;text-align:left'>Assignee</th></tr>{rows}</table>"
+        + (f"<h4 style='margin:16px 0 4px'>Resource workload</h4><ul>{wl}</ul>" if wl else "")
+        + f"<p style='color:#888;font-size:12px;margin-top:18px'>Sent from QA Studio. "
+          f"Full plan attached.</p></div>")
+
+
+
 def _out_dir():
     d = os.path.join(os.path.expanduser("~"), "QA Studio", "Regression Plans")
     os.makedirs(d, exist_ok=True)
@@ -419,6 +453,7 @@ def _init(app):
                  ("_reg_selected_rows", []), ("_reg_res_names", []),
                  ("_reg_res_count", None), ("_reg_busy", False),
                  ("_reg_export_msg", None), ("_reg_calc_msg", None),
+                 ("_reg_email_to", ""), ("_reg_emailing", False),
                  ("_reg_plans_loading", False)):
         if not hasattr(app, k):
             setattr(app, k, v)
@@ -438,6 +473,13 @@ def _reload_plan_stories(app):
     def _work():
         agg, seen = [], set()
         for p in plans:
+            # the plan's own sprint (its iteration) — shown on the plan chip
+            try:
+                pj = E._azure_get(f"https://dev.azure.com/{E.AZURE_ORG}/{app.project}"
+                                  f"/_apis/testplan/plans/{p['id']}?api-version=7.0")
+                p["sprint"] = (pj.get("iteration") or "").split("\\")[-1]
+            except Exception:
+                p.setdefault("sprint", "")
             try:
                 stories = E.fetch_stories_in_plan(app.project, p["id"])
             except Exception:
@@ -447,7 +489,11 @@ def _reload_plan_stories(app):
                 if key in seen:
                     continue
                 seen.add(key)
-                agg.append({"id": s["id"], "title": s.get("title", ""), "plan_id": p["id"]})
+                agg.append({"id": s["id"], "title": s.get("title", ""),
+                            "sprint": s.get("sprint", "") or p.get("sprint", ""),
+                            "plan_id": p["id"]})
+        # group by sprint then id so the picker lists them clustered by sprint
+        agg.sort(key=lambda s: (s.get("sprint", "") or "~", s["id"]))
         app._reg_plan_stories = agg
         app._reg_stories_loading = False
         app.ui_safe(app.render)
@@ -547,9 +593,12 @@ def screen(app):
         app.render()
 
     def _add_name(e):
-        name = (name_field.value or "").strip()
-        if name and name not in app._reg_res_names:
-            app._reg_res_names.append(name)
+        raw = (name_field.value or "")
+        # accept several names at once, separated by commas (or newlines)
+        for piece in re.split(r"[,\n]+", raw):
+            nm = piece.strip()
+            if nm and nm not in app._reg_res_names:
+                app._reg_res_names.append(nm)
         name_field.value = ""
         app._reg_export_msg = None
         app.render()
@@ -590,26 +639,105 @@ def screen(app):
             app.ui_safe(app.render)
         threading.Thread(target=_work, daemon=True).start()
 
+    def _do_export_to(fmt, dest=None):
+        try:
+            path = EXPORTERS[fmt](app)
+        except ImportError:
+            app._reg_export_msg = ("err", f"{fmt.upper()} needs {_MISSING_DEP.get(fmt, fmt)}")
+            return None
+        except Exception as ex:
+            app._reg_export_msg = ("err", f"Export failed: {ex}")
+            return None
+        if dest:
+            if not dest.lower().endswith("." + fmt):
+                dest += "." + fmt
+            try:
+                import shutil
+                if os.path.abspath(dest) != os.path.abspath(path):
+                    shutil.move(path, dest)
+                path = dest
+            except Exception as ex:
+                app._reg_export_msg = ("err", f"Couldn't save there: {ex}")
+                return None
+        app._reg_export_msg = ("ok", f"Saved {fmt.upper()}: {path}")
+        try:
+            os.startfile(os.path.dirname(path))
+        except Exception:
+            pass
+        return path
+
+    def _on_pick(e):
+        fmt = getattr(app, "_reg_pending_fmt", None)
+        app._reg_pending_fmt = None
+        if not fmt or not getattr(e, "path", None):
+            return                      # user cancelled the dialog
+        _do_export_to(fmt, e.path)
+        app.ui_safe(app.render)
+
+    # Windows save dialog — added to the page overlay exactly once.
+    if not hasattr(app, "_reg_file_picker"):
+        app._reg_file_picker = ft.FilePicker(on_result=_on_pick)
+        try:
+            app.page.overlay.append(app._reg_file_picker)
+            app.page.update()
+        except Exception:
+            pass
+
     def _export(fmt):
         def _do(e):
+            if not app._reg_selected_rows:
+                app._reg_export_msg = ("err", "Calculate the plan first.")
+                app.render(); return
+            app._reg_pending_fmt = fmt
             try:
-                path = EXPORTERS[fmt](app)
-            except ImportError:
-                app._reg_export_msg = ("err",
-                    f"{fmt.upper()} needs {_MISSING_DEP.get(fmt, fmt)}")
-                app.render()
-                return
-            except Exception as ex:
-                app._reg_export_msg = ("err", f"Export failed: {ex}")
-                app.render()
-                return
-            app._reg_export_msg = ("ok", f"Saved {fmt.upper()}: {path}")
-            try:
-                os.startfile(os.path.dirname(path))
+                # let the user choose where to save (Windows save dialog)
+                app._reg_file_picker.save_file(
+                    dialog_title="Save regression plan",
+                    file_name=_stamp(app) + "." + fmt,
+                    allowed_extensions=[fmt])
             except Exception:
-                pass
-            app.render()
+                # no native dialog available → fall back to the default folder
+                _do_export_to(fmt)
+                app.render()
         return _do
+
+    def _on_email_to(e):
+        app._reg_email_to = (email_field.value or "").strip()
+
+    def _email(e):
+        if not app._reg_selected_rows:
+            app._reg_export_msg = ("err", "Calculate the plan first.")
+            app.render(); return
+        to = [a.strip() for a in re.split(r"[,\s;]+", (email_field.value or ""))
+              if a.strip()]
+        if not to:
+            app._reg_export_msg = ("err", "Enter at least one recipient email.")
+            app.render(); return
+        if not E.GMAIL_APP_PASS:
+            app._reg_export_msg = ("err",
+                "Set the Gmail App Password on the Setup screen first.")
+            app.render(); return
+        app._reg_email_to = ", ".join(to)
+        app._reg_emailing = True
+        app._reg_export_msg = None
+        app.render()
+
+        def work():
+            try:
+                d = plan_payload(app)
+                try:
+                    attach = [export_docx(app)]   # attach the Word plan
+                except Exception:
+                    attach = []
+                subj = f"Regression Test Plan — {d['plan_name'] or d['project']}"
+                ok, err = E.send_report(to, subj, _plan_html(d), attachments=attach)
+                app._reg_export_msg = (("ok", f"Emailed to {', '.join(to)}")
+                                       if ok else ("err", err or "Email failed."))
+            except Exception as ex:
+                app._reg_export_msg = ("err", f"Email failed: {ex}")
+            app._reg_emailing = False
+            app.ui_safe(app.render)
+        threading.Thread(target=work, daemon=True).start()
 
     # ── validation ──
     names = app._reg_res_names
@@ -634,10 +762,12 @@ def screen(app):
     _have_plans = bool(app._reg_plans_selected)
     story_dd = searchable_dropdown(
         hint_text=("Loading stories…" if app._reg_stories_loading
-                   else ("Search & add a story" if _have_plans
+                   else ("Search & add a story (grouped by sprint)" if _have_plans
                          else "Add a test plan first")),
-        options=[ft.DropdownOption(key=str(s["id"]),
-                                   text=f"[{s['id']}] {(s['title'] or '')[:48]}")
+        options=[ft.DropdownOption(
+                    key=str(s["id"]),
+                    text=(f"[{s['sprint']}] " if s.get("sprint") else "")
+                         + f"[{s['id']}] {(s['title'] or '')[:44]}")
                  for s in app._reg_plan_stories if s["id"] not in selected_ids],
         on_select=_add_story, border_color=T.BORDER, focused_border_color=T.VIOLET,
         border_radius=T.R,
@@ -657,8 +787,13 @@ def screen(app):
             bgcolor=T.VIOLET_SOFT, border_radius=T.R_SM,
             border=ft.Border.all(1, "#D9D2FF"))
 
+    def _plan_chip_label(p):
+        base = f"[{p['id']}] {p['name'][:22]}"
+        spr = p.get("sprint")
+        return f"{base} · {spr}" if spr else base
+
     plan_chips = ft.Row(
-        [_chip(f"[{p['id']}] {p['name'][:24]}", (lambda e, x=p["id"]: _remove_plan(x)))
+        [_chip(_plan_chip_label(p), (lambda e, x=p["id"]: _remove_plan(x)))
          for p in app._reg_plans_selected], wrap=True, spacing=6, run_spacing=6)
 
     story_chips = ft.Row(
@@ -863,12 +998,31 @@ def screen(app):
                 padding=10, bgcolor=(T.GREEN_SOFT if ok else T.RED_SOFT),
                 border_radius=T.R, margin=ft.Margin.only(top=10))
 
+        email_field = ft.TextField(
+            value=app._reg_email_to or "", on_change=_on_email_to,
+            hint_text="recipient@company.com (comma-separate for several)",
+            expand=True, text_size=13, border_color=T.BORDER,
+            focused_border_color=T.VIOLET, border_radius=T.R,
+            content_padding=ft.Padding.symmetric(vertical=12, horizontal=10))
+        email_row = ft.Column([
+            ft.Divider(height=20, color=T.BORDER),
+            ft.Text("EMAIL THE PLAN", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
+            ft.Container(height=8),
+            ft.Row([email_field,
+                    green_btn("Sending…" if app._reg_emailing else "Send",
+                              icon=ft.Icons.SEND, on_click=_email)],
+                   spacing=10),
+            ft.Text("Attaches the Word plan and an inline summary. Uses the Gmail "
+                    "sender configured on Setup.", size=11, color=T.INK_3,
+                    weight=ft.FontWeight.W_500),
+        ], spacing=6)
+
         results = card(ft.Column([
             sec_head("4", "Plan"), ft.Container(height=10), table,
             ft.Container(totals, padding=ft.Padding.only(top=12, bottom=2)),
             workload_ui, ft.Divider(height=22, color=T.BORDER),
             ft.Text("EXPORT", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
-            ft.Container(height=8), exports, status,
+            ft.Container(height=8), exports, email_row, status,
         ], spacing=0))
 
     calc_btn = primary_btn("Calculating…" if app._reg_busy else "Calculate plan",
@@ -891,4 +1045,4 @@ def screen(app):
 
     body = ft.Column(body_children, spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
     return app.shell("Regression Plan",
-                     "Build a regression plan from existing sprints & stories", body)
+                     "Build a regression plan from your test plans & their stories", body)
