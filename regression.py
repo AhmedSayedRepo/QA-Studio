@@ -590,7 +590,7 @@ def _bar(frac, color=T.VIOLET, h=7):
     f = max(1, int(round((frac or 0) * 100)))
     e = max(0, 100 - f)
     fill = ft.Container(height=h, bgcolor=color, border_radius=4, expand=f,
-                        animate=ft.Animation(700, ft.AnimationCurve.EASE_OUT))
+                        animate=700)
     inner = [fill] + ([ft.Container(expand=e)] if e > 0 else [])
     return ft.Container(ft.Row(inner, spacing=0), bgcolor=T.BORDER_2,
                         border_radius=4, height=h, clip_behavior=ft.ClipBehavior.HARD_EDGE)

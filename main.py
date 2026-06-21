@@ -449,7 +449,12 @@ class QAStudio:
             # active indicator bar on the far left
             indicator = ft.Container(width=3, height=22,
                                      bgcolor=(T.VIOLET if is_active else ft.Colors.TRANSPARENT),
-                                     border_radius=4)
+                                     border_radius=4, animate=200)
+            def _nav_hover(e, base=bg):
+                e.control.bgcolor = (ft.Colors.with_opacity(0.09, "#FFFFFF")
+                                     if e.data == "true" else base)
+                try: e.control.update()
+                except Exception: pass
             nav_items.append(
                 ft.Container(
                     ft.Row([
@@ -462,6 +467,8 @@ class QAStudio:
                     ], spacing=9),
                     padding=ft.Padding.only(left=6, right=12, top=12, bottom=12),
                     bgcolor=bg, border_radius=9,
+                    animate=150,
+                    on_hover=(_nav_hover if (clickable and not is_active) else None),
                     on_click=(lambda e, nid=n["id"]: self.goto(nid)) if clickable else None,
                 ))
         conn_color  = T.GREEN if self.connected else T.INK_3
@@ -2819,11 +2826,46 @@ class QAStudio:
                 return "amber"
             return "grey"
 
+        # animated 'scanning' loading state — motion while the summary is generated
+        _sum_status = ft.Text("Connecting to Azure DevOps…", size=12.5, color=T.INK_2,
+                              weight=ft.FontWeight.W_500)
+        _scan = ft.Column([
+            ft.Container(ft.Stack([
+                ft.ProgressRing(width=76, height=76, stroke_width=3,
+                                color=ft.Colors.with_opacity(0.85, T.VIOLET)),
+                ft.Container(ft.Icon(ft.Icons.SUMMARIZE_OUTLINED, size=26, color=T.VIOLET),
+                             width=54, height=54, bgcolor=T.VIOLET_SOFT, border_radius=16,
+                             alignment=ft.Alignment.CENTER, left=11, top=11),
+            ], width=76, height=76), width=76, height=76, alignment=ft.Alignment.CENTER),
+            ft.Container(height=18),
+            ft.Text("Generating sprint summary", size=16, weight=ft.FontWeight.BOLD,
+                    color=T.INK),
+            ft.Container(height=5),
+            _sum_status,
+        ], horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+           alignment=ft.MainAxisAlignment.CENTER, spacing=0)
         body_col = ft.Column(
-            [ft.Row([ft.ProgressRing(width=18, height=18, stroke_width=2, color=T.VIOLET),
-                     ft.Text("Loading sprint summary…", size=13, color=T.INK_2,
-                             weight=ft.FontWeight.BOLD)], spacing=10)],
+            [ft.Container(_scan, alignment=ft.Alignment.CENTER, height=380, expand=True)],
             spacing=12, tight=True, scroll=ft.ScrollMode.AUTO)
+
+        # cycle the status line every ~0.9s until the data arrives
+        self._sum_loading = True
+        def _cycle_status():
+            msgs = ["Connecting to Azure DevOps…", "Fetching sprint results…",
+                    "Counting test cases…", "Summarizing stories…"]
+            ev = threading.Event()
+            i = 0
+            while getattr(self, "_sum_loading", False):
+                ev.wait(0.9)
+                if not getattr(self, "_sum_loading", False):
+                    break
+                i += 1
+                def upd(m=msgs[i % len(msgs)]):
+                    _sum_status.value = m
+                    try: _sum_status.update()
+                    except Exception: pass
+                self.ui_safe(upd)
+        self._bg(_cycle_status)
 
         # email recipients field (asked each time) + status text
         self._sum_data = None
@@ -2910,6 +2952,7 @@ class QAStudio:
             try:
                 data = E.sprint_summary(self.project, self.plan_id)
             except Exception as ex:
+                self._sum_loading = False
                 def show_err():
                     body_col.controls = [ft.Row([
                         ft.Icon(ft.Icons.ERROR_OUTLINE, color=T.RED, size=20),
@@ -2923,6 +2966,7 @@ class QAStudio:
 
             def render_summary():
                 self._sum_data = data
+                self._sum_loading = False
                 total = data["total_stories"]
                 by_state = data["by_state"]
                 total_tc = data["total_test_cases"]
@@ -2970,6 +3014,15 @@ class QAStudio:
                 status_row = ft.Row(state_cards, wrap=True, spacing=10, run_spacing=10) \
                     if state_cards else ft.Text("No stories in this sprint.",
                                                 size=12, color=T.INK_3, weight=ft.FontWeight.W_500)
+                dist_bar = ft.Container(
+                    ft.Row([ft.Container(expand=max(1, c),
+                                         bgcolor=_kind_colors.get(_state_kind(stt),
+                                                                  _kind_colors["grey"])[0],
+                                         tooltip=f"{stt}: {c}")
+                            for stt, c in sorted(by_state.items(), key=lambda x: -x[1])],
+                           spacing=2),
+                    height=10, border_radius=6,
+                    clip_behavior=ft.ClipBehavior.HARD_EDGE) if by_state else ft.Container()
 
                 # Per-story rows
                 story_rows = []
@@ -3005,7 +3058,9 @@ class QAStudio:
                     header,
                     ft.Container(height=4),
                     tiles,
-                    ft.Container(height=6),
+                    ft.Container(height=10),
+                    dist_bar,
+                    ft.Container(height=8),
                     ft.Text("STATUS BREAKDOWN", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
                     status_row,
                     ft.Container(height=6),
@@ -3051,6 +3106,7 @@ class QAStudio:
             self.page.update()
 
     def _close_dialog(self):
+        self._sum_loading = False
         dlg = getattr(self, "_dialog", None)
         # Flet 0.85 uses page.pop_dialog(); older uses page.close(dlg)
         if hasattr(self.page, "pop_dialog"):
