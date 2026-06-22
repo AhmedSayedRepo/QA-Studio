@@ -1736,7 +1736,7 @@ def screen(app):
                      ft.Row([ft.Container(card2, expand=1),
                              ft.Container(card3, expand=1)],
                             spacing=14,
-                            vertical_alignment=ft.CrossAxisAlignment.STRETCH),
+                            vertical_alignment=ft.CrossAxisAlignment.START),
                      ft.Container(height=16), calc_btn, calc_note]
     if results is not None:
         body_children += [ft.Container(height=16), results]
