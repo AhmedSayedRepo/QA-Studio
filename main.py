@@ -477,7 +477,7 @@ class QAStudio:
                                 font_family=T.F_MONO),
                     ], spacing=9),
                     padding=ft.Padding.only(left=6, right=12, top=12, bottom=12),
-                    bgcolor=bg, border_radius=9,
+                    bgcolor=bg, border_radius=11,
                     offset=ft.Offset(0, 0), animate=150, animate_offset=150,
                     on_hover=(_nav_hover if (clickable and not is_active) else None),
                     on_click=(lambda e, nid=n["id"]: self.goto(nid)) if clickable else None,
@@ -513,7 +513,7 @@ class QAStudio:
                     ], spacing=11), padding=ft.Padding.symmetric(vertical=16, horizontal=6)),
                 ft.Container(ft.Text("PIPELINE", size=10, weight=ft.FontWeight.BOLD,
                                      color="#615E6E"), padding=ft.Padding.only(left=18, top=14, bottom=6)),
-                ft.Container(ft.Column(nav_items, spacing=3), padding=ft.Padding.symmetric(vertical=10, horizontal=0)),
+                ft.Container(ft.Column(nav_items, spacing=3), padding=ft.Padding.symmetric(vertical=10, horizontal=12)),
                 ft.Container(expand=True),
                 ft.Container(
                     ft.Row([
@@ -556,9 +556,28 @@ class QAStudio:
     }
 
     def _provider_logo(self, prov, size=30):
+        key = (prov or "").lower()
         color, glyph = self.PROVIDER_BRAND.get(
-            (prov or "").lower(),
-            (T.VIOLET, (prov[:1].upper() if prov else "?")))
+            key, (T.VIOLET, (prov[:1].upper() if prov else "?")))
+        # Use a real logo image if one is bundled next to main.py. Drop a file
+        # named e.g. anthropic.png / openai.png / gemini.png / nvidia.png into
+        # the app folder (or assets/providers/) and it's picked up automatically.
+        try:
+            import os
+            here = os.path.dirname(os.path.abspath(__file__))
+            for cand in (os.path.join(here, "assets", "providers", key + ".png"),
+                         os.path.join(here, "providers", key + ".png"),
+                         os.path.join(here, key + ".png"),
+                         os.path.join(here, key + "-logo.png")):
+                if os.path.exists(cand):
+                    return ft.Container(
+                        ft.Image(src=cand, width=size, height=size),
+                        width=size, height=size, bgcolor="#FFFFFF",
+                        border_radius=int(size * 0.28),
+                        padding=ft.Padding.all(max(2, int(size * 0.12))),
+                        alignment=ft.Alignment.CENTER)
+        except Exception:
+            pass
         return ft.Container(
             ft.Text(glyph, size=int(size * 0.46), weight=ft.FontWeight.W_800,
                     color="#FFFFFF", font_family=T.F_UI),
@@ -587,8 +606,8 @@ class QAStudio:
         return ft.Container(ft.Row(row, spacing=14, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                             padding=ft.Padding.symmetric(vertical=18, horizontal=24),
                             alignment=ft.Alignment.CENTER_LEFT,
-                            border=ft.Border.only(bottom=ft.BorderSide(1, ft.Colors.with_opacity(0.7, T.BORDER))),
-                            bgcolor=ft.Colors.with_opacity(0.82, "#FFFFFF"))
+                            border=ft.Border.only(bottom=ft.BorderSide(1, T.BORDER)),
+                            bgcolor="#FFFFFF")
 
     def shell(self, title, sub, body, right=None, badge=None):
         return ft.Row([
