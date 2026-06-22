@@ -319,7 +319,7 @@ def _out_dir():
 
 def _stamp(app):
     if getattr(app, "_reg_mode", "existing") == "create":
-        base = getattr(app, "_cp_sprint_name", "") or getattr(app, "_cp_sprint_path", "") or "sprint"
+        base = getattr(app, "_cp_sprint_name", "") or "sprint"
     else:
         base = ((getattr(app, "plan_name", "") or "")
                 or (", ".join(p["name"] for p in (app._reg_plans_selected or [])) or "plan"))
@@ -760,13 +760,14 @@ def _init(app):
                  ("_reg_plans_loading", False),
                  ("_reg_mode", "existing"),
                  ("_cp_iterations", []), ("_cp_iter_loading", False),
-                 ("_cp_sprint_path", ""), ("_cp_sprint_name", ""),
+                 ("_cp_sprint_paths", []), ("_cp_sprint_name", ""),
                  ("_cp_stories_loading", False),
                  ("_cp_rows", []), ("_cp_res_names", []),
                  ("_cp_est_min", 1.0), ("_cp_est_max", 8.0),
                  ("_cp_res_count", None), ("_cp_calculated", False),
                  ("_cp_calc_msg", None),
-                 ("_cp_msg", None), ("_cp_assigning", False)):
+                 ("_cp_msg", None), ("_cp_assigning", False),
+                 ("_cp_email_to", ""), ("_cp_emailing", False)):
         if not hasattr(app, k):
             setattr(app, k, v)
 
@@ -857,9 +858,49 @@ def _sprint_sort_key(it):
     return int(m.group(0)) if m else -1
 
 
+def _checkbox_multiselect(options, selected, on_toggle, on_all, *, height=240,
+                          empty="No options."):
+    """A checkbox list with a 'Select all' control.
+    options: list of (key, label); selected: set/list of keys;
+    on_toggle(key, checked); on_all(checked)."""
+    sel = set(selected or [])
+    keys = [k for k, _ in options]
+    all_on = bool(keys) and all(k in sel for k in keys)
+    head = ft.Container(
+        ft.Row([
+            ft.Checkbox(value=all_on, on_change=lambda e: on_all(e.control.value),
+                        fill_color=T.VIOLET),
+            ft.Text("Select all", size=12.5, weight=ft.FontWeight.BOLD, color=T.INK),
+            ft.Container(expand=True),
+            ft.Text(f"{len(sel)} selected", size=11.5, color=T.INK_3,
+                    weight=ft.FontWeight.BOLD),
+        ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        padding=ft.Padding.symmetric(vertical=8, horizontal=10),
+        bgcolor=T.CARD_2, border_radius=ft.BorderRadius.only(top_left=T.R, top_right=T.R))
+    rows = []
+    for k, label in options:
+        rows.append(ft.Container(
+            ft.Row([ft.Checkbox(value=(k in sel),
+                                on_change=(lambda e, kk=k: on_toggle(kk, e.control.value)),
+                                fill_color=T.VIOLET),
+                    ft.Text(label, size=12.5, color=T.INK, expand=True,
+                            no_wrap=False)],
+                   spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=ft.Padding.only(left=10, right=10, top=2, bottom=2)))
+    body = ft.Column(rows, spacing=0, scroll=ft.ScrollMode.AUTO) if rows else \
+        ft.Container(ft.Text(empty, size=12, color=T.INK_3),
+                     padding=14, alignment=ft.Alignment.CENTER)
+    return ft.Column([
+        head,
+        ft.Container(body, height=height, padding=ft.Padding.symmetric(vertical=4),
+                     border=ft.Border.all(1, T.BORDER),
+                     border_radius=ft.BorderRadius.only(bottom_left=T.R, bottom_right=T.R)),
+    ], spacing=0)
+
+
 def _cp_load_stories(app):
-    path = app._cp_sprint_path
-    if not path:
+    paths = list(app._cp_sprint_paths or [])
+    if not paths:
         app._cp_rows = []
         app.ui_safe(app.render)
         return
@@ -868,13 +909,20 @@ def _cp_load_stories(app):
     app.ui_safe(app.render)
 
     def _work():
-        try:
-            stories = E.fetch_stories_in_iteration(app.project, path) or []
-        except Exception:
-            stories = []
-        app._cp_rows = [{"id": s["id"], "title": s.get("title", ""),
-                         "hours": 0.0, "assignee": ""} for s in stories]
-        _cp_estimate_and_assign(app)   # seed an initial random estimate + assignment
+        agg, seen = [], set()
+        for path in paths:
+            try:
+                stories = E.fetch_stories_in_iteration(app.project, path) or []
+            except Exception:
+                stories = []
+            for s in stories:
+                if s["id"] in seen:
+                    continue
+                seen.add(s["id"])
+                agg.append({"id": s["id"], "title": s.get("title", ""),
+                            "hours": 0.0, "assignee": ""})
+        app._cp_rows = agg
+        _cp_estimate_and_assign(app)
         app._cp_stories_loading = False
         app.ui_safe(app.render)
     threading.Thread(target=_work, daemon=True).start()
@@ -930,7 +978,7 @@ def _cp_payload(app):
                      "hours": round(hr[n], 2)} for n in names]
     return {"generated": datetime.now().strftime("%Y-%m-%d %H:%M"),
             "project": app.project, "plan_id": "",
-            "plan_name": app._cp_sprint_name or app._cp_sprint_path,
+            "plan_name": app._cp_sprint_name or ", ".join(app._cp_sprint_paths or []),
             "plans": [], "avg_minutes_per_case": 0,
             "priority_boost": {}, "resources_count": len(names),
             "resource_names": names, "stories": rows, "workload": workload,
@@ -962,8 +1010,8 @@ def test_plan_screen(app):
     from main import card, sec_head, field_label, green_btn, ghost_btn  # noqa: F401
     if not (app.connected and app.project):
         return locked_state(
-            app, "Test Plan",
-            "Build a test-effort report from a sprint & its stories",
+            app, "Sprint Plan",
+            "Plan & estimate test effort across a sprint’s stories",
             "Connect your Azure DevOps account on the Setup screen, then pick a "
             "sprint here.")
     app._reg_mode = "create"
@@ -979,35 +1027,46 @@ def _create_screen(app):
     count = app._cp_res_count
     mismatch = bool(count) and bool(names) and count != len(names)
 
-    # ── Card 1: sprint ──
-    def _pick_sprint(e):
-        v = (sprint_dd.value or "").strip()
-        it = next((x for x in app._cp_iterations if x["path"] == v), None)
-        if not it:
-            return
-        app._cp_sprint_path = it["path"]
-        app._cp_sprint_name = _sprint_num(it["name"]) or it["name"]
+    # ── Card 1: sprint(s) — checkbox multiselect with Select all ──
+    def _sprint_names():
+        names = []
+        for p in app._cp_sprint_paths:
+            it = next((x for x in app._cp_iterations if x["path"] == p), None)
+            if it:
+                names.append(_sprint_num(it["name"]) or it["name"])
+        return names
+
+    def _after_sprint_change():
+        app._cp_sprint_name = ", ".join(_sprint_names())
         app._cp_calculated = False
         app._cp_calc_msg = None
         _cp_load_stories(app)
 
-    sprint_dd = searchable_dropdown(
-        hint_text=("Loading sprints…" if app._cp_iter_loading
-                   else "Search & pick a sprint"),
-        options=[ft.DropdownOption(key=it["path"],
-                                   text=(_sprint_num(it["name"]) or it["name"])
-                                   + f"  ·  {it['path']}")
-                 for it in app._cp_iterations],
-        on_select=_pick_sprint, border_color=T.BORDER, focused_border_color=T.VIOLET,
-        border_radius=T.R,
-        content_padding=ft.Padding.symmetric(vertical=12, horizontal=8),
-        text_size=13, filled=True, bgcolor=T.CARD, expand=True)
+    def _toggle_sprint(key, checked):
+        s = set(app._cp_sprint_paths)
+        s.add(key) if checked else s.discard(key)
+        app._cp_sprint_paths = [p for p in (x["path"] for x in app._cp_iterations) if p in s]
+        _after_sprint_change()
+
+    def _all_sprints(checked):
+        app._cp_sprint_paths = [x["path"] for x in app._cp_iterations] if checked else []
+        _after_sprint_change()
+
+    sprint_picker = (
+        ft.Container(_txt("Loading sprints…", color=T.INK_3, size=12), padding=10)
+        if app._cp_iter_loading else
+        _checkbox_multiselect(
+            [(it["path"], (_sprint_num(it["name"]) or it["name"]) + f"   ·   {it['path']}")
+             for it in app._cp_iterations],
+            app._cp_sprint_paths, _toggle_sprint, _all_sprints,
+            empty="No sprints found for this project."))
 
     picked = ft.Container()
-    if app._cp_sprint_name:
+    if app._cp_sprint_paths:
         picked = ft.Container(
             ft.Row([ft.Icon(ft.Icons.CHECK_CIRCLE, size=15, color=T.GREEN),
-                    _txt(app._cp_sprint_name, color=T.INK, weight=ft.FontWeight.BOLD),
+                    _txt(", ".join(_sprint_names()), color=T.INK,
+                         weight=ft.FontWeight.BOLD, expand=True),
                     _txt(("Loading stories…" if app._cp_stories_loading
                           else f"· {len(app._cp_rows)} stories"), color=T.INK_3)],
                    spacing=8), padding=ft.Padding.only(top=10))
@@ -1015,7 +1074,7 @@ def _create_screen(app):
     card1 = card(ft.Column([
         sec_head("1", "Sprint"),
         ft.Container(height=10),
-        ft.Column([field_label("Sprint", req=True), sprint_dd], spacing=6),
+        ft.Column([field_label("Sprints", req=True), sprint_picker], spacing=6),
         picked,
     ], spacing=0))
 
@@ -1145,7 +1204,7 @@ def _create_screen(app):
         app._cp_calculated = True
         app.render()
 
-    calc_btn = primary_btn("Assign & Estimate Effort", icon=ft.Icons.CALCULATE,
+    calc_btn = primary_btn("Generate Sprint Plan", icon=ft.Icons.CALCULATE,
                            on_click=_calculate,
                            disabled=not (app._cp_rows and app._cp_res_names))
     calc_note = ft.Container()
@@ -1283,6 +1342,53 @@ def _create_screen(app):
 
         exports = _export_row(app)
 
+        def _email(e):
+            to = [a.strip() for a in re.split(r"[,\s;]+", (email_field.value or ""))
+                  if a.strip()]
+            if not to:
+                app._cp_msg = ("err", "Enter at least one recipient email.")
+                app.render(); return
+            if not getattr(E, "GMAIL_APP_PASS", ""):
+                app._cp_msg = ("err", "Set the Gmail App Password on the Setup screen first.")
+                app.render(); return
+            app._cp_email_to = ", ".join(to)
+            app._cp_emailing = True
+            app._cp_msg = None
+            app.render()
+
+            def work():
+                try:
+                    d = plan_payload(app)
+                    try:
+                        attach = [export_docx(app)]
+                    except Exception:
+                        attach = []
+                    subj = f"Sprint Plan — {d['plan_name'] or d['project']}"
+                    ok, err = E.send_report(to, subj, _plan_html(d), attachments=attach)
+                    app._cp_msg = (("ok", f"Emailed to {', '.join(to)}")
+                                   if ok else ("err", err or "Email failed."))
+                except Exception as ex:
+                    app._cp_msg = ("err", f"Email failed: {str(ex)[:160]}")
+                app._cp_emailing = False
+                app.ui_safe(app.render)
+            threading.Thread(target=work, daemon=True).start()
+
+        email_field = ft.TextField(
+            value=app._cp_email_to, hint_text="name@company.com, another@company.com",
+            on_change=lambda e: setattr(app, "_cp_email_to", e.control.value or ""),
+            expand=True, text_size=13, border_color=T.BORDER,
+            focused_border_color=T.VIOLET, border_radius=T.R,
+            content_padding=ft.Padding.symmetric(vertical=12, horizontal=10))
+        email_row = ft.Column([
+            ft.Text("EMAIL", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
+            ft.Container(height=8),
+            ft.Row([email_field,
+                    green_btn("Sending…" if app._cp_emailing else "Email plan",
+                              icon=ft.Icons.SEND,
+                              on_click=(None if app._cp_emailing else _email))],
+                   spacing=8),
+        ], spacing=0)
+
         def _assign_testers(e):
             rows = [{"id": r["id"], "name": r.get("assignee", "")}
                     for r in app._cp_rows if r.get("assignee")]
@@ -1328,6 +1434,8 @@ def _create_screen(app):
             ft.Divider(height=22, color=T.BORDER),
             ft.Text("EXPORT", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
             ft.Container(height=8), exports,
+            ft.Divider(height=22, color=T.BORDER),
+            email_row,
             ft.Container(height=14),
             ft.Row([green_btn("Assigning…" if app._cp_assigning
                               else "Assign to tester in Azure",
@@ -1341,8 +1449,8 @@ def _create_screen(app):
     if results is not None:
         body_children += [ft.Container(height=16), results]
     body = ft.Column(body_children, spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
-    return app.shell("Test Plan",
-                     "Build a test-effort report from a sprint & its stories", body,
+    return app.shell("Sprint Plan",
+                     "Plan & estimate test effort across a sprint’s stories", body,
                      badge="STEP T")
 
 
@@ -1908,7 +2016,7 @@ def screen(app):
             ft.Container(height=8), exports, email_row, status,
         ], spacing=0))
 
-    calc_btn = primary_btn("Calculating…" if app._reg_busy else "Calculate plan",
+    calc_btn = primary_btn("Calculating…" if app._reg_busy else "Generate Regression Plan",
                            icon=ft.Icons.CALCULATE, on_click=_calculate,
                            disabled=app._reg_busy or not app._reg_selected)
     calc_note = ft.Container()
