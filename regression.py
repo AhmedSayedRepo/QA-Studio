@@ -1812,11 +1812,21 @@ def screen(app):
         app.render()
 
     _have_plans = bool(app._reg_plans_selected)
+
+    def _disabled_field(text):
+        # mirrors the closed dropdown field so the Stories control keeps its
+        # border/placeholder even before a plan is chosen.
+        return ft.Container(
+            ft.Row([ft.Text(text, size=13, color=T.INK_3, expand=True),
+                    ft.Icon(ft.Icons.KEYBOARD_ARROW_DOWN, size=20, color=T.INK_3)],
+                   vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=ft.Padding.symmetric(vertical=12, horizontal=12),
+            bgcolor=T.CARD, border=ft.Border.all(1, T.BORDER), border_radius=T.R)
+
     if app._reg_stories_loading:
-        story_picker = ft.Container(_txt("Loading stories…", color=T.INK_3, size=12), padding=10)
+        story_picker = _disabled_field("Loading stories…")
     elif not _have_plans:
-        story_picker = ft.Container(_txt("Select a test plan first.", color=T.INK_3, size=12),
-                                    padding=10)
+        story_picker = _disabled_field("Select a test plan first")
     else:
         story_picker = _checkbox_multiselect(
             [(str(s["id"]),

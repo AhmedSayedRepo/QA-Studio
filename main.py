@@ -2122,19 +2122,26 @@ class QAStudio:
                 bgcolor=color, duration=6000,
                 behavior=ft.SnackBarBehavior.FLOATING,
                 shape=ft.RoundedRectangleBorder(radius=12),
-                margin=ft.Margin.all(16), padding=ft.Padding.symmetric(vertical=12, horizontal=16))
-            if hasattr(self.page, "open"):
-                self.page.open(sb)
-            else:
-                self.page.snack_bar = sb
-                sb.open = True
-                self.page.update()
+                margin=ft.Margin.all(16),
+                padding=ft.Padding.symmetric(vertical=12, horizontal=16))
         except Exception:
-            # fallback for older Flet builds
+            sb = ft.SnackBar(content=ft.Text(msg, color="#FFFFFF"),
+                             bgcolor=color, duration=6000)
+        try:
+            # drop any stale snackbars, then mount + open this one explicitly
+            # (most reliable across Flet builds; page.open alone wasn't showing).
+            self.page.overlay[:] = [c for c in self.page.overlay
+                                    if not isinstance(c, ft.SnackBar)]
+        except Exception:
+            pass
+        try:
+            self.page.overlay.append(sb)
+            sb.open = True
+            self.page.update()
+        except Exception:
             try:
-                self.page.snack_bar = ft.SnackBar(ft.Text(msg), bgcolor=color, duration=6000)
-                self.page.snack_bar.open = True
-                self.page.update()
+                if hasattr(self.page, "open"):
+                    self.page.open(sb)
             except Exception:
                 pass
 
@@ -2906,14 +2913,30 @@ class QAStudio:
 
     def _restore_scroll(self):
         # Restore scroll after a full render so opening a dropdown / ticking a
-        # checkbox doesn't snap the page back to the top.
-        try:
-            col = getattr(self, "_left_scroll", None)
-            off = getattr(self, "_scroll_offset", 0) or 0
-            if col is not None and off:
+        # checkbox doesn't snap to the top. scroll_to must run AFTER the rebuilt
+        # control is laid out, so defer it onto the page loop.
+        col = getattr(self, "_left_scroll", None)
+        off = getattr(self, "_scroll_offset", 0) or 0
+        if not (col is not None and off):
+            return
+
+        def _do():
+            try:
                 col.scroll_to(offset=off, duration=0)
-        except Exception:
-            pass
+            except Exception:
+                pass
+            try:
+                self.page.update()
+            except Exception:
+                pass
+        ru = getattr(self.page, "run_thread", None)
+        if callable(ru):
+            try:
+                ru(_do)
+                return
+            except Exception:
+                pass
+        _do()
 
     def _close_dropdowns(self, e=None):
         # Click-away: tapping outside an open dropdown closes it.
