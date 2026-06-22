@@ -10,6 +10,7 @@ render routing). Shared UI helpers and the theme are reused from main.py via a
 deferred import so there is no circular import at load time.
 """
 import os, re, json, threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 import flet as ft
@@ -792,28 +793,39 @@ def _reload_plan_stories(app):
     app.ui_safe(app.render)
 
     def _work():
-        agg, seen = [], set()
-        for p in plans:
-            # the plan's own sprint (its iteration) — shown on the plan chip
-            try:
-                pj = E._azure_get(f"https://dev.azure.com/{E.AZURE_ORG}/{app.project}"
-                                  f"/_apis/testplan/plans/{p['id']}?api-version=7.0")
-                itr = pj.get("iteration") or ""
-                p["sprint"] = _sprint_num(itr) or _sprint_num(p.get("name", "")) \
-                    or itr.split("\\")[-1]
-            except Exception:
-                p.setdefault("sprint", "")
+        def _fetch_one(p):
+            # Derive sprint from the plan name first (no network call); only hit
+            # Azure if the name doesn't carry the sprint.
+            spr = _sprint_num(p.get("name", ""))
+            if not spr:
+                try:
+                    pj = E._azure_get(f"https://dev.azure.com/{E.AZURE_ORG}/{app.project}"
+                                      f"/_apis/testplan/plans/{p['id']}?api-version=7.0")
+                    itr = pj.get("iteration") or ""
+                    spr = _sprint_num(itr) or itr.split("\\")[-1]
+                except Exception:
+                    spr = ""
+            p["sprint"] = spr
             try:
                 stories = E.fetch_stories_in_plan(app.project, p["id"])
             except Exception:
                 stories = []
+            return p, stories
+
+        # Fetch every selected plan's stories in parallel (was sequential).
+        try:
+            with ThreadPoolExecutor(max_workers=min(8, len(plans))) as ex:
+                results = list(ex.map(_fetch_one, plans))
+        except Exception:
+            results = [_fetch_one(p) for p in plans]
+
+        agg, seen = [], set()
+        for p, stories in results:
             for s in stories:
                 key = (p["id"], s["id"])
                 if key in seen:
                     continue
                 seen.add(key)
-                # group under the PLAN's sprint (what the user picked), not the
-                # story's own iteration — so only selected sprints appear
                 agg.append({"id": s["id"], "title": s.get("title", ""),
                             "sprint": p.get("sprint", "") or _sprint_num(s.get("sprint", "")),
                             "plan_id": p["id"]})
@@ -1840,11 +1852,15 @@ def screen(app):
         sec_head("1", "Source & stories"),
         ft.Container(height=10),
         ft.Column([field_label("Test plans", req=True), plan_picker], spacing=6),
+        ft.Container(plan_chips, padding=ft.Padding.only(top=10),
+                     visible=bool(app._reg_plans_selected)),
         ft.Text(f"{len(app._reg_plans_selected)} plan(s) selected", size=11,
                 color=T.INK_3, weight=ft.FontWeight.BOLD,
                 visible=bool(app._reg_plans_selected)),
         ft.Container(height=14),
         ft.Column([field_label("Stories", req=True), story_picker], spacing=6),
+        ft.Container(story_chips, padding=ft.Padding.only(top=10),
+                     visible=bool(app._reg_selected)),
         ft.Text(f"{len(app._reg_selected)} stories selected", size=11,
                 color=T.INK_3, weight=ft.FontWeight.BOLD),
     ], spacing=0))

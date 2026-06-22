@@ -312,6 +312,7 @@ class QAStudio:
         self.plan_id = None
         self.plan_name = None
         self.story_ids = []
+        self._setup_story_open = False
         self.emails = ""
         self.existing_mode = "evaluate"
 
@@ -2340,8 +2341,64 @@ class QAStudio:
             text_size=13, filled=True, bgcolor=T.CARD, expand=True)
 
         _build_chips()
-        story_box = ft.Column([self._setup_story_dd, ft.Container(height=8),
-                               self.story_field, self._chip_wrap], spacing=0, tight=True)
+
+        # Checkbox multiselect for the plan's stories (same component as the
+        # Regression/Sprint screens), driven by self.story_ids.
+        def _toggle_setup_story(key, checked):
+            sid = int(key)
+            if checked and sid not in self.story_ids:
+                self.story_ids.append(sid)
+            elif not checked:
+                self.story_ids = [s for s in self.story_ids if s != sid]
+            self.story_field.value = ""
+            self._err_msg = ""
+            self._estimated_tc = None
+            self.render()
+            self._fetch_estimate()
+
+        def _all_setup_stories(checked):
+            if checked:
+                have = set(self.story_ids)
+                for s in (self._setup_stories or []):
+                    if s["id"] not in have:
+                        self.story_ids.append(s["id"])
+            else:
+                self.story_ids = []
+            self._err_msg = ""
+            self._estimated_tc = None
+            self.render()
+            self._fetch_estimate()
+
+        def _open_setup_stories():
+            self._setup_story_open = not self._setup_story_open
+            self.render()
+
+        if self._setup_stories_loading:
+            story_picker = ft.Container(
+                ft.Text("Loading stories…", size=12, color=T.INK_3), padding=10)
+        elif not self.plan_id:
+            story_picker = ft.Container(
+                ft.Text("Select a test plan to list its stories", size=12, color=T.INK_3),
+                padding=10)
+        elif not _ss:
+            story_picker = ft.Container(
+                ft.Text("No stories found in this plan.", size=12, color=T.INK_3), padding=10)
+        else:
+            story_picker = regression._checkbox_multiselect(
+                [(str(s["id"]), f"[{s['id']}] {(s['title'] or '')[:60]}") for s in _ss],
+                [str(s) for s in self.story_ids],
+                _toggle_setup_story, _all_setup_stories,
+                is_open=self._setup_story_open, on_open=_open_setup_stories,
+                placeholder="Select stories", height=260,
+                empty="No stories found in this plan.")
+
+        story_box = ft.Column([
+            story_picker,
+            ft.Container(height=10),
+            ft.Text("Or paste IDs manually", size=10.5, weight=ft.FontWeight.BOLD,
+                    color=T.INK_3),
+            ft.Container(height=4),
+            self.story_field, self._chip_wrap], spacing=0, tight=True)
 
         self.email_field = ft.TextField(
             value=self.emails, hint_text="qa-leads@wss.com  (optional)",
