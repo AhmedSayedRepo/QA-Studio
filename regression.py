@@ -1698,31 +1698,85 @@ def screen(app):
         return ft.Text(s, **kw)
 
     # ── Card 1: source + stories ──
-    plan_dd = searchable_dropdown(
-        hint_text=("Loading test plans…" if app._reg_plans_loading
-                   else "Search & add a test plan"),
-        options=[ft.DropdownOption(key=str(p["id"]), text=f"[{p['id']}] {p['name']}")
-                 for p in (app._plans or []) if p["id"] not in selected_plan_ids],
-        on_select=_add_plan, border_color=T.BORDER, focused_border_color=T.VIOLET,
-        border_radius=T.R,
-        content_padding=ft.Padding.symmetric(vertical=12, horizontal=8),
-        text_size=13, filled=True, bgcolor=T.CARD, expand=True)
+    # ── Test plans: checkbox multiselect with Select all ──
+    def _toggle_plan(key, checked):
+        pid = int(key)
+        ids = [p["id"] for p in app._reg_plans_selected]
+        if checked and pid not in ids:
+            name = next((p["name"] for p in (app._plans or []) if p["id"] == pid), str(pid))
+            app._reg_plans_selected.append({"id": pid, "name": name})
+        elif not checked:
+            app._reg_plans_selected = [p for p in app._reg_plans_selected if p["id"] != pid]
+            app._reg_selected = [s for s in app._reg_selected if s.get("plan_id") != pid]
+        app.plan_id = (app._reg_plans_selected[0]["id"] if app._reg_plans_selected else None)
+        app.plan_name = (app._reg_plans_selected[0]["name"] if app._reg_plans_selected else "")
+        app._reg_selected_rows = []
+        app._reg_export_msg = app._reg_calc_msg = None
+        _reload_plan_stories(app)
+
+    def _all_plans(checked):
+        app._reg_plans_selected = ([{"id": p["id"], "name": p["name"]}
+                                    for p in (app._plans or [])] if checked else [])
+        if not checked:
+            app._reg_selected = []
+        app.plan_id = (app._reg_plans_selected[0]["id"] if app._reg_plans_selected else None)
+        app.plan_name = (app._reg_plans_selected[0]["name"] if app._reg_plans_selected else "")
+        app._reg_selected_rows = []
+        app._reg_export_msg = app._reg_calc_msg = None
+        _reload_plan_stories(app)
+
+    plan_picker = (
+        ft.Container(_txt("Loading test plans…", color=T.INK_3, size=12), padding=10)
+        if app._reg_plans_loading else
+        _checkbox_multiselect(
+            [(str(p["id"]), f"[{p['id']}] {p['name']}") for p in (app._plans or [])],
+            [str(p["id"]) for p in app._reg_plans_selected],
+            _toggle_plan, _all_plans, height=200,
+            empty="No test plans found for this project."))
+
+    # ── Stories: checkbox multiselect with Select all ──
+    def _toggle_story(key, checked):
+        sid = int(key)
+        ids = [s["id"] for s in app._reg_selected]
+        if checked and sid not in ids:
+            src = next((s for s in app._reg_plan_stories if s["id"] == sid), None)
+            if src:
+                app._reg_selected.append({"id": sid, "title": src.get("title", ""),
+                                          "plan_id": src.get("plan_id")})
+        elif not checked:
+            app._reg_selected = [s for s in app._reg_selected if s["id"] != sid]
+        app._reg_selected_rows = []
+        app._reg_export_msg = app._reg_calc_msg = None
+        app.render()
+
+    def _all_stories(checked):
+        if checked:
+            have = {s["id"] for s in app._reg_selected}
+            for s in app._reg_plan_stories:
+                if s["id"] not in have:
+                    app._reg_selected.append({"id": s["id"], "title": s.get("title", ""),
+                                              "plan_id": s.get("plan_id")})
+        else:
+            app._reg_selected = []
+        app._reg_selected_rows = []
+        app._reg_export_msg = app._reg_calc_msg = None
+        app.render()
 
     _have_plans = bool(app._reg_plans_selected)
-    story_dd = searchable_dropdown(
-        hint_text=("Loading stories…" if app._reg_stories_loading
-                   else ("Search & add a story (grouped by sprint)" if _have_plans
-                         else "Add a test plan first")),
-        options=[ft.DropdownOption(
-                    key=str(s["id"]),
-                    text=(f"[{s['sprint']}] " if s.get("sprint") else "")
-                         + f"[{s['id']}] {(s['title'] or '')[:44]}")
-                 for s in app._reg_plan_stories if s["id"] not in selected_ids],
-        on_select=_add_story, border_color=T.BORDER, focused_border_color=T.VIOLET,
-        border_radius=T.R,
-        content_padding=ft.Padding.symmetric(vertical=12, horizontal=8),
-        text_size=13, filled=True, bgcolor=T.CARD, expand=True,
-        disabled=not app._reg_plan_stories)
+    if app._reg_stories_loading:
+        story_picker = ft.Container(_txt("Loading stories…", color=T.INK_3, size=12), padding=10)
+    elif not _have_plans:
+        story_picker = ft.Container(_txt("Select a test plan first.", color=T.INK_3, size=12),
+                                    padding=10)
+    else:
+        story_picker = _checkbox_multiselect(
+            [(str(s["id"]),
+              (f"[{s['sprint']}] " if s.get("sprint") else "")
+              + f"[{s['id']}] {(s['title'] or '')[:60]}")
+             for s in app._reg_plan_stories],
+            [str(s["id"]) for s in app._reg_selected],
+            _toggle_story, _all_stories, height=260,
+            empty="No stories in the selected plan(s).")
 
     def _chip(label, on_close):
         return ft.Container(
@@ -1753,16 +1807,12 @@ def screen(app):
     card1 = card(ft.Column([
         sec_head("1", "Source & stories"),
         ft.Container(height=10),
-        ft.Column([field_label("Test plans", req=True), plan_dd], spacing=6),
-        ft.Container(plan_chips, padding=ft.Padding.only(top=10),
-                     visible=bool(app._reg_plans_selected)),
+        ft.Column([field_label("Test plans", req=True), plan_picker], spacing=6),
         ft.Text(f"{len(app._reg_plans_selected)} plan(s) selected", size=11,
                 color=T.INK_3, weight=ft.FontWeight.BOLD,
                 visible=bool(app._reg_plans_selected)),
-        ft.Container(height=12),
-        ft.Column([field_label("Add story"), story_dd], spacing=6),
-        ft.Container(story_chips, padding=ft.Padding.only(top=10),
-                     visible=bool(app._reg_selected)),
+        ft.Container(height=14),
+        ft.Column([field_label("Stories", req=True), story_picker], spacing=6),
         ft.Text(f"{len(app._reg_selected)} stories selected", size=11,
                 color=T.INK_3, weight=ft.FontWeight.BOLD),
     ], spacing=0))
