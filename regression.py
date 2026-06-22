@@ -1472,12 +1472,10 @@ def _create_screen(app):
             assign_note,
         ], spacing=0))
 
-    body_children = [card1]
-    if app._cp_sprint_paths and app._cp_rows and not app._cp_stories_loading:
-        body_children += [ft.Container(height=14), card2,
-                          ft.Container(height=16), calc_btn, calc_note]
-        if results is not None:
-            body_children += [ft.Container(height=16), results]
+    body_children = [card1, ft.Container(height=14), card2,
+                     ft.Container(height=16), calc_btn, calc_note]
+    if results is not None:
+        body_children += [ft.Container(height=16), results]
     body = ft.Column(body_children, spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
     return app.shell("Sprint Plan",
                      "Plan & estimate test effort across a sprint’s stories", body,
@@ -1856,7 +1854,7 @@ def screen(app):
         [_chip(str(s["id"]), (lambda e, x=s["id"]: _remove_story(x)))
          for s in app._reg_selected], wrap=True, spacing=6, run_spacing=6)
 
-    _c1 = [
+    card1 = card(ft.Column([
         sec_head("1", "Source & stories"),
         ft.Container(height=10),
         ft.Column([field_label("Test plans", req=True), plan_picker], spacing=6),
@@ -1865,17 +1863,13 @@ def screen(app):
         ft.Text(f"{len(app._reg_plans_selected)} plan(s) selected", size=11,
                 color=T.INK_3, weight=ft.FontWeight.BOLD,
                 visible=bool(app._reg_plans_selected)),
-    ]
-    if app._reg_plans_selected:   # Stories appear only after a test plan is picked
-        _c1 += [
-            ft.Container(height=14),
-            ft.Column([field_label("Stories", req=True), story_picker], spacing=6),
-            ft.Container(ft.Column([story_chips], scroll=ft.ScrollMode.AUTO), height=150,
-                         padding=ft.Padding.only(top=10), visible=bool(app._reg_selected)),
-            ft.Text(f"{len(app._reg_selected)} stories selected", size=11,
-                    color=T.INK_3, weight=ft.FontWeight.BOLD),
-        ]
-    card1 = card(ft.Column(_c1, spacing=0))
+        ft.Container(height=14),
+        ft.Column([field_label("Stories", req=True), story_picker], spacing=6),
+        ft.Container(ft.Column([story_chips], scroll=ft.ScrollMode.AUTO), height=150,
+                     padding=ft.Padding.only(top=10), visible=bool(app._reg_selected)),
+        ft.Text(f"{len(app._reg_selected)} stories selected", size=11,
+                color=T.INK_3, weight=ft.FontWeight.BOLD),
+    ], spacing=0))
 
     # ── Card 2: resources ──
     count_field = ft.TextField(

@@ -642,6 +642,11 @@ class QAStudio:
             body.clip_behavior = ft.ClipBehavior.HARD_EDGE
         except Exception:
             pass
+        try:
+            body.on_scroll = self._track_scroll
+            self._left_scroll = body
+        except Exception:
+            pass
         HEADER_H = 94
         header = self.topbar(title, sub, right, badge)
         header.top = 0
@@ -847,6 +852,9 @@ class QAStudio:
 
     def render(self):
         try:
+            if getattr(self, "_last_active", None) != self.active:
+                self._scroll_offset = 0
+                self._last_active = self.active
             if self.active == "setup":
                 view = self.setup_screen()
             elif self.active == "run":
@@ -861,6 +869,11 @@ class QAStudio:
                 view = self.useful_links_screen()
             else:
                 view = self.report_screen()
+            try:
+                view = ft.GestureDetector(content=view, on_tap=self._close_dropdowns,
+                                          expand=True)
+            except Exception:
+                pass
             self.page.controls.clear()
             banner = None
             try:
@@ -873,8 +886,7 @@ class QAStudio:
             else:
                 self.page.add(view)
             self.page.update()
-            if self.active == "setup":
-                self._restore_scroll()
+            self._restore_scroll()
         except Exception as ex:
             # Never leave the user on a blank "Working…" screen — show the error.
             import traceback
@@ -2893,9 +2905,26 @@ class QAStudio:
             pass
 
     def _restore_scroll(self):
-        # scroll_to is async in Flet 0.85 and warns when called sync; we rely on
-        # in-place updates to preserve scroll instead, so this is now a no-op.
-        return
+        # Restore scroll after a full render so opening a dropdown / ticking a
+        # checkbox doesn't snap the page back to the top.
+        try:
+            col = getattr(self, "_left_scroll", None)
+            off = getattr(self, "_scroll_offset", 0) or 0
+            if col is not None and off:
+                col.scroll_to(offset=off, duration=0)
+        except Exception:
+            pass
+
+    def _close_dropdowns(self, e=None):
+        # Click-away: tapping outside an open dropdown closes it.
+        changed = False
+        for attr in ("_setup_story_open", "_reg_plan_open",
+                     "_reg_story_open", "_cp_sprint_open"):
+            if getattr(self, attr, False):
+                setattr(self, attr, False)
+                changed = True
+        if changed:
+            self.render()
 
     def _safe_render(self):
         """Render and force the update onto Flet's event loop."""
