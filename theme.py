@@ -34,6 +34,15 @@ STORY       = "#6A52F0"   # story / log accent (leans to the purple end)
 BRAND_GRAD_1 = "#1C80E0"  # azure
 BRAND_GRAD_2 = "#6A33A8"  # royal purple
 
+# ── Gradient stops (built into ft.LinearGradient by main.grad) ────────────────
+GRAD_BRAND   = ["#1C80E0", "#6A33A8"]   # azure → royal purple (hero/brand bands)
+GRAD_PRIMARY = ["#4F6BF6", "#5B54F0"]   # primary buttons / main CTAs
+GRAD_GREEN   = ["#18A65C", "#0F8F4C"]   # export / confirm buttons
+GRAD_RAIL    = ["#171B36", "#0E1124"]   # sidebar (top → bottom)
+GRAD_LOGO    = ["#4F6BF6", "#7C5CFF"]   # logo tile + small brand chips
+GRAD_PAGE    = ["#F7F8FE", "#EDF0F8"]   # content background wash
+GRAD_NAV_ACT = ["#2C3BC9", "#3A57D6"]   # active nav item highlight
+
 GREEN       = "#1F9D57"; GREEN_SOFT = "#E5F6EC"
 RED         = "#E0474D"; RED_SOFT   = "#FCEBEC"
 AMBER       = "#C2860C"; AMBER_SOFT = "#FAF1DD"

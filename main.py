@@ -61,6 +61,40 @@ def field_label(text, req=False, hint=None, info=None, info_url=None, on_info=No
     return ft.Row(parts, spacing=4, tight=True, height=24,
                   vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
+def grad(stops, diagonal=True):
+    """Build an ft.LinearGradient from a list of hex stops.
+    diagonal=True → top-left→bottom-right (buttons, tiles); False → top→bottom (rail)."""
+    if diagonal:
+        b, e = ft.Alignment.TOP_LEFT, ft.Alignment.BOTTOM_RIGHT
+    else:
+        b, e = ft.Alignment.TOP_CENTER, ft.Alignment.BOTTOM_CENTER
+    return ft.LinearGradient(begin=b, end=e, colors=list(stops))
+
+
+def _grad_button(text, icon, on_click, stops, shadow_rgb, shadow_a,
+                 expand=False, disabled=False, height=46):
+    """Gradient pill button (Container-based) matching the mockup CTAs.
+    Same call shape as primary_btn/green_btn so call sites don't change."""
+    inner = []
+    if icon:
+        inner.append(ft.Icon(icon, size=17, color="#FFFFFF"))
+    inner.append(ft.Text(text, size=14, weight=ft.FontWeight.W_700, color="#FFFFFF"))
+    row = ft.Row(inner, spacing=8, tight=True,
+                 alignment=ft.MainAxisAlignment.CENTER,
+                 vertical_alignment=ft.CrossAxisAlignment.CENTER)
+    c = ft.Container(
+        row, height=height, border_radius=T.R, alignment=ft.Alignment.CENTER,
+        padding=ft.Padding.symmetric(horizontal=18, vertical=0),
+        gradient=grad(stops), ink=True,
+        on_click=(None if disabled else on_click),
+        opacity=(0.45 if disabled else 1),
+        shadow=(None if disabled else _btn_shadow(shadow_rgb, shadow_a)))
+    if expand:
+        c.expand = True
+        return ft.Row([c], spacing=0)
+    return c
+
+
 def _btn_shadow(color_rgb, alpha=0.55):
     """BoxShadow matching the design CSS: 0 6px 16px -6px rgba(color,a).
     blur_style is version-dependent in Flet, so only pass it when available."""
@@ -186,28 +220,13 @@ def logo_img(size=38, fallback_icon=None, fallback_color="#FFFFFF"):
 
 
 def primary_btn(text, icon=None, on_click=None, expand=False, disabled=False):
-    btn = ft.FilledButton(
-        text, icon=icon, on_click=on_click, disabled=disabled, height=46,
-        style=ft.ButtonStyle(
-            bgcolor=T.VIOLET, color="#FFFFFF", elevation=0,
-            shape=ft.RoundedRectangleBorder(radius=T.R),
-            padding=ft.Padding.symmetric(horizontal=18, vertical=0)))
-    btn.width = None
-    # design shadow: 0 6px 16px -6px rgba(106,77,255,.7)
-    if not disabled:
-        return _shadow_wrap(btn, T.VIOLET, 0.6, expand)
-    return _wrap_btn(btn, expand)
-
+    return _grad_button(text, icon, on_click, T.GRAD_PRIMARY, T.VIOLET, 0.6,
+                        expand=expand, disabled=disabled, height=46)
 
 
 def green_btn(text, icon=None, on_click=None, expand=False, height=42):
-    btn = ft.FilledButton(text, icon=icon, on_click=on_click, height=height,
-        style=ft.ButtonStyle(
-            bgcolor=T.GREEN, color="#FFFFFF", elevation=0,
-            shape=ft.RoundedRectangleBorder(radius=T.R),
-            padding=ft.Padding.symmetric(horizontal=16, vertical=0)))
-    # design shadow tuned for green
-    return _shadow_wrap(btn, T.GREEN, 0.5, expand)
+    return _grad_button(text, icon, on_click, T.GRAD_GREEN, T.GREEN, 0.5,
+                        expand=expand, height=height)
 
 def ghost_btn(text, icon=None, on_click=None, expand=False):
     btn = ft.OutlinedButton(text, icon=icon, on_click=on_click, height=46,
@@ -439,7 +458,7 @@ class QAStudio:
             st = self.nav_state.get(n["id"], "")
             is_active = (n["id"] == self.active)
             color = "#FFFFFF" if is_active else ("#B8B5C2" if st == "done" else T.RAIL_DIM)
-            bg = ft.Colors.with_opacity(0.16, T.VIOLET) if is_active else None
+            bg = None  # active items get a gradient instead (applied below)
             leading_icon = getattr(ft.Icons, n.get("icon", "CIRCLE"), ft.Icons.CIRCLE)
             icon_color = "#FFFFFF" if is_active else ("#B8B5C2" if st == "done" else T.RAIL_DIM)
             # trailing: ✓ when this stage is done; Report shows ✓ once a report
@@ -462,7 +481,7 @@ class QAStudio:
                                                    or self.last_report is not None)))
             # active indicator bar on the far left
             indicator = ft.Container(width=3, height=22,
-                                     bgcolor=(T.VIOLET if is_active else ft.Colors.TRANSPARENT),
+                                     bgcolor=("#FFFFFF" if is_active else ft.Colors.TRANSPARENT),
                                      border_radius=4, animate=200)
             def _nav_hover(e, base=bg):
                 try:
@@ -485,6 +504,10 @@ class QAStudio:
                     ], spacing=9),
                     padding=ft.Padding.only(left=6, right=12, top=12, bottom=12),
                     bgcolor=bg, border_radius=11,
+                    gradient=(grad(T.GRAD_NAV_ACT) if is_active else None),
+                    border=(ft.Border.all(1, ft.Colors.with_opacity(0.35, "#8C9BFF"))
+                            if is_active else None),
+                    shadow=(_btn_shadow(T.VIOLET, 0.4) if is_active else None),
                     offset=ft.Offset(0, 0), animate=150, animate_offset=150,
                     on_hover=(_nav_hover if (clickable and not is_active) else None),
                     on_click=(lambda e, nid=n["id"]: self.goto(nid)) if clickable else None,
@@ -494,7 +517,7 @@ class QAStudio:
         conn_text   = (T.disp_name(_prov) + " · Claude") if (self.connected and _prov=="anthropic")                       else (T.disp_name(_prov) if self.connected else "Not connected")
         conn_sub    = "Connected" if self.connected else "Enter credentials"
         return ft.Container(
-            width=244, bgcolor=T.RAIL,
+            width=244, bgcolor=T.RAIL, gradient=grad(T.GRAD_RAIL, diagonal=False),
             content=ft.Column([
                 ft.Container(
                     ft.Row([
@@ -507,7 +530,10 @@ class QAStudio:
                     ft.Row([
                         ft.Container(logo_img(38),
                                      width=38, height=38,
-                                     bgcolor=(None if _logo_b64() else T.VIOLET), border_radius=11,
+                                     bgcolor=(None if _logo_b64() else T.VIOLET),
+                                     gradient=(None if _logo_b64() else grad(T.GRAD_LOGO)),
+                                     border_radius=11,
+                                     shadow=_btn_shadow(T.STORY, 0.5),
                                      alignment=ft.Alignment.CENTER),
                         ft.Column([
                             ft.Text("QA Studio", size=15, weight=ft.FontWeight.BOLD, color=T.RAIL_INK),
@@ -631,6 +657,14 @@ class QAStudio:
                             padding=ft.Padding.symmetric(vertical=0, horizontal=24),
                             alignment=ft.Alignment.CENTER_LEFT,
                             border=ft.Border.only(bottom=ft.BorderSide(1, T.BORDER)),
+                            gradient=ft.LinearGradient(
+                                begin=ft.Alignment.TOP_CENTER,
+                                end=ft.Alignment.BOTTOM_CENTER,
+                                colors=["#FFFFFF", "#FBFCFF"]),
+                            shadow=ft.BoxShadow(
+                                spread_radius=0, blur_radius=18,
+                                offset=ft.Offset(0, 6),
+                                color=ft.Colors.with_opacity(0.05, "#2A3566")),
                             bgcolor="#FFFFFF")
 
     def shell(self, title, sub, body, right=None, badge=None):
