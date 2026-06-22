@@ -10,7 +10,6 @@ render routing). Shared UI helpers and the theme are reused from main.py via a
 deferred import so there is no circular import at load time.
 """
 import os, re, json, threading
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 import flet as ft
@@ -793,39 +792,28 @@ def _reload_plan_stories(app):
     app.ui_safe(app.render)
 
     def _work():
-        def _fetch_one(p):
-            # Derive sprint from the plan name first (no network call); only hit
-            # Azure if the name doesn't carry the sprint.
-            spr = _sprint_num(p.get("name", ""))
-            if not spr:
-                try:
-                    pj = E._azure_get(f"https://dev.azure.com/{E.AZURE_ORG}/{app.project}"
-                                      f"/_apis/testplan/plans/{p['id']}?api-version=7.0")
-                    itr = pj.get("iteration") or ""
-                    spr = _sprint_num(itr) or itr.split("\\")[-1]
-                except Exception:
-                    spr = ""
-            p["sprint"] = spr
+        agg, seen = [], set()
+        for p in plans:
+            # the plan's own sprint (its iteration) — shown on the plan chip
+            try:
+                pj = E._azure_get(f"https://dev.azure.com/{E.AZURE_ORG}/{app.project}"
+                                  f"/_apis/testplan/plans/{p['id']}?api-version=7.0")
+                itr = pj.get("iteration") or ""
+                p["sprint"] = _sprint_num(itr) or _sprint_num(p.get("name", "")) \
+                    or itr.split("\\")[-1]
+            except Exception:
+                p.setdefault("sprint", "")
             try:
                 stories = E.fetch_stories_in_plan(app.project, p["id"])
             except Exception:
                 stories = []
-            return p, stories
-
-        # Fetch every selected plan's stories in parallel (was sequential).
-        try:
-            with ThreadPoolExecutor(max_workers=min(8, len(plans))) as ex:
-                results = list(ex.map(_fetch_one, plans))
-        except Exception:
-            results = [_fetch_one(p) for p in plans]
-
-        agg, seen = [], set()
-        for p, stories in results:
             for s in stories:
-                key = (p["id"], s["id"])
+                key = s["id"]   # dedupe by story id (a story in 2 plans = one entry)
                 if key in seen:
                     continue
                 seen.add(key)
+                # group under the PLAN's sprint (what the user picked), not the
+                # story's own iteration — so only selected sprints appear
                 agg.append({"id": s["id"], "title": s.get("title", ""),
                             "sprint": p.get("sprint", "") or _sprint_num(s.get("sprint", "")),
                             "plan_id": p["id"]})
@@ -1601,12 +1589,22 @@ def screen(app):
                 app._reg_res_names.append(nm)
         name_field.value = ""
         app._reg_export_msg = None
-        app.render()
+        try:   # in-place update keeps the scroll position (full render snaps to top)
+            name_chips.controls = [_res_chip(n, (lambda e, x=n: _remove_name(x)))
+                                   for n in app._reg_res_names]
+            name_chips.update(); name_field.update()
+        except Exception:
+            app.render()
 
     def _remove_name(nm):
         app._reg_res_names = [n for n in app._reg_res_names if n != nm]
         app._reg_export_msg = None
-        app.render()
+        try:
+            name_chips.controls = [_res_chip(n, (lambda e, x=n: _remove_name(x)))
+                                   for n in app._reg_res_names]
+            name_chips.update()
+        except Exception:
+            app.render()
 
     def _on_count(e):
         v = (count_field.value or "").strip()
@@ -1761,6 +1759,7 @@ def screen(app):
 
     def _open_plans():
         app._reg_plan_open = not app._reg_plan_open
+        app._reg_story_open = False
         app.render()
 
     plan_picker = (
@@ -1803,6 +1802,7 @@ def screen(app):
 
     def _open_stories():
         app._reg_story_open = not app._reg_story_open
+        app._reg_plan_open = False
         app.render()
 
     _have_plans = bool(app._reg_plans_selected)
@@ -1852,15 +1852,15 @@ def screen(app):
         sec_head("1", "Source & stories"),
         ft.Container(height=10),
         ft.Column([field_label("Test plans", req=True), plan_picker], spacing=6),
-        ft.Container(plan_chips, padding=ft.Padding.only(top=10),
-                     visible=bool(app._reg_plans_selected)),
+        ft.Container(ft.Column([plan_chips], scroll=ft.ScrollMode.AUTO), height=150,
+                     padding=ft.Padding.only(top=10), visible=bool(app._reg_plans_selected)),
         ft.Text(f"{len(app._reg_plans_selected)} plan(s) selected", size=11,
                 color=T.INK_3, weight=ft.FontWeight.BOLD,
                 visible=bool(app._reg_plans_selected)),
         ft.Container(height=14),
         ft.Column([field_label("Stories", req=True), story_picker], spacing=6),
-        ft.Container(story_chips, padding=ft.Padding.only(top=10),
-                     visible=bool(app._reg_selected)),
+        ft.Container(ft.Column([story_chips], scroll=ft.ScrollMode.AUTO), height=150,
+                     padding=ft.Padding.only(top=10), visible=bool(app._reg_selected)),
         ft.Text(f"{len(app._reg_selected)} stories selected", size=11,
                 color=T.INK_3, weight=ft.FontWeight.BOLD),
     ], spacing=0))
@@ -2114,7 +2114,7 @@ def screen(app):
             ft.Container(height=8), exports, email_row, status,
         ], spacing=0))
 
-    calc_btn = primary_btn("Calculating…" if app._reg_busy else "Generate Regression Plan",
+    calc_btn = primary_btn("Generating…" if app._reg_busy else "Generate Regression Plan",
                            icon=ft.Icons.CALCULATE, on_click=_calculate,
                            disabled=app._reg_busy or not app._reg_selected)
     calc_note = ft.Container()
