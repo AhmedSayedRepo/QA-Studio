@@ -955,6 +955,17 @@ def _cp_load_stories(app):
                 agg.append({"id": s["id"], "title": s.get("title", ""),
                             "hours": 0.0, "assignee": ""})
         app._cp_rows = agg
+        # Pull real Azure DevOps priority (+ state) for these stories so the plan
+        # table and email show P1–P4 like the Regression Plan report (not a bare "P").
+        try:
+            meta = _fetch_meta(app, [int(r["id"]) for r in agg])
+            for r in agg:
+                m = meta.get(int(r["id"]), {})
+                r["priority"] = m.get("priority", DEFAULT_PRIORITY)
+                if m.get("state"):
+                    r["state"] = m["state"]
+        except Exception:
+            pass
         _cp_estimate_and_assign(app)
         app._cp_stories_loading = False
         app.ui_safe(app.render)
@@ -991,8 +1002,8 @@ def _cp_payload(app):
     """Build the same payload shape plan_payload() returns, from the sprint rows —
     so every exporter and the email path work unchanged."""
     names = list(app._cp_res_names or [])
-    rows = [{"id": r["id"], "title": r.get("title", ""), "state": "",
-             "priority": "", "cases": 0, "boost": 1.0,
+    rows = [{"id": r["id"], "title": r.get("title", ""), "state": r.get("state", ""),
+             "priority": r.get("priority", DEFAULT_PRIORITY), "cases": 0, "boost": 1.0,
              "hours": round(float(r.get("hours", 0) or 0), 2),
              "assignee": r.get("assignee", "")} for r in (app._cp_rows or [])]
     total_hours = round(sum(r["hours"] for r in rows), 2)

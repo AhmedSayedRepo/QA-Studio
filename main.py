@@ -672,6 +672,15 @@ class QAStudio:
             body.clip_behavior = ft.ClipBehavior.HARD_EDGE
         except Exception:
             pass
+        # Breathing gap under the header: a spacer that SCROLLS WITH the content,
+        # inserted as the first child of the body. The scroll area is clipped at
+        # exactly the header's bottom edge, so this never leaves an uncovered band
+        # (which is what top-padding > HEADER_H did).
+        try:
+            if hasattr(body, "controls") and isinstance(body.controls, list):
+                body.controls.insert(0, ft.Container(height=18))
+        except Exception:
+            pass
         try:
             body.on_scroll = self._track_scroll
             self._left_scroll = body
@@ -688,7 +697,7 @@ class QAStudio:
                 ft.Stack([
                     ft.Container(
                         body, expand=True,
-                        padding=ft.Padding.only(top=HEADER_H + 18, left=22, right=22, bottom=22),
+                        padding=ft.Padding.only(top=HEADER_H, left=22, right=22, bottom=22),
                         clip_behavior=ft.ClipBehavior.HARD_EDGE),
                     header,
                 ], expand=True),
