@@ -610,6 +610,13 @@ class QAStudio:
                             bgcolor="#FFFFFF")
 
     def shell(self, title, sub, body, right=None, badge=None):
+        # The scrolling body must clip its OWN overflow — an ancestor Container's
+        # clip does NOT contain a scroll viewport's overflow in Flet, which let
+        # scrolled content bleed up into the strip under the header.
+        try:
+            body.clip_behavior = ft.ClipBehavior.HARD_EDGE
+        except Exception:
+            pass
         return ft.Row([
             self.rail(),
             ft.Container(

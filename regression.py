@@ -1427,6 +1427,16 @@ def screen(app):
         app._reg_export_msg = app._reg_calc_msg = None
         app.render()
 
+    def _delete_row(sid):
+        # inline-delete from the calculated plan table + recalculate
+        def _d(e):
+            app._reg_selected_rows = [r for r in (app._reg_selected_rows or [])
+                                      if r.get("id") != sid]
+            app._reg_selected = [s for s in app._reg_selected if s["id"] != sid]
+            app._reg_export_msg = app._reg_calc_msg = None
+            app.render()
+        return _d
+
     def _use_setup_selection(e):
         # ensure the Setup plan is among the selected plans so its cases count
         if app.plan_id and app.plan_id not in selected_plan_ids:
@@ -1755,7 +1765,8 @@ def screen(app):
                                  color=T.INK_3), expand=expand)
 
         header = ft.Container(
-            ft.Row([_hd("STORY", 64), _hd("TITLE", 0, expand=True), _hd("STATE", 84),
+            ft.Row([ft.Container(width=34),
+                    _hd("STORY", 64), _hd("TITLE", 0, expand=True), _hd("STATE", 84),
                     _hd("PRI", 44), _hd("CASES", 52), _hd("HOURS", 128),
                     _hd("ASSIGNEE", 140)], spacing=4),
             padding=ft.Padding.symmetric(vertical=9, horizontal=8), bgcolor=T.CARD_2,
@@ -1776,6 +1787,12 @@ def screen(app):
             ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER)
             body_rows.append(ft.Container(
                 ft.Row([
+                    _cell(34, ft.IconButton(
+                        icon=ft.Icons.DELETE_OUTLINE, icon_size=18, icon_color=T.RED,
+                        tooltip="Remove story & recalculate",
+                        on_click=_delete_row(s["id"]), width=34, height=34,
+                        style=ft.ButtonStyle(padding=ft.Padding.all(0),
+                                             shape=ft.RoundedRectangleBorder(radius=8)))),
                     _cell(64, _txt(str(s["id"]), font_family=T.F_MONO,
                                    color=T.VIOLET_INK, weight=ft.FontWeight.BOLD)),
                     _cell(0, _txt(s["title"] or "—", color=T.INK, no_wrap=False),
@@ -1833,12 +1850,23 @@ def screen(app):
                        spacing=8),
                 padding=10, bgcolor=T.CARD_2, border_radius=T.R)
         else:
+            def _exp_btn(label, icon, color, fmt):
+                return ft.OutlinedButton(
+                    content=ft.Row([ft.Icon(icon, size=17, color=color),
+                                    ft.Text(label, size=13.5, weight=ft.FontWeight.W_600,
+                                            color=T.INK)], spacing=8, tight=True),
+                    on_click=_export(fmt), height=44,
+                    style=ft.ButtonStyle(
+                        bgcolor={"": "#FFFFFF"},
+                        side=ft.BorderSide(1, T.BORDER),
+                        shape=ft.RoundedRectangleBorder(radius=T.R),
+                        padding=ft.Padding.symmetric(horizontal=15, vertical=0)))
             exports = ft.Row([
-                green_btn("Word", icon=ft.Icons.DESCRIPTION, on_click=_export("docx")),
-                ghost_btn("Excel", icon=ft.Icons.GRID_ON, on_click=_export("xlsx")),
-                ghost_btn("JSON", icon=ft.Icons.DATA_OBJECT, on_click=_export("json")),
-                ghost_btn("PDF", icon=ft.Icons.PICTURE_AS_PDF, on_click=_export("pdf")),
-            ], spacing=10, wrap=True)
+                _exp_btn("Word", ft.Icons.DESCRIPTION, T.BRAND_GRAD_1, "docx"),
+                _exp_btn("Excel", ft.Icons.TABLE_CHART, T.GREEN, "xlsx"),
+                _exp_btn("PDF", ft.Icons.PICTURE_AS_PDF, T.RED, "pdf"),
+                _exp_btn("JSON", ft.Icons.DATA_OBJECT, T.STORY, "json"),
+            ], spacing=8, wrap=True)
 
         status = ft.Container()
         if app._reg_export_msg:
