@@ -5190,9 +5190,7 @@ def _apply_update_zip(cb):
     except Exception:
         pass
     cb("Update installed.", "ok")
-    schedule_restart()
-    return (True, "Updated to the latest version. QA Studio will reopen "
-                  "automatically when you close this window.")
+    return (True, "Updated to the latest version.")
 
 def apply_update(cb=None):
     """Self-update. For a frozen .exe build, download + swap the binary; for a

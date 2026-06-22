@@ -951,12 +951,16 @@ def _create_screen(app):
         _cp_load_stories(app)
 
     sprint_dd = searchable_dropdown(
-        hint=("Loading sprints…" if app._cp_iter_loading else "Search & pick a sprint"),
+        hint_text=("Loading sprints…" if app._cp_iter_loading
+                   else "Search & pick a sprint"),
         options=[ft.DropdownOption(key=it["path"],
                                    text=(_sprint_num(it["name"]) or it["name"])
                                    + f"  ·  {it['path']}")
                  for it in app._cp_iterations],
-        on_change=_pick_sprint, disabled=app._cp_iter_loading)
+        on_select=_pick_sprint, border_color=T.BORDER, focused_border_color=T.VIOLET,
+        border_radius=T.R,
+        content_padding=ft.Padding.symmetric(vertical=12, horizontal=8),
+        text_size=13, filled=True, bgcolor=T.CARD, expand=True)
 
     picked = ft.Container()
     if app._cp_sprint_name:

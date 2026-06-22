@@ -439,7 +439,7 @@ class QAStudio:
             ix = "✓" if _is_done else n["ix"]
             ixcolor = "#A99BFF" if is_active else (T.GREEN if _is_done else "#56535F")
             clickable = (st == "done" or is_active
-                         or (n["id"] == "report" and self.last_report is not None)
+                         or (n["id"] == "report")
                          or (n["id"] == "setup")
                          or (n["id"] == "automation")
                          or (n["id"] == "regression")
@@ -1009,14 +1009,14 @@ class QAStudio:
                     ft.Text("QA Studio has been updated to the latest version.",
                             size=13, color=T.INK, weight=ft.FontWeight.BOLD),
                     ft.Container(height=4),
-                    ft.Text("Close the app and open it again from your Desktop "
-                            "shortcut to start using the new version.",
+                    ft.Text("QA Studio will restart to finish updating — it "
+                            "closes and reopens on the new version automatically.",
                             size=12.5, color=T.INK_2, weight=ft.FontWeight.W_500),
                 ], spacing=2, tight=True),
                 width=430),
             actions=[
-                green_btn("Close QA Studio", on_click=lambda e: self._quit_after_update()),
-                ghost_btn("Keep using old version", on_click=lambda e: self._close_dialog()),
+                green_btn("Restart now", on_click=lambda e: self._restart_app()),
+                ghost_btn("Later", on_click=lambda e: self._close_dialog()),
             ],
             actions_alignment=ft.MainAxisAlignment.END,
         )
