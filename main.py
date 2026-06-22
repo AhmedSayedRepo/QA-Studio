@@ -604,31 +604,36 @@ class QAStudio:
         if right:
             row.append(right)
         return ft.Container(ft.Row(row, spacing=14, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                            padding=ft.Padding.symmetric(vertical=18, horizontal=24),
+                            height=94,
+                            padding=ft.Padding.symmetric(vertical=0, horizontal=24),
                             alignment=ft.Alignment.CENTER_LEFT,
                             border=ft.Border.only(bottom=ft.BorderSide(1, T.BORDER)),
                             bgcolor="#FFFFFF")
 
     def shell(self, title, sub, body, right=None, badge=None):
-        # The scrolling body must clip its OWN overflow — an ancestor Container's
-        # clip does NOT contain a scroll viewport's overflow in Flet, which let
-        # scrolled content bleed up into the strip under the header.
+        # Sticky-header pattern: the opaque header is PINNED ON TOP of the scroll
+        # area in a Stack, so scrolled content passes BEHIND it and is covered.
+        # (Container clip does not contain a scroll viewport's overflow in Flet,
+        # which is why every clip-based attempt left a band under the header.)
         try:
             body.clip_behavior = ft.ClipBehavior.HARD_EDGE
         except Exception:
             pass
+        HEADER_H = 94
+        header = self.topbar(title, sub, right, badge)
+        header.top = 0
+        header.left = 0
+        header.right = 0
         return ft.Row([
             self.rail(),
             ft.Container(
-                ft.Column([
-                    self.topbar(title, sub, right, badge),
+                ft.Stack([
                     ft.Container(
-                        ft.Container(body, expand=True,
-                                     padding=ft.Padding.symmetric(horizontal=22),
-                                     clip_behavior=ft.ClipBehavior.HARD_EDGE),
-                        expand=True, padding=ft.Padding.only(top=22),
+                        body, expand=True,
+                        padding=ft.Padding.only(top=HEADER_H + 12, left=22, right=22),
                         clip_behavior=ft.ClipBehavior.HARD_EDGE),
-                ], spacing=0, expand=True),
+                    header,
+                ], expand=True),
                 expand=True,
                 gradient=ft.LinearGradient(
                     begin=ft.Alignment.TOP_CENTER, end=ft.Alignment.BOTTOM_CENTER,
