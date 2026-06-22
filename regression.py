@@ -753,6 +753,8 @@ def locked_state(app, title, sub, msg, icon=None, steps=None):
 def _init(app):
     for k, v in (("_reg_plans_selected", []), ("_reg_plan_stories", []),
                  ("_reg_stories_loading", False), ("_reg_selected", []),
+                 ("_reg_plan_open", False), ("_reg_story_open", False),
+                 ("_cp_sprint_open", False),
                  ("_reg_selected_rows", []), ("_reg_res_names", []),
                  ("_reg_res_count", None), ("_reg_busy", False),
                  ("_reg_export_msg", None), ("_reg_calc_msg", None),
@@ -858,44 +860,58 @@ def _sprint_sort_key(it):
     return int(m.group(0)) if m else -1
 
 
-def _checkbox_multiselect(options, selected, on_toggle, on_all, *, height=240,
-                          empty="No options."):
-    """A checkbox list with a 'Select all' control.
-    options: list of (key, label); selected: set/list of keys;
-    on_toggle(key, checked); on_all(checked)."""
+def _checkbox_multiselect(options, selected, on_toggle, on_all, *, is_open, on_open,
+                          placeholder="Select…", height=240, empty="No options."):
+    """A dropdown-style checkbox multiselect with a 'Select all' control.
+    Collapsed by default (a field you click to open).
+    options: list of (key, label); selected: keys; on_toggle(key, checked);
+    on_all(checked); is_open: bool; on_open(): toggles open state."""
     sel = set(selected or [])
     keys = [k for k, _ in options]
     all_on = bool(keys) and all(k in sel for k in keys)
+
+    # the dropdown-like field (always visible)
+    field = ft.Container(
+        ft.Row([ft.Text((f"{len(sel)} selected" if sel else placeholder),
+                        size=13, color=(T.INK if sel else T.INK_3), expand=True),
+                ft.Icon(ft.Icons.KEYBOARD_ARROW_UP if is_open
+                        else ft.Icons.KEYBOARD_ARROW_DOWN, size=20, color=T.INK_3)],
+               vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        on_click=lambda e: on_open(),
+        padding=ft.Padding.symmetric(vertical=12, horizontal=12),
+        bgcolor=T.CARD, border=ft.Border.all(1, T.VIOLET if is_open else T.BORDER),
+        border_radius=T.R)
+    if not is_open:
+        return field
+
     head = ft.Container(
         ft.Row([
-            ft.Checkbox(value=all_on, on_change=lambda e: on_all(e.control.value),
-                        fill_color=T.VIOLET),
+            ft.Checkbox(value=all_on, on_change=lambda e: on_all(e.control.value)),
             ft.Text("Select all", size=12.5, weight=ft.FontWeight.BOLD, color=T.INK),
             ft.Container(expand=True),
             ft.Text(f"{len(sel)} selected", size=11.5, color=T.INK_3,
                     weight=ft.FontWeight.BOLD),
         ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-        padding=ft.Padding.symmetric(vertical=8, horizontal=10),
-        bgcolor=T.CARD_2, border_radius=ft.BorderRadius.only(top_left=T.R, top_right=T.R))
+        padding=ft.Padding.symmetric(vertical=8, horizontal=10), bgcolor=T.CARD_2,
+        border_radius=ft.BorderRadius.only(top_left=T.R, top_right=T.R))
     rows = []
     for k, label in options:
         rows.append(ft.Container(
             ft.Row([ft.Checkbox(value=(k in sel),
-                                on_change=(lambda e, kk=k: on_toggle(kk, e.control.value)),
-                                fill_color=T.VIOLET),
-                    ft.Text(label, size=12.5, color=T.INK, expand=True,
-                            no_wrap=False)],
+                                on_change=(lambda e, kk=k: on_toggle(kk, e.control.value))),
+                    ft.Text(label, size=12.5, color=T.INK, expand=True, no_wrap=False)],
                    spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER),
             padding=ft.Padding.only(left=10, right=10, top=2, bottom=2)))
     body = ft.Column(rows, spacing=0, scroll=ft.ScrollMode.AUTO) if rows else \
         ft.Container(ft.Text(empty, size=12, color=T.INK_3),
                      padding=14, alignment=ft.Alignment.CENTER)
-    return ft.Column([
+    panel = ft.Column([
         head,
         ft.Container(body, height=height, padding=ft.Padding.symmetric(vertical=4),
                      border=ft.Border.all(1, T.BORDER),
                      border_radius=ft.BorderRadius.only(bottom_left=T.R, bottom_right=T.R)),
     ], spacing=0)
+    return ft.Column([field, ft.Container(panel, padding=ft.Padding.only(top=6))], spacing=0)
 
 
 def _cp_load_stories(app):
@@ -1052,6 +1068,10 @@ def _create_screen(app):
         app._cp_sprint_paths = [x["path"] for x in app._cp_iterations] if checked else []
         _after_sprint_change()
 
+    def _open_sprints():
+        app._cp_sprint_open = not app._cp_sprint_open
+        app.render()
+
     sprint_picker = (
         ft.Container(_txt("Loading sprints…", color=T.INK_3, size=12), padding=10)
         if app._cp_iter_loading else
@@ -1059,6 +1079,8 @@ def _create_screen(app):
             [(it["path"], (_sprint_num(it["name"]) or it["name"]) + f"   ·   {it['path']}")
              for it in app._cp_iterations],
             app._cp_sprint_paths, _toggle_sprint, _all_sprints,
+            is_open=app._cp_sprint_open, on_open=_open_sprints,
+            placeholder="Select sprint(s)",
             empty="No sprints found for this project."))
 
     picked = ft.Container()
@@ -1725,13 +1747,18 @@ def screen(app):
         app._reg_export_msg = app._reg_calc_msg = None
         _reload_plan_stories(app)
 
+    def _open_plans():
+        app._reg_plan_open = not app._reg_plan_open
+        app.render()
+
     plan_picker = (
         ft.Container(_txt("Loading test plans…", color=T.INK_3, size=12), padding=10)
         if app._reg_plans_loading else
         _checkbox_multiselect(
             [(str(p["id"]), f"[{p['id']}] {p['name']}") for p in (app._plans or [])],
             [str(p["id"]) for p in app._reg_plans_selected],
-            _toggle_plan, _all_plans, height=200,
+            _toggle_plan, _all_plans, is_open=app._reg_plan_open, on_open=_open_plans,
+            placeholder="Select test plan(s)", height=200,
             empty="No test plans found for this project."))
 
     # ── Stories: checkbox multiselect with Select all ──
@@ -1762,6 +1789,10 @@ def screen(app):
         app._reg_export_msg = app._reg_calc_msg = None
         app.render()
 
+    def _open_stories():
+        app._reg_story_open = not app._reg_story_open
+        app.render()
+
     _have_plans = bool(app._reg_plans_selected)
     if app._reg_stories_loading:
         story_picker = ft.Container(_txt("Loading stories…", color=T.INK_3, size=12), padding=10)
@@ -1775,7 +1806,8 @@ def screen(app):
               + f"[{s['id']}] {(s['title'] or '')[:60]}")
              for s in app._reg_plan_stories],
             [str(s["id"]) for s in app._reg_selected],
-            _toggle_story, _all_stories, height=260,
+            _toggle_story, _all_stories, is_open=app._reg_story_open, on_open=_open_stories,
+            placeholder="Select stories", height=260,
             empty="No stories in the selected plan(s).")
 
     def _chip(label, on_close):
