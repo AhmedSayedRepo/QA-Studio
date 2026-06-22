@@ -711,24 +711,21 @@ def locked_state(app, title, sub, msg, icon=None, steps=None):
     body = ft.Container(
         ft.Column([
             scan_card,
-            ft.Container(height=16), pill,
-            ft.Container(height=14),
+            ft.Container(height=14), pill,
+            ft.Container(height=12),
             ft.Text("A few things first", size=20, weight=ft.FontWeight.BOLD,
                     color=T.INK),
             ft.Container(height=8),
             ft.Container(ft.Text(msg, size=13.5, color=T.INK_2,
                                  text_align=ft.TextAlign.CENTER), width=470),
-            ft.Container(height=28), path,
-            ft.Container(height=30),
+            ft.Container(height=20), path,
+            ft.Container(height=22),
             primary_btn("Go to Setup", icon=ft.Icons.ARROW_FORWARD,
                         on_click=lambda e: app.goto("setup")),
-            ft.Container(height=14),
-            ft.Text("Takes about a minute · your credentials stay on this device",
-                    size=12, color=T.INK_3, weight=ft.FontWeight.W_500),
         ], horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-           alignment=ft.MainAxisAlignment.CENTER),
+           alignment=ft.MainAxisAlignment.CENTER, tight=True),
         alignment=ft.Alignment.CENTER, expand=True,
-        padding=ft.Padding.symmetric(vertical=50, horizontal=20))
+        padding=ft.Padding.symmetric(vertical=24, horizontal=20))
     return app.shell(title, sub, body)
 
 

@@ -451,11 +451,14 @@ class QAStudio:
                                      bgcolor=(T.VIOLET if is_active else ft.Colors.TRANSPARENT),
                                      border_radius=4, animate=200)
             def _nav_hover(e, base=bg):
-                hov = (e.data == "true")
-                e.control.bgcolor = (ft.Colors.with_opacity(0.09, "#FFFFFF") if hov else base)
-                e.control.offset = (ft.Offset(0.015, 0) if hov else ft.Offset(0, 0))
-                try: e.control.update()
-                except Exception: pass
+                try:
+                    hov = (e.data == "true")
+                    e.control.bgcolor = (ft.Colors.with_opacity(0.14, T.VIOLET)
+                                         if hov else base)
+                    e.control.offset = ft.Offset(0.02, 0) if hov else ft.Offset(0, 0)
+                    e.control.update()
+                except Exception:
+                    pass
             nav_items.append(
                 ft.Container(
                     ft.Row([
