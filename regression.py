@@ -751,6 +751,8 @@ def _init(app):
                  ("_cp_stories_loading", False),
                  ("_cp_rows", []), ("_cp_res_names", []),
                  ("_cp_est_min", 1.0), ("_cp_est_max", 8.0),
+                 ("_cp_res_count", None), ("_cp_calculated", False),
+                 ("_cp_calc_msg", None),
                  ("_cp_msg", None), ("_cp_assigning", False)):
         if not hasattr(app, k):
             setattr(app, k, v)
@@ -960,7 +962,11 @@ def _create_screen(app):
                       primary_btn, searchable_dropdown)
     _cp_load_iterations(app)
 
-    # ── sprint picker ──
+    names = list(app._cp_res_names or [])
+    count = app._cp_res_count
+    mismatch = bool(count) and bool(names) and count != len(names)
+
+    # ── Card 1: sprint ──
     def _pick_sprint(e):
         v = (sprint_dd.value or "").strip()
         it = next((x for x in app._cp_iterations if x["path"] == v), None)
@@ -968,6 +974,8 @@ def _create_screen(app):
             return
         app._cp_sprint_path = it["path"]
         app._cp_sprint_name = _sprint_num(it["name"]) or it["name"]
+        app._cp_calculated = False
+        app._cp_calc_msg = None
         _cp_load_stories(app)
 
     sprint_dd = searchable_dropdown(
@@ -986,8 +994,9 @@ def _create_screen(app):
     if app._cp_sprint_name:
         picked = ft.Container(
             ft.Row([ft.Icon(ft.Icons.CHECK_CIRCLE, size=15, color=T.GREEN),
-                    _txt(f"{app._cp_sprint_name}", color=T.INK, weight=ft.FontWeight.BOLD),
-                    _txt(f"· {len(app._cp_rows)} stories", color=T.INK_3)],
+                    _txt(app._cp_sprint_name, color=T.INK, weight=ft.FontWeight.BOLD),
+                    _txt(("Loading stories…" if app._cp_stories_loading
+                          else f"· {len(app._cp_rows)} stories"), color=T.INK_3)],
                    spacing=8), padding=ft.Padding.only(top=10))
 
     card1 = card(ft.Column([
@@ -995,29 +1004,85 @@ def _create_screen(app):
         ft.Container(height=10),
         ft.Column([field_label("Sprint", req=True), sprint_dd], spacing=6),
         picked,
-        (ft.Container(_txt("Loading stories…", color=T.INK_3, size=12),
-                      padding=ft.Padding.only(top=10))
-         if app._cp_stories_loading else ft.Container()),
     ], spacing=0))
 
-    # ── resources + estimate range ──
-    def _on_res(e):
-        raw = e.control.value or ""
-        app._cp_res_names = [n.strip() for n in re.split(r"[,\n]", raw) if n.strip()]
+    # ── Card 2: resources (count + names + chips), like the Regression screen ──
+    def _add_name(e):
+        for piece in re.split(r"[,\n]+", name_field.value or ""):
+            nm = piece.strip()
+            if nm and nm not in app._cp_res_names:
+                app._cp_res_names.append(nm)
+        name_field.value = ""
+        app._cp_calculated = False
+        app._cp_msg = None
+        app.render()
+
+    def _remove_name(nm):
+        app._cp_res_names = [n for n in app._cp_res_names if n != nm]
+        app._cp_calculated = False
+        app.render()
+
+    def _on_count(e):
+        v = (count_field.value or "").strip()
+        app._cp_res_count = int(v) if v.isdigit() and int(v) > 0 else None
+        app.render()
 
     def _on_min(e):
-        try: app._cp_est_min = float(e.control.value or 1)
-        except Exception: pass
+        try:
+            app._cp_est_min = float(e.control.value or 1)
+        except Exception:
+            pass
 
     def _on_max(e):
-        try: app._cp_est_max = float(e.control.value or 8)
-        except Exception: pass
+        try:
+            app._cp_est_max = float(e.control.value or 8)
+        except Exception:
+            pass
 
-    res_field = ft.TextField(
-        value=", ".join(app._cp_res_names), on_change=_on_res, on_blur=lambda e: app.ui_safe(app.render),
-        hint_text="Ahmed, Nada, Wafaa", multiline=False, text_size=13,
-        border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
-        content_padding=ft.Padding.symmetric(vertical=12, horizontal=10), expand=True)
+    count_field = ft.TextField(
+        value=("" if count is None else str(count)), hint_text="e.g. 3",
+        keyboard_type=ft.KeyboardType.NUMBER, on_blur=_on_count, on_submit=_on_count,
+        width=92, text_size=13,
+        border_color=(T.RED if mismatch else T.BORDER), focused_border_color=T.VIOLET,
+        border_radius=T.R,
+        content_padding=ft.Padding.symmetric(vertical=12, horizontal=10))
+    name_field = ft.TextField(
+        hint_text="Type a tester's name, press Enter (or paste comma-separated)",
+        on_submit=_add_name, expand=True, text_size=13, border_color=T.BORDER,
+        focused_border_color=T.VIOLET, border_radius=T.R,
+        content_padding=ft.Padding.symmetric(vertical=12, horizontal=10))
+
+    def _res_chip(nm):
+        init, col = _av(nm)
+        return ft.Container(
+            ft.Row([
+                ft.Container(ft.Text(init, size=10, weight=ft.FontWeight.BOLD,
+                                     color="#FFFFFF"),
+                             width=20, height=20, bgcolor=col, border_radius=20,
+                             alignment=ft.Alignment.CENTER),
+                ft.Text(nm, size=12.5, weight=ft.FontWeight.BOLD, color=T.INK),
+                ft.GestureDetector(
+                    content=ft.Icon(ft.Icons.CLOSE, size=12, color=T.INK_3),
+                    on_tap=(lambda e, x=nm: _remove_name(x)),
+                    mouse_cursor=ft.MouseCursor.CLICK)],
+               spacing=7, tight=True),
+            padding=ft.Padding.only(left=5, right=9, top=4, bottom=4),
+            bgcolor=T.CARD_2, border_radius=999, border=ft.Border.all(1, T.BORDER_2))
+
+    name_chips = ft.Row([_res_chip(n) for n in app._cp_res_names],
+                        wrap=True, spacing=8, run_spacing=8)
+
+    warn = ft.Container()
+    if mismatch:
+        more = "more names than the number" if len(names) > count else \
+               "fewer names than the number"
+        warn = ft.Container(
+            ft.Row([ft.Icon(ft.Icons.WARNING_AMBER, size=15, color=T.AMBER),
+                    ft.Text(f"You set {count} resource(s) but added {len(names)} "
+                            f"name(s) — {more}.", size=12, color=T.AMBER,
+                            weight=ft.FontWeight.W_500, expand=True)], spacing=8),
+            padding=10, bgcolor=T.AMBER_SOFT, border_radius=T.R,
+            border=ft.Border.all(1, "#EAD9A8"), margin=ft.Margin.only(top=10))
 
     def _num(v, on_change):
         return ft.TextField(value=str(v), on_change=on_change, width=92, text_size=13,
@@ -1025,31 +1090,63 @@ def _create_screen(app):
                             border_radius=T.R, keyboard_type=ft.KeyboardType.NUMBER,
                             content_padding=ft.Padding.symmetric(vertical=12, horizontal=10))
 
-    def _regen(e):
-        _cp_estimate_and_assign(app)
-        app.ui_safe(app.render)
-
     card2 = card(ft.Column([
-        sec_head("2", "Resources & estimate",
-                 right=ghost_btn("Re-roll estimate", icon=ft.Icons.CASINO,
-                                 on_click=_regen) if app._cp_rows else None),
+        sec_head("2", "Resources & estimate"),
         ft.Container(height=10),
-        ft.Column([field_label("Resource names", req=True), res_field], spacing=6),
-        ft.Container(height=12),
         ft.Row([
-            ft.Column([field_label("Min h / story"), _num(app._cp_est_min, _on_min)], spacing=6),
-            ft.Column([field_label("Max h / story"), _num(app._cp_est_max, _on_max)], spacing=6),
+            ft.Column([field_label("Count"), count_field], spacing=6, tight=True),
+            ft.Column([field_label("Add a name"),
+                       ft.Row([name_field,
+                               green_btn("Add", icon=ft.Icons.ADD, on_click=_add_name)],
+                              spacing=8)], spacing=6, expand=True),
+        ], spacing=14, vertical_alignment=ft.CrossAxisAlignment.START),
+        ft.Container(name_chips, padding=ft.Padding.only(top=10),
+                     visible=bool(app._cp_res_names)),
+        ft.Text(f"{len(app._cp_res_names)} resource(s)", size=11, color=T.INK_3,
+                weight=ft.FontWeight.BOLD, visible=bool(app._cp_res_names)),
+        warn,
+        ft.Container(height=14),
+        ft.Row([
+            ft.Column([field_label("Min h / story"), _num(app._cp_est_min, _on_min)],
+                      spacing=6),
+            ft.Column([field_label("Max h / story"), _num(app._cp_est_max, _on_max)],
+                      spacing=6),
             ft.Container(
                 _txt("Each story gets a random estimate in this range (stable per "
-                     "story). Hours and assignees stay editable in the table below.",
+                     "story). Hours & assignees stay editable in the plan below.",
                      color=T.INK_3, size=11.5), expand=True,
                 padding=ft.Padding.only(left=6, top=18)),
         ], spacing=14, vertical_alignment=ft.CrossAxisAlignment.START),
     ], spacing=0))
 
-    # ── results (only once we have rows + resources) ──
+    # ── Assign & Estimate button ──
+    def _calculate(e):
+        if not app._cp_rows:
+            app._cp_calc_msg = "Pick a sprint with stories first."
+            app.render(); return
+        if not app._cp_res_names:
+            app._cp_calc_msg = "Add at least one resource name first."
+            app.render(); return
+        app._cp_calc_msg = None
+        _cp_estimate_and_assign(app)      # random estimate + random assignment
+        app._cp_calculated = True
+        app.render()
+
+    calc_btn = primary_btn("Assign & Estimate Effort", icon=ft.Icons.CALCULATE,
+                           on_click=_calculate,
+                           disabled=not (app._cp_rows and app._cp_res_names))
+    calc_note = ft.Container()
+    if app._cp_calc_msg:
+        calc_note = ft.Container(
+            ft.Row([ft.Icon(ft.Icons.INFO_OUTLINE, size=15, color=T.AMBER),
+                    ft.Text(app._cp_calc_msg, size=12, color=T.AMBER,
+                            weight=ft.FontWeight.W_500, expand=True)], spacing=8),
+            padding=10, bgcolor=T.AMBER_SOFT, border_radius=T.R,
+            border=ft.Border.all(1, "#EAD9A8"), margin=ft.Margin.only(top=10))
+
+    # ── results / plan (after Assign & Estimate) ──
     results = None
-    if app._cp_rows and app._cp_res_names:
+    if app._cp_calculated and app._cp_rows and app._cp_res_names:
         d = plan_payload(app)
 
         def _edit_hours(sid):
@@ -1060,18 +1157,16 @@ def _create_screen(app):
                     return
                 for r in app._cp_rows:
                     if r["id"] == sid:
-                        r["hours"] = round(v, 2)
-                        break
-                app.ui_safe(app.render)
+                        r["hours"] = round(v, 2); break
+                app.render()
             return _h
 
         def _edit_assignee(sid):
             def _a(e):
                 for r in app._cp_rows:
                     if r["id"] == sid:
-                        r["assignee"] = e.control.value or ""
-                        break
-                app.ui_safe(app.render)
+                        r["assignee"] = e.control.value or ""; break
+                app.render()
             return _a
 
         hdr = ft.Container(
@@ -1081,7 +1176,7 @@ def _create_screen(app):
                     _txt("ASSIGNEE", color=T.INK_3, size=10.5, weight=ft.FontWeight.BOLD, width=180)],
                    spacing=10),
             padding=ft.Padding.symmetric(vertical=10, horizontal=12),
-            bgcolor=T.CARD_2 if hasattr(T, "CARD_2") else T.CARD, border_radius=T.R)
+            bgcolor=T.CARD_2, border_radius=T.R)
 
         trows = []
         for r in app._cp_rows:
@@ -1094,7 +1189,7 @@ def _create_screen(app):
             assignee_dd = ft.Dropdown(
                 value=r["assignee"] or None, width=168, text_size=13,
                 options=[ft.DropdownOption(key=n, text=n) for n in app._cp_res_names],
-                on_change=_edit_assignee(r["id"]), border_color=T.BORDER,
+                on_select=_edit_assignee(r["id"]), border_color=T.BORDER,
                 border_radius=T.R, content_padding=ft.Padding.symmetric(vertical=6, horizontal=8))
             trows.append(ft.Container(
                 ft.Row([_txt(str(r["id"]), color=T.VIOLET, weight=ft.FontWeight.BOLD, width=90),
@@ -1112,7 +1207,6 @@ def _create_screen(app):
             _kpi_tile("PER PERSON", f"{d['hours_per_person']} h", T.GREEN),
         ], spacing=14)
 
-        # per-resource workload cards
         workload_ui = ft.Container()
         if d["workload"]:
             maxw = max((w["hours"] for w in d["workload"]), default=0) or 1
@@ -1123,7 +1217,7 @@ def _create_screen(app):
                                   spacing=1, tight=True),
                         ft.Container(expand=True),
                         _txt(f"{w['hours']} h", color=T.INK, weight=ft.FontWeight.BOLD,
-                             size=16, font_family=T.F_MONO)],
+                             size=16)],
                        spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                 ft.Container(height=12), _bar(w["hours"] / maxw, T.VIOLET, 8),
             ], spacing=0), expand=True, padding=14, bgcolor=T.CARD,
@@ -1135,7 +1229,6 @@ def _create_screen(app):
                 ft.Container(height=10),
                 ft.Row(cards_wl, spacing=14)], spacing=0)
 
-        # exports reuse the shared exporter buttons via plan_payload
         exports = _export_row(app)
 
         def _assign_testers(e):
@@ -1143,10 +1236,10 @@ def _create_screen(app):
                     for r in app._cp_rows if r.get("assignee")]
             if not rows:
                 app._cp_msg = ("err", "Assign resources to stories first.")
-                app.ui_safe(app.render); return
+                app.render(); return
             app._cp_assigning = True
             app._cp_msg = None
-            app.ui_safe(app.render)
+            app.render()
 
             def work():
                 try:
@@ -1178,7 +1271,7 @@ def _create_screen(app):
             border=ft.Border.all(1, T.BORDER_2), margin=ft.Margin.only(top=12))
 
         results = card(ft.Column([
-            sec_head("3", "Report"), ft.Container(height=12), kpi_strip,
+            sec_head("3", "Plan"), ft.Container(height=12), kpi_strip,
             ft.Container(height=14), table, workload_ui,
             ft.Divider(height=22, color=T.BORDER),
             ft.Text("EXPORT", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
@@ -1191,7 +1284,8 @@ def _create_screen(app):
             assign_note,
         ], spacing=0))
 
-    body_children = [card1, ft.Container(height=14), card2]
+    body_children = [card1, ft.Container(height=14), card2,
+                     ft.Container(height=16), calc_btn, calc_note]
     if results is not None:
         body_children += [ft.Container(height=16), results]
     body = ft.Column(body_children, spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
