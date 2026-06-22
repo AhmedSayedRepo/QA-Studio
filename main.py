@@ -540,7 +540,7 @@ class QAStudio:
     def current_provider(self):
         return getattr(self, "_provider_choice", None) or (E.active_providers()[:1] or ["anthropic"])[0]
 
-    # brand colour + monogram per provider (drop-in logo images can replace these)
+    # brand colour + monogram per provider (fallback when no logo file is present)
     PROVIDER_BRAND = {
         "anthropic": ("#D97757", "A"),
         "openai":    ("#10A37F", "O"),
@@ -551,31 +551,47 @@ class QAStudio:
         "groq":      ("#F55036", "G"),
         "deepseek":  ("#4D6BFE", "D"),
         "azure":     ("#0078D4", "Az"),
+        "azure_openai": ("#0078D4", "Az"),
+        "ollama":    ("#111111", "Ol"),
+        "qwen":      ("#615CED", "Q"),
+        "manus":     ("#5A4FE0", "Mn"),
         "cohere":    ("#39594D", "C"),
         "xai":       ("#111111", "X"),
+    }
+
+    # filename aliases: provider id -> logo basename(s) to look for
+    PROVIDER_LOGO_ALIAS = {
+        "azure": "azure_openai",
+        "google": "gemini",
     }
 
     def _provider_logo(self, prov, size=30):
         key = (prov or "").lower()
         color, glyph = self.PROVIDER_BRAND.get(
             key, (T.VIOLET, (prov[:1].upper() if prov else "?")))
-        # Use a real logo image if one is bundled next to main.py. Drop a file
-        # named e.g. anthropic.png / openai.png / gemini.png / nvidia.png into
-        # the app folder (or assets/providers/) and it's picked up automatically.
+        # Use a real logo image if one is bundled. Files live in providers/<id>.png
+        # (also checks assets/providers/ and the app root). .png and .webp both work.
         try:
             import os
             here = os.path.dirname(os.path.abspath(__file__))
-            for cand in (os.path.join(here, "assets", "providers", key + ".png"),
-                         os.path.join(here, "providers", key + ".png"),
-                         os.path.join(here, key + ".png"),
-                         os.path.join(here, key + "-logo.png")):
-                if os.path.exists(cand):
-                    return ft.Container(
-                        ft.Image(src=cand, width=size, height=size),
-                        width=size, height=size, bgcolor="#FFFFFF",
-                        border_radius=int(size * 0.28),
-                        padding=ft.Padding.all(max(2, int(size * 0.12))),
-                        alignment=ft.Alignment.CENTER)
+            names = [key]
+            alias = self.PROVIDER_LOGO_ALIAS.get(key)
+            if alias:
+                names.append(alias)
+            dirs = [os.path.join(here, "providers"),
+                    os.path.join(here, "assets", "providers"),
+                    here]
+            for nm in names:
+                for d in dirs:
+                    for ext in (".png", ".webp"):
+                        cand = os.path.join(d, nm + ext)
+                        if os.path.exists(cand):
+                            return ft.Container(
+                                ft.Image(src=cand, width=size, height=size),
+                                width=size, height=size, bgcolor="#FFFFFF",
+                                border_radius=int(size * 0.28),
+                                padding=ft.Padding.all(max(2, int(size * 0.12))),
+                                alignment=ft.Alignment.CENTER)
         except Exception:
             pass
         return ft.Container(
@@ -630,7 +646,7 @@ class QAStudio:
                 ft.Stack([
                     ft.Container(
                         body, expand=True,
-                        padding=ft.Padding.only(top=HEADER_H + 12, left=22, right=22),
+                        padding=ft.Padding.only(top=HEADER_H, left=22, right=22),
                         clip_behavior=ft.ClipBehavior.HARD_EDGE),
                     header,
                 ], expand=True),
