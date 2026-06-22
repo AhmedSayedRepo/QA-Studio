@@ -1645,15 +1645,14 @@ def screen(app):
                         ft.Column([_txt(w["name"], color=T.INK, weight=ft.FontWeight.BOLD,
                                         size=14),
                                    _txt(f"{w['stories']} stories · {w.get('cases', 0)} cases",
-                                        color=T.INK_3,
-                                        size=11)], spacing=1, tight=True),
-                        ft.Container(expand=True),
+                                        color=T.INK_3, size=11)],
+                                  spacing=1, tight=True, expand=True),
                         _txt(f"{w['hours']} h", color=T.INK, weight=ft.FontWeight.BOLD,
-                             size=16, font_family=T.F_MONO)],
+                             size=16, font_family=T.F_MONO, no_wrap=True)],
                        spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                 ft.Container(height=12),
                 _bar(w["hours"] / maxw, T.VIOLET, 8),
-            ], spacing=0), expand=True, padding=14, bgcolor=T.CARD,
+            ], spacing=0), width=300, padding=14, bgcolor=T.CARD,
                 border=ft.Border.all(1, T.BORDER_2), border_radius=T.R)
                 for w in d["workload"]]
             workload_ui = ft.Column([
@@ -1661,7 +1660,7 @@ def screen(app):
                 ft.Text("RESOURCE WORKLOAD", size=10.5, weight=ft.FontWeight.BOLD,
                         color=T.INK_3),
                 ft.Container(height=10),
-                ft.Row(cards_wl, spacing=12,
+                ft.Row(cards_wl, spacing=12, wrap=True, run_spacing=12,
                        vertical_alignment=ft.CrossAxisAlignment.START)], spacing=0)
 
         if mismatch:

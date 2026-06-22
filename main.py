@@ -4565,7 +4565,7 @@ class QAStudio:
 # ═══════════════════════════════════════════════════════════════════════════════
 def main(page: ft.Page):
     page.fonts = {
-        T.F_UI: "https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800",
+        T.F_UI: "https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800",
         T.F_MONO: "https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700",
         T.F_AR: "https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;600;700",
     }
