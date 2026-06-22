@@ -452,7 +452,7 @@ class QAStudio:
                                      border_radius=4, animate=200)
             def _nav_hover(e, base=bg):
                 try:
-                    hov = (e.data == "true")
+                    hov = e.data in (True, "true", "True")
                     e.control.bgcolor = (ft.Colors.with_opacity(0.14, T.VIOLET)
                                          if hov else base)
                     e.control.offset = ft.Offset(0.02, 0) if hov else ft.Offset(0, 0)

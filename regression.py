@@ -1491,7 +1491,7 @@ def screen(app):
     count_field = ft.TextField(
         value=("" if count is None else str(count)), hint_text="e.g. 3",
         keyboard_type=ft.KeyboardType.NUMBER, on_blur=_on_count, on_submit=_on_count,
-        width=120, text_size=13,
+        width=92, text_size=13,
         border_color=(T.RED if mismatch else T.BORDER), focused_border_color=T.VIOLET,
         border_radius=T.R,
         content_padding=ft.Padding.symmetric(vertical=12, horizontal=10))
@@ -1538,14 +1538,14 @@ def screen(app):
         sec_head("2", "Resources"),
         ft.Container(height=10),
         ft.Row([
-            ft.Column([field_label("Number of resources"), count_field],
+            ft.Column([field_label("Count"), count_field],
                       spacing=6, tight=True),
-            ft.Column([field_label("Resource names"),
+            ft.Column([field_label("Add a name"),
                        ft.Row([name_field,
                                green_btn("Add", icon=ft.Icons.ADD,
                                          on_click=_add_name)], spacing=8)],
                       spacing=6, expand=True),
-        ], spacing=16, vertical_alignment=ft.CrossAxisAlignment.START),
+        ], spacing=14, vertical_alignment=ft.CrossAxisAlignment.START),
         ft.Container(name_chips, padding=ft.Padding.only(top=10),
                      visible=bool(app._reg_res_names)),
         warn,
@@ -1732,8 +1732,11 @@ def screen(app):
             border=ft.Border.all(1, "#EAD9A8"), margin=ft.Margin.only(top=10))
 
     body_children = [_mode_toggle(app), ft.Container(height=16),
-                     card1, ft.Container(height=14), card2,
-                     ft.Container(height=14), card3,
+                     card1, ft.Container(height=14),
+                     ft.Row([ft.Container(card2, expand=1),
+                             ft.Container(card3, expand=1)],
+                            spacing=14,
+                            vertical_alignment=ft.CrossAxisAlignment.STRETCH),
                      ft.Container(height=16), calc_btn, calc_note]
     if results is not None:
         body_children += [ft.Container(height=16), results]
