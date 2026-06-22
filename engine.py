@@ -1000,6 +1000,98 @@ def connect_azure_sdk(project):
     return _wit_client, _test_client
 
 
+# ── Assign-to-tester (identity / picklist field on the sprint's user stories) ──
+_FIELD_REF_CACHE = {}
+
+def resolve_field_ref(project, label, pat=None):
+    """Find a field's reference name by its display label (e.g. 'Assigned To
+    Tester'), so callers don't need to know the internal Custom.* name."""
+    key = (project, (label or "").strip().lower())
+    if key in _FIELD_REF_CACHE:
+        return _FIELD_REF_CACHE[key]
+    url = f"https://dev.azure.com/{AZURE_ORG}/{project}/_apis/wit/fields?api-version=7.0"
+    ref = None
+    try:
+        data = _azure_get(url, pat)
+        for f in data.get("value", []) or []:
+            if (f.get("name", "") or "").strip().lower() == key[1]:
+                ref = f.get("referenceName")
+                break
+    except Exception:
+        ref = None
+    _FIELD_REF_CACHE[key] = ref
+    return ref
+
+def tester_allowed_values(project, field_ref, wit_type="User Story", pat=None):
+    """The field's allowed values (the Azure 'list') for a work item type, or []."""
+    try:
+        url = (f"https://dev.azure.com/{AZURE_ORG}/{project}/_apis/wit/workitemtypes/"
+               f"{wit_type}/fields/{field_ref}?api-version=7.0")
+        data = _azure_get(url, pat)
+        return list(data.get("allowedValues", []) or [])
+    except Exception:
+        return []
+
+def _match_identity(name, allowed):
+    """Map a resource name to one allowed value. Returns (value, error_or_None).
+    Exact (case-insensitive) > startswith > contains; ambiguous → error."""
+    n = (name or "").strip().lower()
+    if not n:
+        return None, "no name"
+    for pred in (lambda a: a.strip().lower() == n,
+                 lambda a: a.strip().lower().startswith(n),
+                 lambda a: n in a.strip().lower()):
+        hits = [a for a in allowed if pred(a)]
+        if len(hits) == 1:
+            return hits[0], None
+        if len(hits) > 1:
+            return None, f"'{name}' matches several testers ({', '.join(hits[:4])})"
+    return None, f"no match for '{name}' in the Assigned To Tester list"
+
+def assign_tester(project, work_item_id, value, field_ref):
+    """Write the identity/picklist field on one work item. Raises on failure."""
+    from azure.devops.v7_0.work_item_tracking.models import JsonPatchOperation
+    if _wit_client is None:
+        connect_azure_sdk(project)
+    patch = [JsonPatchOperation(op="add", path=f"/fields/{field_ref}", value=value)]
+    _wit_client.update_work_item(patch, id=int(work_item_id))
+
+def assign_testers(project, assignments, field_label="Assigned To Tester", cb=None):
+    """assignments = [{'id': story_id, 'name': resource_name}, …].
+    Resolves the field by its label, matches each name to the field's allowed list
+    (readable error when it doesn't match), and writes it.
+    Returns {'ok': n, 'field': ref, 'errors': [str, …]}."""
+    cb = cb or (lambda *a, **k: None)
+    field_ref = resolve_field_ref(project, field_label)
+    if not field_ref:
+        return {"ok": 0, "field": None,
+                "errors": [f"No field named '{field_label}' exists in this project."]}
+    allowed = tester_allowed_values(project, field_ref)
+    ok, errors = 0, []
+    for a in assignments:
+        sid, name = a.get("id"), (a.get("name") or "").strip()
+        if not name:
+            errors.append(f"Story {sid}: no assignee."); continue
+        if allowed:
+            value, err = _match_identity(name, allowed)
+            if err:
+                errors.append(f"Story {sid}: {err}."); continue
+        else:
+            value = name  # no enumerable list — let Azure resolve / reject it
+        try:
+            assign_tester(project, sid, value, field_ref)
+            ok += 1
+            cb(f"Assigned {value} → story {sid}", "ok")
+        except Exception as e:
+            msg = str(e)
+            if any(t in msg for t in ("resolve", "TF401", "TF51", "not a valid")) \
+               or "does not" in msg.lower():
+                errors.append(f"Story {sid}: '{name}' isn't a valid Assigned To Tester.")
+            else:
+                errors.append(f"Story {sid}: {msg[:120]}")
+    return {"ok": ok, "field": field_ref, "errors": errors}
+
+
 def fetch_stories_in_plan(project, plan_id, pat=None):
     """User stories referenced by a test plan's requirement-based suites —
     independent of any sprint/iteration (so it works for plans that have no

@@ -115,6 +115,8 @@ def assign_resources(rows, names):
 
 
 def plan_payload(app):
+    if getattr(app, "_reg_mode", "existing") == "create":
+        return _cp_payload(app)
     rows = [dict(r) for r in (app._reg_selected_rows or [])]
     names = list(app._reg_res_names or [])
     load = assign_resources(rows, names)
@@ -316,8 +318,11 @@ def _out_dir():
 
 
 def _stamp(app):
-    base = ((getattr(app, "plan_name", "") or "")
-            or (", ".join(p["name"] for p in (app._reg_plans_selected or [])) or "plan"))
+    if getattr(app, "_reg_mode", "existing") == "create":
+        base = getattr(app, "_cp_sprint_name", "") or getattr(app, "_cp_sprint_path", "") or "sprint"
+    else:
+        base = ((getattr(app, "plan_name", "") or "")
+                or (", ".join(p["name"] for p in (app._reg_plans_selected or [])) or "plan"))
     base = re.sub(r"[^A-Za-z0-9_-]+", "_", base).strip("_") or "plan"
     return f"RegressionPlan_{base}_{datetime.now():%Y%m%d-%H%M}"
 
@@ -554,6 +559,49 @@ _MISSING_DEP = {"xlsx": "openpyxl  ·  pip install openpyxl",
                 "pdf":  "reportlab  ·  pip install reportlab"}
 
 
+def _export_row(app):
+    """Export buttons for the sprint report. Each saves via the shared exporter
+    (which now reads the mode-aware payload) into ~/QA Studio/Regression Plans."""
+    from main import green_btn, ghost_btn
+
+    def _go(fmt):
+        def _do(e):
+            if not app._cp_rows:
+                app._cp_msg = ("err", "Pick a sprint first.")
+                app.ui_safe(app.render); return
+
+            def work():
+                try:
+                    path = EXPORTERS[fmt](app)
+                    app._cp_msg = ("ok", f"Saved: {path}")
+                except ModuleNotFoundError:
+                    app._cp_msg = ("err", f"Missing dependency: {_MISSING_DEP.get(fmt, fmt)}")
+                except Exception as ex:
+                    app._cp_msg = ("err", f"Export failed: {str(ex)[:160]}")
+                app.ui_safe(app.render)
+            threading.Thread(target=work, daemon=True).start()
+        return _do
+
+    btns = ft.Row([
+        ghost_btn("Word", icon=ft.Icons.DESCRIPTION, on_click=_go("docx")),
+        ghost_btn("Excel", icon=ft.Icons.TABLE_CHART, on_click=_go("xlsx")),
+        ghost_btn("PDF", icon=ft.Icons.PICTURE_AS_PDF, on_click=_go("pdf")),
+        ghost_btn("JSON", icon=ft.Icons.DATA_OBJECT, on_click=_go("json")),
+    ], spacing=8, wrap=True)
+
+    status = ft.Container()
+    if app._cp_msg:
+        kind, text = app._cp_msg
+        col = T.GREEN if kind == "ok" else T.RED
+        status = ft.Container(
+            ft.Row([ft.Icon(ft.Icons.CHECK_CIRCLE if kind == "ok"
+                            else ft.Icons.ERROR_OUTLINE, size=15, color=col),
+                    _txt(text, color=col, size=12, expand=True)], spacing=8),
+            padding=10, border_radius=T.R, margin=ft.Margin.only(top=10),
+            bgcolor=T.CARD, border=ft.Border.all(1, T.BORDER_2))
+    return ft.Column([btns, status], spacing=0)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  UI helpers
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -690,7 +738,14 @@ def _init(app):
                  ("_reg_res_count", None), ("_reg_busy", False),
                  ("_reg_export_msg", None), ("_reg_calc_msg", None),
                  ("_reg_email_to", ""), ("_reg_emailing", False),
-                 ("_reg_plans_loading", False)):
+                 ("_reg_plans_loading", False),
+                 ("_reg_mode", "existing"),
+                 ("_cp_iterations", []), ("_cp_iter_loading", False),
+                 ("_cp_sprint_path", ""), ("_cp_sprint_name", ""),
+                 ("_cp_stories_loading", False),
+                 ("_cp_rows", []), ("_cp_res_names", []),
+                 ("_cp_est_min", 1.0), ("_cp_est_max", 8.0),
+                 ("_cp_msg", None), ("_cp_assigning", False)):
         if not hasattr(app, k):
             setattr(app, k, v)
 
@@ -746,6 +801,381 @@ def _reload_plan_stories(app):
     threading.Thread(target=_work, daemon=True).start()
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  SPRINT REPORT (mode = "create") — a regression-style report built from a sprint
+#  and its user stories, with a random (editable) per-story estimate and a random
+#  (editable) assignment. Nothing is written to Azure here.
+# ═══════════════════════════════════════════════════════════════════════════════
+def _cp_is_sprint(it):
+    """Keep only iteration nodes that look like a sprint (have 'Sprint N')."""
+    return bool(_sprint_num(it.get("name", "")) or _sprint_num(it.get("path", "")))
+
+
+def _cp_load_iterations(app):
+    if app._cp_iterations or app._cp_iter_loading:
+        return
+    app._cp_iter_loading = True
+    app.ui_safe(app.render)
+
+    def _work():
+        try:
+            its = E.fetch_iterations(app.project) or []
+        except Exception:
+            its = []
+        sprints = [it for it in its if _cp_is_sprint(it)] or its
+        # newest sprint number first
+        sprints.sort(key=lambda it: _sprint_sort_key(it), reverse=True)
+        app._cp_iterations = sprints
+        app._cp_iter_loading = False
+        app.ui_safe(app.render)
+    threading.Thread(target=_work, daemon=True).start()
+
+
+def _sprint_sort_key(it):
+    m = re.search(r"\d+", _sprint_num(it.get("name", "")) or _sprint_num(it.get("path", "")))
+    return int(m.group(0)) if m else -1
+
+
+def _cp_load_stories(app):
+    path = app._cp_sprint_path
+    if not path:
+        app._cp_rows = []
+        app.ui_safe(app.render)
+        return
+    app._cp_stories_loading = True
+    app._cp_rows = []
+    app.ui_safe(app.render)
+
+    def _work():
+        try:
+            stories = E.fetch_stories_in_iteration(app.project, path) or []
+        except Exception:
+            stories = []
+        app._cp_rows = [{"id": s["id"], "title": s.get("title", ""),
+                         "hours": 0.0, "assignee": ""} for s in stories]
+        _cp_estimate_and_assign(app)   # seed an initial random estimate + assignment
+        app._cp_stories_loading = False
+        app.ui_safe(app.render)
+    threading.Thread(target=_work, daemon=True).start()
+
+
+def _cp_estimate_and_assign(app):
+    """Give every story a stable random estimate (seeded by its id so it doesn't
+    jump around on every render) and a random — but balanced — assignee. Both stay
+    editable afterwards."""
+    import random
+    names = list(app._cp_res_names or [])
+    lo, hi = float(app._cp_est_min or 1.0), float(app._cp_est_max or 8.0)
+    if hi < lo:
+        lo, hi = hi, lo
+    rows = app._cp_rows or []
+    # estimate: deterministic per story id, in 0.5h steps within [lo, hi]
+    steps = max(1, int(round((hi - lo) / 0.5)))
+    for r in rows:
+        rnd = random.Random(r["id"])               # seeded → stable per story
+        r["hours"] = round(lo + 0.5 * rnd.randint(0, steps), 2)
+    # assignment: shuffle (seeded by the set of ids so it's stable) then round-robin
+    if names:
+        order = list(range(len(rows)))
+        random.Random(sum(r["id"] for r in rows)).shuffle(order)
+        for k, idx in enumerate(order):
+            rows[idx]["assignee"] = names[k % len(names)]
+    else:
+        for r in rows:
+            r["assignee"] = ""
+
+
+def _cp_payload(app):
+    """Build the same payload shape plan_payload() returns, from the sprint rows —
+    so every exporter and the email path work unchanged."""
+    names = list(app._cp_res_names or [])
+    rows = [{"id": r["id"], "title": r.get("title", ""), "state": "",
+             "priority": "", "cases": 0, "boost": 1.0,
+             "hours": round(float(r.get("hours", 0) or 0), 2),
+             "assignee": r.get("assignee", "")} for r in (app._cp_rows or [])]
+    total_hours = round(sum(r["hours"] for r in rows), 2)
+    count = len(names) or 1
+    per_person = round(total_hours / count, 2)
+    workload = []
+    if names:
+        st = {n: 0 for n in names}
+        hr = {n: 0.0 for n in names}
+        for r in rows:
+            a = r.get("assignee")
+            if a in st:
+                st[a] += 1
+                hr[a] += r["hours"]
+        workload = [{"name": n, "stories": st[n], "cases": 0,
+                     "hours": round(hr[n], 2)} for n in names]
+    return {"generated": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "project": app.project, "plan_id": "",
+            "plan_name": app._cp_sprint_name or app._cp_sprint_path,
+            "plans": [], "avg_minutes_per_case": 0,
+            "priority_boost": {}, "resources_count": len(names),
+            "resource_names": names, "stories": rows, "workload": workload,
+            "total_stories": len(rows), "total_cases": 0,
+            "total_hours": total_hours, "hours_per_person": per_person}
+
+
+def _mode_toggle(app):
+    """Segmented switch between the existing 'from test plans' report and the new
+    'from a sprint' report."""
+    def _seg(label, mode_id):
+        on = (getattr(app, "_reg_mode", "existing") == mode_id)
+        def _go(e, m=mode_id):
+            app._reg_mode = m
+            app.ui_safe(app.render)
+        return ft.Container(
+            ft.Text(label, size=12.5, weight=ft.FontWeight.BOLD,
+                    color=("#FFFFFF" if on else T.INK_3)),
+            on_click=_go, padding=ft.Padding.symmetric(vertical=8, horizontal=16),
+            bgcolor=(T.VIOLET if on else T.CARD), border_radius=T.R,
+            border=ft.Border.all(1, T.VIOLET if on else T.BORDER_2))
+    return ft.Row([_seg("From test plans", "existing"),
+                   _seg("From a sprint", "create")], spacing=8)
+
+
+def _create_screen(app):
+    from main import (card, sec_head, field_label, green_btn, ghost_btn,
+                      primary_btn, searchable_dropdown)
+    _cp_load_iterations(app)
+
+    # ── sprint picker ──
+    def _pick_sprint(e):
+        v = (sprint_dd.value or "").strip()
+        it = next((x for x in app._cp_iterations if x["path"] == v), None)
+        if not it:
+            return
+        app._cp_sprint_path = it["path"]
+        app._cp_sprint_name = _sprint_num(it["name"]) or it["name"]
+        _cp_load_stories(app)
+
+    sprint_dd = searchable_dropdown(
+        hint=("Loading sprints…" if app._cp_iter_loading else "Search & pick a sprint"),
+        options=[ft.DropdownOption(key=it["path"],
+                                   text=(_sprint_num(it["name"]) or it["name"])
+                                   + f"  ·  {it['path']}")
+                 for it in app._cp_iterations],
+        on_change=_pick_sprint, disabled=app._cp_iter_loading)
+
+    picked = ft.Container()
+    if app._cp_sprint_name:
+        picked = ft.Container(
+            ft.Row([ft.Icon(ft.Icons.CHECK_CIRCLE, size=15, color=T.GREEN),
+                    _txt(f"{app._cp_sprint_name}", color=T.INK, weight=ft.FontWeight.BOLD),
+                    _txt(f"· {len(app._cp_rows)} stories", color=T.INK_3)],
+                   spacing=8), padding=ft.Padding.only(top=10))
+
+    card1 = card(ft.Column([
+        sec_head("1", "Sprint"),
+        ft.Container(height=10),
+        ft.Column([field_label("Sprint", req=True), sprint_dd], spacing=6),
+        picked,
+        (ft.Container(_txt("Loading stories…", color=T.INK_3, size=12),
+                      padding=ft.Padding.only(top=10))
+         if app._cp_stories_loading else ft.Container()),
+    ], spacing=0))
+
+    # ── resources + estimate range ──
+    def _on_res(e):
+        raw = e.control.value or ""
+        app._cp_res_names = [n.strip() for n in re.split(r"[,\n]", raw) if n.strip()]
+
+    def _on_min(e):
+        try: app._cp_est_min = float(e.control.value or 1)
+        except Exception: pass
+
+    def _on_max(e):
+        try: app._cp_est_max = float(e.control.value or 8)
+        except Exception: pass
+
+    res_field = ft.TextField(
+        value=", ".join(app._cp_res_names), on_change=_on_res, on_blur=lambda e: app.ui_safe(app.render),
+        hint_text="Ahmed, Nada, Wafaa", multiline=False, text_size=13,
+        border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
+        content_padding=ft.Padding.symmetric(vertical=12, horizontal=10), expand=True)
+
+    def _num(v, on_change):
+        return ft.TextField(value=str(v), on_change=on_change, width=92, text_size=13,
+                            border_color=T.BORDER, focused_border_color=T.VIOLET,
+                            border_radius=T.R, keyboard_type=ft.KeyboardType.NUMBER,
+                            content_padding=ft.Padding.symmetric(vertical=12, horizontal=10))
+
+    def _regen(e):
+        _cp_estimate_and_assign(app)
+        app.ui_safe(app.render)
+
+    card2 = card(ft.Column([
+        sec_head("2", "Resources & estimate",
+                 right=ghost_btn("Re-roll estimate", icon=ft.Icons.CASINO,
+                                 on_click=_regen) if app._cp_rows else None),
+        ft.Container(height=10),
+        ft.Column([field_label("Resource names", req=True), res_field], spacing=6),
+        ft.Container(height=12),
+        ft.Row([
+            ft.Column([field_label("Min h / story"), _num(app._cp_est_min, _on_min)], spacing=6),
+            ft.Column([field_label("Max h / story"), _num(app._cp_est_max, _on_max)], spacing=6),
+            ft.Container(
+                _txt("Each story gets a random estimate in this range (stable per "
+                     "story). Hours and assignees stay editable in the table below.",
+                     color=T.INK_3, size=11.5), expand=True,
+                padding=ft.Padding.only(left=6, top=18)),
+        ], spacing=14, vertical_alignment=ft.CrossAxisAlignment.START),
+    ], spacing=0))
+
+    # ── results (only once we have rows + resources) ──
+    results = None
+    if app._cp_rows and app._cp_res_names:
+        d = plan_payload(app)
+
+        def _edit_hours(sid):
+            def _h(e):
+                try:
+                    v = float(e.control.value or 0)
+                except Exception:
+                    return
+                for r in app._cp_rows:
+                    if r["id"] == sid:
+                        r["hours"] = round(v, 2)
+                        break
+                app.ui_safe(app.render)
+            return _h
+
+        def _edit_assignee(sid):
+            def _a(e):
+                for r in app._cp_rows:
+                    if r["id"] == sid:
+                        r["assignee"] = e.control.value or ""
+                        break
+                app.ui_safe(app.render)
+            return _a
+
+        hdr = ft.Container(
+            ft.Row([_txt("STORY", color=T.INK_3, size=10.5, weight=ft.FontWeight.BOLD, width=90),
+                    _txt("TITLE", color=T.INK_3, size=10.5, weight=ft.FontWeight.BOLD, expand=True),
+                    _txt("HOURS", color=T.INK_3, size=10.5, weight=ft.FontWeight.BOLD, width=110),
+                    _txt("ASSIGNEE", color=T.INK_3, size=10.5, weight=ft.FontWeight.BOLD, width=180)],
+                   spacing=10),
+            padding=ft.Padding.symmetric(vertical=10, horizontal=12),
+            bgcolor=T.CARD_2 if hasattr(T, "CARD_2") else T.CARD, border_radius=T.R)
+
+        trows = []
+        for r in app._cp_rows:
+            hours_f = ft.TextField(
+                value=str(r["hours"]), on_change=_edit_hours(r["id"]),
+                width=92, text_size=13, border_color=T.BORDER,
+                focused_border_color=T.VIOLET, border_radius=T.R,
+                keyboard_type=ft.KeyboardType.NUMBER,
+                content_padding=ft.Padding.symmetric(vertical=8, horizontal=8))
+            assignee_dd = ft.Dropdown(
+                value=r["assignee"] or None, width=168, text_size=13,
+                options=[ft.DropdownOption(key=n, text=n) for n in app._cp_res_names],
+                on_change=_edit_assignee(r["id"]), border_color=T.BORDER,
+                border_radius=T.R, content_padding=ft.Padding.symmetric(vertical=6, horizontal=8))
+            trows.append(ft.Container(
+                ft.Row([_txt(str(r["id"]), color=T.VIOLET, weight=ft.FontWeight.BOLD, width=90),
+                        _txt(r["title"] or "—", color=T.INK, expand=True),
+                        ft.Container(hours_f, width=110),
+                        ft.Container(assignee_dd, width=180)],
+                       spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                padding=ft.Padding.symmetric(vertical=8, horizontal=12),
+                border=ft.Border.only(bottom=ft.BorderSide(1, T.BORDER))))
+        table = ft.Column([hdr] + trows, spacing=0)
+
+        kpi_strip = ft.Row([
+            _kpi_tile("STORIES", str(d["total_stories"])),
+            _kpi_tile("TOTAL EFFORT", f"{d['total_hours']} h"),
+            _kpi_tile("PER PERSON", f"{d['hours_per_person']} h", T.GREEN),
+        ], spacing=14)
+
+        # per-resource workload cards
+        workload_ui = ft.Container()
+        if d["workload"]:
+            maxw = max((w["hours"] for w in d["workload"]), default=0) or 1
+            cards_wl = [ft.Container(ft.Column([
+                ft.Row([_avatar(w["name"], 32),
+                        ft.Column([_txt(w["name"], color=T.INK, weight=ft.FontWeight.BOLD, size=14),
+                                   _txt(f"{w['stories']} stories", color=T.INK_3, size=11)],
+                                  spacing=1, tight=True),
+                        ft.Container(expand=True),
+                        _txt(f"{w['hours']} h", color=T.INK, weight=ft.FontWeight.BOLD,
+                             size=16, font_family=T.F_MONO)],
+                       spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                ft.Container(height=12), _bar(w["hours"] / maxw, T.VIOLET, 8),
+            ], spacing=0), expand=True, padding=14, bgcolor=T.CARD,
+                border=ft.Border.all(1, T.BORDER_2), border_radius=T.R)
+                for w in d["workload"]]
+            workload_ui = ft.Column([
+                ft.Container(height=16),
+                ft.Text("RESOURCE WORKLOAD", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
+                ft.Container(height=10),
+                ft.Row(cards_wl, spacing=14)], spacing=0)
+
+        # exports reuse the shared exporter buttons via plan_payload
+        exports = _export_row(app)
+
+        def _assign_testers(e):
+            rows = [{"id": r["id"], "name": r.get("assignee", "")}
+                    for r in app._cp_rows if r.get("assignee")]
+            if not rows:
+                app._cp_msg = ("err", "Assign resources to stories first.")
+                app.ui_safe(app.render); return
+            app._cp_assigning = True
+            app._cp_msg = None
+            app.ui_safe(app.render)
+
+            def work():
+                try:
+                    res = E.assign_testers(app.project, rows)
+                except Exception as ex:
+                    res = {"ok": 0, "errors": [str(ex)[:160]]}
+                errs = res.get("errors", [])
+                n = res.get("ok", 0)
+                if n and not errs:
+                    app._cp_msg = ("ok", f"Assigned {n} stories to the "
+                                         f"Assigned To Tester field in Azure.")
+                elif n:
+                    app._cp_msg = ("err", f"Assigned {n}; {len(errs)} failed — "
+                                   + "  ·  ".join(errs[:4])
+                                   + ("  …" if len(errs) > 4 else ""))
+                else:
+                    app._cp_msg = ("err", "  ·  ".join(errs[:5]) or "Nothing assigned.")
+                app._cp_assigning = False
+                app.ui_safe(app.render)
+            threading.Thread(target=work, daemon=True).start()
+
+        assign_note = ft.Container(
+            ft.Row([ft.Icon(ft.Icons.INFO_OUTLINE, size=15, color=T.INK_3),
+                    _txt("Writes each story's assignee into the Azure “Assigned To "
+                         "Tester” field. Names are matched to that field's list — "
+                         "you'll get a readable error for any that don't match.",
+                         color=T.INK_3, size=11.5, expand=True)], spacing=8),
+            padding=10, bgcolor=T.CARD, border_radius=T.R,
+            border=ft.Border.all(1, T.BORDER_2), margin=ft.Margin.only(top=12))
+
+        results = card(ft.Column([
+            sec_head("3", "Report"), ft.Container(height=12), kpi_strip,
+            ft.Container(height=14), table, workload_ui,
+            ft.Divider(height=22, color=T.BORDER),
+            ft.Text("EXPORT", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
+            ft.Container(height=8), exports,
+            ft.Container(height=14),
+            ft.Row([green_btn("Assigning…" if app._cp_assigning
+                              else "Assign to tester in Azure",
+                              icon=ft.Icons.PERSON_ADD, on_click=_assign_testers,
+                              disabled=app._cp_assigning)]),
+            assign_note,
+        ], spacing=0))
+
+    body_children = [_mode_toggle(app), ft.Container(height=16),
+                     card1, ft.Container(height=14), card2]
+    if results is not None:
+        body_children += [ft.Container(height=16), results]
+    body = ft.Column(body_children, spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
+    return app.shell("Regression Plan",
+                     "Build a regression-style report from a sprint & its stories", body)
+
+
 def screen(app):
     _init(app)
     from main import (card, sec_head, field_label, green_btn, ghost_btn,
@@ -758,6 +1188,9 @@ def screen(app):
             "Build a regression plan from your test plans & their stories",
             "Connect your Azure DevOps account on the Setup screen. You can pick "
             "the test plans right here once connected.")
+
+    if getattr(app, "_reg_mode", "existing") == "create":
+        return _create_screen(app)
 
     # lazy-load test plans
     if not app._plans and not app._reg_plans_loading:
@@ -1276,7 +1709,8 @@ def screen(app):
             padding=10, bgcolor=T.AMBER_SOFT, border_radius=T.R,
             border=ft.Border.all(1, "#EAD9A8"), margin=ft.Margin.only(top=10))
 
-    body_children = [card1, ft.Container(height=14), card2,
+    body_children = [_mode_toggle(app), ft.Container(height=16),
+                     card1, ft.Container(height=14), card2,
                      ft.Container(height=14), card3,
                      ft.Container(height=16), calc_btn, calc_note]
     if results is not None:
