@@ -695,6 +695,12 @@ def _init(app):
             setattr(app, k, v)
 
 
+def _sprint_num(text):
+    """Pull a clean 'Sprint N' out of an iteration path or plan name; '' if none."""
+    m = re.search(r"[Ss]print\s*\d+", text or "")
+    return re.sub(r"\s+", " ", m.group(0)).strip() if m else ""
+
+
 def _reload_plan_stories(app):
     """Aggregate the user stories that live in the currently-selected test plans
     (their requirement suites). Runs off the UI thread."""
@@ -713,7 +719,9 @@ def _reload_plan_stories(app):
             try:
                 pj = E._azure_get(f"https://dev.azure.com/{E.AZURE_ORG}/{app.project}"
                                   f"/_apis/testplan/plans/{p['id']}?api-version=7.0")
-                p["sprint"] = (pj.get("iteration") or "").split("\\")[-1]
+                itr = pj.get("iteration") or ""
+                p["sprint"] = _sprint_num(itr) or _sprint_num(p.get("name", "")) \
+                    or itr.split("\\")[-1]
             except Exception:
                 p.setdefault("sprint", "")
             try:
@@ -725,8 +733,10 @@ def _reload_plan_stories(app):
                 if key in seen:
                     continue
                 seen.add(key)
+                # group under the PLAN's sprint (what the user picked), not the
+                # story's own iteration — so only selected sprints appear
                 agg.append({"id": s["id"], "title": s.get("title", ""),
-                            "sprint": s.get("sprint", "") or p.get("sprint", ""),
+                            "sprint": p.get("sprint", "") or _sprint_num(s.get("sprint", "")),
                             "plan_id": p["id"]})
         # group by sprint then id so the picker lists them clustered by sprint
         agg.sort(key=lambda s: (s.get("sprint", "") or "~", s["id"]))
@@ -1007,15 +1017,10 @@ def screen(app):
             border=ft.Border.all(1, "#D9D2FF"))
 
     def _plan_chip_label(p):
-        # Show ONLY the sprint number. Pull "Sprint N" from the plan's iteration
-        # first, then from its name; fall back to the iteration's last segment,
-        # else the plan id — so a chip never renders blank.
-        for src in (p.get("sprint") or "", p.get("name") or ""):
-            m = re.search(r"[Ss]print\s*\d+", src)
-            if m:
-                return re.sub(r"\s+", " ", m.group(0)).strip()
-        spr = (p.get("sprint") or "").strip()
-        return spr or f"[{p['id']}]"
+        # Show ONLY the sprint number; fall back to iteration tail or id so a
+        # chip never renders blank.
+        return (_sprint_num(p.get("sprint") or "") or _sprint_num(p.get("name") or "")
+                or (p.get("sprint") or "").strip() or f"[{p['id']}]")
 
     plan_chips = ft.Row(
         [_chip(_plan_chip_label(p), (lambda e, x=p["id"]: _remove_plan(x)))

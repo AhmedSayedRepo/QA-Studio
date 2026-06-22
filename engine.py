@@ -4901,6 +4901,37 @@ def check_for_update(timeout=6):
     return {"update": _ver_newer(remote, local), "local": local,
             "remote": remote, "error": None}
 
+_RESTART_BAT = r'''@echo off
+set "PID=__PID__"
+:wait
+tasklist /FI "PID eq %PID%" 2>nul | find "%PID%" >nul && (ping -n 2 127.0.0.1 >nul & goto wait)
+ping -n 2 127.0.0.1 >nul
+__LAUNCH__
+del "%~f0" >nul 2>&1
+'''
+
+def schedule_restart():
+    """Arm a detached helper that waits for THIS process to exit, then relaunches
+    QA Studio (the exe when frozen, else `pythonw main.py`). Returns True if armed."""
+    import sys, tempfile, subprocess
+    try:
+        if getattr(sys, "frozen", False):
+            launch = f'start "" "{os.path.abspath(sys.executable)}"'
+        else:
+            pyw = os.path.abspath(sys.executable)
+            mainpy = os.path.join(_app_dir(), "main.py")
+            launch = f'start "" /d "{_app_dir()}" "{pyw}" "{mainpy}"'
+        bat = os.path.join(tempfile.gettempdir(), "qastudio_restart.bat")
+        script = _RESTART_BAT.replace("__PID__", str(os.getpid())).replace("__LAUNCH__", launch)
+        with open(bat, "w", encoding="ascii", errors="ignore", newline="\r\n") as f:
+            f.write(script)
+        DETACHED, NEW_GROUP, NO_WINDOW = 0x00000008, 0x00000200, 0x08000000
+        subprocess.Popen(["cmd", "/c", bat],
+                         creationflags=DETACHED | NEW_GROUP | NO_WINDOW, close_fds=True)
+        return True
+    except Exception:
+        return False
+
 _SWAP_BAT = r'''@echo off
 set "PID=__PID__"
 set "NEW=__NEW__"
@@ -5067,7 +5098,9 @@ def _apply_update_zip(cb):
     except Exception:
         pass
     cb("Update installed.", "ok")
-    return (True, "Updated to the latest version. Please restart QA Studio.")
+    schedule_restart()
+    return (True, "Updated to the latest version. QA Studio will reopen "
+                  "automatically when you close this window.")
 
 def apply_update(cb=None):
     """Self-update. For a frozen .exe build, download + swap the binary; for a
