@@ -680,17 +680,17 @@ def locked_state(app, title, sub, msg, icon=None, steps=None):
     # "scanning for a connection" card — ft.ProgressBar(value=None) animates natively in Flet
     scan_card = ft.Container(
         ft.Column([
-            ft.Container(ft.Icon(icon, size=32, color=T.VIOLET),
-                         width=74, height=74, bgcolor=T.VIOLET_SOFT, border_radius=21,
+            ft.Container(ft.Icon(icon, size=28, color=T.VIOLET),
+                         width=60, height=60, bgcolor=T.VIOLET_SOFT, border_radius=18,
                          alignment=ft.Alignment.CENTER),
-            ft.Container(height=22),
+            ft.Container(height=16),
             ft.ProgressBar(value=None, color=T.VIOLET, bgcolor=T.BORDER_2,
-                           bar_height=6, border_radius=99, width=232),
-            ft.Container(height=11),
+                           bar_height=6, border_radius=99, width=224),
+            ft.Container(height=10),
             ft.Text("Scanning for a connection…", size=11, color=T.INK_3,
                     weight=ft.FontWeight.W_500, font_family=T.F_MONO),
         ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=0),
-        width=300, padding=ft.Padding.symmetric(vertical=28, horizontal=28),
+        width=296, padding=ft.Padding.symmetric(vertical=20, horizontal=26),
         bgcolor=T.CARD, border=ft.Border.all(1, T.BORDER_2), border_radius=22)
 
     pill = ft.Container(
@@ -716,21 +716,21 @@ def locked_state(app, title, sub, msg, icon=None, steps=None):
     body = ft.Container(
         ft.Column([
             scan_card,
-            ft.Container(height=14), pill,
-            ft.Container(height=12),
+            ft.Container(height=12), pill,
+            ft.Container(height=10),
             ft.Text("A few things first", size=20, weight=ft.FontWeight.BOLD,
                     color=T.INK),
             ft.Container(height=8),
             ft.Container(ft.Text(msg, size=13.5, color=T.INK_2,
                                  text_align=ft.TextAlign.CENTER), width=470),
-            ft.Container(height=20), path,
-            ft.Container(height=22),
+            ft.Container(height=16), path,
+            ft.Container(height=18),
             primary_btn("Go to Setup", icon=ft.Icons.ARROW_FORWARD,
                         on_click=lambda e: app.goto("setup")),
         ], horizontal_alignment=ft.CrossAxisAlignment.CENTER,
            alignment=ft.MainAxisAlignment.CENTER, tight=True),
         alignment=ft.Alignment.CENTER, expand=True,
-        padding=ft.Padding.symmetric(vertical=24, horizontal=20))
+        padding=ft.Padding.symmetric(vertical=18, horizontal=20))
     return app.shell(title, sub, body)
 
 
@@ -1147,7 +1147,48 @@ def _create_screen(app):
     # ── results / plan (after Assign & Estimate) ──
     results = None
     if app._cp_calculated and app._cp_rows and app._cp_res_names:
-        d = plan_payload(app)
+
+        # --- live, in-place builders (no full re-render → scroll is preserved) ---
+        def _kpis():
+            d2 = plan_payload(app)
+            return [
+                _kpi_tile("STORIES", str(d2["total_stories"])),
+                _kpi_tile("TOTAL EFFORT", f"{d2['total_hours']} h"),
+                _kpi_tile("PER PERSON", f"{d2['hours_per_person']} h", T.GREEN),
+            ]
+
+        def _workload():
+            d2 = plan_payload(app)
+            if not d2["workload"]:
+                return ft.Container()
+            maxw = max((w["hours"] for w in d2["workload"]), default=0) or 1
+            cards_wl = [ft.Container(ft.Column([
+                ft.Row([_avatar(w["name"], 32),
+                        ft.Column([_txt(w["name"], color=T.INK, weight=ft.FontWeight.BOLD, size=14),
+                                   _txt(f"{w['stories']} stories", color=T.INK_3, size=11)],
+                                  spacing=1, tight=True, expand=True),
+                        _txt(f"{w['hours']} h", color=T.INK, weight=ft.FontWeight.BOLD,
+                             size=16, no_wrap=True)],
+                       spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                ft.Container(height=12), _bar(w["hours"] / maxw, T.VIOLET, 8),
+            ], spacing=0), width=300, padding=14, bgcolor=T.CARD,
+                border=ft.Border.all(1, T.BORDER_2), border_radius=T.R)
+                for w in d2["workload"]]
+            return ft.Column([
+                ft.Container(height=16),
+                ft.Text("RESOURCE WORKLOAD", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
+                ft.Container(height=10),
+                ft.Row(cards_wl, spacing=14, wrap=True, run_spacing=14,
+                       vertical_alignment=ft.CrossAxisAlignment.START)], spacing=0)
+
+        def _refresh_totals():
+            kpi_strip.controls = _kpis()
+            workload_holder.content = _workload()
+            kpi_strip.update(); workload_holder.update()
+
+        def _refresh_all():
+            plan_col.controls = [hdr] + _trows()
+            plan_col.update(); _refresh_totals()
 
         def _edit_hours(sid):
             def _h(e):
@@ -1158,7 +1199,7 @@ def _create_screen(app):
                 for r in app._cp_rows:
                     if r["id"] == sid:
                         r["hours"] = round(v, 2); break
-                app.render()
+                _refresh_totals()          # update KPIs + workload, keep field focused
             return _h
 
         def _edit_assignee(sid):
@@ -1166,11 +1207,18 @@ def _create_screen(app):
                 for r in app._cp_rows:
                     if r["id"] == sid:
                         r["assignee"] = e.control.value or ""; break
-                app.render()
+                _refresh_totals()
             return _a
 
+        def _delete_story(sid):
+            def _d(e):
+                app._cp_rows = [r for r in app._cp_rows if r["id"] != sid]
+                _refresh_all()             # rebuild table + recalc, no scroll jump
+            return _d
+
         hdr = ft.Container(
-            ft.Row([_txt("STORY", color=T.INK_3, size=10.5, weight=ft.FontWeight.BOLD, width=90),
+            ft.Row([ft.Container(width=34),
+                    _txt("STORY", color=T.INK_3, size=10.5, weight=ft.FontWeight.BOLD, width=84),
                     _txt("TITLE", color=T.INK_3, size=10.5, weight=ft.FontWeight.BOLD, expand=True),
                     _txt("HOURS", color=T.INK_3, size=10.5, weight=ft.FontWeight.BOLD, width=110),
                     _txt("ASSIGNEE", color=T.INK_3, size=10.5, weight=ft.FontWeight.BOLD, width=180)],
@@ -1178,56 +1226,45 @@ def _create_screen(app):
             padding=ft.Padding.symmetric(vertical=10, horizontal=12),
             bgcolor=T.CARD_2, border_radius=T.R)
 
-        trows = []
-        for r in app._cp_rows:
-            hours_f = ft.TextField(
-                value=str(r["hours"]), on_change=_edit_hours(r["id"]),
-                width=92, text_size=13, border_color=T.BORDER,
-                focused_border_color=T.VIOLET, border_radius=T.R,
-                keyboard_type=ft.KeyboardType.NUMBER,
-                content_padding=ft.Padding.symmetric(vertical=8, horizontal=8))
-            assignee_dd = ft.Dropdown(
-                value=r["assignee"] or None, width=168, text_size=13,
-                options=[ft.DropdownOption(key=n, text=n) for n in app._cp_res_names],
-                on_select=_edit_assignee(r["id"]), border_color=T.BORDER,
-                border_radius=T.R, content_padding=ft.Padding.symmetric(vertical=6, horizontal=8))
-            trows.append(ft.Container(
-                ft.Row([_txt(str(r["id"]), color=T.VIOLET, weight=ft.FontWeight.BOLD, width=90),
-                        _txt(r["title"] or "—", color=T.INK, expand=True),
-                        ft.Container(hours_f, width=110),
-                        ft.Container(assignee_dd, width=180)],
-                       spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                padding=ft.Padding.symmetric(vertical=8, horizontal=12),
-                border=ft.Border.only(bottom=ft.BorderSide(1, T.BORDER))))
-        table = ft.Column([hdr] + trows, spacing=0)
+        def _trows():
+            out = []
+            for i, r in enumerate(app._cp_rows):
+                hours_f = ft.TextField(
+                    value=str(r["hours"]), on_change=_edit_hours(r["id"]),
+                    width=92, text_size=13, border_color=T.BORDER,
+                    focused_border_color=T.VIOLET, border_radius=T.R,
+                    keyboard_type=ft.KeyboardType.NUMBER,
+                    content_padding=ft.Padding.symmetric(vertical=8, horizontal=8))
+                assignee_dd = ft.Dropdown(
+                    value=r["assignee"] or None, width=168, text_size=13,
+                    options=[ft.DropdownOption(key=n, text=n) for n in app._cp_res_names],
+                    on_select=_edit_assignee(r["id"]), border_color=T.BORDER,
+                    border_radius=T.R, content_padding=ft.Padding.symmetric(vertical=6, horizontal=8))
+                del_btn = ft.IconButton(
+                    icon=ft.Icons.DELETE_OUTLINE, icon_size=18, icon_color=T.INK_3,
+                    tooltip="Remove story & recalculate",
+                    on_click=_delete_story(r["id"]),
+                    width=34, height=34,
+                    style=ft.ButtonStyle(padding=ft.Padding.all(0),
+                                         shape=ft.RoundedRectangleBorder(radius=8)))
+                out.append(ft.Container(
+                    ft.Row([ft.Container(del_btn, width=34),
+                            _txt(str(r["id"]), color=T.VIOLET, weight=ft.FontWeight.BOLD, width=84),
+                            _txt(r["title"] or "—", color=T.INK, expand=True),
+                            ft.Container(hours_f, width=110),
+                            ft.Container(assignee_dd, width=180)],
+                           spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    padding=ft.Padding.symmetric(vertical=6, horizontal=12),
+                    bgcolor=("#FFFFFF" if i % 2 == 0 else ft.Colors.with_opacity(0.5, T.BG)),
+                    border=ft.Border.only(bottom=ft.BorderSide(1, T.BORDER))))
+            return out
 
-        kpi_strip = ft.Row([
-            _kpi_tile("STORIES", str(d["total_stories"])),
-            _kpi_tile("TOTAL EFFORT", f"{d['total_hours']} h"),
-            _kpi_tile("PER PERSON", f"{d['hours_per_person']} h", T.GREEN),
-        ], spacing=14)
-
-        workload_ui = ft.Container()
-        if d["workload"]:
-            maxw = max((w["hours"] for w in d["workload"]), default=0) or 1
-            cards_wl = [ft.Container(ft.Column([
-                ft.Row([_avatar(w["name"], 32),
-                        ft.Column([_txt(w["name"], color=T.INK, weight=ft.FontWeight.BOLD, size=14),
-                                   _txt(f"{w['stories']} stories", color=T.INK_3, size=11)],
-                                  spacing=1, tight=True),
-                        ft.Container(expand=True),
-                        _txt(f"{w['hours']} h", color=T.INK, weight=ft.FontWeight.BOLD,
-                             size=16)],
-                       spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                ft.Container(height=12), _bar(w["hours"] / maxw, T.VIOLET, 8),
-            ], spacing=0), expand=True, padding=14, bgcolor=T.CARD,
-                border=ft.Border.all(1, T.BORDER_2), border_radius=T.R)
-                for w in d["workload"]]
-            workload_ui = ft.Column([
-                ft.Container(height=16),
-                ft.Text("RESOURCE WORKLOAD", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
-                ft.Container(height=10),
-                ft.Row(cards_wl, spacing=14)], spacing=0)
+        kpi_strip = ft.Row(_kpis(), spacing=14)
+        plan_col = ft.Column([hdr] + _trows(), spacing=0)
+        table = ft.Container(plan_col, border=ft.Border.all(1, T.BORDER),
+                             border_radius=T.R, clip_behavior=ft.ClipBehavior.HARD_EDGE)
+        workload_holder = ft.Container(content=_workload())
+        workload_ui = workload_holder
 
         exports = _export_row(app)
 
@@ -1290,7 +1327,8 @@ def _create_screen(app):
         body_children += [ft.Container(height=16), results]
     body = ft.Column(body_children, spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
     return app.shell("Test Plan",
-                     "Build a test-effort report from a sprint & its stories", body)
+                     "Build a test-effort report from a sprint & its stories", body,
+                     badge="STEP T")
 
 
 def screen(app):

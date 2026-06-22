@@ -587,8 +587,8 @@ class QAStudio:
         return ft.Container(ft.Row(row, spacing=14, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                             padding=ft.Padding.symmetric(vertical=18, horizontal=24),
                             alignment=ft.Alignment.CENTER_LEFT,
-                            border=ft.Border.only(bottom=ft.BorderSide(1, T.BORDER)),
-                            bgcolor=ft.Colors.with_opacity(0.7, "#FFFFFF"))
+                            border=ft.Border.only(bottom=ft.BorderSide(1, ft.Colors.with_opacity(0.7, T.BORDER))),
+                            bgcolor=ft.Colors.with_opacity(0.82, "#FFFFFF"))
 
     def shell(self, title, sub, body, right=None, badge=None):
         return ft.Row([
@@ -598,7 +598,10 @@ class QAStudio:
                     self.topbar(title, sub, right, badge),
                     ft.Container(body, padding=22, expand=True),
                 ], spacing=0, expand=True),
-                expand=True, bgcolor=T.BG),
+                expand=True,
+                gradient=ft.LinearGradient(
+                    begin=ft.Alignment.TOP_CENTER, end=ft.Alignment.BOTTOM_CENTER,
+                    colors=["#F7F8FE", "#EDF0F8"])),
         ], spacing=0, expand=True)
 
     # ---- navigation ----
