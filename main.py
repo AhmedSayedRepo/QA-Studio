@@ -652,7 +652,7 @@ class QAStudio:
                 ft.Stack([
                     ft.Container(
                         body, expand=True,
-                        padding=ft.Padding.only(top=HEADER_H, left=22, right=22),
+                        padding=ft.Padding.only(top=HEADER_H, left=22, right=22, bottom=22),
                         clip_behavior=ft.ClipBehavior.HARD_EDGE),
                     header,
                 ], expand=True),
@@ -761,10 +761,8 @@ class QAStudio:
                 ft.Column([field_label("URL"),
                            ft.Container(url_field, padding=ft.Padding.only(top=4))],
                           spacing=0, expand=True),
-                ft.Column([ft.Container(height=22),
-                           green_btn("Add link", icon=ft.Icons.ADD, on_click=_add)],
-                          spacing=0, tight=True),
-            ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.START),
+                green_btn("Add link", icon=ft.Icons.ADD, on_click=_add, height=44),
+            ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.END),
         ], spacing=0))
 
         palette = ["#4d5ad6", "#0f9586", "#7c45d4", "#C2860C", "#1C80E0", "#E0474D"]
@@ -814,6 +812,7 @@ class QAStudio:
                 bgcolor=T.CARD, border=ft.Border.all(1, T.BORDER), border_radius=16)
 
         body = ft.Column([
+            ft.Container(height=14),
             add_card,
             ft.Container(height=24),
             ft.Row([ft.Text("SAVED LINKS", size=10.5, weight=ft.FontWeight.BOLD,
@@ -1482,7 +1481,7 @@ class QAStudio:
         task_card = self._task_card() if self.connected else self._task_locked()
 
         self._left_scroll = ft.Column(
-            [connection_card, tool_card, task_card, self.err_text],
+            [connection_card, tool_card, task_card],
             spacing=14, scroll=ft.ScrollMode.AUTO, expand=True,
             key="setup_scroll", on_scroll=self._track_scroll)
         left = self._left_scroll
@@ -2096,26 +2095,48 @@ class QAStudio:
     def _unlock_sender(self, e=None):
         self._sender_unlocked = True; self.render()
 
-    def _err(self, msg):
-        self._err_msg = msg
+    def _snack(self, msg, color, icon):
+        """Floating toast used for all errors & confirmations (never inline now)."""
+        if not msg:
+            return
         try:
-            self.err_text.value = msg
-            self.page.update()
+            sb = ft.SnackBar(
+                content=ft.Row([
+                    ft.Icon(icon, color="#FFFFFF", size=18),
+                    ft.Text(msg, color="#FFFFFF", size=13,
+                            weight=ft.FontWeight.W_600, expand=True),
+                ], spacing=10, tight=False),
+                bgcolor=color, duration=6000,
+                behavior=ft.SnackBarBehavior.FLOATING,
+                shape=ft.RoundedRectangleBorder(radius=12),
+                margin=ft.Margin.all(16), padding=ft.Padding.symmetric(vertical=12, horizontal=16))
+            if hasattr(self.page, "open"):
+                self.page.open(sb)
+            else:
+                self.page.snack_bar = sb
+                sb.open = True
+                self.page.update()
         except Exception:
-            pass
-        # Also show as a snackbar so it is visible even if the inline label is gone
-        if msg:
+            # fallback for older Flet builds
             try:
-                self.page.snack_bar = ft.SnackBar(ft.Text(msg), bgcolor=T.RED, duration=6000)
+                self.page.snack_bar = ft.SnackBar(ft.Text(msg), bgcolor=color, duration=6000)
                 self.page.snack_bar.open = True
                 self.page.update()
             except Exception:
                 pass
 
+    def _err(self, msg):
+        self._err_msg = msg
+        # keep the (now-unmounted) label in sync so other code paths don't break
+        try:
+            self.err_text.value = msg
+        except Exception:
+            pass
+        # Errors surface as a floating toast, not an inline line at the page bottom.
+        self._snack(msg, T.RED, ft.Icons.ERROR_OUTLINE)
+
     def _toast(self, msg):
-        self.page.snack_bar = ft.SnackBar(ft.Text(msg), bgcolor=T.GREEN)
-        self.page.snack_bar.open = True
-        self.page.update()
+        self._snack(msg, T.GREEN, ft.Icons.CHECK_CIRCLE)
 
     # ---- task card (connected) ----
     def _task_card(self):
