@@ -360,17 +360,17 @@ class QAStudio:
         self._update_dismissed = False
         self._closing = False        # set on close to stop background loops
 
-        # Regression Plan tab (registered at runtime so theme.py needn't change)
+        # Regression Plan tab (after Report)
         if not any(n.get("id") == "regression" for n in T.NAV):
-            _ri = next((i for i, n in enumerate(T.NAV) if n.get("id") == "report"), len(T.NAV))
-            T.NAV.insert(_ri, {"id": "regression", "label": "Regression Plan",
-                               "icon": "FACT_CHECK", "ix": "R"})
+            _ri = next((i for i, n in enumerate(T.NAV) if n.get("id") == "report"), len(T.NAV) - 1)
+            T.NAV.insert(_ri + 1, {"id": "regression", "label": "Regression Plan",
+                                   "icon": "FACT_CHECK", "ix": "R"})
 
-        # Test Plan tab (sprint-based effort report)
+        # Test Plan tab (after Regression Plan)
         if not any(n.get("id") == "testplan" for n in T.NAV):
-            _ti = next((i for i, n in enumerate(T.NAV) if n.get("id") == "report"), len(T.NAV))
-            T.NAV.insert(_ti, {"id": "testplan", "label": "Test Plan",
-                               "icon": "ASSIGNMENT", "ix": "T"})
+            _ti = next((i for i, n in enumerate(T.NAV) if n.get("id") == "regression"), len(T.NAV) - 1)
+            T.NAV.insert(_ti + 1, {"id": "testplan", "label": "Test Plan",
+                                   "icon": "ASSIGNMENT", "ix": "T"})
 
         self._build()
 
@@ -445,7 +445,7 @@ class QAStudio:
             ix = "✓" if _is_done else n["ix"]
             ixcolor = "#A99BFF" if is_active else (T.GREEN if _is_done else "#56535F")
             clickable = (st == "done" or is_active
-                         or (n["id"] == "report")
+                         or (n["id"] == "report" and self.last_report is not None)
                          or (n["id"] == "setup")
                          or (n["id"] == "automation")
                          or (n["id"] == "regression")

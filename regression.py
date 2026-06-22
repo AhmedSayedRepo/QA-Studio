@@ -1279,8 +1279,8 @@ def _create_screen(app):
             ft.Container(height=14),
             ft.Row([green_btn("Assigning…" if app._cp_assigning
                               else "Assign to tester in Azure",
-                              icon=ft.Icons.PERSON_ADD, on_click=_assign_testers,
-                              disabled=app._cp_assigning)]),
+                              icon=ft.Icons.PERSON_ADD,
+                              on_click=(None if app._cp_assigning else _assign_testers))]),
             assign_note,
         ], spacing=0))
 
