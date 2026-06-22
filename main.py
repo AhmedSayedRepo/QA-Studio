@@ -458,7 +458,7 @@ class QAStudio:
             st = self.nav_state.get(n["id"], "")
             is_active = (n["id"] == self.active)
             color = "#FFFFFF" if is_active else ("#B8B5C2" if st == "done" else T.RAIL_DIM)
-            bg = None  # active items get a gradient instead (applied below)
+            bg = ft.Colors.with_opacity(0.16, T.VIOLET) if is_active else None
             leading_icon = getattr(ft.Icons, n.get("icon", "CIRCLE"), ft.Icons.CIRCLE)
             icon_color = "#FFFFFF" if is_active else ("#B8B5C2" if st == "done" else T.RAIL_DIM)
             # trailing: ✓ when this stage is done; Report shows ✓ once a report
@@ -481,7 +481,7 @@ class QAStudio:
                                                    or self.last_report is not None)))
             # active indicator bar on the far left
             indicator = ft.Container(width=3, height=22,
-                                     bgcolor=("#FFFFFF" if is_active else ft.Colors.TRANSPARENT),
+                                     bgcolor=(T.VIOLET if is_active else ft.Colors.TRANSPARENT),
                                      border_radius=4, animate=200)
             def _nav_hover(e, base=bg):
                 try:
@@ -504,10 +504,6 @@ class QAStudio:
                     ], spacing=9),
                     padding=ft.Padding.only(left=6, right=12, top=12, bottom=12),
                     bgcolor=bg, border_radius=11,
-                    gradient=(grad(T.GRAD_NAV_ACT) if is_active else None),
-                    border=(ft.Border.all(1, ft.Colors.with_opacity(0.35, "#8C9BFF"))
-                            if is_active else None),
-                    shadow=(_btn_shadow(T.VIOLET, 0.4) if is_active else None),
                     offset=ft.Offset(0, 0), animate=150, animate_offset=150,
                     on_hover=(_nav_hover if (clickable and not is_active) else None),
                     on_click=(lambda e, nid=n["id"]: self.goto(nid)) if clickable else None,
@@ -692,7 +688,7 @@ class QAStudio:
                 ft.Stack([
                     ft.Container(
                         body, expand=True,
-                        padding=ft.Padding.only(top=HEADER_H, left=22, right=22, bottom=22),
+                        padding=ft.Padding.only(top=HEADER_H + 18, left=22, right=22, bottom=22),
                         clip_behavior=ft.ClipBehavior.HARD_EDGE),
                     header,
                 ], expand=True),
@@ -852,7 +848,6 @@ class QAStudio:
                 bgcolor=T.CARD, border=ft.Border.all(1, T.BORDER), border_radius=16)
 
         body = ft.Column([
-            ft.Container(height=14),
             add_card,
             ft.Container(height=24),
             ft.Row([ft.Text("SAVED LINKS", size=10.5, weight=ft.FontWeight.BOLD,

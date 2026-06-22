@@ -176,11 +176,11 @@ def _plan_html(d):
     is injected by the mail server, not here.
     """
     # KPI tiles
-    def _kpi(label, val, unit, fg, bg, bd):
+    def _kpi(label, val, unit, fg, bg, bd, width="25%"):
         u = (f"<span style='font-size:12px;color:#9aa4b8;font-weight:600'> {unit}</span>"
              if unit else "")
         return (
-            f"<td width='25%' valign='top' style='padding:0 5px'>"
+            f"<td width='{width}' valign='top' style='padding:0 5px'>"
             f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0' "
             f"style='background:{bg};border:1px solid {bd};border-radius:12px'><tr>"
             f"<td style='padding:13px 14px'>"
@@ -189,13 +189,18 @@ def _plan_html(d):
             f"<div style='font-family:Consolas,monospace;font-size:23px;font-weight:700;"
             f"color:{fg};margin-top:4px'>{val}{u}</div></td></tr></table></td>")
 
+    # Sprint Plan estimates from an hours range (no existing test cases), so the
+    # test-case KPI + column are hidden whenever the plan has zero cases.
+    show_cases = (d.get("total_cases") or 0) > 0
+    kw = "25%" if show_cases else "33.33%"
+    kpi_cells = [_kpi("Stories", d["total_stories"], "", "#181A24", "#F6F8FC", "#EBEFF7", kw)]
+    if show_cases:
+        kpi_cells.append(_kpi("Test cases", d["total_cases"], "", "#181A24", "#F6F8FC", "#EBEFF7", kw))
+    kpi_cells.append(_kpi("Total effort", d["total_hours"], "h", "#2940C2", "#E7ECFF", "#D6DEFF", kw))
+    kpi_cells.append(_kpi("Per person", d["hours_per_person"], "h", "#1F9D57", "#E5F6EC", "#D2EEDF", kw))
     kpis = (
         f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0'><tr>"
-        + _kpi("Stories", d["total_stories"], "", "#181A24", "#F6F8FC", "#EBEFF7")
-        + _kpi("Test cases", d["total_cases"], "", "#181A24", "#F6F8FC", "#EBEFF7")
-        + _kpi("Total effort", d["total_hours"], "h", "#2940C2", "#E7ECFF", "#D6DEFF")
-        + _kpi("Per person", d["hours_per_person"], "h", "#1F9D57", "#E5F6EC", "#D2EEDF")
-        + "</tr></table>")
+        + "".join(kpi_cells) + "</tr></table>")
 
     # story rows
     srows = []
@@ -205,10 +210,15 @@ def _plan_html(d):
         who = (r.get("assignee") or "").strip()
         asg = (
             f"<table role='presentation' cellpadding='0' cellspacing='0'><tr>"
-            f"<td width='24' height='24' style='border-radius:50%;background:{acol};"
-            f"color:#fff;text-align:center;font-size:10px;font-weight:700'>{init}</td>"
+            f"<td width='24' style='vertical-align:middle'>"
+            f"<div style='width:24px;height:24px;line-height:24px;border-radius:50%;"
+            f"background:{acol};color:#fff;text-align:center;font-size:10px;font-weight:700;"
+            f"font-family:Segoe UI,Arial,sans-serif'>{init}</div></td>"
             f"<td style='padding-left:9px;font-size:13px;font-weight:600;color:#39435c;"
-            f"white-space:nowrap'>{who or '—'}</td></tr></table>")
+            f"white-space:nowrap;vertical-align:middle'>{who or '—'}</td></tr></table>")
+        cases_cell = (
+            f"<td style='padding:12px 8px;text-align:right;font-family:Consolas,monospace;"
+            f"font-size:13.5px;color:#46506a'>{r['cases']}</td>") if show_cases else ""
         srows.append(
             f"<tr style='border-top:1px solid #f0f3f9'>"
             f"<td style='padding:12px 14px;font-family:Consolas,monospace;font-size:13px;"
@@ -218,22 +228,22 @@ def _plan_html(d):
             f"<td style='padding:12px 8px;text-align:center'>"
             f"<span style='font-family:Consolas,monospace;font-size:11px;font-weight:700;"
             f"padding:3px 8px;border-radius:6px;background:{bg};color:{fg}'>{lab}</span></td>"
-            f"<td style='padding:12px 8px;text-align:right;font-family:Consolas,monospace;"
-            f"font-size:13.5px;color:#46506a'>{r['cases']}</td>"
+            + cases_cell +
             f"<td style='padding:12px 8px;text-align:right;font-family:Consolas,monospace;"
             f"font-size:13.5px;font-weight:700;color:#1f2940'>{r['hours']}</td>"
             f"<td style='padding:12px 14px'>{asg}</td></tr>")
+    _cols = [("Story", "14px", ""), ("Title", "8px", ""),
+             ("Pri", "8px", "text-align:center")]
+    if show_cases:
+        _cols.append(("Cases", "8px", "text-align:right"))
+    _cols += [("Hours", "8px", "text-align:right"), ("Assignee", "14px", "")]
     story_tbl = (
         f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0' "
         f"style='border:1px solid #EBEFF7;border-radius:12px'>"
         f"<tr style='background:#F6F8FC'>"
         + "".join(f"<td style='padding:10px {p};font-size:10.5px;letter-spacing:.5px;"
                   f"text-transform:uppercase;color:#98a1b5;font-weight:700;{a}'>{h}</td>"
-                  for h, p, a in (("Story", "14px", ""), ("Title", "8px", ""),
-                                  ("Pri", "8px", "text-align:center"),
-                                  ("Cases", "8px", "text-align:right"),
-                                  ("Hours", "8px", "text-align:right"),
-                                  ("Assignee", "14px", "")))
+                  for h, p, a in _cols)
         + "</tr>" + "".join(srows) + "</table>")
 
     # workload bars
@@ -262,7 +272,7 @@ def _plan_html(d):
                 f"font-size:0;line-height:0'>&nbsp;</td>"
                 f"<td style='font-size:0;line-height:0'>&nbsp;</td></tr></table></td>"
                 f"<td width='118' align='right' style='padding:7px 0;white-space:nowrap'>"
-                f"<span style='font-size:11.5px;color:#8a93a8'>{w['stories']} stories · {w.get('cases', 0)} cases</span>"
+                f"<span style='font-size:11.5px;color:#8a93a8'>{w['stories']} stories</span>"
                 f"<span style='font-family:Consolas,monospace;font-size:14px;font-weight:700;"
                 f"color:#1f2940;padding-left:8px'>{w['hours']} h</span></td></tr>")
         wl_block = (
@@ -309,8 +319,10 @@ def _plan_html(d):
         f"<div style='border-top:1px solid #eef1f7;padding-top:18px;font-size:12px;"
         f"color:#9aa4b8;line-height:1.6'>Sent automatically from "
         f"<b style='color:#6b7790'>QA Studio</b>. The full plan is attached as a Word "
-        f"document.<br>Estimates use {d['avg_minutes_per_case']}&nbsp;min / test case "
-        f"weighted by Azure DevOps priority.</div></td></tr>"
+        f"document." + (f"<br>Estimates use {d['avg_minutes_per_case']}&nbsp;min / test "
+        f"case weighted by Azure DevOps priority." if show_cases else
+        f"<br>Effort is estimated per story and balanced across the team.")
+        + f"</div></td></tr>"
         f"</table></div>")
 
 
