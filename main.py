@@ -366,6 +366,12 @@ class QAStudio:
             T.NAV.insert(_ri, {"id": "regression", "label": "Regression Plan",
                                "icon": "FACT_CHECK", "ix": "R"})
 
+        # Test Plan tab (sprint-based effort report)
+        if not any(n.get("id") == "testplan" for n in T.NAV):
+            _ti = next((i for i, n in enumerate(T.NAV) if n.get("id") == "report"), len(T.NAV))
+            T.NAV.insert(_ti, {"id": "testplan", "label": "Test Plan",
+                               "icon": "ASSIGNMENT", "ix": "T"})
+
         self._build()
 
     # ---- credential helpers ----
@@ -443,6 +449,7 @@ class QAStudio:
                          or (n["id"] == "setup")
                          or (n["id"] == "automation")
                          or (n["id"] == "regression")
+                         or (n["id"] == "testplan")
                          or (n["id"] == "run" and (getattr(self, "_run_active", False)
                                                    or st == "active"
                                                    or self.last_report is not None)))
@@ -580,6 +587,8 @@ class QAStudio:
                 view = self.automation_screen()
             elif self.active == "regression":
                 view = regression.screen(self)
+            elif self.active == "testplan":
+                view = regression.test_plan_screen(self)
             else:
                 view = self.report_screen()
             self.page.controls.clear()
@@ -1035,70 +1044,43 @@ class QAStudio:
         self._restart_close()
 
     def _restart_app(self):
-        """Restart via an external relauncher script. The old app writes a tiny
-        helper to a temp file and starts it fully detached; the helper waits for
-        THIS process to fully exit, then launches a fresh app. Because the helper
-        is a separate, detached process, killing this app can't affect it."""
+        """Relaunch cleanly. We spawn a helper that is REPARENTED out of our
+        process tree (via `start`), so the `taskkill /T` we run on ourselves
+        below can't kill it. The helper waits for THIS pid to exit, then starts
+        a fresh app."""
         self._close_dialog()
         try:
-            import sys, os, subprocess, tempfile, textwrap
+            import sys, os, subprocess, tempfile
             app_dir = os.path.dirname(os.path.abspath(__file__))
             main_py = os.path.join(app_dir, "main.py")
-            py = sys.executable
-            pyw = py
+            pyw = sys.executable
             try:
-                cand = os.path.join(os.path.dirname(py), "pythonw.exe")
+                cand = os.path.join(os.path.dirname(pyw), "pythonw.exe")
                 if os.path.exists(cand):
                     pyw = cand
             except Exception:
                 pass
-            my_pid = os.getpid()
-            relauncher = os.path.join(tempfile.gettempdir(), "qastudio_relaunch.py")
-            code = textwrap.dedent(f'''
-                import os, sys, time, subprocess
-                OLD_PID = {my_pid}
-                PYW = {pyw!r}
-                MAIN = {main_py!r}
-                APP_DIR = {app_dir!r}
-                # Wait for the old app to fully exit (up to ~15s).
-                def alive(pid):
-                    try:
-                        if os.name == "nt":
-                            out = subprocess.run(
-                                ["tasklist", "/FI", f"PID eq {{pid}}"],
-                                capture_output=True, text=True).stdout
-                            return str(pid) in out
-                        else:
-                            os.kill(pid, 0); return True
-                    except Exception:
-                        return False
-                for _ in range(150):
-                    if not alive(OLD_PID):
-                        break
-                    time.sleep(0.1)
-                time.sleep(0.5)
-                # Launch a fresh app instance.
-                try:
-                    subprocess.Popen([PYW, MAIN], cwd=APP_DIR)
-                except Exception:
-                    pass
-            ''').strip()
-            with open(relauncher, "w", encoding="utf-8") as f:
-                f.write(code)
-            # Start the relauncher FULLY DETACHED so it survives our death.
+            pid = os.getpid()
             if os.name == "nt":
-                DETACHED = 0x00000008
-                NEW_GROUP = 0x00000200
-                NO_WINDOW = 0x08000000
-                subprocess.Popen([pyw, relauncher],
-                                 creationflags=DETACHED | NEW_GROUP | NO_WINDOW,
-                                 close_fds=True)
+                bat = os.path.join(tempfile.gettempdir(), "qastudio_relaunch.bat")
+                script = ("@echo off\r\n"
+                          f'set "PID={pid}"\r\n'
+                          ":wait\r\n"
+                          'tasklist /FI "PID eq %PID%" 2>nul | find "%PID%" >nul '
+                          "&& (ping -n 2 127.0.0.1 >nul & goto wait)\r\n"
+                          "ping -n 2 127.0.0.1 >nul\r\n"
+                          f'start "" /d "{app_dir}" "{pyw}" "{main_py}"\r\n'
+                          'del "%~f0" >nul 2>&1\r\n')
+                with open(bat, "w", encoding="ascii", errors="ignore", newline="") as f:
+                    f.write(script)
+                DETACHED, NEW_GROUP = 0x00000008, 0x00000200
+                # `cmd /c start … cmd /c bat` reparents the helper away from us.
+                subprocess.Popen(["cmd", "/c", "start", "", "/min", "cmd", "/c", bat],
+                                 creationflags=DETACHED | NEW_GROUP, close_fds=True)
             else:
-                subprocess.Popen([py, relauncher], start_new_session=True)
+                subprocess.Popen([pyw, main_py], cwd=app_dir, start_new_session=True)
         except Exception:
             pass
-        # Now tear down THIS instance. The relauncher is watching and will start
-        # the new app once we're gone.
         self._run_active = False
         self._auto_running = False
         self._restart_close()

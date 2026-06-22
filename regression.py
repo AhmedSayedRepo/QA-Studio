@@ -630,6 +630,11 @@ def _pri_pill(pri):
     return _pill(f"P{pri}", T.INK_2, T.CARD_2)
 
 
+def _txt(s, **kw):
+    kw.setdefault("size", 12)
+    return ft.Text(s, **kw)
+
+
 def _avatar(name, size=26):
     """Round initial-avatar; colour is stable per name."""
     init, col = _av(name)
@@ -936,6 +941,20 @@ def _mode_toggle(app):
                    _seg("From a sprint", "create")], spacing=8)
 
 
+def test_plan_screen(app):
+    """Entry point for the 'Test Plan' nav tab — a sprint-based effort report."""
+    _init(app)
+    from main import card, sec_head, field_label, green_btn, ghost_btn  # noqa: F401
+    if not (app.connected and app.project):
+        return locked_state(
+            app, "Test Plan",
+            "Build a test-effort report from a sprint & its stories",
+            "Connect your Azure DevOps account on the Setup screen, then pick a "
+            "sprint here.")
+    app._reg_mode = "create"
+    return _create_screen(app)
+
+
 def _create_screen(app):
     from main import (card, sec_head, field_label, green_btn, ghost_btn,
                       primary_btn, searchable_dropdown)
@@ -1172,13 +1191,12 @@ def _create_screen(app):
             assign_note,
         ], spacing=0))
 
-    body_children = [_mode_toggle(app), ft.Container(height=16),
-                     card1, ft.Container(height=14), card2]
+    body_children = [card1, ft.Container(height=14), card2]
     if results is not None:
         body_children += [ft.Container(height=16), results]
     body = ft.Column(body_children, spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
-    return app.shell("Regression Plan",
-                     "Build a regression-style report from a sprint & its stories", body)
+    return app.shell("Test Plan",
+                     "Build a test-effort report from a sprint & its stories", body)
 
 
 def screen(app):
@@ -1194,8 +1212,7 @@ def screen(app):
             "Connect your Azure DevOps account on the Setup screen. You can pick "
             "the test plans right here once connected.")
 
-    if getattr(app, "_reg_mode", "existing") == "create":
-        return _create_screen(app)
+    app._reg_mode = "existing"
 
     # lazy-load test plans
     if not app._plans and not app._reg_plans_loading:
@@ -1730,8 +1747,7 @@ def screen(app):
             padding=10, bgcolor=T.AMBER_SOFT, border_radius=T.R,
             border=ft.Border.all(1, "#EAD9A8"), margin=ft.Margin.only(top=10))
 
-    body_children = [_mode_toggle(app), ft.Container(height=16),
-                     card1, ft.Container(height=14),
+    body_children = [card1, ft.Container(height=14),
                      ft.Row([ft.Container(card2, expand=1),
                              ft.Container(card3, expand=1)],
                             spacing=14,
