@@ -1580,9 +1580,7 @@ def screen(app):
          for s in app._reg_selected], wrap=True, spacing=6, run_spacing=6)
 
     card1 = card(ft.Column([
-        sec_head("1", "Source & stories",
-                 right=ghost_btn("Use Setup selection", icon=ft.Icons.DOWNLOAD,
-                                 on_click=_use_setup_selection)),
+        sec_head("1", "Source & stories"),
         ft.Container(height=10),
         ft.Column([field_label("Test plans", req=True), plan_dd], spacing=6),
         ft.Container(plan_chips, padding=ft.Padding.only(top=10),
@@ -1852,4 +1850,7 @@ def screen(app):
 
     body = ft.Column(body_children, spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
     return app.shell("Regression Plan",
-                     "Build a regression plan from your test plans & their stories", body)
+                     "Build a regression plan from your test plans & their stories", body,
+                     right=ghost_btn("Use Setup selection", icon=ft.Icons.DOWNLOAD,
+                                     on_click=_use_setup_selection),
+                     badge="STEP R")

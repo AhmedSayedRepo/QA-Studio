@@ -518,10 +518,11 @@ class QAStudio:
                 ft.Container(
                     ft.Row([
                         ft.Container(
-                            ft.Icon(ft.Icons.AUTO_AWESOME, size=15, color="#FFFFFF") if self.connected
-                            else ft.Container(width=10, height=10, bgcolor=conn_color, border_radius=5),
+                            self._provider_logo(_prov, 30) if self.connected
+                            else ft.Container(width=10, height=10, bgcolor=conn_color,
+                                              border_radius=5),
                             width=30, height=30,
-                            bgcolor=(T.VIOLET if self.connected else T.RAIL_2),
+                            bgcolor=(None if self.connected else T.RAIL_2),
                             border_radius=8, alignment=ft.Alignment.CENTER),
                         ft.Column([
                             ft.Text(conn_text, size=12, weight=ft.FontWeight.BOLD, color=T.RAIL_INK),
@@ -539,25 +540,62 @@ class QAStudio:
     def current_provider(self):
         return getattr(self, "_provider_choice", None) or (E.active_providers()[:1] or ["anthropic"])[0]
 
-    def topbar(self, title, sub=None, right=None):
-        row = [ft.Text(title, size=15, weight=ft.FontWeight.BOLD, color=T.INK)]
+    # brand colour + monogram per provider (drop-in logo images can replace these)
+    PROVIDER_BRAND = {
+        "anthropic": ("#D97757", "A"),
+        "openai":    ("#10A37F", "O"),
+        "gemini":    ("#1A73E8", "G"),
+        "google":    ("#1A73E8", "G"),
+        "nvidia":    ("#76B900", "N"),
+        "mistral":   ("#FF7000", "M"),
+        "groq":      ("#F55036", "G"),
+        "deepseek":  ("#4D6BFE", "D"),
+        "azure":     ("#0078D4", "Az"),
+        "cohere":    ("#39594D", "C"),
+        "xai":       ("#111111", "X"),
+    }
+
+    def _provider_logo(self, prov, size=30):
+        color, glyph = self.PROVIDER_BRAND.get(
+            (prov or "").lower(),
+            (T.VIOLET, (prov[:1].upper() if prov else "?")))
+        return ft.Container(
+            ft.Text(glyph, size=int(size * 0.46), weight=ft.FontWeight.W_800,
+                    color="#FFFFFF", font_family=T.F_UI),
+            width=size, height=size, bgcolor=color, border_radius=int(size * 0.28),
+            alignment=ft.Alignment.CENTER)
+
+    def topbar(self, title, sub=None, right=None, badge=None):
+        title_ctl = ft.Text(title, size=27, weight=ft.FontWeight.W_800, color=T.INK,
+                            no_wrap=True)
+        if badge:
+            head = ft.Row([title_ctl,
+                ft.Container(ft.Text(badge, size=11, weight=ft.FontWeight.BOLD,
+                                     color=T.VIOLET, font_family=T.F_MONO),
+                             padding=ft.Padding.symmetric(vertical=5, horizontal=10),
+                             bgcolor=T.VIOLET_SOFT, border_radius=8,
+                             border=ft.Border.all(1, "#E0E5FF"))],
+                spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+        else:
+            head = title_ctl
+        left = [head]
         if sub:
-            row.append(ft.Text(f"·  {sub}", size=12, color=T.INK_2, weight=ft.FontWeight.BOLD))
-        row.append(ft.Container(expand=True))
+            left.append(ft.Text(sub, size=14, color=T.INK_2, weight=ft.FontWeight.W_500))
+        row = [ft.Column(left, spacing=3, tight=True), ft.Container(expand=True)]
         if right:
             row.append(right)
-        return ft.Container(ft.Row(row, spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                            padding=ft.Padding.symmetric(vertical=0, horizontal=24), height=58,
+        return ft.Container(ft.Row(row, spacing=14, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                            padding=ft.Padding.symmetric(vertical=18, horizontal=24),
                             alignment=ft.Alignment.CENTER_LEFT,
                             border=ft.Border.only(bottom=ft.BorderSide(1, T.BORDER)),
                             bgcolor=ft.Colors.with_opacity(0.7, "#FFFFFF"))
 
-    def shell(self, title, sub, body, right=None):
+    def shell(self, title, sub, body, right=None, badge=None):
         return ft.Row([
             self.rail(),
             ft.Container(
                 ft.Column([
-                    self.topbar(title, sub, right),
+                    self.topbar(title, sub, right, badge),
                     ft.Container(body, padding=22, expand=True),
                 ], spacing=0, expand=True),
                 expand=True, bgcolor=T.BG),
