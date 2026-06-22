@@ -1,78 +1,110 @@
+<div align="center">
+
+<img src="qa-logo.png" alt="QA Studio" width="84" height="84">
+
 # QA Studio
 
-**AI-powered Azure DevOps test-case generator** — titles + steps, Arabic or English output.
-A single desktop window with a clean **Setup → Run → Report** flow.
+### AI test cases for Azure DevOps, in minutes
 
-![QA Studio](app.png)
+QA Studio reads your sprints &amp; stories and generates test-case titles or full steps —
+in **English or Arabic** — straight into your Azure DevOps test plans.
+One clean **Setup → Run → Report** flow.
 
----
+<br>
 
-## Quick install (Windows)
+[![Download](https://img.shields.io/badge/⬇_Download_installer-install.bat-4f6bf6?style=for-the-badge)](https://github.com/AhmedSayedRepo/QA-Studio/releases/latest/download/install.bat)
+&nbsp;
+[![Latest release](https://img.shields.io/github/v/release/AhmedSayedRepo/QA-Studio?style=for-the-badge&label=latest&color=6A33A8)](https://github.com/AhmedSayedRepo/QA-Studio/releases/latest)
 
-1. **Download** this repository:
-   - Click the green **Code** button above → **Download ZIP**, then extract it.
-   - *(or)* `git clone https://github.com/YOUR-USERNAME/qa-studio.git`
+**[🌐 Landing page](https://ahmedsayedrepo.github.io/QA-Studio/)** · **[📦 All releases &amp; changelog](https://github.com/AhmedSayedRepo/QA-Studio/releases)**
 
-2. **Double-click `install.bat`.**
-   It will:
-   - Install Python automatically if it isn't already on your PC
-   - Install all dependencies (Flet, Anthropic, Azure DevOps SDK, etc.)
-   - Put a **QA Studio** icon on your Desktop
+<sub>Windows 10/11 · Python auto-installed · your keys stay on your device</sub>
 
-3. **Double-click the "QA Studio" icon** on your Desktop to open the app.
-
-> If `install.bat` says Python was just installed, **close the window and run `install.bat` once more** so the new PATH takes effect.
+</div>
 
 ---
 
-## Manual install (any OS)
+## Install
 
-```bash
-# 1. Install Python 3.9+ (3.11 or 3.12 recommended)
+The fastest way — one small file, nothing to unzip, nothing to configure.
 
-# 2. Install dependencies
-pip install -r requirements.txt
+1. **Download** [`install.bat`](https://github.com/AhmedSayedRepo/QA-Studio/releases/latest/download/install.bat)
+2. **Double-click it.** It installs Python if needed, pulls the app, adds dependencies, and drops a Desktop icon.
+3. **Open QA Studio** from the new Desktop icon, add your keys in **Setup**, and run.
 
-# 3. Run the app
-python main.py
+<details>
+<summary>Prefer PowerShell?</summary>
+
+```powershell
+powershell -c "irm https://github.com/AhmedSayedRepo/QA-Studio/releases/latest/download/install.bat -OutFile $env:TEMP\install.bat; & $env:TEMP\install.bat"
 ```
 
-Only the provider library you actually use is strictly required:
-`anthropic` for Claude, `openai` for OpenAI/NVIDIA, `google-generativeai` for Gemini.
+</details>
+
+> [!NOTE]
+> Windows may show a blue **“Windows protected your PC”** notice for the `.bat` —
+> click **More info → Run anyway**. This is the standard SmartScreen prompt for
+> unsigned scripts; the installer is open and its source lives in this repo.
 
 ---
 
-## First-time setup inside the app
+## What it does
 
-1. Open **Setup → Connection** and enter:
-   - **AI provider key** (Anthropic / OpenAI / Gemini / NVIDIA / Azure OpenAI / Ollama)
-   - **Azure DevOps PAT** — needs **Work Items (read & write)** and **Test Management (read & write)** scopes
-   - *(optional)* **Gmail App Password** for emailed reports
-2. Pick your project, test plan, and the user stories to process.
-3. Choose **Titles** or **Steps**, then **Run**.
-
-Your keys, PAT, and Gmail password are saved **locally only** (base64) at
-`~/.qa_tool/creds.dat` — they are never uploaded anywhere and are git-ignored.
+| Stage | What happens |
+|-------|--------------|
+| **Setup** | Connect Azure DevOps, pick your AI provider, choose what to generate (titles or full steps) and the language. |
+| **Run** | QA Studio reads the chosen sprint &amp; stories and writes test cases back into your test plans. |
+| **Regression Plan** | Build a regression plan from existing test plans — weighted effort estimates, balanced across named resources. |
+| **Sprint Plan** | Plan a sprint's testing scope, with an inline editable plan table and an email-ready report. |
+| **Report** | Per-sprint summary with status breakdown — exportable to **Word · Excel · PDF · JSON** and shareable by email. |
 
 ---
 
-## Files
+## Highlights
 
-| File | Purpose |
-|------|---------|
-| `main.py` | Flet UI — all screens and modals |
-| `engine.py` | Azure DevOps + AI logic (no UI) |
-| `theme.py` | Design tokens (colors, radii, fonts) |
-| `store.py` | Local credential persistence |
-| `install.bat` | Windows installer (deps + desktop icon) |
-| `launch.bat` | Fallback launcher (no console window) |
-| `requirements.txt` | Python dependencies |
-| `app.ico` | App icon |
+- **Bilingual** — generate test cases in English *or* Arabic.
+- **Effort estimation** — test cases × minutes × Azure DevOps priority weight → estimated hours, balanced across your team.
+- **Editable plan tables** — inline-delete a story and the totals &amp; workload recalculate instantly.
+- **Polished exports** — clean Word/Excel/PDF/JSON documents and an Outlook-safe HTML email report.
+- **Useful Links** — keep your boards &amp; apps one click away, saved on your device.
+- **Local-first** — credentials and links stay on your machine; nothing is uploaded anywhere but your own Azure DevOps and AI provider.
 
 ---
 
-## Notes
+## Supported AI providers
 
-- The window targets a desktop size (1120×760).
-- Generated test content can be Arabic or English (toggle in Setup).
-- For a no-Python standalone build later, Flet supports `flet build windows`.
+Anthropic · OpenAI · Azure OpenAI · Google Gemini · NVIDIA · DeepSeek · Qwen · Ollama (local) · and more.
+
+Add a key for any one of them in **Setup** — keys are stored locally and never leave your device except to call that provider.
+
+---
+
+## Requirements
+
+- **Windows 10 or 11**
+- An **Azure DevOps** account with access to the project you want to work in
+- An **API key** for at least one supported AI provider
+- Python — **installed automatically** by `install.bat` if it isn't already present
+
+---
+
+## Updating
+
+Re-run `install.bat` (or the PowerShell one-liner) any time — it always pulls the
+latest release. The [landing page](https://ahmedsayedrepo.github.io/QA-Studio/)
+and download links always point to the newest version.
+
+---
+
+## Privacy
+
+QA Studio runs entirely on your machine. Your Azure DevOps credentials and AI keys
+are stored locally and are only ever sent to the services you explicitly connect
+(your Azure DevOps organization and your chosen AI provider). No telemetry, no
+third-party servers.
+
+---
+
+<div align="center">
+<sub>QA Studio · Windows desktop app · built for Azure DevOps test teams</sub>
+</div>

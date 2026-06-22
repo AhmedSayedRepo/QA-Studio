@@ -96,7 +96,7 @@
     <div class="radar"><span class="r1"></span><span class="r2"></span><span class="r3"></span><span class="sw"></span></div>
 
     <div class="herobody">
-      <span class="pill"><span class="dot"></span> Windows desktop app &middot; version v2.3.4</span>
+      <span class="pill"><span class="dot"></span> Windows desktop app &middot; version <span id="ver">v2.3.4</span></span>
       <h1>AI test cases for<br>Azure DevOps, in minutes</h1>
       <p class="sub">QA Studio reads your sprint &amp; stories and generates test-case titles or full steps — in English or Arabic — straight into your test plans. One clean Setup &rarr; Run &rarr; Report flow.</p>
 
@@ -152,7 +152,7 @@
         <a class="dlbtn" href="https://github.com/AhmedSayedRepo/QA-Studio/releases/latest/download/install.bat" style="padding:15px 28px;font-size:16px;">&#8595; Download installer</a>
         <a class="ghost" href="https://github.com/AhmedSayedRepo/QA-Studio/releases" target="_blank" rel="noopener">View all releases</a>
       </div>
-      <div class="foot"><span style="font-weight:600;">QA Studio &middot; v2.3.4</span><span>Windows 10/11 &middot; Python auto-installed &middot; keys stay on your device</span></div>
+      <div class="foot"><span style="font-weight:600;">QA Studio &middot; <span id="verfoot">v2.3.4</span></span><span>Windows 10/11 &middot; Python auto-installed &middot; keys stay on your device</span></div>
     </div>
   </section>
 
@@ -167,6 +167,25 @@
         setTimeout(function(){b.textContent='Copy';},1800);
       });
     });
+  })();
+
+  // Keep the displayed version in sync with the latest GitHub release.
+  // Download links already use /releases/latest/, so only the labels need updating.
+  (function(){
+    try{
+      fetch('https://api.github.com/repos/AhmedSayedRepo/QA-Studio/releases/latest',
+            {headers:{'Accept':'application/vnd.github+json'}})
+        .then(function(r){return r.ok?r.json():null;})
+        .then(function(d){
+          if(!d||!d.tag_name)return;
+          var v=d.tag_name;
+          if(v.charAt(0)!=='v'&&/^\d/.test(v))v='v'+v;
+          var a=document.getElementById('ver'),b=document.getElementById('verfoot');
+          if(a)a.textContent=v;
+          if(b)b.textContent=v;
+        })
+        .catch(function(){});
+    }catch(e){}
   })();
 </script>
 </body>

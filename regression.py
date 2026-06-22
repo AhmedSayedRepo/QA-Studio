@@ -141,6 +141,7 @@ def plan_payload(app):
     return {"generated": datetime.now().strftime("%Y-%m-%d %H:%M"),
             "project": app.project, "plan_id": plan_ids,
             "plan_name": plan_names, "plans": plans,
+            "report_title": "Regression Test Plan", "mode": "existing",
             "avg_minutes_per_case": AVG_MINUTES_PER_CASE,
             "priority_boost": PRIORITY_BOOST, "resources_count": count,
             "resource_names": names, "stories": rows, "workload": workload,
@@ -247,9 +248,12 @@ def _plan_html(d):
             wrows.append(
                 f"<tr><td width='118' style='padding:7px 0'>"
                 f"<table role='presentation' cellpadding='0' cellspacing='0'><tr>"
-                f"<td width='22' height='22' style='border-radius:6px;background:{acol};"
-                f"color:#fff;text-align:center;font-size:10px;font-weight:700'>{init}</td>"
-                f"<td style='padding-left:9px;font-size:13px;font-weight:700;color:#1f2940'>"
+                f"<td width='22' style='vertical-align:middle'>"
+                f"<div style='width:22px;height:22px;line-height:22px;border-radius:6px;"
+                f"background:{acol};color:#fff;text-align:center;font-size:10px;"
+                f"font-weight:700;font-family:Segoe UI,Arial,sans-serif'>{init}</div></td>"
+                f"<td style='padding-left:9px;font-size:13px;font-weight:700;color:#1f2940;"
+                f"vertical-align:middle'>"
                 f"{w['name']}</td></tr></table></td>"
                 f"<td style='padding:7px 14px'>"
                 f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0' "
@@ -289,7 +293,7 @@ def _plan_html(d):
         f"color:#d6ddf6;background:rgba(255,255,255,.14);padding:6px 11px;"
         f"border-radius:8px'>generated {d['generated']}</span></td></tr></table>"
         f"<div style='margin-top:20px;color:#fff;font-size:25px;font-weight:800;"
-        f"letter-spacing:-.5px'>Regression Test Plan</div>"
+        f"letter-spacing:-.5px'>{d.get('report_title', 'Regression Test Plan')}</div>"
         f"<div style='margin-top:6px;color:#cdd5f0;font-size:13.5px;font-weight:500'>"
         f"{scope}</div></td></tr>"
         # KPI strip
@@ -324,7 +328,8 @@ def _stamp(app):
         base = ((getattr(app, "plan_name", "") or "")
                 or (", ".join(p["name"] for p in (app._reg_plans_selected or [])) or "plan"))
     base = re.sub(r"[^A-Za-z0-9_-]+", "_", base).strip("_") or "plan"
-    return f"RegressionPlan_{base}_{datetime.now():%Y%m%d-%H%M}"
+    prefix = "SprintPlan" if getattr(app, "_reg_mode", "existing") == "create" else "RegressionPlan"
+    return f"{prefix}_{base}_{datetime.now():%Y%m%d-%H%M}"
 
 
 def _ask_save_path(fmt, default_name):
@@ -371,7 +376,7 @@ def export_xlsx(app):
     d = plan_payload(app)
     wb = Workbook()
     ws = wb.active
-    ws.title = "Regression Plan"
+    ws.title = d.get("report_title", "Regression Plan")[:31]
     head = Font(bold=True, color="FFFFFF")
     fill = PatternFill("solid", fgColor="6A4DFF")
     thin = Border(*[Side(style="thin", color="E3E0EC")] * 4)
@@ -430,7 +435,7 @@ def export_docx(app):
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     d = plan_payload(app)
     doc = Document()
-    h = doc.add_heading("Regression Test Plan", level=0)
+    h = doc.add_heading(d.get("report_title", "Regression Test Plan"), level=0)
     h.alignment = WD_ALIGN_PARAGRAPH.CENTER
     sub = doc.add_paragraph()
     sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -995,6 +1000,7 @@ def _cp_payload(app):
     return {"generated": datetime.now().strftime("%Y-%m-%d %H:%M"),
             "project": app.project, "plan_id": "",
             "plan_name": app._cp_sprint_name or ", ".join(app._cp_sprint_paths or []),
+            "report_title": "Sprint Plan", "mode": "create",
             "plans": [], "avg_minutes_per_case": 0,
             "priority_boost": {}, "resources_count": len(names),
             "resource_names": names, "stories": rows, "workload": workload,
@@ -1466,10 +1472,12 @@ def _create_screen(app):
             assign_note,
         ], spacing=0))
 
-    body_children = [card1, ft.Container(height=14), card2,
-                     ft.Container(height=16), calc_btn, calc_note]
-    if results is not None:
-        body_children += [ft.Container(height=16), results]
+    body_children = [card1]
+    if app._cp_sprint_paths and app._cp_rows and not app._cp_stories_loading:
+        body_children += [ft.Container(height=14), card2,
+                          ft.Container(height=16), calc_btn, calc_note]
+        if results is not None:
+            body_children += [ft.Container(height=16), results]
     body = ft.Column(body_children, spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
     return app.shell("Sprint Plan",
                      "Plan & estimate test effort across a sprint’s stories", body,
@@ -1848,7 +1856,7 @@ def screen(app):
         [_chip(str(s["id"]), (lambda e, x=s["id"]: _remove_story(x)))
          for s in app._reg_selected], wrap=True, spacing=6, run_spacing=6)
 
-    card1 = card(ft.Column([
+    _c1 = [
         sec_head("1", "Source & stories"),
         ft.Container(height=10),
         ft.Column([field_label("Test plans", req=True), plan_picker], spacing=6),
@@ -1857,13 +1865,17 @@ def screen(app):
         ft.Text(f"{len(app._reg_plans_selected)} plan(s) selected", size=11,
                 color=T.INK_3, weight=ft.FontWeight.BOLD,
                 visible=bool(app._reg_plans_selected)),
-        ft.Container(height=14),
-        ft.Column([field_label("Stories", req=True), story_picker], spacing=6),
-        ft.Container(ft.Column([story_chips], scroll=ft.ScrollMode.AUTO), height=150,
-                     padding=ft.Padding.only(top=10), visible=bool(app._reg_selected)),
-        ft.Text(f"{len(app._reg_selected)} stories selected", size=11,
-                color=T.INK_3, weight=ft.FontWeight.BOLD),
-    ], spacing=0))
+    ]
+    if app._reg_plans_selected:   # Stories appear only after a test plan is picked
+        _c1 += [
+            ft.Container(height=14),
+            ft.Column([field_label("Stories", req=True), story_picker], spacing=6),
+            ft.Container(ft.Column([story_chips], scroll=ft.ScrollMode.AUTO), height=150,
+                         padding=ft.Padding.only(top=10), visible=bool(app._reg_selected)),
+            ft.Text(f"{len(app._reg_selected)} stories selected", size=11,
+                    color=T.INK_3, weight=ft.FontWeight.BOLD),
+        ]
+    card1 = card(ft.Column(_c1, spacing=0))
 
     # ── Card 2: resources ──
     count_field = ft.TextField(
