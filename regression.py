@@ -582,11 +582,24 @@ def _export_row(app):
             threading.Thread(target=work, daemon=True).start()
         return _do
 
+    def _exp_btn(label, icon, color, fmt):
+        return ft.OutlinedButton(
+            content=ft.Row([ft.Icon(icon, size=17, color=color),
+                            ft.Text(label, size=13.5, weight=ft.FontWeight.W_600,
+                                    color=T.INK)],
+                           spacing=8, tight=True),
+            on_click=_go(fmt), height=44,
+            style=ft.ButtonStyle(
+                bgcolor={"": "#FFFFFF", "hovered": T.CARD_2},
+                side=ft.BorderSide(1, T.BORDER),
+                shape=ft.RoundedRectangleBorder(radius=T.R),
+                padding=ft.Padding.symmetric(horizontal=15, vertical=0)))
+
     btns = ft.Row([
-        ghost_btn("Word", icon=ft.Icons.DESCRIPTION, on_click=_go("docx")),
-        ghost_btn("Excel", icon=ft.Icons.TABLE_CHART, on_click=_go("xlsx")),
-        ghost_btn("PDF", icon=ft.Icons.PICTURE_AS_PDF, on_click=_go("pdf")),
-        ghost_btn("JSON", icon=ft.Icons.DATA_OBJECT, on_click=_go("json")),
+        _exp_btn("Word", ft.Icons.DESCRIPTION, T.BRAND_GRAD_1, "docx"),
+        _exp_btn("Excel", ft.Icons.TABLE_CHART, T.GREEN, "xlsx"),
+        _exp_btn("PDF", ft.Icons.PICTURE_AS_PDF, T.RED, "pdf"),
+        _exp_btn("JSON", ft.Icons.DATA_OBJECT, T.STORY, "json"),
     ], spacing=8, wrap=True)
 
     status = ft.Container()
@@ -1218,13 +1231,14 @@ def _create_screen(app):
 
         hdr = ft.Container(
             ft.Row([ft.Container(width=34),
-                    _txt("STORY", color=T.INK_3, size=10.5, weight=ft.FontWeight.BOLD, width=84),
-                    _txt("TITLE", color=T.INK_3, size=10.5, weight=ft.FontWeight.BOLD, expand=True),
-                    _txt("HOURS", color=T.INK_3, size=10.5, weight=ft.FontWeight.BOLD, width=110),
-                    _txt("ASSIGNEE", color=T.INK_3, size=10.5, weight=ft.FontWeight.BOLD, width=180)],
+                    _txt("STORY", color=T.INK_2, size=10.5, weight=ft.FontWeight.BOLD, width=84),
+                    _txt("TITLE", color=T.INK_2, size=10.5, weight=ft.FontWeight.BOLD, expand=True),
+                    _txt("HOURS", color=T.INK_2, size=10.5, weight=ft.FontWeight.BOLD, width=110),
+                    _txt("ASSIGNEE", color=T.INK_2, size=10.5, weight=ft.FontWeight.BOLD, width=180)],
                    spacing=10),
-            padding=ft.Padding.symmetric(vertical=10, horizontal=12),
-            bgcolor=T.CARD_2, border_radius=T.R)
+            padding=ft.Padding.symmetric(vertical=11, horizontal=12),
+            bgcolor=T.CARD_2,
+            border=ft.Border.only(bottom=ft.BorderSide(1, T.BORDER)))
 
         def _trows():
             out = []
@@ -1245,18 +1259,22 @@ def _create_screen(app):
                     tooltip="Remove story & recalculate",
                     on_click=_delete_story(r["id"]),
                     width=34, height=34,
-                    style=ft.ButtonStyle(padding=ft.Padding.all(0),
-                                         shape=ft.RoundedRectangleBorder(radius=8)))
+                    style=ft.ButtonStyle(
+                        padding=ft.Padding.all(0),
+                        color={"": T.INK_3, "hovered": T.RED},
+                        bgcolor={"": None, "hovered": T.RED_SOFT},
+                        shape=ft.RoundedRectangleBorder(radius=8)))
                 out.append(ft.Container(
                     ft.Row([ft.Container(del_btn, width=34),
-                            _txt(str(r["id"]), color=T.VIOLET, weight=ft.FontWeight.BOLD, width=84),
+                            _txt(str(r["id"]), color=T.VIOLET_INK, weight=ft.FontWeight.BOLD,
+                                 width=84, font_family=T.F_MONO),
                             _txt(r["title"] or "—", color=T.INK, expand=True),
                             ft.Container(hours_f, width=110),
                             ft.Container(assignee_dd, width=180)],
                            spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                     padding=ft.Padding.symmetric(vertical=6, horizontal=12),
-                    bgcolor=("#FFFFFF" if i % 2 == 0 else ft.Colors.with_opacity(0.5, T.BG)),
-                    border=ft.Border.only(bottom=ft.BorderSide(1, T.BORDER))))
+                    bgcolor=("#FFFFFF" if i % 2 == 0 else T.CARD_2),
+                    border=ft.Border.only(bottom=ft.BorderSide(1, T.BORDER_2))))
             return out
 
         kpi_strip = ft.Row(_kpis(), spacing=14)
