@@ -590,7 +590,7 @@ def _export_row(app):
                            spacing=8, tight=True),
             on_click=_go(fmt), height=44,
             style=ft.ButtonStyle(
-                bgcolor={"": "#FFFFFF", "hovered": T.CARD_2},
+                bgcolor={"": "#FFFFFF"},
                 side=ft.BorderSide(1, T.BORDER),
                 shape=ft.RoundedRectangleBorder(radius=T.R),
                 padding=ft.Padding.symmetric(horizontal=15, vertical=0)))
@@ -1255,15 +1255,12 @@ def _create_screen(app):
                     on_select=_edit_assignee(r["id"]), border_color=T.BORDER,
                     border_radius=T.R, content_padding=ft.Padding.symmetric(vertical=6, horizontal=8))
                 del_btn = ft.IconButton(
-                    icon=ft.Icons.DELETE_OUTLINE, icon_size=18, icon_color=T.INK_3,
+                    icon=ft.Icons.DELETE_OUTLINE, icon_size=18, icon_color=T.RED,
                     tooltip="Remove story & recalculate",
                     on_click=_delete_story(r["id"]),
                     width=34, height=34,
-                    style=ft.ButtonStyle(
-                        padding=ft.Padding.all(0),
-                        color={"": T.INK_3, "hovered": T.RED},
-                        bgcolor={"": None, "hovered": T.RED_SOFT},
-                        shape=ft.RoundedRectangleBorder(radius=8)))
+                    style=ft.ButtonStyle(padding=ft.Padding.all(0),
+                                         shape=ft.RoundedRectangleBorder(radius=8)))
                 out.append(ft.Container(
                     ft.Row([ft.Container(del_btn, width=34),
                             _txt(str(r["id"]), color=T.VIOLET_INK, weight=ft.FontWeight.BOLD,

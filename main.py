@@ -596,8 +596,12 @@ class QAStudio:
             ft.Container(
                 ft.Column([
                     self.topbar(title, sub, right, badge),
-                    ft.Container(body, padding=22, expand=True,
-                                 clip_behavior=ft.ClipBehavior.HARD_EDGE),
+                    ft.Container(
+                        ft.Container(body, expand=True,
+                                     padding=ft.Padding.symmetric(horizontal=22),
+                                     clip_behavior=ft.ClipBehavior.HARD_EDGE),
+                        expand=True, padding=ft.Padding.only(top=22),
+                        clip_behavior=ft.ClipBehavior.HARD_EDGE),
                 ], spacing=0, expand=True),
                 expand=True,
                 gradient=ft.LinearGradient(
