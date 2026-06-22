@@ -672,17 +672,21 @@ def locked_state(app, title, sub, msg, icon=None, steps=None):
                       (ft.Icons.CHECKLIST, "Select"),
                       (ft.Icons.AUTO_AWESOME, "Generate")]
 
-    # animated "scanning for a connection" ring around the icon tile
-    ring = ft.Container(
-        ft.Stack([
-            ft.ProgressRing(width=104, height=104, stroke_width=2,
-                            color=ft.Colors.with_opacity(0.45, T.VIOLET)),
+    # "scanning for a connection" card — ft.ProgressBar(value=None) animates natively in Flet
+    scan_card = ft.Container(
+        ft.Column([
             ft.Container(ft.Icon(icon, size=32, color=T.VIOLET),
-                         width=78, height=78, bgcolor=T.VIOLET_SOFT,
-                         border_radius=22, alignment=ft.Alignment.CENTER,
-                         left=13, top=13),
-        ], width=104, height=104),
-        width=104, height=104, alignment=ft.Alignment.CENTER)
+                         width=74, height=74, bgcolor=T.VIOLET_SOFT, border_radius=21,
+                         alignment=ft.Alignment.CENTER),
+            ft.Container(height=22),
+            ft.ProgressBar(value=None, color=T.VIOLET, bgcolor=T.BORDER_2,
+                           bar_height=6, border_radius=99, width=232),
+            ft.Container(height=11),
+            ft.Text("Scanning for a connection…", size=11, color=T.INK_3,
+                    weight=ft.FontWeight.W_500, font_family=T.F_MONO),
+        ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=0),
+        width=300, padding=ft.Padding.symmetric(vertical=28, horizontal=28),
+        bgcolor=T.CARD, border=ft.Border.all(1, T.BORDER_2), border_radius=22)
 
     pill = ft.Container(
         ft.Row([ft.Container(width=7, height=7, border_radius=7, bgcolor=T.STORY),
@@ -706,7 +710,7 @@ def locked_state(app, title, sub, msg, icon=None, steps=None):
 
     body = ft.Container(
         ft.Column([
-            ring,
+            scan_card,
             ft.Container(height=16), pill,
             ft.Container(height=14),
             ft.Text("A few things first", size=20, weight=ft.FontWeight.BOLD,
@@ -1499,9 +1503,26 @@ def screen(app):
         text_size=13, border_color=T.BORDER, focused_border_color=T.VIOLET,
         border_radius=T.R,
         content_padding=ft.Padding.symmetric(vertical=12, horizontal=10))
+    def _res_chip(nm, on_close):
+        init, col = _av(nm)
+        return ft.Container(
+            ft.Row([
+                ft.Container(ft.Text(init, size=10, weight=ft.FontWeight.BOLD,
+                                     color="#FFFFFF"),
+                             width=20, height=20, bgcolor=col, border_radius=20,
+                             alignment=ft.Alignment.CENTER),
+                ft.Text(nm, size=12.5, weight=ft.FontWeight.BOLD, color=T.INK),
+                ft.GestureDetector(
+                    content=ft.Icon(ft.Icons.CLOSE, size=12, color=T.INK_3),
+                    on_tap=on_close, mouse_cursor=ft.MouseCursor.CLICK)],
+               spacing=7, tight=True),
+            padding=ft.Padding.only(left=5, right=9, top=4, bottom=4),
+            bgcolor=T.CARD_2, border_radius=999,
+            border=ft.Border.all(1, T.BORDER_2))
+
     name_chips = ft.Row(
-        [_chip(n, (lambda e, x=n: _remove_name(x))) for n in app._reg_res_names],
-        wrap=True, spacing=6, run_spacing=6)
+        [_res_chip(n, (lambda e, x=n: _remove_name(x))) for n in app._reg_res_names],
+        wrap=True, spacing=8, run_spacing=8)
 
     warn = ft.Container()
     if mismatch:

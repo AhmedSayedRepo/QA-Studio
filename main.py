@@ -451,8 +451,9 @@ class QAStudio:
                                      bgcolor=(T.VIOLET if is_active else ft.Colors.TRANSPARENT),
                                      border_radius=4, animate=200)
             def _nav_hover(e, base=bg):
-                e.control.bgcolor = (ft.Colors.with_opacity(0.09, "#FFFFFF")
-                                     if e.data == "true" else base)
+                hov = (e.data == "true")
+                e.control.bgcolor = (ft.Colors.with_opacity(0.09, "#FFFFFF") if hov else base)
+                e.control.offset = (ft.Offset(0.015, 0) if hov else ft.Offset(0, 0))
                 try: e.control.update()
                 except Exception: pass
             nav_items.append(
@@ -467,7 +468,7 @@ class QAStudio:
                     ], spacing=9),
                     padding=ft.Padding.only(left=6, right=12, top=12, bottom=12),
                     bgcolor=bg, border_radius=9,
-                    animate=150,
+                    offset=ft.Offset(0, 0), animate=150, animate_offset=150,
                     on_hover=(_nav_hover if (clickable and not is_active) else None),
                     on_click=(lambda e, nid=n["id"]: self.goto(nid)) if clickable else None,
                 ))
