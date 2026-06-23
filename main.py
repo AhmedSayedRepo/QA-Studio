@@ -2951,8 +2951,11 @@ class QAStudio:
 
     def _restore_scroll(self):
         # Restore scroll after a full render so opening a dropdown / ticking a
-        # checkbox doesn't snap to the top. scroll_to must run AFTER the rebuilt
-        # control is laid out, so defer it onto the page loop.
+        # checkbox / pressing Generate doesn't snap to the top. render() clears and
+        # re-adds the whole page, so the scroller is a brand-new control each time;
+        # scroll_to must run AFTER it's laid out. A single immediate call often runs
+        # before layout is measured (and clamps to 0), so we re-apply across a couple
+        # of short delays — idempotent, and it reliably holds the position.
         col = getattr(self, "_left_scroll", None)
         off = getattr(self, "_scroll_offset", 0) or 0
         if not (col is not None and off):
@@ -2967,14 +2970,23 @@ class QAStudio:
                 self.page.update()
             except Exception:
                 pass
-        ru = getattr(self.page, "run_thread", None)
-        if callable(ru):
+
+        def _run():
+            ru = getattr(self.page, "run_thread", None)
+            if callable(ru):
+                try:
+                    ru(_do)
+                    return
+                except Exception:
+                    pass
+            _do()
+
+        _run()
+        for _delay in (0.05, 0.15):
             try:
-                ru(_do)
-                return
+                threading.Timer(_delay, _run).start()
             except Exception:
                 pass
-        _do()
 
     def _close_dropdowns(self, e=None):
         # Click-away: tapping outside an open dropdown closes it.
