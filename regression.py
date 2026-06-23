@@ -922,9 +922,12 @@ def _checkbox_multiselect(options, selected, on_toggle, on_all, *, is_open, on_o
     body = ft.Column(rows, spacing=0, scroll=ft.ScrollMode.AUTO) if rows else \
         ft.Container(ft.Text(empty, size=12, color=T.INK_3),
                      padding=14, alignment=ft.Alignment.CENTER)
+    # Fit the panel to its content, capped at `height` (so a short list doesn't
+    # leave a big empty gap, and a long list still scrolls).
+    panel_h = min(height, max(40, len(rows) * 34 + 8)) if rows else 64
     panel = ft.Column([
         head,
-        ft.Container(body, height=height, padding=ft.Padding.symmetric(vertical=4),
+        ft.Container(body, height=panel_h, padding=ft.Padding.symmetric(vertical=4),
                      border=ft.Border.all(1, T.BORDER),
                      border_radius=ft.BorderRadius.only(bottom_left=T.R, bottom_right=T.R)),
     ], spacing=0)
@@ -1067,6 +1070,7 @@ def _create_screen(app):
     from main import (card, sec_head, field_label, green_btn, ghost_btn,
                       primary_btn, searchable_dropdown)
     _cp_load_iterations(app)
+    _flush_toasts(app)
 
     names = list(app._cp_res_names or [])
     count = app._cp_res_count
@@ -1505,8 +1509,37 @@ def _create_screen(app):
                      badge="STEP T")
 
 
+def _flush_toasts(app):
+    """Surface any newly-set status message (export / email / assign / calc) as a
+    floating toast, in addition to the inline banner. Guards by remembered text so
+    it fires once per new message, not on every render."""
+    seen = getattr(app, "_toast_seen", None)
+    if seen is None:
+        seen = app._toast_seen = {}
+    for slot in ("_reg_export_msg", "_reg_calc_msg", "_cp_msg", "_cp_calc_msg"):
+        val = getattr(app, slot, None)
+        if isinstance(val, (tuple, list)) and len(val) == 2:
+            kind, text = val[0], val[1]
+        elif isinstance(val, str) and val:
+            kind, text = "err", val
+        else:
+            seen[slot] = None
+            continue
+        if not text or seen.get(slot) == text:
+            continue
+        seen[slot] = text
+        try:
+            if kind == "ok":
+                app.ui_safe(lambda t=text: app._toast(t))
+            else:
+                app.ui_safe(lambda t=text: app._err(t))
+        except Exception:
+            pass
+
+
 def screen(app):
     _init(app)
+    _flush_toasts(app)
     from main import (card, sec_head, field_label, green_btn, ghost_btn,
                       primary_btn, searchable_dropdown)
 
@@ -1621,7 +1654,8 @@ def screen(app):
         try:   # in-place update keeps the scroll position (full render snaps to top)
             name_chips.controls = [_res_chip(n, (lambda e, x=n: _remove_name(x)))
                                    for n in app._reg_res_names]
-            name_chips.update(); name_field.update()
+            name_chips_wrap.visible = bool(app._reg_res_names)
+            name_chips_wrap.update(); name_field.update()
         except Exception:
             app.render()
 
@@ -1631,7 +1665,8 @@ def screen(app):
         try:
             name_chips.controls = [_res_chip(n, (lambda e, x=n: _remove_name(x)))
                                    for n in app._reg_res_names]
-            name_chips.update()
+            name_chips_wrap.visible = bool(app._reg_res_names)
+            name_chips_wrap.update()
         except Exception:
             app.render()
 
@@ -1891,15 +1926,15 @@ def screen(app):
         sec_head("1", "Source & stories"),
         ft.Container(height=10),
         ft.Column([field_label("Test plans", req=True), plan_picker], spacing=6),
-        ft.Container(ft.Column([plan_chips], scroll=ft.ScrollMode.AUTO), height=150,
-                     padding=ft.Padding.only(top=10), visible=bool(app._reg_plans_selected)),
+        ft.Container(plan_chips, padding=ft.Padding.only(top=10),
+                     visible=bool(app._reg_plans_selected)),
         ft.Text(f"{len(app._reg_plans_selected)} plan(s) selected", size=11,
                 color=T.INK_3, weight=ft.FontWeight.BOLD,
                 visible=bool(app._reg_plans_selected)),
         ft.Container(height=14),
         ft.Column([field_label("Stories", req=True), story_picker], spacing=6),
-        ft.Container(ft.Column([story_chips], scroll=ft.ScrollMode.AUTO), height=150,
-                     padding=ft.Padding.only(top=10), visible=bool(app._reg_selected)),
+        ft.Container(story_chips, padding=ft.Padding.only(top=10),
+                     visible=bool(app._reg_selected)),
         ft.Text(f"{len(app._reg_selected)} stories selected", size=11,
                 color=T.INK_3, weight=ft.FontWeight.BOLD),
     ], spacing=0))
@@ -1937,6 +1972,8 @@ def screen(app):
     name_chips = ft.Row(
         [_res_chip(n, (lambda e, x=n: _remove_name(x))) for n in app._reg_res_names],
         wrap=True, spacing=8, run_spacing=8)
+    name_chips_wrap = ft.Container(name_chips, padding=ft.Padding.only(top=10),
+                                   visible=bool(app._reg_res_names))
 
     warn = ft.Container()
     if mismatch:
@@ -1963,8 +2000,8 @@ def screen(app):
                                          on_click=_add_name)], spacing=8)],
                       spacing=6, expand=True),
         ], spacing=14, vertical_alignment=ft.CrossAxisAlignment.START),
-        ft.Container(name_chips, padding=ft.Padding.only(top=10),
-                     visible=bool(app._reg_res_names)),
+        ft.Container(name_chips_wrap, padding=ft.Padding.only(top=0),
+                     visible=True),
         warn,
     ], spacing=0))
 
