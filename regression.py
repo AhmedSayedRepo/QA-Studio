@@ -54,13 +54,27 @@ def _fetch_meta(app, ids):
     return meta
 
 
+def _loading_field(text):
+    """A bordered field that shows a small spinner + message — used while plans /
+    stories are being fetched in the background."""
+    return ft.Container(
+        ft.Row([ft.ProgressRing(width=16, height=16, stroke_width=2, color=T.VIOLET),
+                ft.Text(text, size=13, color=T.INK_3, expand=True)],
+               spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        padding=ft.Padding.symmetric(vertical=12, horizontal=12),
+        bgcolor=T.CARD, border=ft.Border.all(1, T.BORDER), border_radius=T.R)
+
+
 def _count_cases(app, selected):
     """selected = [{"id","title","plan_id"}]. Count existing test cases for each
-    story in ITS OWN plan, so multiple selected plans work correctly."""
+    story in ITS OWN plan. The per-suite case lookups are run concurrently so a
+    large selection (hundreds of stories) finishes in seconds, not minutes."""
+    import concurrent.futures as _cf
     counts = {int(s["id"]): 0 for s in selected}
     by_plan = {}
     for s in selected:
         by_plan.setdefault(s.get("plan_id"), []).append(int(s["id"]))
+    tasks = []                       # (sid, plan_id, suite_id)
     for pid, sids in by_plan.items():
         if not pid:
             continue
@@ -71,12 +85,20 @@ def _count_cases(app, selected):
             smap = {}
         for sid in sids:
             suite_id = smap.get(sid)
-            if not suite_id:
-                continue
-            try:
-                counts[sid] = len(E.fetch_test_cases_for_suite(app.project, pid, suite_id))
-            except Exception:
-                counts[sid] = 0
+            if suite_id:
+                tasks.append((sid, pid, suite_id))
+
+    def _one(t):
+        sid, pid, suite_id = t
+        try:
+            return sid, len(E.fetch_test_cases_for_suite(app.project, pid, suite_id))
+        except Exception:
+            return sid, 0
+
+    if tasks:
+        with _cf.ThreadPoolExecutor(max_workers=min(16, len(tasks))) as ex:
+            for sid, n in ex.map(_one, tasks):
+                counts[sid] = n
     return counts
 
 
@@ -1920,6 +1942,7 @@ def screen(app):
     # calc_btn_ref is set after primary_btn() is called below; use a list cell
     # as a mutable reference so the closure can reach the button.
     _calc_btn_cell = [None]
+    _gen_spinner_cell = [None]
 
     def _get_calc_btn():
         return _calc_btn_cell[0]
@@ -1965,6 +1988,13 @@ def screen(app):
             calc_note_wrap.update()
         except Exception:
             pass
+        sp = _gen_spinner_cell[0]
+        if sp is not None:
+            try:
+                sp.visible = True
+                sp.update()
+            except Exception:
+                pass
 
         def _work():
             try:
@@ -2125,7 +2155,7 @@ def screen(app):
         # flag synced; in-place toggle handled by the component itself
 
     plan_picker = (
-        ft.Container(_txt("Loading test plans…", color=T.INK_3, size=12), padding=10)
+        _loading_field("Loading test plans…")
         if app._reg_plans_loading else
         _checkbox_multiselect(
             [(str(p["id"]), f"[{p['id']}] {p['name']}") for p in (app._plans or [])],
@@ -2148,7 +2178,9 @@ def screen(app):
             app._reg_selected = [s for s in app._reg_selected if s["id"] != sid]
         app._reg_selected_rows = []
         app._reg_export_msg = app._reg_calc_msg = None
-        # state updated; component handles visual refresh in-place
+        _fn = getattr(app, "_reg_refresh_story_ext", None)
+        if callable(_fn):
+            _fn()                       # keep chips + "N stories selected" in sync
 
     def _all_stories(checked):
         if checked:
@@ -2161,7 +2193,9 @@ def screen(app):
             app._reg_selected = []
         app._reg_selected_rows = []
         app._reg_export_msg = app._reg_calc_msg = None
-        # state updated; component handles visual refresh in-place
+        _fn = getattr(app, "_reg_refresh_story_ext", None)
+        if callable(_fn):
+            _fn()                       # keep chips + "N stories selected" in sync
 
     def _open_stories():
         app._reg_story_open = not app._reg_story_open
@@ -2181,7 +2215,7 @@ def screen(app):
             bgcolor=T.CARD, border=ft.Border.all(1, T.BORDER), border_radius=T.R)
 
     if app._reg_stories_loading:
-        story_picker = _disabled_field("Loading stories…")
+        story_picker = _loading_field("Loading stories…")
     elif not _have_plans:
         story_picker = _disabled_field("Select a test plan first")
     else:
@@ -2218,9 +2252,41 @@ def screen(app):
         [_chip(_plan_chip_label(p), (lambda e, x=p["id"]: _remove_plan(x)))
          for p in app._reg_plans_selected], wrap=True, spacing=6, run_spacing=6)
 
-    story_chips = ft.Row(
-        [_chip(str(s["id"]), (lambda e, x=s["id"]: _remove_story(x)))
-         for s in app._reg_selected], wrap=True, spacing=6, run_spacing=6)
+    _STORY_CHIP_CAP = 40
+
+    def _story_chip_controls():
+        sel = app._reg_selected
+        ctrls = [_chip(str(s["id"]), (lambda e, x=s["id"]: _remove_story(x)))
+                 for s in sel[:_STORY_CHIP_CAP]]
+        if len(sel) > _STORY_CHIP_CAP:
+            ctrls.append(ft.Container(
+                ft.Text(f"+{len(sel) - _STORY_CHIP_CAP} more", size=12,
+                        weight=ft.FontWeight.BOLD, color=T.INK_3),
+                padding=ft.Padding.only(left=10, right=10, top=5, bottom=5),
+                bgcolor=T.CARD_2, border_radius=T.R_SM))
+        return ctrls
+
+    story_chips = ft.Row(_story_chip_controls(), wrap=True, spacing=6, run_spacing=6)
+    story_chips_wrap = ft.Container(story_chips, padding=ft.Padding.only(top=10),
+                                    visible=bool(app._reg_selected))
+    story_count_text = ft.Text(f"{len(app._reg_selected)} stories selected", size=11,
+                               color=T.INK_3, weight=ft.FontWeight.BOLD)
+
+    def _refresh_story_externals():
+        # the multiselect updates its own header in place but never re-renders, so
+        # these external controls must be patched here or they go stale (the
+        # "53 vs 433" mismatch).
+        try:
+            story_chips.controls = _story_chip_controls()
+            story_chips_wrap.visible = bool(app._reg_selected)
+            story_count_text.value = f"{len(app._reg_selected)} stories selected"
+            story_chips.update(); story_chips_wrap.update(); story_count_text.update()
+        except Exception:
+            try:
+                app.render()
+            except Exception:
+                pass
+    app._reg_refresh_story_ext = _refresh_story_externals
 
     card1 = card(ft.Column([
         sec_head("1", "Source & stories"),
@@ -2233,10 +2299,8 @@ def screen(app):
                 visible=bool(app._reg_plans_selected)),
         ft.Container(height=14),
         ft.Column([field_label("Stories", req=True), story_picker], spacing=6),
-        ft.Container(story_chips, padding=ft.Padding.only(top=10),
-                     visible=bool(app._reg_selected)),
-        ft.Text(f"{len(app._reg_selected)} stories selected", size=11,
-                color=T.INK_3, weight=ft.FontWeight.BOLD),
+        story_chips_wrap,
+        story_count_text,
     ], spacing=0))
 
     # ── Card 2: resources ──
@@ -2497,12 +2561,23 @@ def screen(app):
                            disabled=app._reg_busy or not app._reg_selected)
     _calc_btn_cell[0] = calc_btn   # store ref so _calculate can mutate it
 
+    gen_spinner = ft.Container(
+        ft.Row([ft.ProgressRing(width=18, height=18, stroke_width=2.5, color=T.VIOLET),
+                ft.Text("Generating plan — reading test cases from Azure DevOps…",
+                        size=12.5, color=T.INK_3, weight=ft.FontWeight.W_500)],
+               spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        padding=ft.Padding.symmetric(vertical=10, horizontal=12),
+        margin=ft.Margin.only(top=10),
+        bgcolor=getattr(T, "VIOLET_SOFT", T.CARD_2), border_radius=T.R,
+        visible=app._reg_busy)
+    _gen_spinner_cell[0] = gen_spinner   # so _calculate can show it in place
+
     body_children = [card1, ft.Container(height=14),
                      ft.Row([ft.Container(card2, expand=1),
                              ft.Container(card3, expand=1)],
                             spacing=14,
                             vertical_alignment=ft.CrossAxisAlignment.START),
-                     ft.Container(height=16), calc_btn, calc_note_wrap]
+                     ft.Container(height=16), calc_btn, gen_spinner, calc_note_wrap]
     if results is not None:
         body_children += [ft.Container(height=16), results]
 
