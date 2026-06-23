@@ -2967,17 +2967,21 @@ class QAStudio:
 
     def _restore_scroll(self):
         # Restore scroll after a full render so opening a dropdown / ticking a
-        # checkbox / pressing Generate doesn't snap to the top. render() clears and
-        # re-adds the whole page, so the scroller is a brand-new control each time;
-        # scroll_to must run AFTER it's laid out. A single immediate call often runs
-        # before layout is measured (and clamps to 0), so we re-apply across a couple
-        # of short delays — idempotent, and it reliably holds the position.
-        col = getattr(self, "_left_scroll", None)
+        # checkbox / pressing Generate doesn't snap to the top.
+        #
+        # Why deferred: render() rebuilds the whole page, so the scroller is a
+        # brand-new ft.Column. scroll_to on a control that hasn't been laid out
+        # yet clamps to 0. We retry across increasing delays until the layout
+        # settles. The closure re-reads _left_scroll each time so it always acts
+        # on the freshest reference (in case another render fires mid-flight).
         off = getattr(self, "_scroll_offset", 0) or 0
-        if not (col is not None and off):
+        if not off:
             return
 
         def _do():
+            col = getattr(self, "_left_scroll", None)
+            if col is None:
+                return
             try:
                 col.scroll_to(offset=off, duration=0)
             except Exception:
@@ -2997,8 +3001,10 @@ class QAStudio:
                     pass
             _do()
 
+        # Fire immediately, then at 80 ms, 200 ms, 400 ms, 700 ms.
+        # The later shots catch slow layouts (low-end machines, large screens).
         _run()
-        for _delay in (0.05, 0.15):
+        for _delay in (0.08, 0.20, 0.40, 0.70):
             try:
                 threading.Timer(_delay, _run).start()
             except Exception:
