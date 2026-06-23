@@ -879,7 +879,7 @@ def _sprint_sort_key(it):
 
 def _checkbox_multiselect(options, selected, on_toggle, on_all, *, is_open, on_open,
                           placeholder="Select…", height=240, empty="No options.",
-                          page=None):
+                          page=None, app=None):
     """Collapsible checkbox multiselect.
 
     When page= is supplied every interaction (open/close AND checkbox tick) is
@@ -889,6 +889,9 @@ def _checkbox_multiselect(options, selected, on_toggle, on_all, *, is_open, on_o
     Callers must NOT call render() inside on_toggle / on_all / on_open when
     page= is provided -- they should only mutate app state.  The component keeps
     its own mutable sel set and syncs all visible refs itself.
+
+    When app= is also supplied the component registers a close() callable in
+    app._dd_closers so _close_dropdowns can close it in-place on click-away.
     """
     # mutable state owned by this widget instance
     sel = set(selected or [])
@@ -1006,6 +1009,25 @@ def _checkbox_multiselect(options, selected, on_toggle, on_all, *, is_open, on_o
                 page.update()
             except Exception:
                 pass
+
+    # Register a close() callable so _close_dropdowns can close this in-place.
+    def _close_this():
+        if panel_wrap.visible:
+            panel_wrap.visible = False
+            arrow_icon.name = ft.Icons.KEYBOARD_ARROW_DOWN
+            field_container.border = ft.Border.all(1, T.BORDER)
+            try:
+                on_open()   # sync the flag
+            except Exception:
+                pass
+            return True
+        return False
+
+    if app is not None:
+        try:
+            app._dd_closers.append(_close_this)
+        except Exception:
+            pass
 
     field_container = ft.Container(
         ft.Row([field_label_ref, arrow_icon],
@@ -1208,7 +1230,7 @@ def _create_screen(app):
             is_open=app._cp_sprint_open, on_open=_open_sprints,
             placeholder="Select sprint(s)",
             empty="No sprints found for this project.",
-            page=app.page))
+            page=app.page, app=app))
 
     picked = ft.Container()
     if app._cp_sprint_paths:
@@ -1929,7 +1951,7 @@ def screen(app):
             _toggle_plan, _all_plans, is_open=app._reg_plan_open, on_open=_open_plans,
             placeholder="Select test plan(s)", height=200,
             empty="No test plans found for this project.",
-            page=app.page))
+            page=app.page, app=app))
 
     # ── Stories: checkbox multiselect with Select all ──
     def _toggle_story(key, checked):
@@ -1990,7 +2012,7 @@ def screen(app):
             _toggle_story, _all_stories, is_open=app._reg_story_open, on_open=_open_stories,
             placeholder="Select stories", height=260,
             empty="No stories in the selected plan(s).",
-            page=app.page)
+            page=app.page, app=app)
 
     def _chip(label, on_close):
         return ft.Container(

@@ -332,6 +332,7 @@ class QAStudio:
         self.plan_name = None
         self.story_ids = []
         self._setup_story_open = False
+        self._dd_closers = []  # in-place close callables, reset each render
         self.emails = ""
         self.existing_mode = "evaluate"
 
@@ -901,6 +902,9 @@ class QAStudio:
 
     def render(self):
         try:
+            # Reset dropdown closer registry so stale closers from the previous
+            # render don't linger. Each _checkbox_multiselect re-registers itself.
+            self._dd_closers = []
             if getattr(self, "_last_active", None) != self.active:
                 self._scroll_offset = 0
                 self._last_active = self.active
@@ -2473,7 +2477,7 @@ class QAStudio:
                 is_open=self._setup_story_open, on_open=_open_setup_stories,
                 placeholder="Select stories", height=260,
                 empty="No stories found in this plan.",
-                page=self.page)
+                page=self.page, app=self)
 
         story_box = ft.Column([
             story_picker,
@@ -3021,15 +3025,28 @@ class QAStudio:
                 pass
 
     def _close_dropdowns(self, e=None):
-        # Click-away: tapping outside an open dropdown closes it.
+        # Click-away: close every open dropdown in-place via the registry.
+        # Each _checkbox_multiselect that is currently mounted registers a
+        # _close() callable here; we call them all and page.update() once.
+        closers = list(getattr(self, "_dd_closers", []))
         changed = False
+        for fn in closers:
+            try:
+                if fn():          # fn() returns True when it actually closed something
+                    changed = True
+            except Exception:
+                pass
+        # also clear the open flags so _close_dropdowns stays in sync
         for attr in ("_setup_story_open", "_reg_plan_open",
                      "_reg_story_open", "_cp_sprint_open"):
             if getattr(self, attr, False):
                 setattr(self, attr, False)
                 changed = True
         if changed:
-            self.render()
+            try:
+                self.page.update()
+            except Exception:
+                pass
 
     def _safe_render(self):
         """Render and force the update onto Flet's event loop."""
