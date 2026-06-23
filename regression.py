@@ -576,26 +576,38 @@ _MISSING_DEP = {"xlsx": "openpyxl  ·  pip install openpyxl",
                 "pdf":  "reportlab  ·  pip install reportlab"}
 
 
-def _export_row(app):
+def _export_row(app, set_status=None):
     """Export buttons for the sprint report. Each saves via the shared exporter
-    (which now reads the mode-aware payload) into ~/QA Studio/Regression Plans."""
+    (which now reads the mode-aware payload) into ~/QA Studio/Regression Plans.
+
+    set_status(kind, text) -- if provided, called in-place instead of render().
+    """
     from main import green_btn, ghost_btn
+
+    def _notify(kind, text):
+        app._cp_msg = (kind, text)
+        if set_status is not None:
+            try:
+                app.ui_safe(lambda k=kind, t=text: set_status(k, t))
+                return
+            except Exception:
+                pass
+        app.ui_safe(app.render)
 
     def _go(fmt):
         def _do(e):
             if not app._cp_rows:
-                app._cp_msg = ("err", "Pick a sprint first.")
-                app.ui_safe(app.render); return
+                _notify("err", "Pick a sprint first.")
+                return
 
             def work():
                 try:
                     path = EXPORTERS[fmt](app)
-                    app._cp_msg = ("ok", f"Saved: {path}")
+                    _notify("ok", f"Saved: {path}")
                 except ModuleNotFoundError:
-                    app._cp_msg = ("err", f"Missing dependency: {_MISSING_DEP.get(fmt, fmt)}")
+                    _notify("err", f"Missing dependency: {_MISSING_DEP.get(fmt, fmt)}")
                 except Exception as ex:
-                    app._cp_msg = ("err", f"Export failed: {str(ex)[:160]}")
-                app.ui_safe(app.render)
+                    _notify("err", f"Export failed: {str(ex)[:160]}")
             threading.Thread(target=work, daemon=True).start()
         return _do
 
@@ -619,17 +631,25 @@ def _export_row(app):
         _exp_btn("JSON", ft.Icons.DATA_OBJECT, T.STORY, "json"),
     ], spacing=8, wrap=True)
 
-    status = ft.Container()
-    if app._cp_msg:
-        kind, text = app._cp_msg
-        col = T.GREEN if kind == "ok" else T.RED
-        status = ft.Container(
-            ft.Row([ft.Icon(ft.Icons.CHECK_CIRCLE if kind == "ok"
-                            else ft.Icons.ERROR_OUTLINE, size=15, color=col),
-                    _txt(text, color=col, size=12, expand=True)], spacing=8),
-            padding=10, border_radius=T.R, margin=ft.Margin.only(top=10),
-            bgcolor=T.CARD, border=ft.Border.all(1, T.BORDER_2))
-    return ft.Column([btns, status], spacing=0)
+    _m_kind = app._cp_msg[0] if app._cp_msg else "ok"
+    _m_text = app._cp_msg[1] if app._cp_msg else ""
+    _m_col = T.GREEN if _m_kind == "ok" else T.RED
+    _status_icon = ft.Icon(
+        ft.Icons.CHECK_CIRCLE if _m_kind == "ok" else ft.Icons.ERROR_OUTLINE,
+        size=15, color=_m_col)
+    _status_text = _txt(_m_text, color=_m_col, size=12, expand=True)
+    status = ft.Container(
+        ft.Row([_status_icon, _status_text], spacing=8),
+        padding=10, border_radius=T.R, margin=ft.Margin.only(top=10),
+        bgcolor=T.CARD, border=ft.Border.all(1, T.BORDER_2),
+        visible=bool(app._cp_msg))
+
+    if set_status is None:
+        # legacy: caller didn't provide a callback, nothing to wire
+        pass
+    # Note: set_status wiring happens externally after this returns
+
+    return ft.Column([btns, status], spacing=0), status
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1250,6 +1270,19 @@ def _create_screen(app):
     ], spacing=0))
 
     # ── Card 2: resources (count + names + chips), like the Regression screen ──
+    def _refresh_chips_inplace():
+        name_chips.controls = [_res_chip(n) for n in app._cp_res_names]
+        has = bool(app._cp_res_names)
+        name_chips_wrap.visible = has
+        res_count_text.visible = has
+        res_count_text.value = f"{len(app._cp_res_names)} resource(s)"
+        try:
+            name_chips_wrap.update()
+            res_count_text.update()
+            name_field.update()
+        except Exception:
+            pass
+
     def _add_name(e):
         for piece in re.split(r"[,\n]+", name_field.value or ""):
             nm = piece.strip()
@@ -1258,17 +1291,24 @@ def _create_screen(app):
         name_field.value = ""
         app._cp_calculated = False
         app._cp_msg = None
-        app.render()
+        _refresh_chips_inplace()
 
     def _remove_name(nm):
         app._cp_res_names = [n for n in app._cp_res_names if n != nm]
         app._cp_calculated = False
-        app.render()
+        _refresh_chips_inplace()
 
     def _on_count(e):
         v = (count_field.value or "").strip()
         app._cp_res_count = int(v) if v.isdigit() and int(v) > 0 else None
-        app.render()
+        # in-place: just update the count field border color; no layout change needed
+        new_mismatch = bool(app._cp_res_count is not None and app._cp_res_names
+                            and app._cp_res_count != len(app._cp_res_names))
+        count_field.border_color = T.RED if new_mismatch else T.BORDER
+        try:
+            count_field.update()
+        except Exception:
+            pass
 
     def _on_min(e):
         try:
@@ -1314,6 +1354,10 @@ def _create_screen(app):
 
     name_chips = ft.Row([_res_chip(n) for n in app._cp_res_names],
                         wrap=True, spacing=8, run_spacing=8)
+    name_chips_wrap = ft.Container(name_chips, padding=ft.Padding.only(top=10),
+                                   visible=bool(app._cp_res_names))
+    res_count_text = ft.Text(f"{len(app._cp_res_names)} resource(s)", size=11, color=T.INK_3,
+                             weight=ft.FontWeight.BOLD, visible=bool(app._cp_res_names))
 
     warn = ft.Container()
     if mismatch:
@@ -1343,10 +1387,8 @@ def _create_screen(app):
                                green_btn("Add", icon=ft.Icons.ADD, on_click=_add_name)],
                               spacing=8)], spacing=6, expand=True),
         ], spacing=14, vertical_alignment=ft.CrossAxisAlignment.START),
-        ft.Container(name_chips, padding=ft.Padding.only(top=10),
-                     visible=bool(app._cp_res_names)),
-        ft.Text(f"{len(app._cp_res_names)} resource(s)", size=11, color=T.INK_3,
-                weight=ft.FontWeight.BOLD, visible=bool(app._cp_res_names)),
+        name_chips_wrap,
+        res_count_text,
         warn,
         ft.Container(height=14),
         ft.Row([
@@ -1363,29 +1405,44 @@ def _create_screen(app):
     ], spacing=0))
 
     # ── Assign & Estimate button ──
+    # Mutable refs so _calculate can update these in-place.
+    cp_calc_note_text = ft.Text("", size=12, color=T.AMBER, weight=ft.FontWeight.W_500,
+                                expand=True)
+    cp_calc_note_wrap = ft.Container(
+        ft.Row([ft.Icon(ft.Icons.INFO_OUTLINE, size=15, color=T.AMBER), cp_calc_note_text],
+               spacing=8),
+        padding=10, bgcolor=T.AMBER_SOFT, border_radius=T.R,
+        border=ft.Border.all(1, "#EAD9A8"), margin=ft.Margin.only(top=10),
+        visible=bool(app._cp_calc_msg))
+    if app._cp_calc_msg:
+        cp_calc_note_text.value = app._cp_calc_msg
+
     def _calculate(e):
         if not app._cp_rows:
             app._cp_calc_msg = "Pick a sprint with stories first."
-            app.render(); return
+            cp_calc_note_text.value = app._cp_calc_msg
+            cp_calc_note_wrap.visible = True
+            try: cp_calc_note_wrap.update()
+            except Exception: app.render()
+            return
         if not app._cp_res_names:
             app._cp_calc_msg = "Add at least one resource name first."
-            app.render(); return
+            cp_calc_note_text.value = app._cp_calc_msg
+            cp_calc_note_wrap.visible = True
+            try: cp_calc_note_wrap.update()
+            except Exception: app.render()
+            return
         app._cp_calc_msg = None
-        _cp_estimate_and_assign(app)      # random estimate + random assignment
+        cp_calc_note_wrap.visible = False
+        try: cp_calc_note_wrap.update()
+        except Exception: pass
+        _cp_estimate_and_assign(app)
         app._cp_calculated = True
-        app.render()
+        app.render()   # result table must appear — full render unavoidable here
 
     calc_btn = primary_btn("Generate Sprint Plan", icon=ft.Icons.CALCULATE,
                            on_click=_calculate,
                            disabled=not (app._cp_rows and app._cp_res_names))
-    calc_note = ft.Container()
-    if app._cp_calc_msg:
-        calc_note = ft.Container(
-            ft.Row([ft.Icon(ft.Icons.INFO_OUTLINE, size=15, color=T.AMBER),
-                    ft.Text(app._cp_calc_msg, size=12, color=T.AMBER,
-                            weight=ft.FontWeight.W_500, expand=True)], spacing=8),
-            padding=10, bgcolor=T.AMBER_SOFT, border_radius=T.R,
-            border=ft.Border.all(1, "#EAD9A8"), margin=ft.Margin.only(top=10))
 
     # ── results / plan (after Assign & Estimate) ──
     results = None
@@ -1511,21 +1568,42 @@ def _create_screen(app):
         workload_holder = ft.Container(content=_workload())
         workload_ui = workload_holder
 
-        exports = _export_row(app)
+        _cp_status_cell = [None]
+
+        def _set_cp_status(kind, text):
+            app._cp_msg = (kind, text)
+            sc = _cp_status_cell[0]
+            if sc is None:
+                app.ui_safe(app.render); return
+            ok = (kind == "ok")
+            sc.bgcolor = T.CARD
+            sc.visible = True
+            try:
+                row = sc.content
+                row.controls[0].name = (ft.Icons.CHECK_CIRCLE if ok
+                                        else ft.Icons.ERROR_OUTLINE)
+                row.controls[0].color = T.GREEN if ok else T.RED
+                row.controls[1].value = text
+                row.controls[1].color = T.GREEN if ok else T.RED
+                sc.update()
+            except Exception:
+                app.ui_safe(app.render)
+
+        exports_col, _cp_export_status = _export_row(app, _set_cp_status)
+        _cp_status_cell[0] = _cp_export_status
 
         def _email(e):
             to = [a.strip() for a in re.split(r"[,\s;]+", (email_field.value or ""))
                   if a.strip()]
             if not to:
-                app._cp_msg = ("err", "Enter at least one recipient email.")
-                app.render(); return
+                _set_cp_status("err", "Enter at least one recipient email.")
+                return
             if not getattr(E, "GMAIL_APP_PASS", ""):
-                app._cp_msg = ("err", "Set the Gmail App Password on the Setup screen first.")
-                app.render(); return
+                _set_cp_status("err", "Set the Gmail App Password on the Setup screen first.")
+                return
             app._cp_email_to = ", ".join(to)
             app._cp_emailing = True
             app._cp_msg = None
-            app.render()
 
             def work():
                 try:
@@ -1536,12 +1614,12 @@ def _create_screen(app):
                         attach = []
                     subj = f"Sprint Plan — {d['plan_name'] or d['project']}"
                     ok, err = E.send_report(to, subj, _plan_html(d), attachments=attach)
-                    app._cp_msg = (("ok", f"Emailed to {', '.join(to)}")
-                                   if ok else ("err", err or "Email failed."))
+                    kind = "ok" if ok else "err"
+                    text = f"Emailed to {', '.join(to)}" if ok else (err or "Email failed.")
                 except Exception as ex:
-                    app._cp_msg = ("err", f"Email failed: {str(ex)[:160]}")
+                    kind, text = "err", f"Email failed: {str(ex)[:160]}"
                 app._cp_emailing = False
-                app.ui_safe(app.render)
+                app.ui_safe(lambda k=kind, t=text: _set_cp_status(k, t))
             threading.Thread(target=work, daemon=True).start()
 
         email_field = ft.TextField(
@@ -1564,11 +1642,10 @@ def _create_screen(app):
             rows = [{"id": r["id"], "name": r.get("assignee", "")}
                     for r in app._cp_rows if r.get("assignee")]
             if not rows:
-                app._cp_msg = ("err", "Assign resources to stories first.")
-                app.render(); return
+                _set_cp_status("err", "Assign resources to stories first.")
+                return
             app._cp_assigning = True
             app._cp_msg = None
-            app.render()
 
             def work():
                 try:
@@ -1578,16 +1655,16 @@ def _create_screen(app):
                 errs = res.get("errors", [])
                 n = res.get("ok", 0)
                 if n and not errs:
-                    app._cp_msg = ("ok", f"Assigned {n} stories to the "
-                                         f"Assigned To Tester field in Azure.")
+                    kind, text = "ok", (f"Assigned {n} stories to the "
+                                        f"Assigned To Tester field in Azure.")
                 elif n:
-                    app._cp_msg = ("err", f"Assigned {n}; {len(errs)} failed — "
-                                   + "  ·  ".join(errs[:4])
-                                   + ("  …" if len(errs) > 4 else ""))
+                    kind, text = "err", (f"Assigned {n}; {len(errs)} failed — "
+                                         + "  ·  ".join(errs[:4])
+                                         + ("  …" if len(errs) > 4 else ""))
                 else:
-                    app._cp_msg = ("err", "  ·  ".join(errs[:5]) or "Nothing assigned.")
+                    kind, text = "err", ("  ·  ".join(errs[:5]) or "Nothing assigned.")
                 app._cp_assigning = False
-                app.ui_safe(app.render)
+                app.ui_safe(lambda k=kind, t=text: _set_cp_status(k, t))
             threading.Thread(target=work, daemon=True).start()
 
         assign_note = ft.Container(
@@ -1604,7 +1681,7 @@ def _create_screen(app):
             ft.Container(height=14), table, workload_ui,
             ft.Divider(height=22, color=T.BORDER),
             ft.Text("EXPORT", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
-            ft.Container(height=8), exports,
+            ft.Container(height=8), exports_col,
             ft.Divider(height=22, color=T.BORDER),
             email_row,
             ft.Container(height=14),
@@ -1616,7 +1693,7 @@ def _create_screen(app):
         ], spacing=0))
 
     body_children = [card1, ft.Container(height=14), card2,
-                     ft.Container(height=16), calc_btn, calc_note]
+                     ft.Container(height=16), calc_btn, cp_calc_note_wrap]
     if results is not None:
         body_children += [ft.Container(height=16), results]
     body = ft.Column(body_children, spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
@@ -1790,21 +1867,62 @@ def screen(app):
         v = (count_field.value or "").strip()
         app._reg_res_count = int(v) if v.isdigit() and int(v) > 0 else None
         app._reg_export_msg = None
-        app.render()
+        new_mismatch = bool(app._reg_res_count is not None and app._reg_res_names
+                            and app._reg_res_count != len(app._reg_res_names))
+        count_field.border_color = T.RED if new_mismatch else T.BORDER
+        try:
+            count_field.update()
+        except Exception:
+            pass
+
+    # Mutable refs so _calculate can update these widgets in-place.
+    # They are populated after the layout code below — Python closures capture
+    # by reference so mutations made later are visible here.
+    calc_note_text = ft.Text("", size=12, color=T.AMBER, weight=ft.FontWeight.W_500,
+                             expand=True)
+    calc_note_wrap = ft.Container(
+        ft.Row([ft.Icon(ft.Icons.INFO_OUTLINE, size=15, color=T.AMBER), calc_note_text],
+               spacing=8),
+        padding=10, bgcolor=T.AMBER_SOFT, border_radius=T.R,
+        border=ft.Border.all(1, "#EAD9A8"), margin=ft.Margin.only(top=10),
+        visible=bool(app._reg_calc_msg))
+    if app._reg_calc_msg:
+        calc_note_text.value = app._reg_calc_msg
+    # calc_btn_ref is set after primary_btn() is called below; use a list cell
+    # as a mutable reference so the closure can reach the button.
+    _calc_btn_cell = [None]
+
+    def _get_calc_btn():
+        return _calc_btn_cell[0]
 
     def _calculate(e):
         if not app._reg_plans_selected:
             app._reg_calc_msg = "Add at least one test plan first so effort can be " \
                                 "read from its existing test cases."
-            app.render()
+            calc_note_text.value = app._reg_calc_msg
+            calc_note_wrap.visible = True
+            try: calc_note_wrap.update()
+            except Exception: app.render()
             return
         if not app._reg_selected:
             app._reg_calc_msg = "Add at least one story."
-            app.render()
+            calc_note_text.value = app._reg_calc_msg
+            calc_note_wrap.visible = True
+            try: calc_note_wrap.update()
+            except Exception: app.render()
             return
         app._reg_busy = True
         app._reg_calc_msg = app._reg_export_msg = None
-        app.render()
+        calc_note_wrap.visible = False
+        btn = _get_calc_btn()
+        if btn is not None:
+            btn.disabled = True
+            try: btn.update()
+            except Exception: pass
+        try:
+            calc_note_wrap.update()
+        except Exception:
+            pass
 
         def _work():
             try:
@@ -1844,21 +1962,45 @@ def screen(app):
             pass
         return path
 
+    # Mutable status ref for in-place export/email banner updates.
+    _status_cell = [None]   # [0] = ft.Container ref once results card is built
+
+    def _set_status(kind, text):
+        app._reg_export_msg = (kind, text)
+        sc = _status_cell[0]
+        if sc is None:
+            app.ui_safe(app.render); return
+        ok = (kind == "ok")
+        sc.bgcolor = T.GREEN_SOFT if ok else T.RED_SOFT
+        sc.visible = True
+        try:
+            row = sc.content
+            row.controls[0].name = (ft.Icons.CHECK_CIRCLE if ok
+                                    else ft.Icons.ERROR_OUTLINE)
+            row.controls[0].color = T.GREEN if ok else T.RED
+            row.controls[1].value = text
+            row.controls[1].color = T.GREEN if ok else T.RED
+            sc.update()
+        except Exception:
+            app.ui_safe(app.render)
+
     def _export(fmt):
         def _do(e):
             if not app._reg_selected_rows:
-                app._reg_export_msg = ("err", "Calculate the plan first.")
-                app.render(); return
+                _set_status("err", "Calculate the plan first.")
+                return
 
             def work():
                 dest = _ask_save_path(fmt, _stamp(app) + "." + fmt)
-                if dest is False:        # no native dialog available → default folder
+                if dest is False:
                     _do_export_to(fmt)
-                elif dest:               # a path was chosen
+                elif dest:
                     _do_export_to(fmt, dest)
-                else:                    # user cancelled
+                else:
                     return
-                app.ui_safe(app.render)
+                msg = app._reg_export_msg
+                if msg:
+                    app.ui_safe(lambda: _set_status(msg[0], msg[1]))
             threading.Thread(target=work, daemon=True).start()
         return _do
 
@@ -1867,37 +2009,35 @@ def screen(app):
 
     def _email(e):
         if not app._reg_selected_rows:
-            app._reg_export_msg = ("err", "Calculate the plan first.")
-            app.render(); return
+            _set_status("err", "Calculate the plan first.")
+            return
         to = [a.strip() for a in re.split(r"[,\s;]+", (email_field.value or ""))
               if a.strip()]
         if not to:
-            app._reg_export_msg = ("err", "Enter at least one recipient email.")
-            app.render(); return
+            _set_status("err", "Enter at least one recipient email.")
+            return
         if not E.GMAIL_APP_PASS:
-            app._reg_export_msg = ("err",
-                "Set the Gmail App Password on the Setup screen first.")
-            app.render(); return
+            _set_status("err", "Set the Gmail App Password on the Setup screen first.")
+            return
         app._reg_email_to = ", ".join(to)
         app._reg_emailing = True
         app._reg_export_msg = None
-        app.render()
 
         def work():
             try:
                 d = plan_payload(app)
                 try:
-                    attach = [export_docx(app)]   # attach the Word plan
+                    attach = [export_docx(app)]
                 except Exception:
                     attach = []
                 subj = f"Regression Test Plan — {d['plan_name'] or d['project']}"
                 ok, err = E.send_report(to, subj, _plan_html(d), attachments=attach)
-                app._reg_export_msg = (("ok", f"Emailed to {', '.join(to)}")
-                                       if ok else ("err", err or "Email failed."))
+                kind = "ok" if ok else "err"
+                text = f"Emailed to {', '.join(to)}" if ok else (err or "Email failed.")
             except Exception as ex:
-                app._reg_export_msg = ("err", f"Email failed: {ex}")
+                kind, text = "err", f"Email failed: {ex}"
             app._reg_emailing = False
-            app.ui_safe(app.render)
+            app.ui_safe(lambda: _set_status(kind, text))
         threading.Thread(target=work, daemon=True).start()
 
     # ── validation ──
@@ -2311,21 +2451,14 @@ def screen(app):
     calc_btn = primary_btn("Generating…" if app._reg_busy else "Generate Regression Plan",
                            icon=ft.Icons.CALCULATE, on_click=_calculate,
                            disabled=app._reg_busy or not app._reg_selected)
-    calc_note = ft.Container()
-    if app._reg_calc_msg:
-        calc_note = ft.Container(
-            ft.Row([ft.Icon(ft.Icons.INFO_OUTLINE, size=15, color=T.AMBER),
-                    ft.Text(app._reg_calc_msg, size=12, color=T.AMBER,
-                            weight=ft.FontWeight.W_500, expand=True)], spacing=8),
-            padding=10, bgcolor=T.AMBER_SOFT, border_radius=T.R,
-            border=ft.Border.all(1, "#EAD9A8"), margin=ft.Margin.only(top=10))
+    _calc_btn_cell[0] = calc_btn   # store ref so _calculate can mutate it
 
     body_children = [card1, ft.Container(height=14),
                      ft.Row([ft.Container(card2, expand=1),
                              ft.Container(card3, expand=1)],
                             spacing=14,
                             vertical_alignment=ft.CrossAxisAlignment.START),
-                     ft.Container(height=16), calc_btn, calc_note]
+                     ft.Container(height=16), calc_btn, calc_note_wrap]
     if results is not None:
         body_children += [ft.Container(height=16), results]
 
