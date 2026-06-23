@@ -2443,7 +2443,7 @@ class QAStudio:
 
         def _open_setup_stories():
             self._setup_story_open = not self._setup_story_open
-            self.render()
+            # flag synced; in-place toggle handled by the component itself
 
         if self._setup_stories_loading:
             story_picker = ft.Container(
@@ -2462,7 +2462,8 @@ class QAStudio:
                 _toggle_setup_story, _all_setup_stories,
                 is_open=self._setup_story_open, on_open=_open_setup_stories,
                 placeholder="Select stories", height=260,
-                empty="No stories found in this plan.")
+                empty="No stories found in this plan.",
+                page=self.page)
 
         story_box = ft.Column([
             story_picker,

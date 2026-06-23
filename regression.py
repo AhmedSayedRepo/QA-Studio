@@ -878,28 +878,21 @@ def _sprint_sort_key(it):
 
 
 def _checkbox_multiselect(options, selected, on_toggle, on_all, *, is_open, on_open,
-                          placeholder="Select…", height=240, empty="No options."):
+                          placeholder="Select…", height=240, empty="No options.",
+                          page=None):
     """A dropdown-style checkbox multiselect with a 'Select all' control.
     Collapsed by default (a field you click to open).
     options: list of (key, label); selected: keys; on_toggle(key, checked);
-    on_all(checked); is_open: bool; on_open(): toggles open state."""
+    on_all(checked); is_open: bool; on_open(): toggles open state.
+
+    When `page` is supplied the component manages open/close IN-PLACE via
+    panel.visible + page.update() so the scroll position never jumps.
+    on_open() is still called to keep app._*_open in sync (for _close_dropdowns),
+    but render() must NOT be called inside it when page is provided.
+    """
     sel = set(selected or [])
     keys = [k for k, _ in options]
     all_on = bool(keys) and all(k in sel for k in keys)
-
-    # the dropdown-like field (always visible)
-    field = ft.Container(
-        ft.Row([ft.Text((f"{len(sel)} selected" if sel else placeholder),
-                        size=13, color=(T.INK if sel else T.INK_3), expand=True),
-                ft.Icon(ft.Icons.KEYBOARD_ARROW_UP if is_open
-                        else ft.Icons.KEYBOARD_ARROW_DOWN, size=20, color=T.INK_3)],
-               vertical_alignment=ft.CrossAxisAlignment.CENTER),
-        on_click=lambda e: on_open(),
-        padding=ft.Padding.symmetric(vertical=12, horizontal=12),
-        bgcolor=T.CARD, border=ft.Border.all(1, T.VIOLET if is_open else T.BORDER),
-        border_radius=T.R)
-    if not is_open:
-        return field
 
     head = ft.Container(
         ft.Row([
@@ -922,16 +915,62 @@ def _checkbox_multiselect(options, selected, on_toggle, on_all, *, is_open, on_o
     body = ft.Column(rows, spacing=0, scroll=ft.ScrollMode.AUTO) if rows else \
         ft.Container(ft.Text(empty, size=12, color=T.INK_3),
                      padding=14, alignment=ft.Alignment.CENTER)
-    # Fit the panel to its content, capped at `height` (so a short list doesn't
-    # leave a big empty gap, and a long list still scrolls).
+    # Fit the panel to its content, capped at `height`.
     panel_h = min(height, max(40, len(rows) * 34 + 8)) if rows else 64
-    panel = ft.Column([
+    panel_body = ft.Column([
         head,
         ft.Container(body, height=panel_h, padding=ft.Padding.symmetric(vertical=4),
                      border=ft.Border.all(1, T.BORDER),
                      border_radius=ft.BorderRadius.only(bottom_left=T.R, bottom_right=T.R)),
     ], spacing=0)
-    return ft.Column([field, ft.Container(panel, padding=ft.Padding.only(top=6))], spacing=0)
+    panel_wrap = ft.Container(panel_body, padding=ft.Padding.only(top=6),
+                              visible=is_open)
+
+    # Arrow icon ref so we can flip it without a full render.
+    arrow_icon = ft.Icon(
+        ft.Icons.KEYBOARD_ARROW_UP if is_open else ft.Icons.KEYBOARD_ARROW_DOWN,
+        size=20, color=T.INK_3)
+    field_border_ref = [T.VIOLET if is_open else T.BORDER]  # mutable cell
+
+    def _toggle(e):
+        new_open = not panel_wrap.visible
+        panel_wrap.visible = new_open
+        arrow_icon.name = (ft.Icons.KEYBOARD_ARROW_UP if new_open
+                           else ft.Icons.KEYBOARD_ARROW_DOWN)
+        field_container.border = ft.Border.all(1, T.VIOLET if new_open else T.BORDER)
+        # Sync the app flag (needed by _close_dropdowns) without triggering render.
+        try:
+            on_open()
+        except Exception:
+            pass
+        if page is not None:
+            try:
+                page.update()
+            except Exception:
+                pass
+
+    field_container = ft.Container(
+        ft.Row([ft.Text((f"{len(sel)} selected" if sel else placeholder),
+                        size=13, color=(T.INK if sel else T.INK_3), expand=True),
+                arrow_icon],
+               vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        on_click=_toggle if page is not None else (lambda e: on_open()),
+        padding=ft.Padding.symmetric(vertical=12, horizontal=12),
+        bgcolor=T.CARD,
+        border=ft.Border.all(1, T.VIOLET if is_open else T.BORDER),
+        border_radius=T.R)
+
+    # Legacy path (no page): return old stateless widget so existing callers
+    # that don't pass page= still work identically.
+    if page is None:
+        if not is_open:
+            return field_container
+        return ft.Column([field_container,
+                          ft.Container(panel_body, padding=ft.Padding.only(top=6))],
+                         spacing=0)
+
+    # In-place path: always render both field + panel (panel hidden when closed).
+    return ft.Column([field_container, panel_wrap], spacing=0)
 
 
 def _cp_load_stories(app):
@@ -1103,7 +1142,7 @@ def _create_screen(app):
 
     def _open_sprints():
         app._cp_sprint_open = not app._cp_sprint_open
-        app.render()
+        # flag synced; in-place toggle handled by the component itself
 
     sprint_picker = (
         ft.Container(_txt("Loading sprints…", color=T.INK_3, size=12), padding=10)
@@ -1114,7 +1153,8 @@ def _create_screen(app):
             app._cp_sprint_paths, _toggle_sprint, _all_sprints,
             is_open=app._cp_sprint_open, on_open=_open_sprints,
             placeholder="Select sprint(s)",
-            empty="No sprints found for this project."))
+            empty="No sprints found for this project.",
+            page=app.page))
 
     picked = ft.Container()
     if app._cp_sprint_paths:
@@ -1824,7 +1864,7 @@ def screen(app):
     def _open_plans():
         app._reg_plan_open = not app._reg_plan_open
         app._reg_story_open = False
-        app.render()
+        # flag synced; in-place toggle handled by the component itself
 
     plan_picker = (
         ft.Container(_txt("Loading test plans…", color=T.INK_3, size=12), padding=10)
@@ -1834,7 +1874,8 @@ def screen(app):
             [str(p["id"]) for p in app._reg_plans_selected],
             _toggle_plan, _all_plans, is_open=app._reg_plan_open, on_open=_open_plans,
             placeholder="Select test plan(s)", height=200,
-            empty="No test plans found for this project."))
+            empty="No test plans found for this project.",
+            page=app.page))
 
     # ── Stories: checkbox multiselect with Select all ──
     def _toggle_story(key, checked):
@@ -1867,7 +1908,7 @@ def screen(app):
     def _open_stories():
         app._reg_story_open = not app._reg_story_open
         app._reg_plan_open = False
-        app.render()
+        # flag synced; in-place toggle handled by the component itself
 
     _have_plans = bool(app._reg_plans_selected)
 
@@ -1894,7 +1935,8 @@ def screen(app):
             [str(s["id"]) for s in app._reg_selected],
             _toggle_story, _all_stories, is_open=app._reg_story_open, on_open=_open_stories,
             placeholder="Select stories", height=260,
-            empty="No stories in the selected plan(s).")
+            empty="No stories in the selected plan(s).",
+            page=app.page)
 
     def _chip(label, on_close):
         return ft.Container(
