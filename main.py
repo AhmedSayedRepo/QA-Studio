@@ -2425,7 +2425,12 @@ class QAStudio:
             self.story_field.value = ""
             self._err_msg = ""
             self._estimated_tc = None
-            self.render()
+            # update chips in-place -- no full render so scroll never jumps
+            _build_chips()
+            try:
+                self._chip_row.update(); self._chip_wrap.update()
+            except Exception:
+                pass
             self._fetch_estimate()
 
         def _all_setup_stories(checked):
@@ -2438,7 +2443,12 @@ class QAStudio:
                 self.story_ids = []
             self._err_msg = ""
             self._estimated_tc = None
-            self.render()
+            # update chips in-place -- no full render so scroll never jumps
+            _build_chips()
+            try:
+                self._chip_row.update(); self._chip_wrap.update()
+            except Exception:
+                pass
             self._fetch_estimate()
 
         def _open_setup_stories():

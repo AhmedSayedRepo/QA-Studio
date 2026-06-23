@@ -880,43 +880,108 @@ def _sprint_sort_key(it):
 def _checkbox_multiselect(options, selected, on_toggle, on_all, *, is_open, on_open,
                           placeholder="Select…", height=240, empty="No options.",
                           page=None):
-    """A dropdown-style checkbox multiselect with a 'Select all' control.
-    Collapsed by default (a field you click to open).
-    options: list of (key, label); selected: keys; on_toggle(key, checked);
-    on_all(checked); is_open: bool; on_open(): toggles open state.
+    """Collapsible checkbox multiselect.
 
-    When `page` is supplied the component manages open/close IN-PLACE via
-    panel.visible + page.update() so the scroll position never jumps.
-    on_open() is still called to keep app._*_open in sync (for _close_dropdowns),
-    but render() must NOT be called inside it when page is provided.
+    When page= is supplied every interaction (open/close AND checkbox tick) is
+    handled fully IN-PLACE via control mutation + page.update().  render() is
+    never called from inside this component so the scroll position never jumps.
+
+    Callers must NOT call render() inside on_toggle / on_all / on_open when
+    page= is provided -- they should only mutate app state.  The component keeps
+    its own mutable sel set and syncs all visible refs itself.
     """
+    # mutable state owned by this widget instance
     sel = set(selected or [])
     keys = [k for k, _ in options]
-    all_on = bool(keys) and all(k in sel for k in keys)
 
-    head = ft.Container(
-        ft.Row([
-            ft.Checkbox(value=all_on, on_change=lambda e: on_all(e.control.value)),
-            ft.Text("Select all", size=12.5, weight=ft.FontWeight.BOLD, color=T.INK),
-            ft.Container(expand=True),
-            ft.Text(f"{len(sel)} selected", size=11.5, color=T.INK_3,
-                    weight=ft.FontWeight.BOLD),
-        ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-        padding=ft.Padding.symmetric(vertical=8, horizontal=10), bgcolor=T.CARD_2,
-        border_radius=ft.BorderRadius.only(top_left=T.R, top_right=T.R))
+    def _all_on():
+        return bool(keys) and all(k in sel for k in keys)
+
+    # refs we need to mutate on tick / open
+    field_label_ref = ft.Text(
+        (f"{len(sel)} selected" if sel else placeholder),
+        size=13, color=(T.INK if sel else T.INK_3), expand=True)
+    arrow_icon = ft.Icon(
+        ft.Icons.KEYBOARD_ARROW_UP if is_open else ft.Icons.KEYBOARD_ARROW_DOWN,
+        size=20, color=T.INK_3)
+    select_all_cb = ft.Checkbox(value=_all_on())
+    count_text = ft.Text(f"{len(sel)} selected", size=11.5, color=T.INK_3,
+                         weight=ft.FontWeight.BOLD)
+
+    # per-row checkbox refs keyed by option key
+    row_cbs = {}
+
+    def _refresh_header():
+        n = len(sel)
+        field_label_ref.value = f"{n} selected" if sel else placeholder
+        field_label_ref.color = T.INK if sel else T.INK_3
+        count_text.value = f"{n} selected"
+        select_all_cb.value = _all_on()
+
+    def _do_toggle(kk, checked):
+        if checked:
+            sel.add(kk)
+        else:
+            sel.discard(kk)
+        for k2, cb in row_cbs.items():
+            if k2 != kk:
+                cb.value = (k2 in sel)
+        _refresh_header()
+        try:
+            on_toggle(kk, checked)
+        except Exception:
+            pass
+        if page is not None:
+            try:
+                page.update()
+            except Exception:
+                pass
+
+    def _do_all(checked):
+        if checked:
+            sel.update(keys)
+        else:
+            sel.clear()
+        for k2, cb in row_cbs.items():
+            cb.value = (k2 in sel)
+        _refresh_header()
+        try:
+            on_all(checked)
+        except Exception:
+            pass
+        if page is not None:
+            try:
+                page.update()
+            except Exception:
+                pass
+
+    select_all_cb.on_change = lambda e: _do_all(e.control.value)
+
+    # build panel rows
     rows = []
     for k, label in options:
+        cb = ft.Checkbox(value=(k in sel),
+                         on_change=(lambda e, kk=k: _do_toggle(kk, e.control.value)))
+        row_cbs[k] = cb
         rows.append(ft.Container(
-            ft.Row([ft.Checkbox(value=(k in sel),
-                                on_change=(lambda e, kk=k: on_toggle(kk, e.control.value))),
-                    ft.Text(label, size=12.5, color=T.INK, expand=True, no_wrap=False)],
+            ft.Row([cb, ft.Text(label, size=12.5, color=T.INK, expand=True, no_wrap=False)],
                    spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER),
             padding=ft.Padding.only(left=10, right=10, top=2, bottom=2)))
+
     body = ft.Column(rows, spacing=0, scroll=ft.ScrollMode.AUTO) if rows else \
         ft.Container(ft.Text(empty, size=12, color=T.INK_3),
                      padding=14, alignment=ft.Alignment.CENTER)
-    # Fit the panel to its content, capped at `height`.
     panel_h = min(height, max(40, len(rows) * 34 + 8)) if rows else 64
+
+    head = ft.Container(
+        ft.Row([select_all_cb,
+                ft.Text("Select all", size=12.5, weight=ft.FontWeight.BOLD, color=T.INK),
+                ft.Container(expand=True),
+                count_text],
+               spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        padding=ft.Padding.symmetric(vertical=8, horizontal=10), bgcolor=T.CARD_2,
+        border_radius=ft.BorderRadius.only(top_left=T.R, top_right=T.R))
+
     panel_body = ft.Column([
         head,
         ft.Container(body, height=panel_h, padding=ft.Padding.symmetric(vertical=4),
@@ -926,19 +991,12 @@ def _checkbox_multiselect(options, selected, on_toggle, on_all, *, is_open, on_o
     panel_wrap = ft.Container(panel_body, padding=ft.Padding.only(top=6),
                               visible=is_open)
 
-    # Arrow icon ref so we can flip it without a full render.
-    arrow_icon = ft.Icon(
-        ft.Icons.KEYBOARD_ARROW_UP if is_open else ft.Icons.KEYBOARD_ARROW_DOWN,
-        size=20, color=T.INK_3)
-    field_border_ref = [T.VIOLET if is_open else T.BORDER]  # mutable cell
-
-    def _toggle(e):
+    def _do_open(e):
         new_open = not panel_wrap.visible
         panel_wrap.visible = new_open
         arrow_icon.name = (ft.Icons.KEYBOARD_ARROW_UP if new_open
                            else ft.Icons.KEYBOARD_ARROW_DOWN)
         field_container.border = ft.Border.all(1, T.VIOLET if new_open else T.BORDER)
-        # Sync the app flag (needed by _close_dropdowns) without triggering render.
         try:
             on_open()
         except Exception:
@@ -950,18 +1008,15 @@ def _checkbox_multiselect(options, selected, on_toggle, on_all, *, is_open, on_o
                 pass
 
     field_container = ft.Container(
-        ft.Row([ft.Text((f"{len(sel)} selected" if sel else placeholder),
-                        size=13, color=(T.INK if sel else T.INK_3), expand=True),
-                arrow_icon],
+        ft.Row([field_label_ref, arrow_icon],
                vertical_alignment=ft.CrossAxisAlignment.CENTER),
-        on_click=_toggle if page is not None else (lambda e: on_open()),
+        on_click=_do_open if page is not None else (lambda e: on_open()),
         padding=ft.Padding.symmetric(vertical=12, horizontal=12),
         bgcolor=T.CARD,
         border=ft.Border.all(1, T.VIOLET if is_open else T.BORDER),
         border_radius=T.R)
 
-    # Legacy path (no page): return old stateless widget so existing callers
-    # that don't pass page= still work identically.
+    # legacy path (no page=)
     if page is None:
         if not is_open:
             return field_container
@@ -969,9 +1024,8 @@ def _checkbox_multiselect(options, selected, on_toggle, on_all, *, is_open, on_o
                           ft.Container(panel_body, padding=ft.Padding.only(top=6))],
                          spacing=0)
 
-    # In-place path: always render both field + panel (panel hidden when closed).
+    # in-place path
     return ft.Column([field_container, panel_wrap], spacing=0)
-
 
 def _cp_load_stories(app):
     paths = list(app._cp_sprint_paths or [])
@@ -1890,7 +1944,7 @@ def screen(app):
             app._reg_selected = [s for s in app._reg_selected if s["id"] != sid]
         app._reg_selected_rows = []
         app._reg_export_msg = app._reg_calc_msg = None
-        app.render()
+        # state updated; component handles visual refresh in-place
 
     def _all_stories(checked):
         if checked:
@@ -1903,7 +1957,7 @@ def screen(app):
             app._reg_selected = []
         app._reg_selected_rows = []
         app._reg_export_msg = app._reg_calc_msg = None
-        app.render()
+        # state updated; component handles visual refresh in-place
 
     def _open_stories():
         app._reg_story_open = not app._reg_story_open
