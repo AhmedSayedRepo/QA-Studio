@@ -672,18 +672,29 @@ class QAStudio:
             body.clip_behavior = ft.ClipBehavior.HARD_EDGE
         except Exception:
             pass
+        # Identify the REAL scroller. When body is a scrolling Column (most screens)
+        # it IS the scroller. When body is a composite layout (e.g. Setup's two-column
+        # Row), the screen already assigned self._left_scroll to its inner scrolling
+        # Column — don't clobber it with the Row (scroll_to on a Row is a no-op, which
+        # is why Setup's scroll never restored).
+        _is_col_scroller = (isinstance(body, ft.Column)
+                            and getattr(body, "scroll", None) is not None)
+        scroller = body if _is_col_scroller else getattr(self, "_left_scroll", None)
+        if _is_col_scroller:
+            try:
+                body.on_scroll = self._track_scroll
+                self._left_scroll = body
+            except Exception:
+                pass
         # Breathing gap under the header: a spacer that SCROLLS WITH the content,
-        # inserted as the first child of the body. The scroll area is clipped at
-        # exactly the header's bottom edge, so this never leaves an uncovered band
-        # (which is what top-padding > HEADER_H did).
+        # inserted as the first child of the real scroller. The scroll area is clipped
+        # at exactly the header's bottom edge, so this never leaves an uncovered band.
         try:
-            if hasattr(body, "controls") and isinstance(body.controls, list):
-                body.controls.insert(0, ft.Container(height=18))
-        except Exception:
-            pass
-        try:
-            body.on_scroll = self._track_scroll
-            self._left_scroll = body
+            if (scroller is not None and hasattr(scroller, "controls")
+                    and isinstance(scroller.controls, list)
+                    and not getattr(scroller, "_qa_gap", False)):
+                scroller.controls.insert(0, ft.Container(height=18))
+                scroller._qa_gap = True
         except Exception:
             pass
         HEADER_H = 94
@@ -1334,23 +1345,27 @@ class QAStudio:
     def _show_restart_dialog(self, msg):
         dlg = ft.AlertDialog(
             modal=True,
-            title=ft.Row([ft.Icon(ft.Icons.CHECK_CIRCLE, color=T.GREEN, size=20),
-                          ft.Text("Update complete", weight=ft.FontWeight.BOLD, size=16)],
-                         spacing=8, tight=True),
+            title=ft.Row([ft.Icon(ft.Icons.CHECK_CIRCLE, color=T.GREEN, size=22),
+                          ft.Text("Update complete", weight=ft.FontWeight.BOLD, size=17,
+                                  color=T.INK)],
+                         spacing=10, tight=True),
             content=ft.Container(
                 ft.Column([
                     ft.Text("QA Studio has been updated to the latest version.",
-                            size=13, color=T.INK, weight=ft.FontWeight.BOLD),
-                    ft.Container(height=4),
-                    ft.Text("QA Studio will restart to finish updating — it "
-                            "closes and reopens on the new version automatically.",
+                            size=13.5, color=T.INK, weight=ft.FontWeight.BOLD),
+                    ft.Container(height=6),
+                    ft.Text("It will restart to finish updating — closing and reopening "
+                            "on the new version automatically.",
                             size=12.5, color=T.INK_2, weight=ft.FontWeight.W_500),
+                    ft.Container(height=22),
+                    ft.Row([
+                        ghost_btn("Later", on_click=lambda e: self._close_dialog()),
+                        green_btn("Restart now", icon=ft.Icons.RESTART_ALT,
+                                  on_click=lambda e: self._restart_app(), height=46),
+                    ], spacing=10, alignment=ft.MainAxisAlignment.END,
+                       vertical_alignment=ft.CrossAxisAlignment.CENTER),
                 ], spacing=2, tight=True),
                 width=430),
-            actions=[
-                green_btn("Restart now", on_click=lambda e: self._restart_app()),
-                ghost_btn("Later", on_click=lambda e: self._close_dialog()),
-            ],
             actions_alignment=ft.MainAxisAlignment.END,
         )
         self._show_dialog(dlg)
