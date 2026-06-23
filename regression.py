@@ -608,6 +608,12 @@ def _export_row(app, set_status=None):
 
     def _notify(kind, text):
         app._cp_msg = (kind, text)
+        try:
+            app.ui_safe(lambda k=kind, t=text: (app._toast(t) if k == "ok"
+                                                else app._err(t)))
+            return
+        except Exception:
+            pass
         if set_status is not None:
             try:
                 app.ui_safe(lambda k=kind, t=text: set_status(k, t))
@@ -624,7 +630,21 @@ def _export_row(app, set_status=None):
 
             def work():
                 try:
+                    dest = _ask_save_path(fmt, _stamp(app) + "." + fmt)
+                    if dest is None:
+                        return                       # user cancelled the dialog
                     path = EXPORTERS[fmt](app)
+                    if dest and dest is not False:   # a path was chosen → move there
+                        if not dest.lower().endswith("." + fmt):
+                            dest += "." + fmt
+                        import shutil
+                        if os.path.abspath(dest) != os.path.abspath(path):
+                            shutil.move(path, dest)
+                        path = dest
+                    try:
+                        os.startfile(os.path.dirname(path))
+                    except Exception:
+                        pass
                     _notify("ok", f"Saved: {path}")
                 except ModuleNotFoundError:
                     _notify("err", f"Missing dependency: {_MISSING_DEP.get(fmt, fmt)}")
@@ -1291,11 +1311,10 @@ def _create_screen(app):
         picked = ft.Container(
             ft.Column([
                 ft.Row([ft.Icon(ft.Icons.CHECK_CIRCLE, size=15, color=T.GREEN),
-                        sprint_chips,
-                        ft.Container(expand=True),
+                        ft.Column([sprint_chips], expand=True),
                         _txt(("Loading stories…" if app._cp_stories_loading
                               else f"· {len(app._cp_rows)} stories"), color=T.INK_3)],
-                       spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                       spacing=8, vertical_alignment=ft.CrossAxisAlignment.START),
             ], spacing=0),
             padding=ft.Padding.only(top=10))
 
@@ -1647,14 +1666,15 @@ def _create_screen(app):
             to = [a.strip() for a in re.split(r"[,\s;]+", (email_field.value or ""))
                   if a.strip()]
             if not to:
-                _set_cp_status("err", "Enter at least one recipient email.")
+                app._err("Enter at least one recipient email.")
                 return
             if not getattr(E, "GMAIL_APP_PASS", ""):
-                _set_cp_status("err", "Set the Gmail App Password on the Setup screen first.")
+                app._err("Set the Gmail App Password on the Setup screen first.")
                 return
             app._cp_email_to = ", ".join(to)
             app._cp_emailing = True
             app._cp_msg = None
+            app._toast("Sending the sprint plan…")
 
             def work():
                 try:
@@ -1670,7 +1690,8 @@ def _create_screen(app):
                 except Exception as ex:
                     kind, text = "err", f"Email failed: {str(ex)[:160]}"
                 app._cp_emailing = False
-                app.ui_safe(lambda k=kind, t=text: _set_cp_status(k, t))
+                app.ui_safe(lambda k=kind, t=text: (app._toast(t) if k == "ok"
+                                                    else app._err(t)))
             threading.Thread(target=work, daemon=True).start()
 
         email_field = ft.TextField(
@@ -2059,7 +2080,7 @@ def screen(app):
     def _export(fmt):
         def _do(e):
             if not app._reg_selected_rows:
-                _set_status("err", "Calculate the plan first.")
+                app._err("Calculate the plan first.")
                 return
 
             def work():
@@ -2072,7 +2093,8 @@ def screen(app):
                     return
                 msg = app._reg_export_msg
                 if msg:
-                    app.ui_safe(lambda: _set_status(msg[0], msg[1]))
+                    app.ui_safe(lambda m=msg: (app._toast(m[1]) if m[0] == "ok"
+                                               else app._err(m[1])))
             threading.Thread(target=work, daemon=True).start()
         return _do
 
@@ -2081,23 +2103,32 @@ def screen(app):
 
     def _email(e):
         if not app._reg_selected_rows:
-            _set_status("err", "Calculate the plan first.")
+            app._err("Calculate the plan first.")
             return
         to = [a.strip() for a in re.split(r"[,\s;]+", (email_field.value or ""))
               if a.strip()]
         if not to:
-            _set_status("err", "Enter at least one recipient email.")
+            app._err("Enter at least one recipient email.")
             return
         if not E.GMAIL_APP_PASS:
-            _set_status("err", "Set the Gmail App Password on the Setup screen first.")
+            app._err("Set the Gmail App Password on the Setup screen first.")
             return
         app._reg_email_to = ", ".join(to)
         app._reg_emailing = True
         app._reg_export_msg = None
+        app._toast("Sending the regression plan…")
 
         def work():
             try:
                 d = plan_payload(app)
+                # The mail report shows only the sprint number, not the long
+                # "<Project>_Sprint N" test-plan name.
+                trimmed = ", ".join(
+                    (_sprint_num(p.get("name") or p.get("sprint") or "")
+                     or (p.get("name") or "").strip())
+                    for p in (app._reg_plans_selected or [])).strip(", ")
+                if trimmed:
+                    d["plan_name"] = trimmed
                 try:
                     attach = [export_docx(app)]
                 except Exception:
@@ -2109,7 +2140,7 @@ def screen(app):
             except Exception as ex:
                 kind, text = "err", f"Email failed: {ex}"
             app._reg_emailing = False
-            app.ui_safe(lambda: _set_status(kind, text))
+            app.ui_safe(lambda: (app._toast(text) if kind == "ok" else app._err(text)))
         threading.Thread(target=work, daemon=True).start()
 
     # ── validation ──
@@ -2275,7 +2306,8 @@ def screen(app):
     def _refresh_story_externals():
         # the multiselect updates its own header in place but never re-renders, so
         # these external controls must be patched here or they go stale (the
-        # "53 vs 433" mismatch).
+        # "53 vs 433" mismatch). We also re-evaluate the Generate button's enabled
+        # state here, otherwise it stays disabled after an in-place story pick.
         try:
             story_chips.controls = _story_chip_controls()
             story_chips_wrap.visible = bool(app._reg_selected)
@@ -2284,6 +2316,15 @@ def screen(app):
         except Exception:
             try:
                 app.render()
+            except Exception:
+                pass
+        cb = _calc_btn_cell[0]
+        if cb is not None:
+            should = bool(app._reg_selected) and not app._reg_busy
+            try:
+                cb.opacity = 1.0 if should else 0.45
+                cb.on_click = _calculate if should else None
+                cb.update()
             except Exception:
                 pass
     app._reg_refresh_story_ext = _refresh_story_externals
