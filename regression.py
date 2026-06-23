@@ -1254,13 +1254,28 @@ def _create_screen(app):
 
     picked = ft.Container()
     if app._cp_sprint_paths:
+        snames = _sprint_names()
+        sprint_chips = ft.Row(
+            [ft.Container(
+                ft.Row([
+                    ft.Text(n, size=12, weight=ft.FontWeight.BOLD, color=T.VIOLET_INK,
+                            font_family=T.F_MONO),
+                ], spacing=4, tight=True),
+                padding=ft.Padding.symmetric(vertical=4, horizontal=10),
+                bgcolor=T.VIOLET_SOFT, border_radius=T.R_SM,
+                border=ft.Border.all(1, "#D9D2FF"))
+             for n in snames],
+            wrap=True, spacing=6, run_spacing=6)
         picked = ft.Container(
-            ft.Row([ft.Icon(ft.Icons.CHECK_CIRCLE, size=15, color=T.GREEN),
-                    _txt(", ".join(_sprint_names()), color=T.INK,
-                         weight=ft.FontWeight.BOLD, expand=True),
-                    _txt(("Loading stories…" if app._cp_stories_loading
-                          else f"· {len(app._cp_rows)} stories"), color=T.INK_3)],
-                   spacing=8), padding=ft.Padding.only(top=10))
+            ft.Column([
+                ft.Row([ft.Icon(ft.Icons.CHECK_CIRCLE, size=15, color=T.GREEN),
+                        sprint_chips,
+                        ft.Container(expand=True),
+                        _txt(("Loading stories…" if app._cp_stories_loading
+                              else f"· {len(app._cp_rows)} stories"), color=T.INK_3)],
+                       spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            ], spacing=0),
+            padding=ft.Padding.only(top=10))
 
     card1 = card(ft.Column([
         sec_head("1", "Sprint"),
@@ -1270,12 +1285,25 @@ def _create_screen(app):
     ], spacing=0))
 
     # ── Card 2: resources (count + names + chips), like the Regression screen ──
+    # mutable cell so _refresh_chips_inplace can enable calc_btn after it's built
+    _cp_calc_btn_cell = [None]
+
     def _refresh_chips_inplace():
         name_chips.controls = [_res_chip(n) for n in app._cp_res_names]
         has = bool(app._cp_res_names)
         name_chips_wrap.visible = has
         res_count_text.visible = has
         res_count_text.value = f"{len(app._cp_res_names)} resource(s)"
+        # enable/disable calc_btn in-place based on current state
+        cb = _cp_calc_btn_cell[0]
+        if cb is not None:
+            should_enable = bool(app._cp_rows and app._cp_res_names)
+            try:
+                cb.opacity = 1.0 if should_enable else 0.45
+                cb.on_click = _calculate if should_enable else None
+                cb.update()
+            except Exception:
+                pass
         try:
             name_chips_wrap.update()
             res_count_text.update()
@@ -1331,8 +1359,8 @@ def _create_screen(app):
         content_padding=ft.Padding.symmetric(vertical=12, horizontal=10))
     name_field = ft.TextField(
         hint_text="Type a tester's name, press Enter (or paste comma-separated)",
-        on_submit=_add_name, expand=True, text_size=13, border_color=T.BORDER,
-        focused_border_color=T.VIOLET, border_radius=T.R,
+        on_submit=_add_name, on_blur=_add_name, expand=True, text_size=13,
+        border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
         content_padding=ft.Padding.symmetric(vertical=12, horizontal=10))
 
     def _res_chip(nm):
@@ -1443,6 +1471,7 @@ def _create_screen(app):
     calc_btn = primary_btn("Generate Sprint Plan", icon=ft.Icons.CALCULATE,
                            on_click=_calculate,
                            disabled=not (app._cp_rows and app._cp_res_names))
+    _cp_calc_btn_cell[0] = calc_btn   # wire so _refresh_chips_inplace can enable it
 
     # ── results / plan (after Assign & Estimate) ──
     results = None
@@ -1916,9 +1945,22 @@ def screen(app):
         calc_note_wrap.visible = False
         btn = _get_calc_btn()
         if btn is not None:
-            btn.disabled = True
-            try: btn.update()
-            except Exception: pass
+            # primary_btn returns a Container (_grad_button); .disabled doesn't work on it.
+            # Update opacity + remove click handler to signal busy state visually.
+            try:
+                btn.opacity = 0.55
+                btn.on_click = None
+                # also update the label text inside the Row>Text
+                inner = btn.content.controls if hasattr(btn, "content") else []
+                for ctrl in (inner if inner else []):
+                    if hasattr(ctrl, "controls"):
+                        for c in ctrl.controls:
+                            if hasattr(c, "value"):
+                                c.value = "Generating…"
+                                break
+                btn.update()
+            except Exception:
+                pass
         try:
             calc_note_wrap.update()
         except Exception:
@@ -2206,8 +2248,8 @@ def screen(app):
         border_radius=T.R,
         content_padding=ft.Padding.symmetric(vertical=12, horizontal=10))
     name_field = ft.TextField(
-        hint_text="Type a name, press Enter", on_submit=_add_name, expand=True,
-        text_size=13, border_color=T.BORDER, focused_border_color=T.VIOLET,
+        hint_text="Type a name, press Enter", on_submit=_add_name, on_blur=_add_name,
+        expand=True, text_size=13, border_color=T.BORDER, focused_border_color=T.VIOLET,
         border_radius=T.R,
         content_padding=ft.Padding.symmetric(vertical=12, horizontal=10))
     def _res_chip(nm, on_close):
@@ -2408,18 +2450,20 @@ def screen(app):
                 _exp_btn("JSON", ft.Icons.DATA_OBJECT, T.STORY, "json"),
             ], spacing=8, wrap=True)
 
-        status = ft.Container()
-        if app._reg_export_msg:
-            kind, text = app._reg_export_msg
-            ok = kind == "ok"
-            status = ft.Container(
-                ft.Row([ft.Icon(ft.Icons.CHECK_CIRCLE if ok else ft.Icons.ERROR_OUTLINE,
-                                size=16, color=(T.GREEN if ok else T.RED)),
-                        ft.Text(text, size=12, color=(T.GREEN if ok else T.RED),
-                                weight=ft.FontWeight.W_500, selectable=True, expand=True)],
-                       spacing=8),
-                padding=10, bgcolor=(T.GREEN_SOFT if ok else T.RED_SOFT),
-                border_radius=T.R, margin=ft.Margin.only(top=10))
+        _s_kind = app._reg_export_msg[0] if app._reg_export_msg else "ok"
+        _s_text = app._reg_export_msg[1] if app._reg_export_msg else ""
+        _s_ok = (_s_kind == "ok")
+        _status_icon = ft.Icon(
+            ft.Icons.CHECK_CIRCLE if _s_ok else ft.Icons.ERROR_OUTLINE,
+            size=16, color=(T.GREEN if _s_ok else T.RED))
+        _status_txt = ft.Text(_s_text, size=12, color=(T.GREEN if _s_ok else T.RED),
+                              weight=ft.FontWeight.W_500, selectable=True, expand=True)
+        status = ft.Container(
+            ft.Row([_status_icon, _status_txt], spacing=8),
+            padding=10, bgcolor=(T.GREEN_SOFT if _s_ok else T.RED_SOFT),
+            border_radius=T.R, margin=ft.Margin.only(top=10),
+            visible=bool(app._reg_export_msg))
+        _status_cell[0] = status   # wire mutable ref for in-place updates
 
         email_field = ft.TextField(
             value=app._reg_email_to or "", on_change=_on_email_to,
