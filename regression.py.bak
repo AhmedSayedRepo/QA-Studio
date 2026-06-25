@@ -1,0 +1,220 @@
+"""patch_regression.py — applies the performance fix to regression.py.
+
+Run from the QA Studio folder:
+    python patch_regression.py
+
+It reads regression.py, applies four targeted changes, and writes regression.py
+back (a .bak backup is made first). No other files are touched.
+"""
+import os, sys, shutil
+
+TARGET = os.path.join(os.path.dirname(__file__), "regression.py")
+
+# ── sanity ────────────────────────────────────────────────────────────────────
+if not os.path.exists(TARGET):
+    sys.exit(f"ERROR: {TARGET} not found. Run this script from the QA Studio folder.")
+
+with open(TARGET, "r", encoding="utf-8") as f:
+    src = f.read()
+
+errors = []
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  PATCH 1 — add _reg_suite_cache to _init
+# ═══════════════════════════════════════════════════════════════════════════════
+P1_OLD = '                 ("_cp_email_to", ""), ("_cp_emailing", False)):'
+P1_NEW = ('                 ("_cp_email_to", ""), ("_cp_emailing", False),\n'
+          '                 ("_reg_suite_cache", {})):')
+
+if P1_OLD in src:
+    src = src.replace(P1_OLD, P1_NEW, 1)
+    print("✓ Patch 1: suite cache added to _init")
+else:
+    errors.append("Patch 1 anchor not found — _init may already be patched or changed.")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  PATCH 2 — parallelize + cache suite discovery in _count_cases
+# ═══════════════════════════════════════════════════════════════════════════════
+P2_OLD = """\
+    tasks = []                       # (sid, plan_id, suite_id)
+    for pid, sids in by_plan.items():
+        if not pid:
+            continue
+        try:
+            smap = E.discover_suites_for_stories(app.project, pid, set(sids),
+                                                 create_missing=False)
+        except Exception:
+            smap = {}
+        for sid in sids:
+            suite_id = smap.get(sid)
+            if suite_id:
+                tasks.append((sid, pid, suite_id))"""
+
+P2_NEW = """\
+    tasks = []                       # (sid, plan_id, suite_id)
+
+    # Parallelize suite-list fetches: one HTTP call per plan → run concurrently.
+    # Results are also cached on app._reg_suite_cache so re-clicks skip the round-trip.
+    def _discover_plan(pid_sids):
+        pid, sids = pid_sids
+        if not pid:
+            return pid, sids, {}
+        cache = getattr(app, "_reg_suite_cache", {})
+        if pid in cache:
+            return pid, sids, cache[pid]
+        try:
+            smap = E.discover_suites_for_stories(app.project, pid, set(sids),
+                                                 create_missing=False)
+        except Exception:
+            smap = {}
+        try:
+            app._reg_suite_cache[pid] = smap
+        except Exception:
+            pass
+        return pid, sids, smap
+
+    plan_items = [(pid, sids) for pid, sids in by_plan.items() if pid]
+    with _cf.ThreadPoolExecutor(max_workers=min(8, len(plan_items) or 1)) as ex:
+        for pid, sids, smap in ex.map(_discover_plan, plan_items):
+            for sid in sids:
+                suite_id = smap.get(sid)
+                if suite_id:
+                    tasks.append((sid, pid, suite_id))"""
+
+if P2_OLD in src:
+    src = src.replace(P2_OLD, P2_NEW, 1)
+    print("✓ Patch 2: _count_cases suite discovery parallelized + cached")
+elif "_discover_plan" in src:
+    print("~ Patch 2: already applied, skipping")
+else:
+    errors.append("Patch 2 anchor not found — _count_cases structure may have changed.")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  PATCH 3 — parallelize plan fetching in _reload_plan_stories
+# ═══════════════════════════════════════════════════════════════════════════════
+P3_OLD = """\
+    def _work():
+        agg, seen = [], set()
+        for p in plans:
+            # the plan's own sprint (its iteration) — shown on the plan chip
+            try:
+                pj = E._azure_get(f"https://dev.azure.com/{E.AZURE_ORG}/{app.project}"
+                                  f"/_apis/testplan/plans/{p['id']}?api-version=7.0")
+                itr = pj.get("iteration") or ""
+                p["sprint"] = _sprint_num(itr) or _sprint_num(p.get("name", "")) \\
+                    or itr.split("\\\\")[-1]
+            except Exception:
+                p.setdefault("sprint", "")
+            try:
+                stories = E.fetch_stories_in_plan(app.project, p["id"])
+            except Exception:
+                stories = []
+            for s in stories:
+                key = s["id"]   # dedupe by story id (a story in 2 plans = one entry)
+                if key in seen:
+                    continue
+                seen.add(key)
+                # group under the PLAN's sprint (what the user picked), not the
+                # story's own iteration — so only selected sprints appear
+                agg.append({"id": s["id"], "title": s.get("title", ""),
+                            "sprint": p.get("sprint", "") or _sprint_num(s.get("sprint", "")),
+                            "plan_id": p["id"]})
+        # group by sprint then id so the picker lists them clustered by sprint
+        agg.sort(key=lambda s: (s.get("sprint", "") or "~", s["id"]))"""
+
+P3_NEW = """\
+    def _work():
+        import concurrent.futures as _cf_reload
+
+        def _fetch_one_plan(p):
+            # Fetch the plan's sprint/iteration label and its stories concurrently.
+            try:
+                pj = E._azure_get(f"https://dev.azure.com/{E.AZURE_ORG}/{app.project}"
+                                  f"/_apis/testplan/plans/{p['id']}?api-version=7.0")
+                itr = pj.get("iteration") or ""
+                sprint = _sprint_num(itr) or _sprint_num(p.get("name", "")) \\
+                    or itr.split("\\\\")[-1]
+            except Exception:
+                sprint = p.get("sprint", "")
+            try:
+                stories = E.fetch_stories_in_plan(app.project, p["id"])
+            except Exception:
+                stories = []
+            return p["id"], sprint, stories
+
+        agg, seen = [], set()
+        with _cf_reload.ThreadPoolExecutor(max_workers=min(8, len(plans))) as ex:
+            plan_results = list(ex.map(_fetch_one_plan, plans))
+
+        # Write sprint back onto the shared plan dicts so chips show the right label.
+        plan_sprint = {pid: sprint for pid, sprint, _ in plan_results}
+        for p in plans:
+            p["sprint"] = plan_sprint.get(p["id"], p.get("sprint", ""))
+
+        for pid, sprint, stories in plan_results:
+            for s in stories:
+                key = s["id"]   # dedupe by story id (a story in 2 plans = one entry)
+                if key in seen:
+                    continue
+                seen.add(key)
+                # group under the PLAN's sprint (what the user picked), not the
+                # story's own iteration — so only selected sprints appear
+                agg.append({"id": s["id"], "title": s.get("title", ""),
+                            "sprint": sprint or _sprint_num(s.get("sprint", "")),
+                            "plan_id": pid})
+        # group by sprint then id so the picker lists them clustered by sprint
+        agg.sort(key=lambda s: (s.get("sprint", "") or "~", s["id"]))"""
+
+if P3_OLD in src:
+    src = src.replace(P3_OLD, P3_NEW, 1)
+    print("✓ Patch 3: _reload_plan_stories plan fetching parallelized")
+elif "_fetch_one_plan" in src:
+    print("~ Patch 3: already applied, skipping")
+else:
+    errors.append("Patch 3 anchor not found — _reload_plan_stories structure may have changed.")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  PATCH 4 — invalidate suite cache when a plan is removed (in screen())
+# ═══════════════════════════════════════════════════════════════════════════════
+P4_OLD = """\
+    def _remove_plan(pid):
+        app._reg_plans_selected = [p for p in app._reg_plans_selected if p["id"] != pid]
+        # drop any selected stories that belonged to the removed plan
+        app._reg_selected = [s for s in app._reg_selected if s.get("plan_id") != pid]"""
+
+P4_NEW = """\
+    def _remove_plan(pid):
+        app._reg_plans_selected = [p for p in app._reg_plans_selected if p["id"] != pid]
+        # drop any selected stories that belonged to the removed plan
+        app._reg_selected = [s for s in app._reg_selected if s.get("plan_id") != pid]
+        # invalidate cached suite map for this plan
+        try:
+            app._reg_suite_cache.pop(pid, None)
+        except Exception:
+            pass"""
+
+if P4_OLD in src:
+    src = src.replace(P4_OLD, P4_NEW, 1)
+    print("✓ Patch 4: suite cache invalidated on plan removal")
+elif "_reg_suite_cache.pop" in src:
+    print("~ Patch 4: already applied, skipping")
+else:
+    errors.append("Patch 4 anchor not found — _remove_plan may have changed.")
+
+# ── write out ─────────────────────────────────────────────────────────────────
+if errors:
+    print("\n⚠  Some patches were not applied:")
+    for e in errors:
+        print(f"   • {e}")
+    if input("\nContinue and write partial patch? [y/N] ").strip().lower() != "y":
+        sys.exit("Aborted.")
+
+bak = TARGET + ".bak"
+shutil.copy2(TARGET, bak)
+print(f"\nBackup → {bak}")
+
+with open(TARGET, "w", encoding="utf-8") as f:
+    f.write(src)
+
+print(f"Patched → {TARGET}")
+print("\nDone. Restart QA Studio to pick up the changes.") 
