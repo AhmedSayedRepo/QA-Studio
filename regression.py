@@ -68,6 +68,32 @@ def _digits_only():
             return None
 
 
+def _keep_scroll(app, off):
+    """Re-assert a scroll offset after an in-place table rebuild so collapse /
+    pagination doesn't jump when the visible content height changes."""
+    if not off:
+        return
+    col = getattr(app, "_left_scroll", None)
+    if col is None:
+        return
+
+    def _do():
+        try:
+            col.scroll_to(offset=off, duration=0)
+        except Exception:
+            pass
+    try:
+        app.ui_safe(_do)
+    except Exception:
+        pass
+    # a couple of delayed shots in case the layout settles a frame later
+    for _d in (0.05, 0.16):
+        try:
+            threading.Timer(_d, lambda: app.ui_safe(_do)).start()
+        except Exception:
+            pass
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  DISK CACHE  — persist the per-project suite/count/meta/feature caches so the
 #  FIRST generate after an app restart is fast (no ~90 s recount) when nothing in
@@ -135,6 +161,36 @@ def _cache_save(app):
             json.dump(allp, f)
     except Exception:
         pass
+
+
+def clear_caches(app):
+    """Clear the in-memory AND on-disk regression/sprint caches (case counts,
+    work-item meta, suites, feature names). Safe to call any time — the caches
+    are just a speed-up and are rebuilt from Azure on the next generate."""
+    for attr in ("_reg_case_count_cache", "_reg_meta_cache", "_reg_suite_cache",
+                 "_reg_feature_name_cache", "_reg_story_features"):
+        try:
+            setattr(app, attr, {})
+        except Exception:
+            pass
+    app._reg_cache_loaded_project = None
+    try:
+        if os.path.exists(_CACHE_FILE):
+            with open(_CACHE_FILE, "w", encoding="utf-8") as f:
+                f.write("{}")
+    except Exception:
+        pass
+
+
+def set_perf(on):
+    """Enable/disable appending timings to qa_perf.log at runtime."""
+    global _PERF_ON
+    _PERF_ON = bool(on)
+    return _PERF_ON
+
+
+def perf_on():
+    return bool(_PERF_ON)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1429,7 +1485,7 @@ def _sprint_sort_key(it):
 
 def _checkbox_multiselect(options, selected, on_toggle, on_all, *, is_open, on_open,
                           placeholder="Select…", height=240, empty="No options.",
-                          page=None, app=None):
+                          page=None, app=None, invalid=False):
     """Collapsible checkbox multiselect.
 
     When page= is supplied every interaction (open/close AND checkbox tick) is
@@ -1578,7 +1634,8 @@ def _checkbox_multiselect(options, selected, on_toggle, on_all, *, is_open, on_o
         panel_wrap.visible = new_open
         arrow_icon.name = (ft.Icons.KEYBOARD_ARROW_UP if new_open
                            else ft.Icons.KEYBOARD_ARROW_DOWN)
-        field_container.border = ft.Border.all(1, T.VIOLET if new_open else T.BORDER)
+        field_container.border = ft.Border.all(
+            1, T.VIOLET if new_open else (T.RED if invalid else T.BORDER))
         try:
             on_open()
         except Exception:
@@ -1594,7 +1651,7 @@ def _checkbox_multiselect(options, selected, on_toggle, on_all, *, is_open, on_o
         if panel_wrap.visible:
             panel_wrap.visible = False
             arrow_icon.name = ft.Icons.KEYBOARD_ARROW_DOWN
-            field_container.border = ft.Border.all(1, T.BORDER)
+            field_container.border = ft.Border.all(1, T.RED if invalid else T.BORDER)
             try:
                 on_open()   # sync the flag
             except Exception:
@@ -1614,7 +1671,8 @@ def _checkbox_multiselect(options, selected, on_toggle, on_all, *, is_open, on_o
         on_click=_do_open if page is not None else (lambda e: on_open()),
         padding=ft.Padding.symmetric(vertical=12, horizontal=12),
         bgcolor=T.CARD,
-        border=ft.Border.all(1, T.VIOLET if is_open else T.BORDER),
+        border=ft.Border.all(
+            1, T.VIOLET if is_open else (T.RED if invalid else T.BORDER)),
         border_radius=T.R)
 
     # legacy path (no page=)
@@ -1827,6 +1885,7 @@ def _create_screen(app):
         app._cp_sprint_name = ", ".join(_sprint_names())
         app._cp_calculated = False
         app._cp_calc_msg = None
+        app._cp_sprint_invalid = False
         _cp_load_stories(app)
 
     def _toggle_sprint(key, checked):
@@ -1853,7 +1912,8 @@ def _create_screen(app):
             is_open=app._cp_sprint_open, on_open=_open_sprints,
             placeholder="Select sprint(s)",
             empty="No sprints found for this project.",
-            page=app.page, app=app))
+            page=app.page, app=app,
+            invalid=getattr(app, "_cp_sprint_invalid", False)))
 
     picked = ft.Container()
     if app._cp_sprint_paths:
@@ -1925,6 +1985,11 @@ def _create_screen(app):
         name_field.value = ""
         app._cp_calculated = False
         app._cp_msg = None
+        if app._cp_res_names and getattr(app, "_cp_res_invalid", False):
+            app._cp_res_invalid = False
+            name_field.border_color = T.BORDER
+            try: name_field.update()
+            except Exception: pass
         _refresh_chips_inplace()
 
     def _remove_name(nm):
@@ -1935,6 +2000,8 @@ def _create_screen(app):
     def _on_count(e):
         v = (count_field.value or "").strip()
         app._cp_res_count = int(v) if v.isdigit() and int(v) > 0 else None
+        if app._cp_res_count:
+            app._cp_count_invalid = False
         # in-place: just update the count field border color; no layout change needed
         new_mismatch = bool(app._cp_res_count is not None and app._cp_res_names
                             and app._cp_res_count != len(app._cp_res_names))
@@ -1959,15 +2026,17 @@ def _create_screen(app):
     count_field = ft.TextField(
         value=("" if count is None else str(count)), hint_text="e.g. 3",
         keyboard_type=ft.KeyboardType.NUMBER, on_blur=_on_count, on_submit=_on_count,
-        input_filter=_digits_only(), max_length=3,
+        input_filter=_digits_only(),
         width=92, text_size=13,
-        border_color=(T.RED if mismatch else T.BORDER), focused_border_color=T.VIOLET,
+        border_color=(T.RED if (mismatch or getattr(app, "_cp_count_invalid", False))
+                      else T.BORDER), focused_border_color=T.VIOLET,
         border_radius=T.R,
         content_padding=ft.Padding.symmetric(vertical=12, horizontal=10))
     name_field = ft.TextField(
         hint_text="Type a tester's name, press Enter (or paste comma-separated)",
         on_submit=_add_name, on_blur=_add_name, expand=True, text_size=13,
-        border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
+        border_color=(T.RED if getattr(app, "_cp_res_invalid", False) else T.BORDER),
+        focused_border_color=T.VIOLET, border_radius=T.R,
         content_padding=ft.Padding.symmetric(vertical=12, horizontal=10))
 
     def _res_chip(nm):
@@ -2016,8 +2085,8 @@ def _create_screen(app):
         sec_head("2", "Resources & estimate"),
         ft.Container(height=10),
         ft.Row([
-            ft.Column([field_label("Count"), count_field], spacing=6, tight=True),
-            ft.Column([field_label("Add a name"),
+            ft.Column([field_label("Count", req=True), count_field], spacing=6, tight=True),
+            ft.Column([field_label("Add a name", req=True),
                        ft.Row([name_field,
                                green_btn("Add", icon=ft.Icons.ADD, on_click=_add_name)],
                               spacing=8)], spacing=6, expand=True),
@@ -2076,19 +2145,23 @@ def _create_screen(app):
             return
         if not app._cp_rows:
             app._cp_calc_msg = "Pick a sprint with stories first."
-            cp_calc_note_text.value = app._cp_calc_msg
-            cp_calc_note_wrap.visible = True
-            try: cp_calc_note_wrap.update()
-            except Exception: app.render()
+            app._cp_sprint_invalid = True
+            app.render()   # repaint so the sprint picker turns red
+            return
+        if not app._cp_res_count:
+            app._cp_calc_msg = "Enter the resource count."
+            app._cp_count_invalid = True
+            app.render()   # repaint so the count field turns red
             return
         if not app._cp_res_names:
             app._cp_calc_msg = "Add at least one resource name first."
-            cp_calc_note_text.value = app._cp_calc_msg
-            cp_calc_note_wrap.visible = True
-            try: cp_calc_note_wrap.update()
-            except Exception: app.render()
+            app._cp_res_invalid = True
+            app.render()   # repaint so the resource field turns red
             return
         app._cp_calc_msg = None
+        app._cp_sprint_invalid = False
+        app._cp_count_invalid = False
+        app._cp_res_invalid = False
         cp_calc_note_wrap.visible = False
         try: cp_calc_note_wrap.update()
         except Exception: pass
@@ -2248,12 +2321,14 @@ def _create_screen(app):
 
         def _toggle_cp_feature(fname):
             def _h(e):
+                _off = getattr(app, "_scroll_offset", 0) or 0
                 cf = set(getattr(app, "_cp_collapsed_features", set()))
                 cf.discard(fname) if fname in cf else cf.add(fname)
                 app._cp_collapsed_features = cf
                 try:
                     plan_col.controls = [hdr] + _trows()
                     plan_col.update()
+                    _keep_scroll(app, _off)
                 except Exception:
                     app.render()
             return _h
@@ -2309,10 +2384,12 @@ def _create_screen(app):
             if total > 1:
                 def _cp_go(delta, p=pg, t=total):
                     def _h(e):
+                        _off = getattr(app, "_scroll_offset", 0) or 0
                         app._cp_table_page = max(0, min(p + delta, t - 1))
                         try:
                             plan_col.controls = [hdr] + _trows()
                             plan_col.update()
+                            _keep_scroll(app, _off)
                         except Exception:
                             app.render()
                     return _h
@@ -2633,6 +2710,9 @@ def screen(app):
                 app._reg_res_names.append(nm)
         name_field.value = ""
         app._reg_export_msg = None
+        if app._reg_res_names and getattr(app, "_reg_res_invalid", False):
+            app._reg_res_invalid = False
+            name_field.border_color = T.BORDER
         try:   # in-place update keeps the scroll position (full render snaps to top)
             name_chips.controls = [_res_chip(n, (lambda e, x=n: _remove_name(x)))
                                    for n in app._reg_res_names]
@@ -2656,6 +2736,8 @@ def screen(app):
         v = (count_field.value or "").strip()
         app._reg_res_count = int(v) if v.isdigit() and int(v) > 0 else None
         app._reg_export_msg = None
+        if app._reg_res_count:
+            app._reg_count_invalid = False
         new_mismatch = bool(app._reg_res_count is not None and app._reg_res_names
                             and app._reg_res_count != len(app._reg_res_names))
         count_field.border_color = T.RED if new_mismatch else T.BORDER
@@ -2698,20 +2780,30 @@ def screen(app):
         if not app._reg_plans_selected:
             app._reg_calc_msg = "Add at least one test plan first so effort can be " \
                                 "read from its existing test cases."
-            calc_note_text.value = app._reg_calc_msg
-            calc_note_wrap.visible = True
-            try: calc_note_wrap.update()
-            except Exception: app.render()
+            app._reg_plan_invalid = True
+            app.render()   # repaint so the test-plan picker turns red
             return
         if not app._reg_selected:
             app._reg_calc_msg = "Add at least one story."
-            calc_note_text.value = app._reg_calc_msg
-            calc_note_wrap.visible = True
-            try: calc_note_wrap.update()
-            except Exception: app.render()
+            app._reg_story_invalid = True
+            app.render()   # repaint so the stories picker turns red
+            return
+        if not app._reg_res_count:
+            app._reg_calc_msg = "Enter the resource count."
+            app._reg_count_invalid = True
+            app.render()   # repaint so the count field turns red
+            return
+        if not app._reg_res_names:
+            app._reg_calc_msg = "Add at least one resource name."
+            app._reg_res_invalid = True
+            app.render()   # repaint so the resource field turns red
             return
         app._reg_busy = True
         app._reg_calc_msg = app._reg_export_msg = None
+        app._reg_plan_invalid = False
+        app._reg_story_invalid = False
+        app._reg_count_invalid = False
+        app._reg_res_invalid = False
         calc_note_wrap.visible = False
         btn = _get_calc_btn()
         if btn is not None:
@@ -2915,6 +3007,8 @@ def screen(app):
         app.plan_name = (app._reg_plans_selected[0]["name"] if app._reg_plans_selected else "")
         app._reg_selected_rows = []
         app._reg_export_msg = app._reg_calc_msg = None
+        if app._reg_plans_selected:
+            app._reg_plan_invalid = False
         _reload_plan_stories(app)
 
     def _all_plans(checked):
@@ -2926,6 +3020,8 @@ def screen(app):
         app.plan_name = (app._reg_plans_selected[0]["name"] if app._reg_plans_selected else "")
         app._reg_selected_rows = []
         app._reg_export_msg = app._reg_calc_msg = None
+        if app._reg_plans_selected:
+            app._reg_plan_invalid = False
         _reload_plan_stories(app)
 
     def _open_plans():
@@ -2942,7 +3038,8 @@ def screen(app):
             _toggle_plan, _all_plans, is_open=app._reg_plan_open, on_open=_open_plans,
             placeholder="Select test plan(s)", height=200,
             empty="No test plans found for this project.",
-            page=app.page, app=app))
+            page=app.page, app=app,
+            invalid=getattr(app, "_reg_plan_invalid", False)))
 
     # ── Stories: checkbox multiselect with Select all ──
     def _toggle_story(key, checked):
@@ -2957,6 +3054,8 @@ def screen(app):
             app._reg_selected = [s for s in app._reg_selected if s["id"] != sid]
         app._reg_selected_rows = []
         app._reg_export_msg = app._reg_calc_msg = None
+        if app._reg_selected:
+            app._reg_story_invalid = False
         _fn = getattr(app, "_reg_refresh_story_ext", None)
         if callable(_fn):
             _fn()                       # keep chips + "N stories selected" in sync
@@ -2972,6 +3071,8 @@ def screen(app):
             app._reg_selected = []
         app._reg_selected_rows = []
         app._reg_export_msg = app._reg_calc_msg = None
+        if app._reg_selected:
+            app._reg_story_invalid = False
         _fn = getattr(app, "_reg_refresh_story_ext", None)
         if callable(_fn):
             _fn()                       # keep chips + "N stories selected" in sync
@@ -3007,7 +3108,8 @@ def screen(app):
             _toggle_story, _all_stories, is_open=app._reg_story_open, on_open=_open_stories,
             placeholder="Select stories", height=260,
             empty="No stories in the selected plan(s).",
-            page=app.page, app=app)
+            page=app.page, app=app,
+            invalid=getattr(app, "_reg_story_invalid", False))
 
     def _chip(label, on_close):
         return ft.Container(
@@ -3096,14 +3198,17 @@ def screen(app):
     count_field = ft.TextField(
         value=("" if count is None else str(count)), hint_text="e.g. 3",
         keyboard_type=ft.KeyboardType.NUMBER, on_blur=_on_count, on_submit=_on_count,
-        input_filter=_digits_only(), max_length=3,
+        input_filter=_digits_only(),
         width=92, text_size=13,
-        border_color=(T.RED if mismatch else T.BORDER), focused_border_color=T.VIOLET,
+        border_color=(T.RED if (mismatch or getattr(app, "_reg_count_invalid", False))
+                      else T.BORDER), focused_border_color=T.VIOLET,
         border_radius=T.R,
         content_padding=ft.Padding.symmetric(vertical=12, horizontal=10))
     name_field = ft.TextField(
         hint_text="Type a name, press Enter", on_submit=_add_name, on_blur=_add_name,
-        expand=True, text_size=13, border_color=T.BORDER, focused_border_color=T.VIOLET,
+        expand=True, text_size=13,
+        border_color=(T.RED if getattr(app, "_reg_res_invalid", False) else T.BORDER),
+        focused_border_color=T.VIOLET,
         border_radius=T.R,
         content_padding=ft.Padding.symmetric(vertical=12, horizontal=10))
     def _res_chip(nm, on_close):
@@ -3146,9 +3251,9 @@ def screen(app):
         sec_head("2", "Resources"),
         ft.Container(height=10),
         ft.Row([
-            ft.Column([field_label("Count"), count_field],
+            ft.Column([field_label("Count", req=True), count_field],
                       spacing=6, tight=True),
-            ft.Column([field_label("Add a name"),
+            ft.Column([field_label("Add a name", req=True),
                        ft.Row([name_field,
                                green_btn("Add", icon=ft.Icons.ADD,
                                          on_click=_add_name)], spacing=8)],
@@ -3321,7 +3426,9 @@ def screen(app):
         table_body_col = ft.Column(_build_table_body(), spacing=0)
 
         def _refresh_table():
-            """Swap table rows/pager in-place without a full page rebuild."""
+            """Swap table rows/pager in-place without a full page rebuild.
+            Preserves the scroll position so collapse / page-flip never jumps."""
+            _off = getattr(app, "_scroll_offset", 0) or 0
             try:
                 with _perf("table.rebuild_rows"):
                     table_body_col.controls = _build_table_body()
@@ -3331,6 +3438,8 @@ def screen(app):
                 _perf_log("table.refresh FELL BACK to full render()")
                 with _perf("table.full_render_fallback"):
                     app.render()
+                return
+            _keep_scroll(app, _off)
 
         table = ft.Container(
             ft.Column([header, table_body_col], spacing=0),

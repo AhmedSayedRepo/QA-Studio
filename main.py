@@ -27,6 +27,12 @@ if not hasattr(ft, "Colors") and hasattr(ft, "colors"):
 # ═══════════════════════════════════════════════════════════════════════════════
 #  Small reusable builders
 # ═══════════════════════════════════════════════════════════════════════════════
+def _ic(name, fallback="CIRCLE"):
+    """Safe icon lookup: some Material icon names vary across Flet builds, so fall
+    back to a always-present icon instead of raising AttributeError at render."""
+    return getattr(ft.Icons, name, None) or getattr(ft.Icons, fallback, ft.Icons.CIRCLE)
+
+
 def card(content, padding=18, expand=False, bg=None, radius=T.R_LG):
     # bg read at CALL time (not as a default) so cards follow theme switches.
     return ft.Container(content=content, padding=padding,
@@ -37,6 +43,30 @@ def card(content, padding=18, expand=False, bg=None, radius=T.R_LG):
                         shadow=ft.BoxShadow(blur_radius=22, spread_radius=-12,
                                             offset=ft.Offset(0, 9),
                                             color=ft.Colors.with_opacity(0.10, "#1B1F3A")))
+
+
+def empty_state(icon, title, hint, tone="violet"):
+    """Friendly placeholder for empty panels: a soft icon badge, a bold title,
+    and a dim one-line hint, centered. Theme-aware via tokens read at call time."""
+    soft = {"violet": T.VIOLET_SOFT, "green": T.GREEN_SOFT,
+            "amber": T.AMBER_SOFT}.get(tone, T.VIOLET_SOFT)
+    ink = {"violet": T.VIOLET_INK, "green": T.GREEN,
+           "amber": T.AMBER}.get(tone, T.VIOLET_INK)
+    return ft.Container(
+        ft.Column([
+            ft.Container(ft.Icon(icon, size=23, color=ink),
+                         width=50, height=50, bgcolor=soft, border_radius=14,
+                         alignment=ft.Alignment.CENTER),
+            ft.Container(height=12),
+            ft.Text(title, size=14, weight=ft.FontWeight.BOLD, color=T.INK,
+                    text_align=ft.TextAlign.CENTER),
+            ft.Container(height=4),
+            ft.Text(hint, size=12, color=T.INK_3, weight=ft.FontWeight.W_500,
+                    text_align=ft.TextAlign.CENTER),
+        ], horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+           alignment=ft.MainAxisAlignment.CENTER, spacing=0, tight=True),
+        alignment=ft.Alignment.CENTER, expand=True,
+        padding=ft.Padding.symmetric(vertical=28, horizontal=20))
 
 
 def grad_text(value, size=32, weight=None, stops=None, font_family=None):
@@ -386,6 +416,11 @@ class QAStudio:
                                     else ft.ThemeMode.LIGHT)
         except Exception:
             pass
+        # Apply saved performance-logging preference (Settings screen).
+        try:
+            regression.set_perf(self.creds.get("perf", True))
+        except Exception:
+            pass
         # Apply saved org / email sender to the engine immediately so they
         # persist across restarts without needing to reconnect first.
         try:
@@ -632,6 +667,23 @@ class QAStudio:
                                      color="#615E6E"), padding=ft.Padding.only(left=18, top=14, bottom=6)),
                 ft.Container(ft.Column(nav_items, spacing=3), padding=ft.Padding.symmetric(vertical=10, horizontal=12)),
                 ft.Container(expand=True),
+                # Settings entry
+                ft.Container(
+                    ft.Row([
+                        ft.Icon(ft.Icons.SETTINGS_OUTLINED, size=16,
+                                color=("#FFFFFF" if self.active == "settings" else T.RAIL_INK)),
+                        ft.Text("Settings", size=12, weight=ft.FontWeight.BOLD,
+                                color=("#FFFFFF" if self.active == "settings" else T.RAIL_INK)),
+                        ft.Container(expand=True),
+                    ], spacing=9),
+                    on_click=lambda e: self.goto("settings"),
+                    tooltip="App settings & preferences",
+                    ink=True, padding=ft.Padding.symmetric(vertical=10, horizontal=12),
+                    margin=ft.Margin.only(left=10, right=10, bottom=4),
+                    border_radius=10,
+                    bgcolor=(ft.Colors.with_opacity(0.16, T.VIOLET) if self.active == "settings"
+                             else ft.Colors.with_opacity(0.04, "#FFFFFF")),
+                    border=ft.Border.all(1, T.RAIL_LINE)),
                 # theme toggle (light default · dark secondary)
                 ft.Container(
                     ft.Row([
@@ -779,10 +831,11 @@ class QAStudio:
         # Theme-aware surfaces (so the bar goes dark in dark mode).
         _has_blur = hasattr(ft, "Blur")
         if _has_blur:
+            # More translucent so scrolled cards read through the frosted glass.
             _g = ft.LinearGradient(
                 begin=ft.Alignment.TOP_CENTER, end=ft.Alignment.BOTTOM_CENTER,
-                colors=[ft.Colors.with_opacity(0.86, T.CARD),
-                        ft.Colors.with_opacity(0.70, T.CARD_2)])
+                colors=[ft.Colors.with_opacity(0.72, T.CARD),
+                        ft.Colors.with_opacity(0.52, T.CARD_2)])
         else:
             _g = ft.LinearGradient(
                 begin=ft.Alignment.TOP_CENTER, end=ft.Alignment.BOTTOM_CENTER,
@@ -800,46 +853,66 @@ class QAStudio:
                 color=ft.Colors.with_opacity(0.08, "#2A3566")))
         if _has_blur:
             try:
-                bar.blur = ft.Blur(20, 20)
+                bar.blur = ft.Blur(34, 34)
             except Exception:
                 pass
         return bar
 
+    def _install_top_gap(self, body, height):
+        """Give every screen the SAME header→content gap AND let cards scroll up
+        behind the translucent header. A top-spacer is placed at the very top of
+        each primary column, so scrolling columns slide their cards behind the
+        glass; static side cards are wrapped so the spacer sits above them.
+        Idempotent within a render (controls are rebuilt fresh each render)."""
+        def gap_into_column(col):
+            try:
+                if (isinstance(getattr(col, "controls", None), list)
+                        and not getattr(col, "_qa_gap", False)):
+                    col.controls.insert(0, ft.Container(height=height))
+                    col._qa_gap = True
+            except Exception:
+                pass
+        if isinstance(body, ft.Column):
+            gap_into_column(body)
+            return
+        if isinstance(body, ft.Row):
+            for child in (getattr(body, "controls", None) or []):
+                try:
+                    if isinstance(child, ft.Column):
+                        gap_into_column(child)
+                    elif isinstance(child, ft.Container):
+                        inner = child.content
+                        if isinstance(inner, ft.Column):
+                            gap_into_column(inner)
+                        elif inner is not None and not getattr(child, "_qa_gap", False):
+                            # static side card → put the spacer above it
+                            child.content = ft.Column([ft.Container(height=height), inner],
+                                                      spacing=0, expand=True)
+                            child._qa_gap = True
+                except Exception:
+                    pass
+
     def shell(self, title, sub, body, right=None, badge=None):
-        # Sticky-header pattern: the opaque header is PINNED ON TOP of the scroll
-        # area in a Stack, so scrolled content passes BEHIND it and is covered.
-        # (Container clip does not contain a scroll viewport's overflow in Flet,
-        # which is why every clip-based attempt left a band under the header.)
+        # Glass-header pattern: the frosted, translucent header is pinned ON TOP of
+        # the scroll area in a Stack. The body has NO top padding; instead each
+        # primary column gets a scrolling top-spacer (see _install_top_gap), so
+        # cards pass UP behind the header (visible, blurred) as you scroll, and the
+        # header→content gap is identical on every screen.
         try:
             body.clip_behavior = ft.ClipBehavior.HARD_EDGE
         except Exception:
             pass
-        # Identify the REAL scroller. When body is a scrolling Column (most screens)
-        # it IS the scroller. When body is a composite layout (e.g. Setup's two-column
-        # Row), the screen already assigned self._left_scroll to its inner scrolling
-        # Column — don't clobber it with the Row (scroll_to on a Row is a no-op, which
-        # is why Setup's scroll never restored).
         _is_col_scroller = (isinstance(body, ft.Column)
                             and getattr(body, "scroll", None) is not None)
-        scroller = body if _is_col_scroller else getattr(self, "_left_scroll", None)
         if _is_col_scroller:
             try:
                 body.on_scroll = self._track_scroll
                 self._left_scroll = body
             except Exception:
                 pass
-        # Breathing gap under the header: a spacer that SCROLLS WITH the content,
-        # inserted as the first child of the real scroller. The scroll area is clipped
-        # at exactly the header's bottom edge, so this never leaves an uncovered band.
-        try:
-            if (scroller is not None and hasattr(scroller, "controls")
-                    and isinstance(scroller.controls, list)
-                    and not getattr(scroller, "_qa_gap", False)):
-                scroller.controls.insert(0, ft.Container(height=18))
-                scroller._qa_gap = True
-        except Exception:
-            pass
         HEADER_H = 94
+        GAP = 18
+        self._install_top_gap(body, HEADER_H + GAP)
         header = self.topbar(title, sub, right, badge)
         header.top = 0
         header.left = 0
@@ -850,7 +923,7 @@ class QAStudio:
                 ft.Stack([
                     ft.Container(
                         body, expand=True,
-                        padding=ft.Padding.only(top=HEADER_H, left=22, right=22, bottom=22),
+                        padding=ft.Padding.only(left=22, right=22, bottom=22),
                         clip_behavior=ft.ClipBehavior.HARD_EDGE),
                     header,
                 ], expand=True),
@@ -1027,6 +1100,393 @@ class QAStudio:
             "Useful Links",
             "Save links to the boards & apps you use — open them in one click", body)
 
+    # ---- settings ----
+    def settings_screen(self):
+        def srow(title, desc, control):
+            return ft.Container(
+                ft.Row([
+                    ft.Column([
+                        ft.Text(title, size=13.5, weight=ft.FontWeight.BOLD, color=T.INK),
+                        ft.Text(desc, size=12, color=T.INK_3, weight=ft.FontWeight.W_500),
+                    ], spacing=2, expand=True),
+                    control,
+                ], vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=16),
+                padding=ft.Padding.symmetric(vertical=13))
+
+        def divider():
+            return ft.Container(height=1, bgcolor=T.BORDER_2)
+
+        def _theme_seg():
+            def seg(label, icon, mode):
+                sel = (T.MODE == mode)
+                return ft.Container(
+                    ft.Row([ft.Icon(icon, size=15,
+                                    color=(T.VIOLET_INK if sel else T.INK_2)),
+                            ft.Text(label, size=12, weight=ft.FontWeight.BOLD,
+                                    color=(T.VIOLET_INK if sel else T.INK_2))],
+                           spacing=7, tight=True),
+                    height=34, alignment=ft.Alignment.CENTER,
+                    padding=ft.Padding.symmetric(vertical=0, horizontal=16),
+                    bgcolor=(T.VIOLET_SOFT if sel else None), border_radius=T.R_SM,
+                    border=ft.Border.all(1, T.VIOLET if sel else ft.Colors.TRANSPARENT),
+                    on_click=lambda e, m=mode: (None if T.MODE == m
+                                                else self._toggle_theme()))
+            return ft.Container(
+                ft.Row([seg("Light", ft.Icons.LIGHT_MODE_OUTLINED, "light"),
+                        seg("Dark", ft.Icons.DARK_MODE_OUTLINED, "dark")],
+                       spacing=4, tight=True),
+                padding=4, bgcolor=T.CARD_2, border_radius=T.R,
+                border=ft.Border.all(1, T.BORDER))
+
+        appearance = card(ft.Column([
+            ft.Text("APPEARANCE", size=11, weight=ft.FontWeight.BOLD, color=T.INK_3),
+            ft.Container(height=4),
+            srow("Theme", "Light is the default; dark is easier on the eyes at night.",
+                 _theme_seg()),
+            divider(),
+            srow("Output language", "Default language for newly generated test cases.",
+                 self._lang_segment()),
+        ], spacing=0))
+
+        perf_switch = ft.Switch(value=regression.perf_on(), active_color=T.VIOLET,
+                                on_change=lambda e: self._set_perf(e.control.value))
+        data = card(ft.Column([
+            ft.Text("DATA & DIAGNOSTICS", size=11, weight=ft.FontWeight.BOLD, color=T.INK_3),
+            ft.Container(height=4),
+            srow("Regression & sprint caches",
+                 "Cached Azure data speeds up re-generating plans. Clear it if "
+                 "stories or test cases look out of date.",
+                 ghost_btn("Clear caches", icon=_ic("CLEANING_SERVICES_OUTLINED","DELETE_OUTLINE"),
+                           on_click=lambda e: self._clear_caches())),
+            divider(),
+            srow("Performance logging",
+                 "Append timing diagnostics to qa_perf.log. Leave on if I'm helping "
+                 "you troubleshoot speed.",
+                 perf_switch),
+        ], spacing=0))
+
+        reset = card(ft.Column([
+            ft.Text("HELP & RESET", size=11, weight=ft.FontWeight.BOLD, color=T.INK_3),
+            ft.Container(height=4),
+            srow("Welcome walkthrough",
+                 "Replay the first-run guided tour of the app.",
+                 ghost_btn("Replay", icon=_ic("SLIDESHOW_OUTLINED","PLAY_ARROW"),
+                           on_click=lambda e: self._open_onboarding())),
+            divider(),
+            srow("Restore default preferences",
+                 "Resets theme, language, and logging to defaults. Your saved "
+                 "credentials and links are kept.",
+                 danger_btn("Reset", icon=ft.Icons.RESTART_ALT,
+                            on_click=lambda e: self._reset_prefs())),
+        ], spacing=0))
+
+        body = ft.Column([appearance, data, reset], spacing=16,
+                         scroll=ft.ScrollMode.AUTO, expand=True)
+        return self.shell("Settings", "Preferences for this device", body)
+
+    def _set_perf(self, on):
+        try:
+            regression.set_perf(on)
+            self.creds["perf"] = bool(on)
+            store.save(self.creds)
+        except Exception:
+            pass
+
+    def _clear_caches(self):
+        try:
+            regression.clear_caches(self)
+        except Exception:
+            pass
+        self._toast("Caches cleared — the next plan will rebuild from Azure.")
+
+    def _reset_prefs(self):
+        try:
+            T.apply_theme("light")
+        except Exception:
+            pass
+        self.lang = "en"
+        try:
+            regression.set_perf(True)
+        except Exception:
+            pass
+        try:
+            self.creds["theme"] = "light"
+            self.creds["lang"] = "en"
+            self.creds["perf"] = True
+            store.save(self.creds)
+        except Exception:
+            pass
+        try:
+            self.page.bgcolor = T.RAIL
+            self.page.theme_mode = ft.ThemeMode.LIGHT
+        except Exception:
+            pass
+        self._toast("Preferences reset to defaults.")
+        self.render()
+
+    # ---- command palette (Ctrl/⌘-K) ----
+    def _on_key(self, e):
+        try:
+            key = (getattr(e, "key", "") or "")
+            mod = bool(getattr(e, "ctrl", False) or getattr(e, "meta", False))
+            if mod and key.lower() == "k":
+                if getattr(self, "_palette_open", False):
+                    self._close_palette()
+                else:
+                    self._open_palette()
+                return
+            if key == "Escape" and getattr(self, "_palette_open", False):
+                self._close_palette()
+        except Exception:
+            pass
+
+    def _palette_commands(self):
+        def nav(s):
+            return lambda: self.goto(s)
+        return [
+            ("Go to Setup", ft.Icons.TUNE, "setup connection credentials", nav("setup")),
+            ("Go to Run", ft.Icons.MONITOR_HEART, "run live generate", nav("run")),
+            ("Go to Report", ft.Icons.DESCRIPTION_OUTLINED, "report results summary", nav("report")),
+            ("Go to Regression Plan", _ic("CHECKLIST","LAYERS_OUTLINED"), "regression plan effort", nav("regression")),
+            ("Go to Sprint Plan", _ic("EVENT_NOTE_OUTLINED","DESCRIPTION_OUTLINED"), "sprint plan capacity", nav("testplan")),
+            ("Go to Automation", ft.Icons.CODE, "automation selenium tests", nav("automation")),
+            ("Go to Useful Links", _ic("BOOKMARK_BORDER","BOOKMARKS"), "links bookmarks", nav("links")),
+            ("Open Settings", ft.Icons.SETTINGS_OUTLINED, "settings preferences", nav("settings")),
+            (("Switch to dark mode" if T.MODE == "light" else "Switch to light mode"),
+             ft.Icons.DARK_MODE_OUTLINED, "theme dark light toggle",
+             lambda: self._toggle_theme()),
+            ("Clear regression & sprint caches", _ic("CLEANING_SERVICES_OUTLINED","DELETE_OUTLINE"),
+             "clear cache refresh stale", lambda: self._clear_caches()),
+            ("Check for updates", _ic("SYSTEM_UPDATE_ALT_OUTLINED","SYSTEM_UPDATE_ALT"), "update version",
+             lambda: self._manual_update_check()),
+        ]
+
+    def _open_palette(self):
+        self._palette_open = True
+        cmds = self._palette_commands()
+        results = ft.Column([], spacing=2, scroll=ft.ScrollMode.AUTO, height=326)
+
+        def run_cmd(action):
+            self._close_palette()
+            try:
+                action()
+            except Exception:
+                pass
+
+        def make_row(label, icon, action):
+            row = ft.Container(
+                ft.Row([ft.Icon(icon, size=17, color=T.VIOLET_INK),
+                        ft.Text(label, size=13.5, weight=ft.FontWeight.W_600, color=T.INK)],
+                       spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                padding=ft.Padding.symmetric(vertical=11, horizontal=12),
+                border_radius=T.R, ink=True,
+                on_click=lambda e, a=action: run_cmd(a))
+
+            def _h(e, _c=row):
+                try:
+                    _c.bgcolor = (T.VIOLET_SOFT if e.data in (True, "true", "True")
+                                  else None)
+                    _c.update()
+                except Exception:
+                    pass
+            row.on_hover = _h
+            return row
+
+        def render_list(q=""):
+            q = (q or "").strip().lower()
+            rows = [make_row(lbl, ico, act) for (lbl, ico, kw, act) in cmds
+                    if (not q) or q in lbl.lower() or q in kw]
+            results.controls = rows or [ft.Container(
+                ft.Text("No matching commands.", size=12.5, color=T.INK_3,
+                        weight=ft.FontWeight.W_500),
+                padding=14, alignment=ft.Alignment.CENTER)]
+            try:
+                results.update()
+            except Exception:
+                pass
+
+        search = ft.TextField(
+            hint_text="Type a command…   (Esc to close)", autofocus=True,
+            border_color=T.BORDER,
+            focused_border_color=T.VIOLET, border_radius=T.R, text_size=14,
+            content_padding=ft.Padding.symmetric(vertical=12, horizontal=12),
+            on_change=lambda e: render_list(e.control.value))
+        render_list("")
+
+        dlg = ft.AlertDialog(
+            content=ft.Container(width=540, padding=ft.Padding.all(6),
+                                 content=ft.Column([
+                                     search,
+                                     ft.Container(height=6),
+                                     results,
+                                 ], spacing=0, tight=True)),
+            shape=ft.RoundedRectangleBorder(radius=T.R_LG),
+            on_dismiss=lambda e: setattr(self, "_palette_open", False))
+        self._show_dialog(dlg)
+
+    def _close_palette(self):
+        self._palette_open = False
+        try:
+            self._close_dialog()
+        except Exception:
+            pass
+
+    # ---- first-run onboarding wizard ----
+    def _maybe_show_onboarding(self):
+        try:
+            if not self.creds.get("onboarded"):
+                self._open_onboarding()
+        except Exception:
+            pass
+
+    def _finish_onboarding(self, goto_setup=False):
+        try:
+            self.creds["onboarded"] = True
+            store.save(self.creds)
+        except Exception:
+            pass
+        try:
+            self._close_dialog()
+        except Exception:
+            pass
+        if goto_setup:
+            self.goto("setup")
+
+    def _open_onboarding(self):
+        self._onb_i = 0
+
+        def _badge(icon, tone="violet"):
+            soft = {"violet": T.VIOLET_SOFT, "green": T.GREEN_SOFT,
+                    "amber": T.AMBER_SOFT}.get(tone, T.VIOLET_SOFT)
+            ink = {"violet": T.VIOLET_INK, "green": T.GREEN,
+                   "amber": T.AMBER}.get(tone, T.VIOLET_INK)
+            return ft.Container(ft.Icon(icon, size=22, color=ink),
+                                width=46, height=46, bgcolor=soft, border_radius=13,
+                                alignment=ft.Alignment.CENTER)
+
+        def _item(icon, title, desc, tone="violet"):
+            return ft.Container(
+                ft.Row([_badge(icon, tone),
+                        ft.Column([
+                            ft.Text(title, size=13, weight=ft.FontWeight.BOLD, color=T.INK),
+                            ft.Text(desc, size=12, color=T.INK_3, weight=ft.FontWeight.W_500),
+                        ], spacing=1, expand=True)],
+                       spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                padding=ft.Padding.symmetric(vertical=7))
+
+        def _welcome():
+            return ft.Column([
+                ft.Text("Generate Azure DevOps test cases with AI, plan regression "
+                        "and sprint effort, and build self-healing Selenium tests — "
+                        "all from one place.",
+                        size=13, color=T.INK_2, weight=ft.FontWeight.W_500),
+            ], spacing=0, tight=True)
+
+        def _how():
+            return ft.Column([
+                _item(ft.Icons.TUNE, "1 · Setup",
+                      "Connect your AI provider and Azure DevOps, then pick a project, "
+                      "test plan and stories."),
+                _item(ft.Icons.MONITOR_HEART, "2 · Run",
+                      "Generate test-case titles or detailed steps in English or Arabic."),
+                _item(ft.Icons.DESCRIPTION_OUTLINED, "3 · Report",
+                      "Review what was created and email the summary."),
+                _item(_ic("CHECKLIST","LAYERS_OUTLINED"), "Plan & automate", "Regression and Sprint "
+                      "plans estimate effort; Automation builds Selenium tests.", "green"),
+            ], spacing=0, tight=True)
+
+        def _connect():
+            return ft.Column([
+                ft.Text("On the Setup screen you'll add three credentials "
+                        "(stored only on this device):",
+                        size=12.5, color=T.INK_2, weight=ft.FontWeight.W_500),
+                ft.Container(height=8),
+                _item(ft.Icons.AUTO_AWESOME, "AI provider key",
+                      "Anthropic, OpenAI, Gemini, and more — powers the generation."),
+                _item(ft.Icons.KEY_OUTLINED, "Azure DevOps PAT",
+                      "Read/write access to your test plans and work items."),
+                _item(ft.Icons.MAIL_OUTLINED, "Gmail app password",
+                      "Optional — only needed to email reports.", "amber"),
+            ], spacing=0, tight=True)
+
+        def _ready():
+            return ft.Column([
+                _item(_ic("KEYBOARD_COMMAND_KEY","TERMINAL"), "Command palette",
+                      "Press Ctrl/⌘-K anywhere to jump between screens and run actions."),
+                _item(ft.Icons.DARK_MODE_OUTLINED, "Light & dark",
+                      "Toggle the theme from the sidebar or Settings."),
+                _item(ft.Icons.SETTINGS_OUTLINED, "Settings",
+                      "Defaults, cache controls, and this walkthrough live there."),
+            ], spacing=0, tight=True)
+
+        steps = [
+            (_ic("WAVING_HAND_OUTLINED","AUTO_AWESOME"), "violet", "Welcome to QA Studio",
+             "Your AI test-engineering workspace.", _welcome),
+            (_ic("ACCOUNT_TREE_OUTLINED","LAYERS_OUTLINED"), "violet", "How it works",
+             "A simple pipeline, plus planning tools.", _how),
+            (ft.Icons.LINK, "green", "Get connected",
+             "Three quick credentials and you're set.", _connect),
+            (_ic("ROCKET_LAUNCH_OUTLINED","PLAY_ARROW"), "violet", "You're ready",
+             "A couple of shortcuts worth knowing.", _ready),
+        ]
+
+        body = ft.Container()
+        dots = ft.Row([], spacing=6)
+        back_holder = ft.Container()
+        next_holder = ft.Container()
+
+        def _paint():
+            i = self._onb_i
+            icon, tone, title, sub, build = steps[i]
+            body.content = ft.Column([
+                ft.Row([_badge(icon, tone),
+                        ft.Column([
+                            ft.Text(title, size=16, weight=ft.FontWeight.BOLD, color=T.INK),
+                            ft.Text(sub, size=12, color=T.INK_2, weight=ft.FontWeight.W_500),
+                        ], spacing=2, expand=True)],
+                       spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                ft.Container(height=16),
+                build(),
+            ], spacing=0, tight=True)
+            dots.controls = [
+                ft.Container(width=(18 if j == i else 7), height=7,
+                             bgcolor=(T.VIOLET if j == i else T.BORDER),
+                             border_radius=4, animate=160)
+                for j in range(len(steps))]
+            last = (i == len(steps) - 1)
+            back_holder.content = (ghost_btn("Back", on_click=lambda e: _go(-1))
+                                   if i > 0 else ft.Container(width=0))
+            next_holder.content = (
+                green_btn("Get started", icon=ft.Icons.ARROW_FORWARD,
+                          on_click=lambda e: self._finish_onboarding(goto_setup=True))
+                if last else
+                primary_btn("Next", icon=ft.Icons.ARROW_FORWARD,
+                            on_click=lambda e: _go(1)))
+            for c in (body, dots, back_holder, next_holder):
+                try:
+                    c.update()
+                except Exception:
+                    pass
+
+        def _go(delta):
+            self._onb_i = max(0, min(len(steps) - 1, self._onb_i + delta))
+            _paint()
+
+        skip = ft.TextButton("Skip", on_click=lambda e: self._finish_onboarding())
+        footer = ft.Row([skip, ft.Container(expand=True), dots,
+                         ft.Container(width=14), back_holder, next_holder],
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=8)
+        _paint()
+        dlg = ft.AlertDialog(
+            modal=True, bgcolor=T.CARD,
+            shape=ft.RoundedRectangleBorder(radius=T.R_LG),
+            content=ft.Container(width=540, content=ft.Column([
+                body,
+                ft.Container(height=20),
+                footer,
+            ], spacing=0, tight=True)))
+        self._show_dialog(dlg)
+
     # ---- navigation ----
     def goto(self, screen):
         # Persist automation inputs when leaving the Automation screen so they
@@ -1063,6 +1523,8 @@ class QAStudio:
                 view = regression.test_plan_screen(self)
             elif self.active == "links":
                 view = self.useful_links_screen()
+            elif self.active == "settings":
+                view = self.settings_screen()
             else:
                 view = self.report_screen()
             try:
@@ -1114,6 +1576,11 @@ class QAStudio:
         self.page.title = "QA Studio"
         self.page.bgcolor = T.RAIL
         self.page.padding = 0
+        # Command palette: Ctrl/⌘-K opens a quick-switcher; Esc closes it.
+        try:
+            self.page.on_keyboard_event = self._on_key
+        except Exception:
+            pass
         # Give Windows a distinct app identity BEFORE the window shows, so the
         # taskbar groups us as "QA Studio" and uses our icon instead of inheriting
         # the generic Flet/Python client icon.
@@ -1183,6 +1650,11 @@ class QAStudio:
             except Exception:
                 pass
         self.render()
+        # First-run onboarding (once, until "onboarded" is saved).
+        try:
+            self._maybe_show_onboarding()
+        except Exception:
+            pass
         # Check for a newer version in the background (never blocks startup)
         self._kickoff_update_check()
 
@@ -2644,6 +3116,7 @@ class QAStudio:
             except Exception:
                 pass
             self._fetch_estimate()
+            _clear_story_invalid()
 
         def _all_setup_stories(checked):
             if checked:
@@ -2662,6 +3135,7 @@ class QAStudio:
             except Exception:
                 pass
             self._fetch_estimate()
+            _clear_story_invalid()
 
         def _open_setup_stories():
             self._setup_story_open = not self._setup_story_open
@@ -3484,7 +3958,11 @@ class QAStudio:
             self._bg(work)
 
         cancel_btn = ghost_btn("Cancel", on_click=lambda e: self._close_dialog())
-        create_btn = green_btn("Create plan", icon=ft.Icons.ADD, on_click=do_create)
+        create_btn = green_btn("Create plan", icon=ft.Icons.ADD, on_click=do_create,
+                               height=46)
+        btn_row = ft.Row([cancel_btn, create_btn],
+                         alignment=ft.MainAxisAlignment.END, spacing=10,
+                         vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
         dlg = ft.AlertDialog(
             modal=True,
@@ -3526,9 +4004,8 @@ class QAStudio:
                     padding=ft.Padding.only(top=12)),
                 prog_box,
                 ft.Container(modal_err, padding=ft.Padding.only(top=8)),
+                ft.Container(btn_row, padding=ft.Padding.only(top=18)),
             ], spacing=0, tight=True)),
-            actions=[cancel_btn, create_btn],
-            actions_alignment=ft.MainAxisAlignment.END,
         )
         self._show_dialog(dlg)
         self._bg(load_iters)
@@ -3801,7 +4278,7 @@ class QAStudio:
                     ft.Container(height=6),
                     ft.Text("STORIES", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
                     ft.Container(ft.Column(story_rows, spacing=0, scroll=ft.ScrollMode.AUTO),
-                                 bgcolor="#FCFCFE", border=ft.Border.all(1, T.BORDER),
+                                 bgcolor=T.CARD, border=ft.Border.all(1, T.BORDER),
                                  border_radius=T.R, padding=ft.Padding.symmetric(vertical=2, horizontal=4),
                                  height=240),
                 ]
@@ -4045,6 +4522,9 @@ class QAStudio:
         self._emailed_to = None
         self._run_finished = False
         self._run_started = False
+        import time as _t
+        self._run_start_ts = _t.time()
+        self._run_end_ts = None
         self._set_run_active(True)
         self.render()
 
@@ -4073,6 +4553,15 @@ class QAStudio:
                     self._log_lines.append({"tone": "dim", "indent": True, "msg": payload["detail"]})
             elif ev == "done":
                 self.last_report = payload
+                # The run has ended on ANY 'done' (success, stop, or credit) — clear
+                # the active flag here so the "Preparing stories…" spinner can't
+                # linger if the after-run block is skipped.
+                self._run_finished = True
+                self._run_end_ts = _t.time()
+                try:
+                    self._set_run_active(False)
+                except Exception:
+                    self._run_active = False
                 reason = payload.get("reason")
                 if reason == "credit":
                     self._log_lines.append({"tone": "err", "ico": "✕",
@@ -4239,6 +4728,10 @@ class QAStudio:
     def _build_story_cards(self):
         cards = [self._story_card(sp) for sp in self._story_prog.values()]
         if not cards:
+            # Only spin while the run is actually active — once it stops/finishes,
+            # don't leave a perpetual "Preparing stories…" spinner.
+            if not getattr(self, "_run_active", False):
+                return []
             return [ft.Container(
                 ft.Row([ft.ProgressRing(width=14, height=14, stroke_width=2, color=T.VIOLET),
                         ft.Text("Preparing stories…", size=12.5, color=T.INK_3,
@@ -4267,6 +4760,42 @@ class QAStudio:
             if callable(ru): ru(_apply)
         except Exception:
             pass
+
+    @staticmethod
+    def _fmt_dur(secs):
+        secs = int(max(0, secs))
+        h, rem = divmod(secs, 3600)
+        m, s = divmod(rem, 60)
+        if h:
+            return f"{h}:{m:02d}:{s:02d}"
+        return f"{m}:{s:02d}"
+
+    def _run_meta_line(self):
+        """One-line 'THIS RUN' meta: elapsed · ETA · story x of y.
+        ETA is projected from elapsed time and % complete; it freezes when the
+        run finishes (showing the total time taken)."""
+        import time as _t
+        p = getattr(self, "_progress", {}) or {}
+        s = getattr(self, "_stats", {}) or {}
+        pct = p.get("pct", 0) or 0
+        start = getattr(self, "_run_start_ts", None)
+        finished = getattr(self, "_run_finished", False)
+        ended = not getattr(self, "_run_active", False)
+        end = getattr(self, "_run_end_ts", None)
+        bits = []
+        if start:
+            elapsed = (end or _t.time()) - start
+            bits.append(("Total " if (finished or ended) else "Elapsed ")
+                        + self._fmt_dur(elapsed))
+            if not (finished or ended):
+                if pct >= 2:
+                    remaining = elapsed / (pct / 100.0) - elapsed
+                    bits.append("ETA ~" + self._fmt_dur(remaining))
+                else:
+                    bits.append("ETA estimating…")
+        if s.get("total_stories"):
+            bits.append(f"story {s.get('stories_done', 0)} of {s['total_stories']}")
+        return "   ·   ".join(bits)
 
     def run_screen(self):
         s = getattr(self, "_stats", {"total": 0, "stories_done": 0, "total_stories": 0,
@@ -4309,16 +4838,24 @@ class QAStudio:
         spinner = (ft.Container(width=14, height=14) if (_stopping or _idle)
                    else ft.ProgressRing(width=14, height=14, stroke_width=2, color=T.VIOLET))
         _started = getattr(self, "_run_started", False)
-        _label = ("Completed" if _finished
+        _reason = (getattr(self, "last_report", None) or {}).get("reason")
+        _was_stopped = _finished and (_reason == "credit"
+                                      or getattr(self, "stop_flag", False))
+        _label = ("Stopped" if _was_stopped
+                  else "Completed" if _finished
                   else ("Stopping after current test case…" if _stopping
                         else ("Completed" if _done
                               else (p["label"] if _started else "Discovering suites & test cases…"))))
+        # Right label: once the run has finished it must NOT fall back to "Starting…"
+        _pct_label = ("Stopped" if _was_stopped
+                      else "Done" if _finished
+                      else f"{p['pct']}%" if (p["pct"] > 0 or _started)
+                      else "Starting…")
         self._prow = ft.Row([
             spinner,
             ft.Text(_label, size=12, color=T.INK_2, weight=ft.FontWeight.BOLD),
             ft.Container(expand=True),
-            ft.Text((f"{p['pct']}%" if (p["pct"] > 0 or _started) else "Starting…"),
-                    size=12, color=T.VIOLET_INK, weight=ft.FontWeight.BOLD),
+            ft.Text(_pct_label, size=12, color=T.VIOLET_INK, weight=ft.FontWeight.BOLD),
         ], spacing=8)
 
         # Per-story cards grid
@@ -4340,14 +4877,26 @@ class QAStudio:
                     ft.Text("select to copy", size=10, color=T.INK_3,
                             weight=ft.FontWeight.W_500)]),
             ft.Container(height=8),
-            ft.Container(ft.SelectionArea(content=self._log_col), height=230, bgcolor="#FCFCFE",
+            ft.Container(ft.SelectionArea(content=self._log_col), height=230, bgcolor=T.CARD_2,
                          border=ft.Border.all(1, T.BORDER), border_radius=T.R, padding=12),
         ], spacing=0))
 
+        # ── "THIS RUN" live progress card (elapsed · ETA · story x/y) ──
+        self._tr_meta = ft.Text(self._run_meta_line(), size=11.5, color=T.INK_3,
+                                weight=ft.FontWeight.BOLD, font_family=T.F_MONO)
+        prog_card = card(ft.Column([
+            ft.Row([ft.Text("THIS RUN", size=11, weight=ft.FontWeight.BOLD, color=T.INK_3),
+                    ft.Container(expand=True),
+                    self._tr_meta]),
+            ft.Container(height=12),
+            self._prow,
+            ft.Container(height=2),
+            self._bar,
+        ], spacing=6))
+
         body = ft.Column([
             self._stats_row,
-            ft.Container(ft.Column([self._prow, self._bar], spacing=7),
-                         padding=ft.Padding.symmetric(vertical=0, horizontal=2)),
+            prog_card,
             self._story_grid,
             log_card,
         ], spacing=16, scroll=ft.ScrollMode.AUTO, expand=True)
@@ -4446,14 +4995,25 @@ class QAStudio:
                     try:
                         _stopping = getattr(self, "_stopping", False)
                         _done = self._progress["pct"] >= 100
-                        # swap spinner → static container when stopping/done
-                        if _stopping or _done:
+                        _ended = not getattr(self, "_run_active", False)
+                        # swap spinner → static container when stopping / done / ended
+                        # (ended covers a credit-stop, which isn't 100% and isn't a
+                        # user-initiated stop — the spinner used to keep spinning).
+                        if _stopping or _done or _ended:
                             self._prow.controls[0] = ft.Container(width=14, height=14)
                         self._prow.controls[1].value = (
                             "Stopping after current test case…" if _stopping
-                            else ("Completed" if _done else self._progress["label"]))
-                        self._prow.controls[-1].value = (f"{self._progress['pct']}%"
-                                                         if self._progress["pct"] > 0 else "Starting…")
+                            else "Completed" if _done
+                            else "Stopped" if _ended
+                            else self._progress["label"])
+                        self._prow.controls[-1].value = (
+                            "Stopped" if (_ended and not _done)
+                            else "Done" if _done
+                            else f"{self._progress['pct']}%" if self._progress["pct"] > 0
+                            else "Starting…")
+                        # live "THIS RUN" meta (elapsed · ETA · story x/y)
+                        if hasattr(self, "_tr_meta"):
+                            self._tr_meta.value = self._run_meta_line()
                     except Exception:
                         pass
                 if hasattr(self, "_log_col"):
@@ -4606,7 +5166,7 @@ class QAStudio:
             ft.Container(
                 ft.SelectionArea(content=ft.Column(log_lines, spacing=2,
                                                     scroll=ft.ScrollMode.AUTO, expand=True)),
-                height=240, bgcolor="#FCFCFE", border=ft.Border.all(1, T.BORDER),
+                height=240, bgcolor=T.CARD_2, border=ft.Border.all(1, T.BORDER),
                 border_radius=T.R, padding=12),
         ], spacing=0))
         left = ft.Column([head_card, stats, breakdown_card, log_card], spacing=14,
@@ -4734,16 +5294,37 @@ class QAStudio:
     # ═══════════════════════════════════════════════════════════════════════════
     def _auto_field(self, label, attr, hint, password=False, req=False,
                     info=None, on_info=None):
+        invalid = attr in getattr(self, "_auto_invalid", set())
+        err = ft.Text(
+            getattr(self, "_auto_invalid_msgs", {}).get(attr, "Required."),
+            size=11, color=T.RED, weight=ft.FontWeight.W_500, visible=invalid)
         tf = ft.TextField(
             value=getattr(self, attr, "") or "", hint_text=hint, password=password,
             can_reveal_password=password,
-            border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
+            border_color=(T.RED if invalid else T.BORDER),
+            focused_border_color=(T.RED if invalid else T.VIOLET), border_radius=T.R,
             content_padding=ft.Padding.symmetric(vertical=11, horizontal=12),
             text_size=13, expand=True,
-            on_change=lambda e, a=attr: setattr(self, a, e.control.value))
+            on_change=lambda e, a=attr, et=err: self._auto_field_change(a, e.control, et))
         return ft.Column([field_label(label, req=req, info=info, on_info=on_info),
-                          ft.Container(tf, padding=ft.Padding.only(top=4))],
+                          ft.Container(tf, padding=ft.Padding.only(top=4)),
+                          ft.Container(err, padding=ft.Padding.only(top=4, left=2))],
                          spacing=0)
+
+    def _auto_field_change(self, attr, ctrl, err):
+        """Live-update the bound value and clear the red invalid state as soon as
+        the user types into a previously-empty required field."""
+        setattr(self, attr, ctrl.value)
+        inv = getattr(self, "_auto_invalid", None)
+        if inv and attr in inv and (ctrl.value or "").strip():
+            inv.discard(attr)
+            ctrl.border_color = T.BORDER
+            ctrl.focused_border_color = T.VIOLET
+            err.visible = False
+            try:
+                ctrl.update(); err.update()
+            except Exception:
+                pass
 
     def automation_screen(self):
         if not (self.connected and self.project and self.plan_id and self.story_ids):
@@ -4883,8 +5464,10 @@ class QAStudio:
         log_lines = [self._auto_log_line(ln.get("msg", ""), ln.get("tone", "dim"))
                      for ln in self._auto_log]
         if not log_lines:
-            log_lines = [ft.Text("Configure the site + Git, then Generate. Activity shows here.",
-                                 size=12, color=T.INK_3, weight=ft.FontWeight.W_500)]
+            log_lines = [empty_state(
+                ft.Icons.TERMINAL, "No activity yet",
+                "Fill in the site and Git details, then Generate — "
+                "each step shows up here live.")]
         self._auto_log_col = ft.Column(log_lines, spacing=3, scroll=ft.ScrollMode.AUTO,
                                        expand=True, auto_scroll=True)
 
@@ -5126,13 +5709,28 @@ class QAStudio:
             self._toast("A plan is generating — let it finish before starting automation.")
             return
         if not (self.story_ids and self.project and self.plan_id):
-            self._toast("Select stories on Setup first.")
+            self._toast("Select a project, test plan, and stories on Setup first.")
             return
+        # Field-level validation: red borders + inline helpers on the required
+        # fields, while keeping the toast (per the rest of the app's pattern).
+        self._auto_invalid = set()
+        self._auto_invalid_msgs = {}
+        def _mark(attr, msg):
+            self._auto_invalid.add(attr)
+            self._auto_invalid_msgs[attr] = msg
         if not self.auto_site_url.strip():
-            self._toast("Enter the site URL.")
-            return
+            _mark("auto_site_url", "Enter the target site URL.")
+        if not (self.auto_git_url or "").strip():
+            _mark("auto_git_url", "Enter the Git repository URL.")
+        if not (self.auto_git_token or "").strip():
+            _mark("auto_git_token", "A Git access token (PAT) is required to push.")
         if not self._auto_project_dir():
-            self._toast("Set 'Save project to folder' (Local copy) - it's now the project home.")
+            _mark("auto_local_path",
+                  "Set the project folder — it's the home we push from.")
+        if self._auto_invalid:
+            first = next(iter(self._auto_invalid))
+            self._toast(self._auto_invalid_msgs[first])
+            self.render()
             return
         self._save_git_creds()
         self._auto_running = True
