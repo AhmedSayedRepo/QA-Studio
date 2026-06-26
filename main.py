@@ -27,10 +27,50 @@ if not hasattr(ft, "Colors") and hasattr(ft, "colors"):
 # ═══════════════════════════════════════════════════════════════════════════════
 #  Small reusable builders
 # ═══════════════════════════════════════════════════════════════════════════════
-def card(content, padding=18, expand=False, bg=T.CARD, radius=T.R_LG):
-    return ft.Container(content=content, padding=padding, bgcolor=bg,
+def card(content, padding=18, expand=False, bg=None, radius=T.R_LG):
+    # bg read at CALL time (not as a default) so cards follow theme switches.
+    return ft.Container(content=content, padding=padding,
+                        bgcolor=(bg if bg is not None else T.CARD),
                         border=ft.Border.all(1, T.BORDER),
-                        border_radius=radius, expand=expand)
+                        border_radius=radius, expand=expand,
+                        # soft indigo-tinted elevation for depth
+                        shadow=ft.BoxShadow(blur_radius=22, spread_radius=-12,
+                                            offset=ft.Offset(0, 9),
+                                            color=ft.Colors.with_opacity(0.10, "#1B1F3A")))
+
+
+def grad_text(value, size=32, weight=None, stops=None, font_family=None):
+    """Brand-gradient text via ShaderMask (falls back to solid indigo on older
+    Flet). Use for hero KPI numbers so they tie to the logo gradient."""
+    weight = weight or ft.FontWeight.BOLD
+    stops = stops or T.GRAD_LOGO
+    txt = ft.Text(value, size=size, weight=weight, color="#FFFFFF",
+                  font_family=font_family)
+    try:
+        return ft.ShaderMask(
+            content=txt, blend_mode=ft.BlendMode.SRC_IN,
+            shader=ft.LinearGradient(begin=ft.Alignment.TOP_LEFT,
+                                     end=ft.Alignment.BOTTOM_RIGHT, colors=list(stops)))
+    except Exception:
+        txt.color = T.VIOLET_INK
+        return txt
+
+
+def skeleton_rows(n=4, row_h=46):
+    """Placeholder 'skeleton' rows for loading states — reads as content loading,
+    nicer than a bare spinner. Subtle pulse where the Flet build supports it."""
+    def _bar(w=None):
+        c = ft.Container(height=row_h, expand=(w is None), width=w,
+                         bgcolor=T.CARD_2, border_radius=T.R,
+                         border=ft.Border.all(1, T.BORDER_2))
+        try:
+            c.opacity = 0.7
+            c.animate_opacity = ft.Animation(800, ft.AnimationCurve.EASE_IN_OUT)
+        except Exception:
+            pass
+        return c
+    return ft.Column([ft.Row([_bar(110), _bar()], spacing=12) for _ in range(n)],
+                     spacing=10)
 
 def sec_head(num, title, right=None):
     row = [
@@ -89,6 +129,20 @@ def _grad_button(text, icon, on_click, stops, shadow_rgb, shadow_a,
         on_click=(None if disabled else on_click),
         opacity=(0.45 if disabled else 1),
         shadow=(None if disabled else _btn_shadow(shadow_rgb, shadow_a)))
+    # subtle hover lift (press-ready CTA feel)
+    if not disabled:
+        try:
+            c.animate_scale = ft.Animation(120, ft.AnimationCurve.EASE_OUT)
+
+            def _hov(e, _c=c):
+                try:
+                    _c.scale = 1.018 if e.data == "true" else 1.0
+                    _c.update()
+                except Exception:
+                    pass
+            c.on_hover = _hov
+        except Exception:
+            pass
     if expand:
         c.expand = True
         return ft.Row([c], spacing=0)
@@ -224,25 +278,40 @@ def primary_btn(text, icon=None, on_click=None, expand=False, disabled=False):
                         expand=expand, disabled=disabled, height=46)
 
 
-def green_btn(text, icon=None, on_click=None, expand=False, height=42):
-    return _grad_button(text, icon, on_click, T.GRAD_GREEN, T.GREEN, 0.5,
-                        expand=expand, height=height)
+def _disabled_wrap(w, disabled, op=0.45):
+    """Uniform disabled look across ALL button types: dim + drop the shadow.
+    (Gradient buttons already dim themselves; this matches ghost/danger to them.)"""
+    if disabled:
+        try:
+            w.opacity = op
+            w.shadow = None
+        except Exception:
+            pass
+    return w
 
-def ghost_btn(text, icon=None, on_click=None, expand=False):
-    btn = ft.OutlinedButton(text, icon=icon, on_click=on_click, height=46,
-        style=ft.ButtonStyle(color=T.INK_2, side=ft.BorderSide(1, T.BORDER),
+
+def green_btn(text, icon=None, on_click=None, expand=False, height=42, disabled=False):
+    return _grad_button(text, icon, on_click, T.GRAD_GREEN, T.GREEN, 0.5,
+                        expand=expand, height=height, disabled=disabled)
+
+def ghost_btn(text, icon=None, on_click=None, expand=False, disabled=False):
+    btn = ft.OutlinedButton(
+        text, icon=icon, on_click=(None if disabled else on_click), height=46,
+        style=ft.ButtonStyle(color=(T.INK_3 if disabled else T.INK_2),
+            side=ft.BorderSide(1, T.BORDER),
             shape=ft.RoundedRectangleBorder(radius=T.R),
             padding=ft.Padding.symmetric(horizontal=16, vertical=0)))
-    return _wrap_btn(btn, expand)
+    return _disabled_wrap(_wrap_btn(btn, expand), disabled, op=0.55)
 
-def danger_btn(text, icon=None, on_click=None):
-    btn = ft.FilledButton(text, icon=icon, on_click=on_click, height=40,
+def danger_btn(text, icon=None, on_click=None, disabled=False):
+    btn = ft.FilledButton(
+        text, icon=icon, on_click=(None if disabled else on_click), height=40,
         style=ft.ButtonStyle(
             bgcolor=T.RED, color="#FFFFFF", elevation=0,
             shape=ft.RoundedRectangleBorder(radius=T.R),
             padding=ft.Padding.symmetric(horizontal=18, vertical=0)))
     # design shadow: 0 6px 16px -6px rgba(224,71,77,.6)
-    return _shadow_wrap(btn, T.RED, 0.55, False)
+    return _disabled_wrap(_shadow_wrap(btn, T.RED, 0.55, False), disabled)
 
 def searchable_dropdown(**kwargs):
     """ft.Dropdown that is type-to-filter on newer Flet, degrading gracefully."""
@@ -274,10 +343,11 @@ def stat_tile(label, num, tone=None, sub=None):
                          tooltip=label)]
     if tone:  # colored status dot (matches design)
         label_row.append(ft.Container(width=8, height=8, bgcolor=numc, border_radius=5))
+    _numstops = {"green": T.GRAD_GREEN, "violet": T.GRAD_LOGO}.get(tone, T.GRAD_LOGO)
     children = [
         ft.Row(label_row, vertical_alignment=ft.CrossAxisAlignment.CENTER),
         ft.Row([
-            ft.Text(str(num), size=22, weight=ft.FontWeight.BOLD, color=numc),
+            grad_text(str(num), size=22, weight=ft.FontWeight.BOLD, stops=_numstops),
             ft.Text(sub or "", size=12, color=T.INK_3, weight=ft.FontWeight.BOLD),
         ], spacing=2, vertical_alignment=ft.CrossAxisAlignment.END),
     ]
@@ -306,6 +376,16 @@ class QAStudio:
     def __init__(self, page: ft.Page):
         self.page = page
         self.creds = store.load()
+        # Apply the saved theme (light default, dark secondary) before any UI builds.
+        try:
+            T.apply_theme(self.creds.get("theme", "light"))
+            # theme_mode drives Flet's BUILT-IN controls (dropdown menus, pickers,
+            # text fields) so they get readable dark surfaces — without it the
+            # dropdown popups render dark-on-dark.
+            self.page.theme_mode = (ft.ThemeMode.DARK if T.MODE == "dark"
+                                    else ft.ThemeMode.LIGHT)
+        except Exception:
+            pass
         # Apply saved org / email sender to the engine immediately so they
         # persist across restarts without needing to reconnect first.
         try:
@@ -480,9 +560,10 @@ class QAStudio:
                          or (n["id"] == "run" and (getattr(self, "_run_active", False)
                                                    or st == "active"
                                                    or self.last_report is not None)))
-            # active indicator bar on the far left
-            indicator = ft.Container(width=3, height=22,
-                                     bgcolor=(T.VIOLET if is_active else ft.Colors.TRANSPARENT),
+            # active indicator bar on the far left — bright so it pops on the
+            # active item's indigo gradient (plain VIOLET blended in before)
+            indicator = ft.Container(width=4, height=22,
+                                     bgcolor=("#FFFFFF" if is_active else ft.Colors.TRANSPARENT),
                                      border_radius=4, animate=200)
             def _nav_hover(e, base=bg):
                 try:
@@ -504,7 +585,13 @@ class QAStudio:
                                 font_family=T.F_MONO),
                     ], spacing=9),
                     padding=ft.Padding.only(left=6, right=12, top=12, bottom=12),
-                    bgcolor=bg, border_radius=11,
+                    bgcolor=(None if is_active else bg),
+                    gradient=(grad(T.GRAD_NAV_ACT) if is_active else None),
+                    border_radius=11,
+                    shadow=(ft.BoxShadow(blur_radius=16, spread_radius=-6,
+                                         offset=ft.Offset(0, 5),
+                                         color=ft.Colors.with_opacity(0.45, T.VIOLET))
+                            if is_active else None),
                     offset=ft.Offset(0, 0), animate=150, animate_offset=150,
                     on_hover=(_nav_hover if (clickable and not is_active) else None),
                     on_click=(lambda e, nid=n["id"]: self.goto(nid)) if clickable else None,
@@ -545,6 +632,24 @@ class QAStudio:
                                      color="#615E6E"), padding=ft.Padding.only(left=18, top=14, bottom=6)),
                 ft.Container(ft.Column(nav_items, spacing=3), padding=ft.Padding.symmetric(vertical=10, horizontal=12)),
                 ft.Container(expand=True),
+                # theme toggle (light default · dark secondary)
+                ft.Container(
+                    ft.Row([
+                        ft.Icon(ft.Icons.DARK_MODE_OUTLINED if T.MODE == "light"
+                                else ft.Icons.LIGHT_MODE_OUTLINED,
+                                size=16, color=T.RAIL_INK),
+                        ft.Text("Dark mode" if T.MODE == "light" else "Light mode",
+                                size=12, weight=ft.FontWeight.BOLD, color=T.RAIL_INK),
+                        ft.Container(expand=True),
+                        ft.Text(T.MODE.upper(), size=9.5, weight=ft.FontWeight.BOLD,
+                                color=T.RAIL_DIM, font_family=T.F_MONO),
+                    ], spacing=9),
+                    on_click=lambda e: self._toggle_theme(),
+                    tooltip="Switch between light and dark",
+                    ink=True, padding=ft.Padding.symmetric(vertical=10, horizontal=12),
+                    margin=ft.Margin.only(left=10, right=10, bottom=4),
+                    border_radius=10, bgcolor=ft.Colors.with_opacity(0.04, "#FFFFFF"),
+                    border=ft.Border.all(1, T.RAIL_LINE)),
                 ft.Container(
                     ft.Row([
                         ft.Container(
@@ -566,6 +671,25 @@ class QAStudio:
                     border_radius=10, border=ft.Border.all(1, T.RAIL_LINE)),
             ], spacing=0, expand=True),
         )
+
+    def _toggle_theme(self):
+        new = "dark" if getattr(T, "MODE", "light") == "light" else "light"
+        try:
+            T.apply_theme(new)
+        except Exception:
+            pass
+        try:
+            self.creds["theme"] = new
+            store.save(self.creds)
+        except Exception:
+            pass
+        try:
+            self.page.bgcolor = T.RAIL   # window frame; content wash is per-theme in shell()
+            self.page.theme_mode = (ft.ThemeMode.DARK if T.MODE == "dark"
+                                    else ft.ThemeMode.LIGHT)
+        except Exception:
+            pass
+        self.render()
 
     def current_provider(self):
         return getattr(self, "_provider_choice", None) or (E.active_providers()[:1] or ["anthropic"])[0]
@@ -649,20 +773,37 @@ class QAStudio:
         row = [ft.Column(left, spacing=3, tight=True), ft.Container(expand=True)]
         if right:
             row.append(right)
-        return ft.Container(ft.Row(row, spacing=14, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                            height=94,
-                            padding=ft.Padding.symmetric(vertical=0, horizontal=24),
-                            alignment=ft.Alignment.CENTER_LEFT,
-                            border=ft.Border.only(bottom=ft.BorderSide(1, T.BORDER)),
-                            gradient=ft.LinearGradient(
-                                begin=ft.Alignment.TOP_CENTER,
-                                end=ft.Alignment.BOTTOM_CENTER,
-                                colors=["#FFFFFF", "#FBFCFF"]),
-                            shadow=ft.BoxShadow(
-                                spread_radius=0, blur_radius=18,
-                                offset=ft.Offset(0, 6),
-                                color=ft.Colors.with_opacity(0.05, "#2A3566")),
-                            bgcolor="#FFFFFF")
+        # Glass top bar: a translucent frosted gradient with a backdrop blur so
+        # scrolled content shows softly behind it. Falls back to an opaque bar on
+        # older Flet builds that lack ft.Blur.
+        # Theme-aware surfaces (so the bar goes dark in dark mode).
+        _has_blur = hasattr(ft, "Blur")
+        if _has_blur:
+            _g = ft.LinearGradient(
+                begin=ft.Alignment.TOP_CENTER, end=ft.Alignment.BOTTOM_CENTER,
+                colors=[ft.Colors.with_opacity(0.86, T.CARD),
+                        ft.Colors.with_opacity(0.70, T.CARD_2)])
+        else:
+            _g = ft.LinearGradient(
+                begin=ft.Alignment.TOP_CENTER, end=ft.Alignment.BOTTOM_CENTER,
+                colors=[T.CARD, T.CARD_2])
+        bar = ft.Container(
+            ft.Row(row, spacing=14, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            height=94,
+            padding=ft.Padding.symmetric(vertical=0, horizontal=24),
+            alignment=ft.Alignment.CENTER_LEFT,
+            border=ft.Border.only(
+                bottom=ft.BorderSide(1, ft.Colors.with_opacity(0.65, T.BORDER))),
+            gradient=_g,
+            shadow=ft.BoxShadow(
+                spread_radius=0, blur_radius=22, offset=ft.Offset(0, 7),
+                color=ft.Colors.with_opacity(0.08, "#2A3566")))
+        if _has_blur:
+            try:
+                bar.blur = ft.Blur(20, 20)
+            except Exception:
+                pass
+        return bar
 
     def shell(self, title, sub, body, right=None, badge=None):
         # Sticky-header pattern: the opaque header is PINNED ON TOP of the scroll
@@ -716,7 +857,7 @@ class QAStudio:
                 expand=True,
                 gradient=ft.LinearGradient(
                     begin=ft.Alignment.TOP_CENTER, end=ft.Alignment.BOTTOM_CENTER,
-                    colors=["#F7F8FE", "#EDF0F8"])),
+                    colors=list(T.GRAD_PAGE))),   # theme-aware page wash (dark in dark mode)
         ], spacing=0, expand=True)
 
     # ---- Useful Links ----
@@ -901,6 +1042,8 @@ class QAStudio:
         self._maybe_check_update_on_nav()
 
     def render(self):
+        import time as _pt
+        _r0 = _pt.perf_counter()
         try:
             # Reset dropdown closer registry so stale closers from the previous
             # render don't linger. Each _checkbox_multiselect re-registers itself.
@@ -938,7 +1081,13 @@ class QAStudio:
                                         spacing=0, expand=True))
             else:
                 self.page.add(view)
+            _build_ms = (_pt.perf_counter() - _r0) * 1000
+            _u0 = _pt.perf_counter()
             self.page.update()
+            _upd_ms = (_pt.perf_counter() - _u0) * 1000
+            regression._perf_log(
+                f"render[{self.active}]: build {_build_ms:.0f} ms + "
+                f"page.update {_upd_ms:.0f} ms = {_build_ms + _upd_ms:.0f} ms")
             self._restore_scroll()
         except Exception as ex:
             # Never leave the user on a blank "Working…" screen — show the error.
@@ -953,10 +1102,10 @@ class QAStudio:
                         ft.Text(str(ex), size=12, color="#1B1A22"),
                         ft.Container(
                             ft.Text(tb, size=10, selectable=True,
-                                    font_family="monospace", color="#74727E"),
-                            bgcolor="#F6F5FA", padding=12, border_radius=8),
+                                    font_family="monospace", color=T.INK_2),
+                            bgcolor=T.CARD_2, padding=12, border_radius=8),
                     ], spacing=10, scroll=ft.ScrollMode.AUTO),
-                    padding=24, expand=True, bgcolor="#FFFFFF"))
+                    padding=24, expand=True, bgcolor=T.CARD))
                 self.page.update()
             except Exception:
                 pass
@@ -1505,6 +1654,12 @@ class QAStudio:
     #  SETUP SCREEN
     # ═══════════════════════════════════════════════════════════════════════════
     def setup_screen(self):
+        # Clear validation-red for any required field that's now filled.
+        _inv = getattr(self, "_invalid", None)
+        if _inv:
+            if self.project: _inv.discard("project")
+            if self.plan_id: _inv.discard("plan")
+            if self.story_ids: _inv.discard("stories")
         # default provider choice
         if not hasattr(self, "_provider_choice"):
             names = list(E.AI_CONFIG.keys())
@@ -1922,18 +2077,30 @@ class QAStudio:
     def _tool_segment(self):
         def seg(label, icon, key):
             sel = (self.tool == key)
-            return ft.Container(
+            c = ft.Container(
                 ft.Row([ft.Icon(icon, size=16, color=(T.VIOLET_INK if sel else T.INK_2)),
                         ft.Text(label, size=12.5, weight=ft.FontWeight.BOLD,
                                 color=(T.VIOLET_INK if sel else T.INK_2))],
                        spacing=7, alignment=ft.MainAxisAlignment.CENTER, tight=True),
                 expand=True, height=40, alignment=ft.Alignment.CENTER,
                 padding=ft.Padding.symmetric(vertical=0, horizontal=9),
-                bgcolor=(T.CARD if sel else None), border_radius=T.R_SM,
-                border=ft.Border.all(1, T.BORDER) if sel else None,
-                shadow=(ft.BoxShadow(blur_radius=6, color=ft.Colors.with_opacity(0.08, "#000000"),
-                                     offset=ft.Offset(0, 2)) if sel else None),
+                bgcolor=(T.VIOLET_SOFT if sel else None), border_radius=T.R_SM,
+                border=ft.Border.all(1, T.VIOLET if sel else ft.Colors.TRANSPARENT),
+                animate=140,
+                shadow=(ft.BoxShadow(blur_radius=10, spread_radius=-4,
+                                     color=ft.Colors.with_opacity(0.35, T.VIOLET),
+                                     offset=ft.Offset(0, 3)) if sel else None),
                 on_click=lambda e, k=key: self._set_tool(k))
+            if not sel:
+                def _h(e, _c=c):
+                    try:
+                        _c.bgcolor = (ft.Colors.with_opacity(0.55, T.CARD)
+                                      if e.data in (True, "true", "True") else None)
+                        _c.update()
+                    except Exception:
+                        pass
+                c.on_hover = _h
+            return c
         return ft.Container(
             ft.Row([seg("Test Case Titles", ft.Icons.DESCRIPTION_OUTLINED, "titles"),
                     seg("Test Case Steps", ft.Icons.LAYERS_OUTLINED, "steps")], spacing=4),
@@ -1947,16 +2114,28 @@ class QAStudio:
     def _lang_segment(self):
         def seg(label, key):
             sel = (self.lang == key)
-            return ft.Container(
+            c = ft.Container(
                 ft.Text(label, size=12, weight=ft.FontWeight.BOLD,
                         color=(T.VIOLET_INK if sel else T.INK_2)),
                 height=32, alignment=ft.Alignment.CENTER,
                 padding=ft.Padding.symmetric(vertical=0, horizontal=16),
-                bgcolor=(T.CARD if sel else None), border_radius=T.R_SM,
-                border=ft.Border.all(1, T.BORDER) if sel else None,
-                shadow=(ft.BoxShadow(blur_radius=6, color=ft.Colors.with_opacity(0.08, "#000000"),
-                                     offset=ft.Offset(0, 2)) if sel else None),
+                bgcolor=(T.VIOLET_SOFT if sel else None), border_radius=T.R_SM,
+                border=ft.Border.all(1, T.VIOLET if sel else ft.Colors.TRANSPARENT),
+                animate=140,
+                shadow=(ft.BoxShadow(blur_radius=10, spread_radius=-4,
+                                     color=ft.Colors.with_opacity(0.35, T.VIOLET),
+                                     offset=ft.Offset(0, 3)) if sel else None),
                 on_click=lambda e, k=key: self._set_lang(k))
+            if not sel:
+                def _h(e, _c=c):
+                    try:
+                        _c.bgcolor = (ft.Colors.with_opacity(0.55, T.CARD)
+                                      if e.data in (True, "true", "True") else None)
+                        _c.update()
+                    except Exception:
+                        pass
+                c.on_hover = _h
+            return c
         return ft.Container(
             ft.Row([seg("العربية", "ar"), seg("English", "en")], spacing=4, tight=True),
             padding=4, bgcolor=T.CARD_2, border_radius=T.R, border=ft.Border.all(1, T.BORDER))
@@ -2241,12 +2420,14 @@ class QAStudio:
                 self.ui_safe(self.render)
             threading.Thread(target=_load_ss, daemon=True).start()
 
+        _inv0 = getattr(self, "_invalid", set())
         self.project_dd = ft.Dropdown(
             value=self.project, hint_text="Select project",
             options=[ft.DropdownOption(p) for p in self._projects],
             on_select=self._on_project_change,
             tooltip=(self.project or None),
-            border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
+            border_color=(T.RED if "project" in _inv0 else T.BORDER),
+            focused_border_color=T.VIOLET, border_radius=T.R,
             content_padding=ft.Padding.symmetric(vertical=12, horizontal=8), text_size=13, filled=True,
             bgcolor=T.CARD, expand=True)
 
@@ -2256,7 +2437,8 @@ class QAStudio:
             options=[ft.DropdownOption(key=str(p["id"]), text=f"[{p['id']}] {p['name']}") for p in self._plans],
             on_select=self._on_plan_change,
             tooltip=_plan_tip,
-            border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
+            border_color=(T.RED if "plan" in _inv0 else T.BORDER),
+            focused_border_color=T.VIOLET, border_radius=T.R,
             content_padding=ft.Padding.symmetric(vertical=12, horizontal=8), text_size=13, filled=True,
             bgcolor=T.CARD, expand=True)
 
@@ -2342,6 +2524,7 @@ class QAStudio:
                 pass
             _update_summary_inplace()
             self._fetch_estimate()
+            _clear_story_invalid()
 
         def _on_story_change(e=None):
             """As the user types/pastes, auto-chip any COMPLETED id (one followed
@@ -2365,14 +2548,38 @@ class QAStudio:
                         pass
                     _update_summary_inplace()
                     self._fetch_estimate()
+                    _clear_story_invalid()
 
+        _inv = getattr(self, "_invalid", set())
         self.story_field = ft.TextField(
             value="",
             hint_text="Paste an ID and press Enter (or comma). Repeat to add more.",
-            border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
+            border_color=(T.RED if "stories" in _inv else T.BORDER),
+            focused_border_color=T.VIOLET, border_radius=T.R,
             content_padding=ft.Padding.symmetric(vertical=12, horizontal=12),
             text_size=13, expand=True, on_submit=_commit_stories,
             on_change=_on_story_change)
+        self._story_err = ft.Container(
+            ft.Row([ft.Icon(ft.Icons.ERROR_OUTLINE, size=13, color=T.RED),
+                    ft.Text("Add at least one User Story ID to start a run.",
+                            size=11.5, color=T.RED, weight=ft.FontWeight.W_600)],
+                   spacing=5, tight=True),
+            visible=("stories" in _inv),
+            padding=ft.Padding.only(top=2, bottom=8))
+
+        def _clear_story_invalid():
+            inv = getattr(self, "_invalid", None)
+            if inv is not None:
+                inv.discard("stories")
+            try:
+                if self.story_ids:
+                    self.story_field.border_color = T.BORDER
+                    self.story_field.update()
+                    self._story_err.visible = False
+                    self._story_err.update()
+            except Exception:
+                pass
+
         def _add_from_dd(e):
             v = self._setup_story_dd.value
             if v and str(v).strip().isdigit():
@@ -2382,6 +2589,7 @@ class QAStudio:
                     self._err_msg = ""
                     _build_chips()
                     self._estimated_tc = None
+                    _clear_story_invalid()
                     # Patch the dropdown IN PLACE (drop the picked story, clear the
                     # value) instead of a full render, so the scroll stays put.
                     try:
@@ -2562,7 +2770,8 @@ class QAStudio:
             ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
             ft.Container(height=14),
             field_label("User Story IDs", req=True, hint="comma-separated"),
-            ft.Container(story_box, padding=ft.Padding.only(top=4, bottom=12)),
+            ft.Container(story_box, padding=ft.Padding.only(top=4, bottom=2)),
+            self._story_err,
         ]
 
         rows += [
@@ -2596,6 +2805,9 @@ class QAStudio:
         self.render()
 
     def _on_plan_change(self, e):
+        # Remember where the user was BEFORE selecting — Flet's editable dropdown
+        # focus-scrolls the page on selection; we snap back to this afterwards.
+        _scroll_keep = getattr(self, "_scroll_offset", 0) or 0
         self.plan_id = int(self.plan_dd.value)
         for p in self._plans:
             if p["id"] == self.plan_id:
@@ -2653,6 +2865,27 @@ class QAStudio:
         # Fall back to a full render only if we couldn't patch in place
         if not updated_any:
             self.render()
+        # Snap the scroll back to where it was (counteracts the dropdown's focus
+        # auto-scroll-to-top). Fire now + a few delayed shots so the last word wins.
+        if _scroll_keep:
+            def _keep():
+                col = getattr(self, "_left_scroll", None)
+                if col is not None:
+                    try:
+                        col.scroll_to(offset=_scroll_keep, duration=0)
+                    except Exception:
+                        pass
+            ru = getattr(self.page, "run_thread", None)
+            try:
+                ru(_keep) if callable(ru) else _keep()
+            except Exception:
+                pass
+            for _d in (0.15, 0.35, 0.6):
+                try:
+                    threading.Timer(
+                        _d, lambda: (ru(_keep) if callable(ru) else _keep())).start()
+                except Exception:
+                    pass
 
     def _load_setup_stories_inplace(self):
         """Load the selected plan's stories (from its requirement suites) and patch
@@ -2715,7 +2948,10 @@ class QAStudio:
                     have, total = E.count_existing_steps(self.project, self.plan_id, self.story_ids)
                     self._estimated_tc = total
                 else:
-                    self._estimated_tc = len(self.story_ids) * 6
+                    # Real count of existing test cases across the selected stories
+                    # (was a fabricated stories×6 guess).
+                    self._estimated_tc = E.count_test_cases(
+                        self.project, self.plan_id, self.story_ids)
             except Exception:
                 return
             # Update just the two labels, not the whole page
@@ -2767,8 +3003,9 @@ class QAStudio:
     def _setup_right(self):
         if self.connected:
             est = getattr(self, "_estimated_tc", None)
-            if est is None: est = len(self.story_ids) * 6 if self.story_ids else 0
-            self._est_num = ft.Text(f"~{est}", size=32, weight=ft.FontWeight.BOLD, color=T.VIOLET_INK)
+            # Show "…" while the real count is being fetched, instead of a fake guess.
+            _est_disp = "…" if (est is None and self.story_ids) else f"{est or 0}"
+            self._est_num = ft.Text(f"~{_est_disp}", size=32, weight=ft.FontWeight.BOLD, color=T.VIOLET_INK)
             self._est_sub = ft.Text(f"test cases\nacross {len(self.story_ids)} stories", size=12,
                                     color=T.INK_2, weight=ft.FontWeight.BOLD)
             rows = [("Generator", "Steps" if self.tool == "steps" else "Titles"),
@@ -3015,14 +3252,16 @@ class QAStudio:
                     pass
             _do()
 
-        # Fire immediately, then at 80 ms, 200 ms, 400 ms, 700 ms.
-        # The later shots catch slow layouts (low-end machines, large screens).
+        # Fire immediately, then one late shot to catch slow layouts. (Was 5
+        # shots firing a full page.update() each — that thrashed the event loop
+        # right after every render, including the post-Generate render, which
+        # made the first interactions feel sluggish. Two shots restore the
+        # scroll just as reliably with a fraction of the update traffic.)
         _run()
-        for _delay in (0.08, 0.20, 0.40, 0.70):
-            try:
-                threading.Timer(_delay, _run).start()
-            except Exception:
-                pass
+        try:
+            threading.Timer(0.35, _run).start()
+        except Exception:
+            pass
 
     def _close_dropdowns(self, e=None):
         # Click-away: close every open dropdown in-place via the registry.
@@ -3476,35 +3715,46 @@ class QAStudio:
                     stat_tile("Statuses", len(by_state), tone="amber"),
                 ], spacing=10)
 
-                # Status breakdown — small color-coded cards (count + label)
-                _kind_colors = {
-                    "green":  (T.GREEN, "#E5F6EC"),
-                    "violet": (T.VIOLET_INK, "#ECE8FF"),
-                    "amber":  (T.AMBER, "#FAF1DD"),
-                    "grey":   (T.INK_2, "#F1F0F5"),
-                }
-                def _status_card(label, count, kind):
-                    fg, bg = _kind_colors.get(kind, _kind_colors["grey"])
+                # Status breakdown — give EACH status its own distinct colour so the
+                # cards are visually separable (most states otherwise collapsed to the
+                # same grey). Colours are assigned from a rotating palette, ordered by
+                # count, and reused for the distribution bar so the two line up.
+                _PALETTE = [
+                    (T.VIOLET_INK, "#ECE8FF"),
+                    (T.GREEN,      "#E5F6EC"),
+                    ("#1C80E0",    "#E3F0FC"),
+                    (T.AMBER,      "#FAF1DD"),
+                    ("#0E8A8A",    "#DEF3F3"),
+                    (T.RED,        "#FCEBEC"),
+                    ("#6A33A8",    "#F0E6FB"),
+                    ("#C2860C",    "#FBF0D8"),
+                ]
+                _sorted_states = sorted(by_state.items(), key=lambda x: -x[1])
+                _state_color = {st: _PALETTE[i % len(_PALETTE)]
+                                for i, (st, _c) in enumerate(_sorted_states)}
+                def _status_card(label, count, fg, bg):
                     return ft.Container(
                         ft.Column([
                             ft.Text(str(count), size=22, weight=ft.FontWeight.BOLD, color=fg),
                             ft.Text(label, size=11, weight=ft.FontWeight.BOLD, color=T.INK_2,
                                     max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
                         ], spacing=1, horizontal_alignment=ft.CrossAxisAlignment.CENTER, tight=True),
-                        bgcolor=bg, border_radius=T.R, padding=ft.Padding.symmetric(vertical=12, horizontal=14),
+                        bgcolor=bg, border_radius=T.R,
+                        border=ft.Border.all(1, ft.Colors.with_opacity(0.30, fg)),
+                        padding=ft.Padding.symmetric(vertical=12, horizontal=14),
                         width=104, tooltip=f"{label}: {count}")
                 state_cards = []
-                for st, cnt in sorted(by_state.items(), key=lambda x: -x[1]):
-                    state_cards.append(_status_card(st, cnt, _state_kind(st)))
+                for st, cnt in _sorted_states:
+                    fg, bg = _state_color[st]
+                    state_cards.append(_status_card(st, cnt, fg, bg))
                 status_row = ft.Row(state_cards, wrap=True, spacing=10, run_spacing=10) \
                     if state_cards else ft.Text("No stories in this sprint.",
                                                 size=12, color=T.INK_3, weight=ft.FontWeight.W_500)
                 dist_bar = ft.Container(
                     ft.Row([ft.Container(expand=max(1, c),
-                                         bgcolor=_kind_colors.get(_state_kind(stt),
-                                                                  _kind_colors["grey"])[0],
+                                         bgcolor=_state_color[stt][0],
                                          tooltip=f"{stt}: {c}")
-                            for stt, c in sorted(by_state.items(), key=lambda x: -x[1])],
+                            for stt, c in _sorted_states],
                            spacing=2),
                     height=10, border_radius=6,
                     clip_behavior=ft.ClipBehavior.HARD_EDGE) if by_state else ft.Container()
@@ -3693,12 +3943,22 @@ class QAStudio:
                 if x.isdigit() and int(x) not in self.story_ids:
                     self.story_ids.append(int(x))
             inp.value = ""
+        # Mark which required fields are missing → red border + inline helper
+        # (visual), AND keep the toast (per request).
+        self._invalid = set()
         if not self.project:
-            self._err("Select a project first."); return
+            self._invalid.add("project")
         if not self.plan_id:
-            self._err("Select or create a test plan first."); return
+            self._invalid.add("plan")
         if not self.story_ids:
-            self._err("Add at least one User Story ID."); return
+            self._invalid.add("stories")
+        if self._invalid:
+            self._err("Select a project first." if "project" in self._invalid
+                      else "Select or create a test plan first." if "plan" in self._invalid
+                      else "Add at least one User Story ID.")
+            self.render()   # repaint so the invalid fields turn red with a helper
+            return
+        self._invalid = set()
         self._err_msg = ""  # all good — clear any prior validation error
         # Steps tool: check existing steps first
         if self.tool == "steps":
@@ -4856,6 +5116,15 @@ class QAStudio:
         self._show_dialog(dlg)
 
     def _start_automation(self):
+        # Guard like the Regression/Sprint plans: don't run two heavy generators at
+        # once (GIL contention freezes everything), and don't double-start.
+        if self._auto_running:
+            self._toast("Automation is already running.")
+            return
+        if (getattr(self, "_reg_busy", False) or getattr(self, "_cp_busy", False)
+                or getattr(self, "_cp_stories_loading", False)):
+            self._toast("A plan is generating — let it finish before starting automation.")
+            return
         if not (self.story_ids and self.project and self.plan_id):
             self._toast("Select stories on Setup first.")
             return
@@ -4893,28 +5162,60 @@ class QAStudio:
                                                      set(self.story_ids), create_missing=False)
                 stories = E.fetch_stories(self.story_ids)
 
+                import concurrent.futures as _cf
                 stories_payload = []
                 total_tc = 0
                 total_steps = 0
+
+                # Phase A: each story's suite test cases, fetched CONCURRENTLY.
+                def _story_tcs(s):
+                    suite_id = smap.get(s.id)
+                    out = []
+                    if suite_id:
+                        try:
+                            for tc in E.fetch_test_cases_for_suite(
+                                    self.project, self.plan_id, suite_id):
+                                wi = tc.get("workItem", {})
+                                tcid = wi.get("id")
+                                if tcid:
+                                    out.append({"id": tcid, "title": wi.get("name", "")})
+                        except Exception:
+                            pass
+                    return s.id, out
+                story_tcs = {}
+                if stories:
+                    with _cf.ThreadPoolExecutor(max_workers=min(8, len(stories))) as _ex:
+                        for _sid, _out in _ex.map(_story_tcs, stories):
+                            story_tcs[_sid] = _out
+                if self._auto_stop:
+                    cb("Stopped before scraping.", "warn"); return
+
+                # Phase B: steps for every test case, fetched CONCURRENTLY (was a
+                # serial fetch_test_case_steps per test case — slow on big sets).
+                _all_tcids = [tc["id"] for lst in story_tcs.values() for tc in lst]
+                steps_map = {}
+                def _steps(tcid):
+                    try:
+                        return tcid, E.fetch_test_case_steps(tcid)
+                    except Exception:
+                        return tcid, []
+                if _all_tcids:
+                    with _cf.ThreadPoolExecutor(max_workers=min(16, len(_all_tcids))) as _ex:
+                        for _tcid, _st in _ex.map(_steps, _all_tcids):
+                            steps_map[_tcid] = _st
+
+                # Assemble in the original story order.
                 for s in stories:
                     if self._auto_stop:
                         cb("Stopped before scraping.", "warn"); return
                     sid = s.id
                     title = s.fields.get("System.Title", "")
                     criteria = s.fields.get("Microsoft.VSTS.Common.AcceptanceCriteria", "")
-                    suite_id = smap.get(sid)
                     tcs = []
-                    if suite_id:
-                        try:
-                            for tc in E.fetch_test_cases_for_suite(self.project, self.plan_id, suite_id):
-                                wi = tc.get("workItem", {})
-                                tc_id = wi.get("id")
-                                tc_title = wi.get("name", "")
-                                steps = E.fetch_test_case_steps(tc_id) if tc_id else []
-                                total_steps += len(steps)
-                                tcs.append({"id": tc_id, "title": tc_title, "steps": steps})
-                        except Exception:
-                            pass
+                    for tc in story_tcs.get(sid, []):
+                        steps = steps_map.get(tc["id"], [])
+                        total_steps += len(steps)
+                        tcs.append({"id": tc["id"], "title": tc["title"], "steps": steps})
                     total_tc += len(tcs)
                     stories_payload.append({
                         "story": {"id": sid, "title": title, "criteria": criteria},
@@ -4968,11 +5269,19 @@ class QAStudio:
                     login = {"url": self.auto_login_url.strip() or self.auto_site_url.strip(),
                              "user": self.auto_login_user.strip(),
                              "password": self.auto_login_pass}
-                cb("Generating self-healing automation (no browser)…", "info")
-                E.generate_and_push_selfhealing(
-                    project_dir, stories_payload, self.auto_site_url.strip(),
-                    login=login, cb=cb, should_stop=lambda: self._auto_stop,
-                    on_error=self._auto_on_ai_error, gate=self._auto_gate)
+                # Generate ONLY what the keep/re-evaluate choice said to (walk_payload):
+                # brand-new stories, the new test cases of "grew" stories, and any the
+                # user chose to re-evaluate. "Done" stories are kept untouched. (Was
+                # passing the full stories_payload, so the choice had no effect.)
+                if walk_payload:
+                    cb(f"Generating self-healing automation for {len(walk_payload)} "
+                       f"story(ies) (no browser)…", "info")
+                    E.generate_and_push_selfhealing(
+                        project_dir, walk_payload, self.auto_site_url.strip(),
+                        login=login, cb=cb, should_stop=lambda: self._auto_stop,
+                        on_error=self._auto_on_ai_error, gate=self._auto_gate)
+                else:
+                    cb("Nothing new to generate — existing tests are kept as-is.", "ok")
 
                 self._auto_out_dir = project_dir
                 self.creds["auto_local_path"] = (self.auto_local_path or "").strip()
@@ -5050,7 +5359,11 @@ def main(page: ft.Page):
         T.F_MONO: "https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700",
         T.F_AR: "https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;600;700",
     }
-    page.theme = ft.Theme(font_family=T.F_UI)
+    try:
+        page.theme = ft.Theme(font_family=T.F_UI, color_scheme_seed=T.VIOLET)
+        page.dark_theme = ft.Theme(font_family=T.F_UI, color_scheme_seed=T.VIOLET)
+    except Exception:
+        page.theme = ft.Theme(font_family=T.F_UI)
     QAStudio(page)
 
 

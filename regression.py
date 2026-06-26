@@ -10,6 +10,40 @@ render routing). Shared UI helpers and the theme are reused from main.py via a
 deferred import so there is no circular import at load time.
 """
 import os, re, json, threading
+import time as _time
+import contextlib as _ctxlib
+
+# ── Lightweight perf logging ────────────────────────────────────────────────
+# The app runs under pythonw.exe (no console), so prints are invisible. Instead
+# we APPEND timings to a log file next to the app: "qa_perf.log". On by default;
+# set QASTUDIO_PERF=0 to silence. Use this to find the real hotspot behind UI
+# slowness (build_rows, table refresh, full render). One perf_counter() pair per
+# block when enabled.
+_PERF_ON = os.environ.get("QASTUDIO_PERF", "1") != "0"
+try:
+    _PERF_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "qa_perf.log")
+except Exception:
+    _PERF_LOG = os.path.join(os.path.expanduser("~"), "qa_perf.log")
+
+def _perf_log(msg):
+    if not _PERF_ON:
+        return
+    try:
+        with open(_PERF_LOG, "a", encoding="utf-8") as _fh:
+            _fh.write(f"{_time.strftime('%H:%M:%S')}  {msg}\n")
+    except Exception:
+        pass
+
+@_ctxlib.contextmanager
+def _perf(label):
+    if not _PERF_ON:
+        yield
+        return
+    _t0 = _time.perf_counter()
+    try:
+        yield
+    finally:
+        _perf_log(f"{label}: {(_time.perf_counter() - _t0) * 1000:.0f} ms")
 from datetime import datetime
 
 import flet as ft
@@ -23,35 +57,187 @@ PRIORITY_BOOST = {1: 1.30, 2: 1.15, 3: 1.00, 4: 0.90}
 _PRI_FULL = {1: "P1 (highest)", 2: "P2", 3: "P3", 4: "P4 (lowest)"}
 
 
+def _digits_only():
+    """Numeric-only input filter so count fields reject letters/symbols."""
+    try:
+        return ft.NumbersOnlyInputFilter()
+    except Exception:
+        try:
+            return ft.InputFilter(regex_string=r"[0-9]", allow=True)
+        except Exception:
+            return None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  DISK CACHE  — persist the per-project suite/count/meta/feature caches so the
+#  FIRST generate after an app restart is fast (no ~90 s recount) when nothing in
+#  Azure changed. The "Regenerate" button force-refreshes, so stale data always
+#  has an escape hatch. Keyed by project; JSON (int keys stored as strings).
+# ═══════════════════════════════════════════════════════════════════════════════
+_CACHE_DIR = os.path.join(os.path.expanduser("~"), ".qa_tool")
+_CACHE_FILE = os.path.join(_CACHE_DIR, "reg_cache.json")
+
+
+def _cache_load(app):
+    """Load the saved caches for the current project once (per project)."""
+    proj = getattr(app, "project", None)
+    if not proj:
+        return
+    if getattr(app, "_reg_cache_loaded_project", None) == proj:
+        return
+    app._reg_cache_loaded_project = proj
+    # Reset first so switching projects never carries another project's caches.
+    app._reg_case_count_cache = {}
+    app._reg_meta_cache = {}
+    app._reg_suite_cache = {}
+    app._reg_feature_name_cache = {}
+    app._reg_story_features = {}
+    try:
+        with open(_CACHE_FILE, "r", encoding="utf-8") as f:
+            d = (json.load(f) or {}).get(proj) or {}
+        app._reg_case_count_cache = {int(k): v for k, v in d.get("counts", {}).items()}
+        app._reg_meta_cache = {int(k): v for k, v in d.get("meta", {}).items()}
+        app._reg_suite_cache = {int(k): {int(sk): sv for sk, sv in v.items()}
+                                for k, v in d.get("suites", {}).items()}
+        app._reg_feature_name_cache = {int(k): v
+                                       for k, v in d.get("fnames", {}).items()}
+        app._reg_story_features = {int(k): tuple(v)
+                                   for k, v in d.get("features", {}).items()}
+    except Exception:
+        pass
+
+
+def _cache_save(app):
+    """Persist the current project's caches to disk (best-effort)."""
+    proj = getattr(app, "project", None)
+    if not proj:
+        return
+    try:
+        os.makedirs(_CACHE_DIR, exist_ok=True)
+        try:
+            with open(_CACHE_FILE, "r", encoding="utf-8") as f:
+                allp = json.load(f) or {}
+        except Exception:
+            allp = {}
+        allp[proj] = {
+            "counts": {str(k): v for k, v
+                       in (getattr(app, "_reg_case_count_cache", {}) or {}).items()},
+            "meta": {str(k): v for k, v
+                     in (getattr(app, "_reg_meta_cache", {}) or {}).items()},
+            "suites": {str(k): {str(sk): sv for sk, sv in v.items()} for k, v
+                       in (getattr(app, "_reg_suite_cache", {}) or {}).items()},
+            "fnames": {str(k): v for k, v
+                       in (getattr(app, "_reg_feature_name_cache", {}) or {}).items()},
+            "features": {str(k): list(v) for k, v
+                         in (getattr(app, "_reg_story_features", {}) or {}).items()},
+        }
+        with open(_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(allp, f)
+    except Exception:
+        pass
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  DATA GATHERING  (Azure DevOps — reference existing only)
 # ═══════════════════════════════════════════════════════════════════════════════
 def _fetch_meta(app, ids):
-    meta = {}
+    """Fetch work item metadata with per-story caching (fast on re-generate)."""
+    cache = getattr(app, "_reg_meta_cache", {})
+    missing = [i for i in ids if i not in cache]
+    if missing:
+        org, proj = E.AZURE_ORG, app.project
+        for i in range(0, len(missing), 200):
+            batch = missing[i:i + 200]
+            joined = ",".join(map(str, batch))
+            url = (f"https://dev.azure.com/{org}/{proj}/_apis/wit/workitems"
+                   f"?ids={joined}"
+                   f"&fields=System.Id,System.Title,System.State,"
+                   f"Microsoft.VSTS.Common.Priority,System.Parent&api-version=7.0")
+            try:
+                data = E._azure_get(url)
+            except Exception:
+                data = {}
+            for w in data.get("value", []):
+                f = w.get("fields", {})
+                try:
+                    pri = int(f.get("Microsoft.VSTS.Common.Priority", DEFAULT_PRIORITY)
+                              or DEFAULT_PRIORITY)
+                except Exception:
+                    pri = DEFAULT_PRIORITY
+                cache[int(w["id"])] = {"title": f.get("System.Title", ""),
+                                       "state": f.get("System.State", "Unknown"),
+                                       "priority": pri,
+                                       "parent_id": f.get("System.Parent")}
+        app._reg_meta_cache = cache
+    return {i: cache.get(i, {}) for i in ids}
+
+
+def _fetch_feature_names(app, parent_ids):
+    """Feature (parent work-item) titles, cached per id on app._reg_feature_name_cache
+    so re-selecting plans / re-generating never re-requests a name we already have."""
+    ids = [i for i in parent_ids if i]
     if not ids:
-        return meta
+        return {}
+    cache = getattr(app, "_reg_feature_name_cache", None)
+    if cache is None:
+        cache = {}
+        app._reg_feature_name_cache = cache
+    names = {i: cache[i] for i in ids if i in cache}
+    missing = [i for i in ids if i not in cache]
+    if missing:
+        org, proj = E.AZURE_ORG, app.project
+        for i in range(0, len(missing), 200):
+            batch = missing[i:i + 200]
+            joined = ",".join(map(str, batch))
+            url = (f"https://dev.azure.com/{org}/{proj}/_apis/wit/workitems"
+                   f"?ids={joined}&fields=System.Id,System.Title&api-version=7.0")
+            try:
+                data = E._azure_get(url)
+            except Exception:
+                data = {}
+            for w in data.get("value", []):
+                f2 = w.get("fields", {})
+                nm = f2.get("System.Title", str(w["id"]))
+                names[int(w["id"])] = nm
+                cache[int(w["id"])] = nm
+    return names
+
+
+def _fetch_cp_complexity(app, ids):
+    """Rough 'amount of work' units per story from its CONTENT — acceptance
+    criteria (weighted most), description, and title word counts. Lets the sprint
+    estimate reflect each story's complexity/size instead of a random number.
+    Returns {story_id: units(float)}; falls back to {} on error."""
+    ids = [int(i) for i in ids if i]
+    if not ids:
+        return {}
     org, proj = E.AZURE_ORG, app.project
+    flds = ("System.Id,System.Title,System.Description,"
+            "Microsoft.VSTS.Common.AcceptanceCriteria")
+    out = {}
+
+    def _plain(html):
+        s = re.sub(r"<[^>]+>", " ", html or "")
+        return re.sub(r"\s+", " ", s).strip()
+
     for i in range(0, len(ids), 200):
         batch = ids[i:i + 200]
         url = (f"https://dev.azure.com/{org}/{proj}/_apis/wit/workitems"
-               f"?ids={','.join(map(str, batch))}"
-               f"&fields=System.Id,System.Title,System.State,"
-               f"Microsoft.VSTS.Common.Priority&api-version=7.0")
+               f"?ids={','.join(map(str, batch))}&fields={flds}&api-version=7.0")
         try:
             data = E._azure_get(url)
         except Exception:
             data = {}
         for w in data.get("value", []):
             f = w.get("fields", {})
-            try:
-                pri = int(f.get("Microsoft.VSTS.Common.Priority", DEFAULT_PRIORITY)
-                          or DEFAULT_PRIORITY)
-            except Exception:
-                pri = DEFAULT_PRIORITY
-            meta[int(w["id"])] = {"title": f.get("System.Title", ""),
-                                  "state": f.get("System.State", "Unknown"),
-                                  "priority": pri}
-    return meta
+            crit = _plain(f.get("Microsoft.VSTS.Common.AcceptanceCriteria", ""))
+            desc = _plain(f.get("System.Description", ""))
+            title = f.get("System.Title", "") or ""
+            units = (len(crit.split()) * 1.0
+                     + len(desc.split()) * 0.4
+                     + len(title.split()) * 0.2)
+            out[int(w["id"])] = max(1.0, units)
+    return out
 
 
 def _loading_field(text):
@@ -65,63 +251,104 @@ def _loading_field(text):
         bgcolor=T.CARD, border=ft.Border.all(1, T.BORDER), border_radius=T.R)
 
 
+def _discover_suite_map(app, plan_id, story_ids):
+    """One HTTP call per plan → {story_id: suite_id}. Result cached."""
+    story_ids = set(story_ids)
+    cache = getattr(app, "_reg_suite_cache", {})
+    if plan_id in cache:
+        return cache[plan_id]
+    url = (f"https://dev.azure.com/{E.AZURE_ORG}/{app.project}"
+           f"/_apis/testplan/Plans/{plan_id}/Suites?api-version=7.0&$expand=true")
+    try:
+        data = E._azure_get(url)
+    except Exception:
+        return {}
+    smap = {}
+    for suite in data.get("value", []):
+        sid = suite.get("id")
+        req_id = suite.get("requirementId")
+        if req_id and int(req_id) in story_ids:
+            smap[int(req_id)] = sid
+            continue
+        name = suite.get("name", "")
+        try:
+            cand = int(name.split(":")[0].strip())
+            if cand in story_ids:
+                smap[cand] = sid
+        except (ValueError, IndexError):
+            pass
+    try:
+        app._reg_suite_cache[plan_id] = smap
+    except Exception:
+        pass
+    return smap
+
+
 def _count_cases(app, selected):
-    """selected = [{"id","title","plan_id"}]. Count existing test cases for each
-    story in ITS OWN plan. The per-suite case lookups are run concurrently so a
-    large selection (hundreds of stories) finishes in seconds, not minutes."""
+    """Phase 1: suite map per plan (1 call/plan, parallel, cached).
+    Phase 2: test case count per suite (parallel, up to 16 workers)."""
     import concurrent.futures as _cf
     counts = {int(s["id"]): 0 for s in selected}
     by_plan = {}
     for s in selected:
         by_plan.setdefault(s.get("plan_id"), []).append(int(s["id"]))
-    tasks = []                       # (sid, plan_id, suite_id)
 
-    # Parallelize suite-list fetches: one HTTP call per plan → run concurrently.
-    # Cached on app._reg_suite_cache so re-clicks skip the round-trip entirely.
-    def _discover_plan(pid_sids):
-        pid, sids = pid_sids
-        if not pid:
-            return pid, sids, {}
-        cache = getattr(app, "_reg_suite_cache", {})
-        if pid in cache:
-            return pid, sids, cache[pid]
-        try:
-            smap = E.discover_suites_for_stories(app.project, pid, set(sids),
-                                                 create_missing=False)
-        except Exception:
-            smap = {}
-        try:
-            app._reg_suite_cache[pid] = smap
-        except Exception:
-            pass
-        return pid, sids, smap
-
+    tasks = []
     plan_items = [(pid, sids) for pid, sids in by_plan.items() if pid]
     with _cf.ThreadPoolExecutor(max_workers=min(8, len(plan_items) or 1)) as ex:
-        for pid, sids, smap in ex.map(_discover_plan, plan_items):
+        futs = {ex.submit(_discover_suite_map, app, pid, sids): (pid, sids)
+                for pid, sids in plan_items}
+        for fut, (pid, sids) in futs.items():
+            smap = fut.result()
             for sid in sids:
                 suite_id = smap.get(sid)
                 if suite_id:
                     tasks.append((sid, pid, suite_id))
 
+    # Per-suite count cache: a suite's case count doesn't change between
+    # generates in a session, so re-generating (or tweaking resources and
+    # re-running) costs ZERO network for suites we've already counted. This is
+    # the single biggest lever — the first count of 433 suites took ~92 s.
+    cache = getattr(app, "_reg_case_count_cache", None)
+    if cache is None:
+        cache = {}
+        app._reg_case_count_cache = cache
+
+    todo = []
+    for sid, pid, suite_id in tasks:
+        if suite_id in cache:
+            counts[sid] = cache[suite_id]
+        else:
+            todo.append((sid, pid, suite_id))
+
     def _one(t):
         sid, pid, suite_id = t
         try:
-            return sid, len(E.fetch_test_cases_for_suite(app.project, pid, suite_id))
+            n = len(E.fetch_test_cases_for_suite(app.project, pid, suite_id))
         except Exception:
-            return sid, 0
+            n = 0
+        return sid, suite_id, n
 
-    if tasks:
-        with _cf.ThreadPoolExecutor(max_workers=min(16, len(tasks))) as ex:
-            for sid, n in ex.map(_one, tasks):
+    if todo:
+        # 16 workers: 24 measured SLOWER (Azure rate-limits) and starved the UI
+        # thread's GIL share, which is what made renders freeze during a parallel
+        # generate. Fewer concurrent JSON parses = a more responsive UI.
+        with _cf.ThreadPoolExecutor(max_workers=min(16, len(todo))) as ex:
+            for sid, suite_id, n in ex.map(_one, todo):
                 counts[sid] = n
+                cache[suite_id] = n
     return counts
 
 
 def build_rows(app, selected):
+    _cache_load(app)   # warm caches from disk on the first generate of a session
     ids = [int(s["id"]) for s in selected]
-    meta = _fetch_meta(app, ids)
-    counts = _count_cases(app, selected)
+    with _perf(f"build_rows.fetch_meta ({len(ids)} stories)"):
+        meta = _fetch_meta(app, ids)
+    with _perf(f"build_rows.count_cases ({len(selected)} stories)"):
+        counts = _count_cases(app, selected)
+    _cache_save(app)   # persist freshly-fetched counts/meta/features for next launch
+    story_features = getattr(app, "_reg_story_features", {})
     rows = []
     for s in selected:
         sid = int(s["id"])
@@ -130,10 +357,13 @@ def build_rows(app, selected):
         cases = counts.get(sid, 0)
         boost = PRIORITY_BOOST.get(pri, 1.0)
         hours = round(cases * (AVG_MINUTES_PER_CASE / 60.0) * boost, 2)
+        fid = s.get("feature_id") or story_features.get(sid, (None, ""))[0]
+        fname = s.get("feature_name") or story_features.get(sid, (None, ""))[1]
         rows.append({"id": sid, "title": m.get("title", "") or s.get("title", ""),
                      "state": m.get("state", "Unknown"), "priority": pri,
                      "cases": cases, "boost": boost, "hours": hours,
-                     "plan_id": s.get("plan_id"), "assignee": ""})
+                     "plan_id": s.get("plan_id"), "assignee": "",
+                     "feature_id": fid, "feature_name": fname})
     return rows
 
 
@@ -174,7 +404,13 @@ def plan_payload(app):
         workload = [{"name": n, "stories": cnt[n], "cases": ccases[n],
                      "hours": round(load.get(n, 0.0), 2)} for n in names]
     plans = list(app._reg_plans_selected or [])
-    plan_names = ", ".join(p["name"] for p in plans) or (getattr(app, "plan_name", "") or "")
+    # Show only the sprint number ("Sprint 22") in exports/email instead of the
+    # full ADO test-plan name ("<Project>_Sprint 22"). Fall back to the full name
+    # if a plan has no recognizable sprint number.
+    plan_names = ", ".join(_sprint_num(p.get("name", "")) or p.get("name", "")
+                           for p in plans) \
+        or (_sprint_num(getattr(app, "plan_name", "") or "")
+            or (getattr(app, "plan_name", "") or ""))
     plan_ids = ", ".join(str(p["id"]) for p in plans)
     return {"generated": datetime.now().strftime("%Y-%m-%d %H:%M"),
             "project": app.project, "plan_id": plan_ids,
@@ -241,8 +477,7 @@ def _plan_html(d):
         + "".join(kpi_cells) + "</tr></table>")
 
     # story rows
-    srows = []
-    for r in d["stories"]:
+    def _story_html_row(r):
         bg, fg, lab = _email_pri(r["priority"])
         init, acol = _av(r.get("assignee", ""))
         who = (r.get("assignee") or "").strip()
@@ -257,7 +492,7 @@ def _plan_html(d):
         cases_cell = (
             f"<td style='padding:12px 8px;text-align:right;font-family:Consolas,monospace;"
             f"font-size:13.5px;color:#46506a'>{r['cases']}</td>") if show_cases else ""
-        srows.append(
+        return (
             f"<tr style='border-top:1px solid #f0f3f9'>"
             f"<td style='padding:12px 14px;font-family:Consolas,monospace;font-size:13px;"
             f"font-weight:600;color:#3A57D6;white-space:nowrap'>{r['id']}</td>"
@@ -270,6 +505,24 @@ def _plan_html(d):
             f"<td style='padding:12px 8px;text-align:right;font-family:Consolas,monospace;"
             f"font-size:13.5px;font-weight:700;color:#1f2940'>{r['hours']}</td>"
             f"<td style='padding:12px 14px'>{asg}</td></tr>")
+
+    from collections import OrderedDict as _ODh
+    _feat_grps_h = _ODh()
+    for r in d["stories"]:
+        _feat_grps_h.setdefault(
+            (r.get("feature_id"), r.get("feature_name") or "No Feature"), []).append(r)
+    _html_ncols = 4 + (1 if show_cases else 0)  # id + title + pri + [cases] + hours + asg
+    srows = []
+    for (_fid_h, _fname_h), _fstories_h in _feat_grps_h.items():
+        _fid_label_h = f"[{_fid_h}]  " if _fid_h else ""
+        srows.append(
+            f"<tr style='background:#EEE8FF;border-top:2px solid #C8BAFF'>"
+            f"<td colspan='{_html_ncols + 2}' style='padding:7px 14px;font-size:10.5px;"
+            f"font-weight:700;color:#6A4DFF;letter-spacing:.4px;"
+            f"text-transform:uppercase'>"
+            f"Feature: {_fid_label_h}{_fname_h}</td></tr>")
+        for r in _fstories_h:
+            srows.append(_story_html_row(r))
     _cols = [("Story", "14px", ""), ("Title", "8px", ""),
              ("Pri", "8px", "text-align:center")]
     if show_cases:
@@ -422,14 +675,17 @@ def export_json(app):
 
 def export_xlsx(app):
     from openpyxl import Workbook
-    from openpyxl.styles import Font, PatternFill, Border, Side
+    from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
     d = plan_payload(app)
     wb = Workbook()
     ws = wb.active
     ws.title = d.get("report_title", "Regression Plan")[:31]
-    head = Font(bold=True, color="FFFFFF")
-    fill = PatternFill("solid", fgColor="6A4DFF")
-    thin = Border(*[Side(style="thin", color="E3E0EC")] * 4)
+    head = Font(bold=True, color="FFFFFF", name="Segoe UI")
+    fill = PatternFill("solid", fgColor="3A57D6")          # brand indigo
+    thin = Border(*[Side(style="thin", color="E6E8F1")] * 4)
+    _AR = Alignment(horizontal="right", vertical="center")
+    _AC = Alignment(horizontal="center", vertical="center")
+    _AL = Alignment(horizontal="left", vertical="center", wrap_text=True)
     r = 1
     for k, v in (("Project", d["project"]), ("Test plan", d["plan_name"]),
                  ("Plan ID", d["plan_id"]),
@@ -441,38 +697,71 @@ def export_xlsx(app):
         ws.cell(r, 2, v)
         r += 1
     r += 1
-    for c, name in enumerate(["Story ID", "Title", "State", "Priority",
-                              "Test cases", "Est. hours", "Assignee"], 1):
+    # Sprint Plan has no test-case counts (estimates are complexity-based), so the
+    # cases column/total is dropped when total_cases is 0.
+    show_cases = (d.get("total_cases") or 0) > 0
+    cols = (["Feature", "Story ID", "Title", "State", "Priority"]
+            + (["Test cases"] if show_cases else [])
+            + ["Est. hours", "Assignee"])
+    ncol = len(cols)
+    _hours_col = ncol - 1
+    _cases_col = 6 if show_cases else None
+    for c, name in enumerate(cols, 1):
         cell = ws.cell(r, c, name)
         cell.font = head
         cell.fill = fill
+        cell.alignment = _AC
+    _header_row = r
     r += 1
+    from collections import OrderedDict as _ODx
+    feat_grps = _ODx()
     for s in d["stories"]:
-        vals = [s["id"], s["title"], s["state"],
-                _PRI_FULL.get(s["priority"], s["priority"]), s["cases"],
-                s["hours"], s.get("assignee") or "—"]
-        for c, v in enumerate(vals, 1):
-            ws.cell(r, c, v).border = thin
+        feat_grps.setdefault(s.get("feature_name") or "No Feature", []).append(s)
+    feat_fill = PatternFill("solid", fgColor="EEE8FF")
+    for feat_name, fstories in feat_grps.items():
+        ws.cell(r, 1, feat_name).font = Font(bold=True, color="2940C2", name="Segoe UI")
+        ws.cell(r, 1).fill = feat_fill
+        for c2 in range(2, ncol + 1): ws.cell(r, c2).fill = feat_fill
         r += 1
-    ws.cell(r, 4, "TOTAL").font = Font(bold=True)
-    ws.cell(r, 5, d["total_cases"]).font = Font(bold=True)
-    ws.cell(r, 6, d["total_hours"]).font = Font(bold=True)
+        for s in fstories:
+            vals = ([feat_name, s["id"], s["title"], s["state"],
+                     _PRI_FULL.get(s["priority"], s["priority"])]
+                    + ([s["cases"]] if show_cases else [])
+                    + [s["hours"], s.get("assignee") or "—"])
+            for c, v in enumerate(vals, 1):
+                cell = ws.cell(r, c, v)
+                cell.border = thin
+                if c in (2, _hours_col) or c == _cases_col:      # ids / hours / cases
+                    cell.alignment = _AR
+                elif c in (4, 5):                                # state / priority
+                    cell.alignment = _AC
+                elif c == 3:                                      # title
+                    cell.alignment = _AL
+            r += 1
+    ws.freeze_panes = ws.cell(_header_row + 1, 1).coordinate
+    ws.cell(r, 5, "TOTAL").font = Font(bold=True)
+    if show_cases:
+        ws.cell(r, 6, d["total_cases"]).font = Font(bold=True)
+    ws.cell(r, ncol - 1, d["total_hours"]).font = Font(bold=True)
     r += 2
     if d["workload"]:
         ws.cell(r, 1, "Resource workload").font = Font(bold=True, size=12)
         r += 1
-        for c, name in enumerate(["Resource", "Stories", "Test cases", "Hours"], 1):
+        wl_cols = (["Resource", "Stories"] + (["Test cases"] if show_cases else [])
+                   + ["Hours"])
+        for c, name in enumerate(wl_cols, 1):
             cell = ws.cell(r, c, name)
             cell.font = head
             cell.fill = fill
         r += 1
         for w in d["workload"]:
-            ws.cell(r, 1, w["name"])
-            ws.cell(r, 2, w["stories"])
-            ws.cell(r, 3, w.get("cases", 0))
-            ws.cell(r, 4, w["hours"])
+            wvals = ([w["name"], w["stories"]]
+                     + ([w.get("cases", 0)] if show_cases else []) + [w["hours"]])
+            for c, v in enumerate(wvals, 1):
+                ws.cell(r, c, v)
             r += 1
-    for c, wdt in zip("ABCDEFG", [12, 52, 14, 16, 12, 12, 18]):
+    _widths = [28, 12, 52, 14, 16] + ([12] if show_cases else []) + [12, 18]
+    for c, wdt in zip("ABCDEFGH", _widths):
         ws.column_dimensions[c].width = wdt
     p = os.path.join(_out_dir(), _stamp(app) + ".xlsx")
     wb.save(p)
@@ -485,6 +774,12 @@ def export_docx(app):
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     d = plan_payload(app)
     doc = Document()
+    try:
+        _ns = doc.styles["Normal"]
+        _ns.font.name = "Segoe UI"
+        _ns.font.size = Pt(10)
+    except Exception:
+        pass
     h = doc.add_heading(d.get("report_title", "Regression Test Plan"), level=0)
     h.alignment = WD_ALIGN_PARAGRAPH.CENTER
     sub = doc.add_paragraph()
@@ -507,28 +802,48 @@ def export_docx(app):
         for p in cells[0].paragraphs:
             for x in p.runs:
                 x.font.bold = True
+    # Sprint Plan has no test-case counts → drop the cases column/totals.
+    show_cases = (d.get("total_cases") or 0) > 0
     doc.add_heading("Stories", level=1)
-    tbl = doc.add_table(rows=1, cols=7)
-    tbl.style = "Medium Shading 1 Accent 1"
-    for i, hd in enumerate(["Story", "Title", "State", "Priority",
-                            "Test cases", "Est. hours", "Assignee"]):
-        tbl.rows[0].cells[i].text = hd
+    from collections import OrderedDict as _ODd
+    feat_grps_d = _ODd()
     for s in d["stories"]:
-        c = tbl.add_row().cells
-        c[0].text = str(s["id"])
-        c[1].text = s["title"]
-        c[2].text = s["state"]
-        c[3].text = _PRI_FULL.get(s["priority"], str(s["priority"]))
-        c[4].text = str(s["cases"])
-        c[5].text = str(s["hours"])
-        c[6].text = s.get("assignee") or "—"
+        feat_grps_d.setdefault(s.get("feature_name") or "No Feature", []).append(s)
+    _heads = (["Story", "Title", "State", "Priority"]
+              + (["Test cases"] if show_cases else []) + ["Est. hours", "Assignee"])
+    for feat_name, fstories in feat_grps_d.items():
+        fh = doc.add_heading(f"Feature: {feat_name}", level=2)
+        fh.runs[0].font.color.rgb = RGBColor(0x6A, 0x4D, 0xFF)
+        tbl = doc.add_table(rows=1, cols=len(_heads))
+        tbl.style = "Medium Shading 1 Accent 1"
+        for i, hd in enumerate(_heads):
+            tbl.rows[0].cells[i].text = hd
+        for s in fstories:
+            c = tbl.add_row().cells
+            _vals = ([str(s["id"]), s["title"], s["state"],
+                      _PRI_FULL.get(s["priority"], str(s["priority"]))]
+                     + ([str(s["cases"])] if show_cases else [])
+                     + [str(s["hours"]), s.get("assignee") or "—"])
+            _last = len(_vals) - 1
+            for i, v in enumerate(_vals):
+                c[i].text = v
+                if i in (0, _last - 1) or (show_cases and i == 4):     # id / hours / cases
+                    _al = WD_ALIGN_PARAGRAPH.RIGHT
+                elif i in (2, 3):                                       # state / priority
+                    _al = WD_ALIGN_PARAGRAPH.CENTER
+                else:
+                    _al = WD_ALIGN_PARAGRAPH.LEFT
+                for _p in c[i].paragraphs:
+                    _p.alignment = _al
+        doc.add_paragraph()
     doc.add_paragraph()
     tot = doc.add_table(rows=0, cols=2)
     tot.style = "Light List Accent 1"
-    for k, v in (("Total stories", d["total_stories"]),
-                 ("Total test cases", d["total_cases"]),
-                 ("Total estimated hours", d["total_hours"]),
-                 ("Hours per resource (target)", d["hours_per_person"])):
+    _tot_rows = ([("Total stories", d["total_stories"])]
+                 + ([("Total test cases", d["total_cases"])] if show_cases else [])
+                 + [("Total estimated hours", d["total_hours"]),
+                    ("Hours per resource (target)", d["hours_per_person"])])
+    for k, v in _tot_rows:
         cells = tot.add_row().cells
         cells[0].text = k
         cells[1].text = str(v)
@@ -537,16 +852,18 @@ def export_docx(app):
                 x.font.bold = True
     if d["workload"]:
         doc.add_heading("Resource workload", level=1)
-        wt = doc.add_table(rows=1, cols=4)
+        _wh = (["Resource", "Stories"] + (["Test cases"] if show_cases else [])
+               + ["Hours"])
+        wt = doc.add_table(rows=1, cols=len(_wh))
         wt.style = "Medium Shading 1 Accent 1"
-        for i, hd in enumerate(["Resource", "Stories", "Test cases", "Hours"]):
+        for i, hd in enumerate(_wh):
             wt.rows[0].cells[i].text = hd
         for w in d["workload"]:
             c = wt.add_row().cells
-            c[0].text = w["name"]
-            c[1].text = str(w["stories"])
-            c[2].text = str(w.get("cases", 0))
-            c[3].text = str(w["hours"])
+            _wv = ([w["name"], str(w["stories"])]
+                   + ([str(w.get("cases", 0))] if show_cases else []) + [str(w["hours"])])
+            for i, v in enumerate(_wv):
+                c[i].text = v
     foot = doc.add_paragraph()
     fr = foot.add_run("Generated by QA Studio · effort references existing "
                       "test cases only.")
@@ -555,6 +872,47 @@ def export_docx(app):
     p = os.path.join(_out_dir(), _stamp(app) + ".docx")
     doc.save(p)
     return p
+
+
+_PDF_FONT_NAME = None
+
+
+def _pdf_font():
+    """Register an Arabic-capable TTF for reportlab ONCE and return its name.
+    reportlab's built-in fonts have no Arabic glyphs, so Arabic story titles
+    rendered as blank — making the PDF look empty. Falls back to Helvetica
+    (Latin-only) if no suitable font is found."""
+    global _PDF_FONT_NAME
+    if _PDF_FONT_NAME is not None:
+        return _PDF_FONT_NAME
+    try:
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+        for fp in (r"C:\Windows\Fonts\segoeui.ttf", r"C:\Windows\Fonts\tahoma.ttf",
+                   r"C:\Windows\Fonts\arial.ttf", r"C:\Windows\Fonts\ARIALUNI.TTF",
+                   "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"):
+            if os.path.exists(fp):
+                pdfmetrics.registerFont(TTFont("PlanFont", fp))
+                _PDF_FONT_NAME = "PlanFont"
+                return _PDF_FONT_NAME
+    except Exception:
+        pass
+    _PDF_FONT_NAME = "Helvetica"
+    return _PDF_FONT_NAME
+
+
+def _ar(s):
+    """Shape Arabic text (connected glyphs + RTL order) for the PDF when the
+    reshaper libs are present; otherwise return it unchanged."""
+    s = "" if s is None else str(s)
+    if not any('؀' <= c <= 'ۿ' for c in s):
+        return s
+    try:
+        import arabic_reshaper
+        from bidi.algorithm import get_display
+        return get_display(arabic_reshaper.reshape(s))
+    except Exception:
+        return s
 
 
 def export_pdf(app):
@@ -568,41 +926,79 @@ def export_pdf(app):
     p = os.path.join(_out_dir(), _stamp(app) + ".pdf")
     doc = SimpleDocTemplate(p, pagesize=A4, topMargin=18 * mm, bottomMargin=18 * mm)
     styles = getSampleStyleSheet()
-    elems = [Paragraph("Regression Test Plan", styles["Title"]),
-             Paragraph(f"{d['plan_name'] or d['project']}",
+    _fn = _pdf_font()
+    for _sn in ("Title", "Normal", "Heading2"):
+        try: styles[_sn].fontName = _fn
+        except Exception: pass
+    elems = [Paragraph(_ar(d.get("report_title") or "Regression Test Plan"), styles["Title"]),
+             Paragraph(_ar(d['plan_name'] or d['project']),
                        styles["Normal"]),
              Spacer(1, 8 * mm)]
-    data = [["Story", "Title", "State", "Pri", "Cases", "Hours", "Assignee"]]
+    # Sprint Plan has no test-case counts → drop the cases column/total.
+    show_cases = (d.get("total_cases") or 0) > 0
+    data = [["Story", "Title", "State", "Pri"]
+            + (["Cases"] if show_cases else []) + ["Hours", "Assignee"]]
     for s in d["stories"]:
-        data.append([str(s["id"]), (s["title"] or "")[:38], s["state"],
-                     str(s["priority"]), str(s["cases"]), str(s["hours"]),
-                     s.get("assignee") or "—"])
-    data.append(["", "", "", "TOT", str(d["total_cases"]),
-                 str(d["total_hours"]), ""])
-    tbl = Table(data, colWidths=[18*mm, 54*mm, 22*mm, 10*mm, 14*mm, 14*mm, 28*mm])
+        data.append([str(s["id"]), _ar((s["title"] or "")[:38]), _ar(s["state"]),
+                     str(s["priority"])]
+                    + ([str(s["cases"])] if show_cases else [])
+                    + [str(s["hours"]), _ar(s.get("assignee") or "—")])
+    data.append(["", "", "", "TOT"]
+                + ([str(d["total_cases"])] if show_cases else [])
+                + [str(d["total_hours"]), ""])
+    _cw = [18*mm, 54*mm, 22*mm, 10*mm] + ([14*mm] if show_cases else []) + [14*mm, 28*mm]
+    tbl = Table(data, colWidths=_cw, repeatRows=1)
+    _pri_col = 3
+    _cases_col = 4 if show_cases else None
     tbl.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#6A4DFF")),
+        # header: brand indigo band, white, centered
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#3A57D6")),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTSIZE", (0, 0), (-1, -1), 7.5),
-        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#DDDDDD")),
+        ("ALIGN", (0, 0), (-1, 0), "CENTER"),
+        ("FONTNAME", (0, 0), (-1, -1), _fn),
+        ("FONTSIZE", (0, 0), (-1, 0), 8),
+        ("FONTSIZE", (0, 1), (-1, -1), 7.5),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("LEFTPADDING", (0, 0), (-1, -1), 7),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#E6E8F1")),
+        ("LINEBELOW", (0, 0), (-1, 0), 0.8, colors.HexColor("#2C44BE")),
         ("ROWBACKGROUNDS", (0, 1), (-1, -2),
-         [colors.white, colors.HexColor("#F7F6FF")]),
-        ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
-        ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#F2F0FF")),
-    ]))
+         [colors.white, colors.HexColor("#F6F8FC")]),
+        # alignment by meaning: story id centred, numerics right, pri centred
+        ("ALIGN", (0, 1), (0, -1), "CENTER"),          # story id
+        ("ALIGN", (_pri_col, 1), (_pri_col, -1), "CENTER"),  # priority
+        ("ALIGN", (-2, 1), (-2, -1), "RIGHT"),         # hours
+        ("TEXTCOLOR", (-2, 1), (-2, -1), colors.HexColor("#181A24")),
+        # totals row
+        ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#EEF1FF")),
+        ("LINEABOVE", (0, -1), (-1, -1), 0.8, colors.HexColor("#3A57D6")),
+        ("TEXTCOLOR", (0, -1), (-1, -1), colors.HexColor("#2940C2")),
+    ] + ([("ALIGN", (_cases_col, 1), (_cases_col, -1), "RIGHT")] if _cases_col else [])))
     elems += [tbl, Spacer(1, 6 * mm)]
     if d["workload"]:
-        wd = [["Resource", "Stories", "Test cases", "Hours"]] + \
-             [[w["name"], str(w["stories"]), str(w.get("cases", 0)), str(w["hours"])]
-              for w in d["workload"]]
-        wt = Table(wd, colWidths=[55*mm, 25*mm, 30*mm, 25*mm])
+        wd = [["Resource", "Stories"] + (["Test cases"] if show_cases else []) + ["Hours"]] + \
+             [[_ar(w["name"]), str(w["stories"])] + ([str(w.get("cases", 0))] if show_cases else [])
+              + [str(w["hours"])] for w in d["workload"]]
+        _wcw = [55*mm, 25*mm] + ([30*mm] if show_cases else []) + [25*mm]
+        wt = Table(wd, colWidths=_wcw, repeatRows=1)
         wt.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#6A4DFF")),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#3A57D6")),
             ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("ALIGN", (0, 0), (-1, 0), "CENTER"),
+            ("FONTNAME", (0, 0), (-1, -1), _fn),
             ("FONTSIZE", (0, 0), (-1, -1), 8),
-            ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#DDDDDD")),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#E6E8F1")),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1),
+             [colors.white, colors.HexColor("#F6F8FC")]),
+            ("ALIGN", (1, 1), (-1, -1), "RIGHT"),   # numeric columns
         ]))
-        elems += [Paragraph("Resource workload", styles["Heading2"]), wt]
+        elems += [Paragraph(_ar("Resource workload"), styles["Heading2"]), wt]
     doc.build(elems)
     return p
 
@@ -677,7 +1073,7 @@ def _export_row(app, set_status=None):
                            spacing=8, tight=True),
             on_click=_go(fmt), height=44,
             style=ft.ButtonStyle(
-                bgcolor={"": "#FFFFFF"},
+                bgcolor={"": T.CARD},
                 side=ft.BorderSide(1, T.BORDER),
                 shape=ft.RoundedRectangleBorder(radius=T.R),
                 padding=ft.Padding.symmetric(horizontal=15, vertical=0)))
@@ -763,15 +1159,25 @@ def _bar(frac, color=T.VIOLET, h=7):
                         border_radius=4, height=h, clip_behavior=ft.ClipBehavior.HARD_EDGE)
 
 
-def _kpi_tile(label, value, accent=T.INK):
+def _kpi_tile(label, value, accent=None):
+    accent = accent if accent is not None else T.INK   # call-time (theme-aware)
+    try:
+        from main import grad_text
+        _stops = T.GRAD_GREEN if accent == T.GREEN else T.GRAD_LOGO
+        _num = grad_text(value, size=23, weight=ft.FontWeight.BOLD,
+                         stops=_stops, font_family=T.F_MONO)
+    except Exception:
+        _num = ft.Text(value, size=23, weight=ft.FontWeight.BOLD, color=accent,
+                       font_family=T.F_MONO)
     return ft.Container(
         ft.Column([
             ft.Text(label, size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
-            ft.Text(value, size=23, weight=ft.FontWeight.BOLD, color=accent,
-                    font_family=T.F_MONO),
+            _num,
         ], spacing=4),
-        expand=True, padding=14, bgcolor=T.CARD_2, border_radius=T.R,
-        border=ft.Border.all(1, T.BORDER_2))
+        expand=True, padding=14, bgcolor=T.CARD,
+        border_radius=T.R, border=ft.Border.all(1, T.BORDER_2),
+        shadow=ft.BoxShadow(blur_radius=16, spread_radius=-10, offset=ft.Offset(0, 6),
+                            color=ft.Colors.with_opacity(0.08, "#1B1F3A")))
 
 
 def locked_state(app, title, sub, msg, icon=None, steps=None):
@@ -864,8 +1270,17 @@ def _init(app):
                  ("_cp_res_count", None), ("_cp_calculated", False),
                  ("_cp_calc_msg", None),
                  ("_cp_msg", None), ("_cp_assigning", False),
+                 ("_cp_busy", False),
                  ("_cp_email_to", ""), ("_cp_emailing", False),
-                 ("_reg_suite_cache", {})):
+                 ("_cp_collapsed_features", set()),
+                 ("_cp_table_page", 0),
+                 ("_reg_suite_cache", {}),
+                 ("_reg_table_page", 0),
+                 ("_reg_story_features", {}),
+                 ("_reg_feature_name_cache", {}),
+                 ("_reg_case_count_cache", {}),
+                 ("_reg_collapsed_features", set()),
+                 ("_reg_meta_cache", {})):
         if not hasattr(app, k):
             setattr(app, k, v)
 
@@ -930,6 +1345,51 @@ def _reload_plan_stories(app):
         app._reg_plan_stories = agg
         app._reg_stories_loading = False
         app.ui_safe(app.render)
+
+        def _fetch_features():
+            try:
+                feat_cache = dict(getattr(app, "_reg_story_features", {}) or {})
+                # INCREMENTAL: only resolve stories we haven't resolved before, so
+                # re-selecting plans or re-generating issues zero network for the
+                # stories already known. The first pass for a brand-new selection
+                # still runs, but it no longer re-does work on every plan tweak and
+                # no longer fights an in-flight generate over the same data.
+                sids = [int(s["id"]) for s in agg if int(s["id"]) not in feat_cache]
+                if not sids:
+                    return
+                org, proj = E.AZURE_ORG, app.project
+                parent_map = {}
+                for i in range(0, len(sids), 200):
+                    batch = sids[i:i + 200]
+                    joined = ",".join(map(str, batch))
+                    url = (f"https://dev.azure.com/{org}/{proj}/_apis/wit/workitems"
+                           f"?ids={joined}&fields=System.Id,System.Parent&api-version=7.0")
+                    try:
+                        data = E._azure_get(url)
+                    except Exception:
+                        data = {}
+                    for w in data.get("value", []):
+                        pid2 = w.get("fields", {}).get("System.Parent")
+                        if pid2:
+                            parent_map[int(w["id"])] = pid2
+                feature_names = _fetch_feature_names(app, list(set(parent_map.values())))
+                for sid, pid2 in parent_map.items():
+                    feat_cache[sid] = (pid2, feature_names.get(pid2, ""))
+                app._reg_story_features = feat_cache   # merged, not replaced
+                for s in app._reg_plan_stories:
+                    fdata = feat_cache.get(int(s["id"]), (None, ""))
+                    s["feature_id"] = fdata[0]
+                    s["feature_name"] = fdata[1]
+                for r in (app._reg_selected_rows or []):
+                    fdata = feat_cache.get(int(r["id"]), (None, ""))
+                    if not r.get("feature_name"):
+                        r["feature_id"] = fdata[0]
+                        r["feature_name"] = fdata[1]
+                # No render here — avoids concurrent page-rebuild race with generate.
+                # build_rows reads _reg_story_features at generate time.
+            except Exception:
+                pass
+        threading.Thread(target=_fetch_features, daemon=True).start()
     threading.Thread(target=_work, daemon=True).start()
 
 
@@ -947,7 +1407,6 @@ def _cp_load_iterations(app):
     if app._cp_iterations or app._cp_iter_loading:
         return
     app._cp_iter_loading = True
-    app.ui_safe(app.render)
 
     def _work():
         try:
@@ -1051,21 +1510,48 @@ def _checkbox_multiselect(options, selected, on_toggle, on_all, *, is_open, on_o
 
     select_all_cb.on_change = lambda e: _do_all(e.control.value)
 
-    # build panel rows
-    rows = []
-    for k, label in options:
-        cb = ft.Checkbox(value=(k in sel),
-                         on_change=(lambda e, kk=k: _do_toggle(kk, e.control.value)))
-        row_cbs[k] = cb
-        rows.append(ft.Container(
-            ft.Row([cb, ft.Text(label, size=12.5, color=T.INK, expand=True, no_wrap=False)],
-                   spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-            padding=ft.Padding.only(left=10, right=10, top=2, bottom=2)))
+    # ── Panel rows are built LAZILY ──────────────────────────────────────────
+    # Building one live control-set (Container+Row+Checkbox+Text) per option for
+    # every story is the single most expensive thing a full render() does: a plan
+    # with hundreds of stories yields thousands of controls that Flet must diff
+    # and ship to the client on EVERY render — even while the dropdown is
+    # collapsed, because visible=is_open only HIDES the wrapper, it does not skip
+    # building it. That full rebuild is what freezes the UI right after "Generate"
+    # (generation completes -> app.render() -> the whole hidden picker is rebuilt
+    # and Flutter re-lays-out thousands of off-screen controls, so collapse / next
+    # / prev / export / email / nav all stop responding until it settles).
+    # Fix: when the panel is closed we build nothing; the rows are materialised
+    # the first time the panel is actually opened.
+    body = ft.Column([], spacing=0, scroll=ft.ScrollMode.AUTO)
+    body_holder = ft.Container(body, height=64,
+                               padding=ft.Padding.symmetric(vertical=4),
+                               border=ft.Border.all(1, T.BORDER),
+                               border_radius=ft.BorderRadius.only(
+                                   bottom_left=T.R, bottom_right=T.R))
+    _built = {"done": False}
 
-    body = ft.Column(rows, spacing=0, scroll=ft.ScrollMode.AUTO) if rows else \
-        ft.Container(ft.Text(empty, size=12, color=T.INK_3),
-                     padding=14, alignment=ft.Alignment.CENTER)
-    panel_h = min(height, max(40, len(rows) * 34 + 8)) if rows else 64
+    def _ensure_built():
+        if _built["done"]:
+            return
+        _built["done"] = True
+        row_cbs.clear()
+        rows = []
+        for k, label in options:
+            cb = ft.Checkbox(value=(k in sel),
+                             on_change=(lambda e, kk=k: _do_toggle(kk, e.control.value)))
+            row_cbs[k] = cb
+            rows.append(ft.Container(
+                ft.Row([cb, ft.Text(label, size=12.5, color=T.INK, expand=True,
+                                    no_wrap=False)],
+                       spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                padding=ft.Padding.only(left=10, right=10, top=2, bottom=2)))
+        if rows:
+            body.controls = rows
+            body_holder.height = min(height, max(40, len(rows) * 34 + 8))
+        else:
+            body.controls = [ft.Container(ft.Text(empty, size=12, color=T.INK_3),
+                                          padding=14, alignment=ft.Alignment.CENTER)]
+            body_holder.height = 64
 
     head = ft.Container(
         ft.Row([select_all_cb,
@@ -1076,17 +1562,19 @@ def _checkbox_multiselect(options, selected, on_toggle, on_all, *, is_open, on_o
         padding=ft.Padding.symmetric(vertical=8, horizontal=10), bgcolor=T.CARD_2,
         border_radius=ft.BorderRadius.only(top_left=T.R, top_right=T.R))
 
-    panel_body = ft.Column([
-        head,
-        ft.Container(body, height=panel_h, padding=ft.Padding.symmetric(vertical=4),
-                     border=ft.Border.all(1, T.BORDER),
-                     border_radius=ft.BorderRadius.only(bottom_left=T.R, bottom_right=T.R)),
-    ], spacing=0)
+    panel_body = ft.Column([head, body_holder], spacing=0)
     panel_wrap = ft.Container(panel_body, padding=ft.Padding.only(top=6),
                               visible=is_open)
 
+    # If the panel is persisted-open across this render, build now so the rows
+    # are present on first paint.
+    if is_open:
+        _ensure_built()
+
     def _do_open(e):
         new_open = not panel_wrap.visible
+        if new_open:
+            _ensure_built()   # materialise rows lazily on first open
         panel_wrap.visible = new_open
         arrow_icon.name = (ft.Icons.KEYBOARD_ARROW_UP if new_open
                            else ft.Icons.KEYBOARD_ARROW_DOWN)
@@ -1148,60 +1636,104 @@ def _cp_load_stories(app):
         return
     app._cp_stories_loading = True
     app._cp_rows = []
+    app._cp_table_page = 0
     app.ui_safe(app.render)
 
     def _work():
-        agg, seen = [], set()
-        for path in paths:
+        import concurrent.futures as _cf
+
+        # Fetch every selected sprint's stories CONCURRENTLY. Sequentially this was
+        # one blocking call per sprint, so 23 sprints kept "Loading stories…" up
+        # (and the Generate button disabled) for the sum of all of them.
+        def _one_sprint(path):
             try:
-                stories = E.fetch_stories_in_iteration(app.project, path) or []
+                return E.fetch_stories_in_iteration(app.project, path) or []
             except Exception:
-                stories = []
-            for s in stories:
-                if s["id"] in seen:
-                    continue
-                seen.add(s["id"])
-                agg.append({"id": s["id"], "title": s.get("title", ""),
-                            "hours": 0.0, "assignee": ""})
+                return []
+
+        agg, seen = [], set()
+        with _perf(f"cp.fetch_stories ({len(paths)} sprints)"):
+            with _cf.ThreadPoolExecutor(max_workers=min(8, len(paths) or 1)) as ex:
+                for stories in ex.map(_one_sprint, paths):
+                    for s in stories:
+                        if s["id"] in seen:
+                            continue
+                        seen.add(s["id"])
+                        agg.append({"id": s["id"], "title": s.get("title", ""),
+                                    "hours": 0.0, "assignee": ""})
         app._cp_rows = agg
         # Pull real Azure DevOps priority (+ state) for these stories so the plan
         # table and email show P1–P4 like the Regression Plan report (not a bare "P").
+        # _fetch_meta also returns each story's parent (feature) id, which we use
+        # to group the plan table by feature (collapsible, like the Regression Plan).
         try:
-            meta = _fetch_meta(app, [int(r["id"]) for r in agg])
-            for r in agg:
-                m = meta.get(int(r["id"]), {})
-                r["priority"] = m.get("priority", DEFAULT_PRIORITY)
-                if m.get("state"):
-                    r["state"] = m["state"]
+            with _perf(f"cp.fetch_meta+features ({len(agg)} stories)"):
+                meta = _fetch_meta(app, [int(r["id"]) for r in agg])
+                parent_ids = []
+                for r in agg:
+                    m = meta.get(int(r["id"]), {})
+                    r["priority"] = m.get("priority", DEFAULT_PRIORITY)
+                    if m.get("state"):
+                        r["state"] = m["state"]
+                    fid = m.get("parent_id")
+                    r["feature_id"] = fid
+                    if fid:
+                        parent_ids.append(fid)
+                fnames = _fetch_feature_names(app, list(set(parent_ids)))
+                for r in agg:
+                    r["feature_name"] = (fnames.get(r.get("feature_id"), "")
+                                         if r.get("feature_id") else "")
+                # Content-complexity units per story → drives a non-random estimate.
+                comp = _fetch_cp_complexity(app, [int(r["id"]) for r in agg])
+                for r in agg:
+                    r["work_units"] = comp.get(int(r["id"]), 1.0)
         except Exception:
             pass
         _cp_estimate_and_assign(app)
         app._cp_stories_loading = False
-        app.ui_safe(app.render)
+        # Only repaint if the user is still on the Sprint Plan screen — otherwise
+        # this background completion would force a full (heavy) render of whatever
+        # screen they navigated to, which reads as a freeze.
+        if getattr(app, "active", None) == "testplan":
+            app.ui_safe(app.render)
     threading.Thread(target=_work, daemon=True).start()
 
 
 def _cp_estimate_and_assign(app):
-    """Give every story a stable random estimate (seeded by its id so it doesn't
-    jump around on every render) and a random — but balanced — assignee. Both stay
-    editable afterwards."""
-    import random
+    """Estimate each story's hours from its CONTENT COMPLEXITY (acceptance-criteria
+    /description size × priority weight), mapped into the user's [min, max] range —
+    so bigger / higher-priority stories get more hours instead of a random number —
+    then balance the resulting HOURS across resources. Both stay editable."""
     names = list(app._cp_res_names or [])
     lo, hi = float(app._cp_est_min or 1.0), float(app._cp_est_max or 8.0)
     if hi < lo:
         lo, hi = hi, lo
     rows = app._cp_rows or []
-    # estimate: deterministic per story id, in 0.5h steps within [lo, hi]
-    steps = max(1, int(round((hi - lo) / 0.5)))
-    for r in rows:
-        rnd = random.Random(r["id"])               # seeded → stable per story
-        r["hours"] = round(lo + 0.5 * rnd.randint(0, steps), 2)
-    # assignment: shuffle (seeded by the set of ids so it's stable) then round-robin
+
+    # complexity score = content work-units × priority weight
+    def _score(r):
+        units = float(r.get("work_units", 1.0) or 1.0)
+        boost = PRIORITY_BOOST.get(r.get("priority", DEFAULT_PRIORITY), 1.0)
+        return units * boost
+    scores = [_score(r) for r in rows]
+    smin = min(scores) if scores else 0.0
+    smax = max(scores) if scores else 0.0
+    span = (smax - smin) or 1.0
+    # Map each score linearly into [lo, hi] (equal scores → midpoint), 0.5 h steps.
+    for r, sc in zip(rows, scores):
+        h = (lo + hi) / 2.0 if smax == smin else lo + (hi - lo) * (sc - smin) / span
+        r["hours"] = round(h * 2) / 2.0
+
+    # assignment: balance by HOURS, not story count. Greedy longest-processing-time
+    # — assign each story (largest estimate first) to the least-loaded resource —
+    # which is the same algorithm the Regression plan uses, so total hours per
+    # person stay as even as possible. Deterministic (tie-break by id / name).
     if names:
-        order = list(range(len(rows)))
-        random.Random(sum(r["id"] for r in rows)).shuffle(order)
-        for k, idx in enumerate(order):
-            rows[idx]["assignee"] = names[k % len(names)]
+        load = {n: 0.0 for n in names}
+        for r in sorted(rows, key=lambda x: (-float(x.get("hours", 0) or 0), x["id"])):
+            n = min(names, key=lambda nm: (load[nm], nm))
+            r["assignee"] = n
+            load[n] = round(load[n] + float(r.get("hours", 0) or 0), 2)
     else:
         for r in rows:
             r["assignee"] = ""
@@ -1337,12 +1869,16 @@ def _create_screen(app):
                 border=ft.Border.all(1, "#D9D2FF"))
              for n in snames],
             wrap=True, spacing=6, run_spacing=6)
+        # While loading we show nothing here — the bottom "Loading sprint stories…"
+        # spinner already indicates progress. Once loaded, show the story count.
+        _stories_status = (ft.Container()
+                           if app._cp_stories_loading
+                           else _txt(f"· {len(app._cp_rows)} stories", color=T.INK_3))
         picked = ft.Container(
             ft.Column([
                 ft.Row([ft.Icon(ft.Icons.CHECK_CIRCLE, size=15, color=T.GREEN),
                         ft.Column([sprint_chips], expand=True),
-                        _txt(("Loading stories…" if app._cp_stories_loading
-                              else f"· {len(app._cp_rows)} stories"), color=T.INK_3)],
+                        _stories_status],
                        spacing=8, vertical_alignment=ft.CrossAxisAlignment.START),
             ], spacing=0),
             padding=ft.Padding.only(top=10))
@@ -1423,6 +1959,7 @@ def _create_screen(app):
     count_field = ft.TextField(
         value=("" if count is None else str(count)), hint_text="e.g. 3",
         keyboard_type=ft.KeyboardType.NUMBER, on_blur=_on_count, on_submit=_on_count,
+        input_filter=_digits_only(), max_length=3,
         width=92, text_size=13,
         border_color=(T.RED if mismatch else T.BORDER), focused_border_color=T.VIOLET,
         border_radius=T.R,
@@ -1495,10 +2032,22 @@ def _create_screen(app):
             ft.Column([field_label("Max h / story"), _num(app._cp_est_max, _on_max)],
                       spacing=6),
             ft.Container(
-                _txt("Each story gets a random estimate in this range (stable per "
-                     "story). Hours & assignees stay editable in the plan below.",
-                     color=T.INK_3, size=11.5), expand=True,
-                padding=ft.Padding.only(left=6, top=18)),
+                ft.Row([
+                    ft.Icon(ft.Icons.AUTO_GRAPH, size=16, color=T.VIOLET_INK),
+                    ft.Column([
+                        ft.Text("Estimates are complexity-based",
+                                size=11.5, weight=ft.FontWeight.BOLD, color=T.VIOLET_INK),
+                        _txt("Each story's hours come from its content size "
+                             "(acceptance criteria + description) weighted by priority, "
+                             "scaled into this Min–Max range — bigger / higher-priority "
+                             "stories get more. Workload is then balanced by hours across "
+                             "resources. Hours & assignees stay editable below.",
+                             color=T.INK_2, size=11.5, no_wrap=False),
+                    ], spacing=2, tight=True, expand=True),
+                ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.START),
+                expand=True, padding=12,
+                bgcolor=getattr(T, "VIOLET_SOFT", T.CARD_2), border_radius=T.R,
+                border=ft.Border.all(1, "#D9D2FF")),
         ], spacing=14, vertical_alignment=ft.CrossAxisAlignment.START),
     ], spacing=0))
 
@@ -1516,6 +2065,15 @@ def _create_screen(app):
         cp_calc_note_text.value = app._cp_calc_msg
 
     def _calculate(e):
+        # Don't let two plans generate at once — running both starves Python's GIL
+        # and makes every render freeze for tens of seconds (see qa_perf.log).
+        if app._reg_busy:
+            app._err("The Regression plan is still generating — let it finish, then "
+                     "generate the Sprint plan.")
+            return
+        if getattr(app, "_auto_running", False):
+            app._err("Automation is running — let it finish before generating a plan.")
+            return
         if not app._cp_rows:
             app._cp_calc_msg = "Pick a sprint with stories first."
             cp_calc_note_text.value = app._cp_calc_msg
@@ -1534,13 +2092,39 @@ def _create_screen(app):
         cp_calc_note_wrap.visible = False
         try: cp_calc_note_wrap.update()
         except Exception: pass
-        _cp_estimate_and_assign(app)
-        app._cp_calculated = True
-        app.render()   # result table must appear — full render unavoidable here
 
-    calc_btn = primary_btn("Generate Sprint Plan", icon=ft.Icons.CALCULATE,
-                           on_click=_calculate,
-                           disabled=not (app._cp_rows and app._cp_res_names))
+        # Show busy state (disable button + spinner) BEFORE the heavy full render,
+        # so the click gives immediate feedback. The render itself is the slow part
+        # for large plans, so we defer it (ui_safe) to let the busy paint flush.
+        app._cp_busy = True
+        cb = _cp_calc_btn_cell[0]
+        if cb is not None:
+            try:
+                cb.opacity = 0.55
+                cb.on_click = None
+                cb.update()
+            except Exception:
+                pass
+        try:
+            cp_spinner.content.controls[1].value = "Generating sprint plan…"
+            cp_spinner.visible = True
+            cp_spinner.update()
+        except Exception:
+            pass
+
+        def _do():
+            with _perf(f"cp.generate_render ({len(app._cp_rows)} stories)"):
+                _cp_estimate_and_assign(app)
+                app._cp_calculated = True
+                app._cp_busy = False
+                if getattr(app, "active", None) == "testplan":
+                    app.render()   # result table must appear — full render here
+        app.ui_safe(_do)
+
+    calc_btn = primary_btn("Generating…" if app._cp_busy else "Generate Sprint Plan",
+                           icon=ft.Icons.CALCULATE,
+                           on_click=(None if app._cp_busy else _calculate),
+                           disabled=app._cp_busy or not (app._cp_rows and app._cp_res_names))
     _cp_calc_btn_cell[0] = calc_btn   # wire so _refresh_chips_inplace can enable it
 
     # ── results / plan (after Assign & Estimate) ──
@@ -1619,6 +2203,7 @@ def _create_screen(app):
             ft.Row([ft.Container(width=34),
                     _txt("STORY", color=T.INK_2, size=10.5, weight=ft.FontWeight.BOLD, width=84),
                     _txt("TITLE", color=T.INK_2, size=10.5, weight=ft.FontWeight.BOLD, expand=True),
+                    _txt("P", color=T.INK_2, size=10.5, weight=ft.FontWeight.BOLD, width=44),
                     _txt("HOURS", color=T.INK_2, size=10.5, weight=ft.FontWeight.BOLD, width=110),
                     _txt("ASSIGNEE", color=T.INK_2, size=10.5, weight=ft.FontWeight.BOLD, width=180)],
                    spacing=10),
@@ -1626,38 +2211,120 @@ def _create_screen(app):
             bgcolor=T.CARD_2,
             border=ft.Border.only(bottom=ft.BorderSide(1, T.BORDER)))
 
+        def _story_row(r, i):
+            hours_f = ft.TextField(
+                value=str(r["hours"]), on_change=_edit_hours(r["id"]),
+                width=92, text_size=13, border_color=T.BORDER,
+                focused_border_color=T.VIOLET, border_radius=T.R,
+                keyboard_type=ft.KeyboardType.NUMBER,
+                content_padding=ft.Padding.symmetric(vertical=8, horizontal=8))
+            assignee_dd = ft.Dropdown(
+                value=r["assignee"] or None, width=142, text_size=13,
+                options=[ft.DropdownOption(key=n, text=n) for n in app._cp_res_names],
+                on_select=_edit_assignee(r["id"]), border_color=T.BORDER,
+                border_radius=T.R, content_padding=ft.Padding.symmetric(vertical=6, horizontal=8))
+            assignee_cell = ft.Row(
+                [_avatar(r.get("assignee", ""), 26), assignee_dd],
+                spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+            del_btn = ft.IconButton(
+                icon=ft.Icons.DELETE_OUTLINE, icon_size=18, icon_color=T.RED,
+                tooltip="Remove story & recalculate",
+                on_click=_delete_story(r["id"]),
+                width=34, height=34,
+                style=ft.ButtonStyle(padding=ft.Padding.all(0),
+                                     shape=ft.RoundedRectangleBorder(radius=8)))
+            return ft.Container(
+                ft.Row([ft.Container(del_btn, width=34),
+                        _txt(str(r["id"]), color=T.VIOLET_INK, weight=ft.FontWeight.BOLD,
+                             width=84, font_family=T.F_MONO),
+                        _txt(r["title"] or "—", color=T.INK, expand=True),
+                        ft.Container(_pri_pill(r.get("priority", DEFAULT_PRIORITY)), width=44),
+                        ft.Container(hours_f, width=110),
+                        ft.Container(assignee_cell, width=180)],
+                       spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                padding=ft.Padding.symmetric(vertical=6, horizontal=12),
+                bgcolor=(T.CARD if i % 2 == 0 else T.CARD_2),
+                border=ft.Border.only(bottom=ft.BorderSide(1, T.BORDER_2)))
+
+        def _toggle_cp_feature(fname):
+            def _h(e):
+                cf = set(getattr(app, "_cp_collapsed_features", set()))
+                cf.discard(fname) if fname in cf else cf.add(fname)
+                app._cp_collapsed_features = cf
+                try:
+                    plan_col.controls = [hdr] + _trows()
+                    plan_col.update()
+                except Exception:
+                    app.render()
+            return _h
+
+        _CP_PAGE = 25  # paginate so a 500-story sprint doesn't build 4000+ controls
+
         def _trows():
-            out = []
-            for i, r in enumerate(app._cp_rows):
-                hours_f = ft.TextField(
-                    value=str(r["hours"]), on_change=_edit_hours(r["id"]),
-                    width=92, text_size=13, border_color=T.BORDER,
-                    focused_border_color=T.VIOLET, border_radius=T.R,
-                    keyboard_type=ft.KeyboardType.NUMBER,
-                    content_padding=ft.Padding.symmetric(vertical=8, horizontal=8))
-                assignee_dd = ft.Dropdown(
-                    value=r["assignee"] or None, width=168, text_size=13,
-                    options=[ft.DropdownOption(key=n, text=n) for n in app._cp_res_names],
-                    on_select=_edit_assignee(r["id"]), border_color=T.BORDER,
-                    border_radius=T.R, content_padding=ft.Padding.symmetric(vertical=6, horizontal=8))
-                del_btn = ft.IconButton(
-                    icon=ft.Icons.DELETE_OUTLINE, icon_size=18, icon_color=T.RED,
-                    tooltip="Remove story & recalculate",
-                    on_click=_delete_story(r["id"]),
-                    width=34, height=34,
-                    style=ft.ButtonStyle(padding=ft.Padding.all(0),
-                                         shape=ft.RoundedRectangleBorder(radius=8)))
-                out.append(ft.Container(
-                    ft.Row([ft.Container(del_btn, width=34),
-                            _txt(str(r["id"]), color=T.VIOLET_INK, weight=ft.FontWeight.BOLD,
-                                 width=84, font_family=T.F_MONO),
-                            _txt(r["title"] or "—", color=T.INK, expand=True),
-                            ft.Container(hours_f, width=110),
-                            ft.Container(assignee_dd, width=180)],
-                           spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                    padding=ft.Padding.symmetric(vertical=6, horizontal=12),
-                    bgcolor=("#FFFFFF" if i % 2 == 0 else T.CARD_2),
-                    border=ft.Border.only(bottom=ft.BorderSide(1, T.BORDER_2))))
+            # Paginate FIRST (one small page of stories at a time), then group that
+            # page by feature with collapsible headers — same pattern as the
+            # Regression Plan table. Building every story's editable row at once was
+            # the cause of the multi-second / multi-minute Sprint Plan renders.
+            from collections import OrderedDict as _OD
+            allrows = app._cp_rows or []
+            total = max(1, -(-len(allrows) // _CP_PAGE))
+            pg = max(0, min(getattr(app, "_cp_table_page", 0), total - 1))
+            page_rows = allrows[pg * _CP_PAGE:(pg + 1) * _CP_PAGE]
+
+            groups = _OD()
+            for r in page_rows:
+                groups.setdefault(r.get("feature_name") or "No Feature", []).append(r)
+            has_features = any(g != "No Feature" for g in groups)
+
+            out, i = [], 0
+            if not has_features:
+                out = [_story_row(r, k) for k, r in enumerate(page_rows)]
+            else:
+                coll = getattr(app, "_cp_collapsed_features", set())
+                for fname, frows in groups.items():
+                    is_c = fname in coll
+                    fid = frows[0].get("feature_id") if frows else None
+                    fl = f"[{fid}]  " if fid else ""
+                    chev = (ft.Icons.KEYBOARD_ARROW_RIGHT if is_c
+                            else ft.Icons.KEYBOARD_ARROW_DOWN)
+                    out.append(ft.Container(
+                        ft.Row([
+                            ft.IconButton(icon=chev, icon_size=16, icon_color=T.VIOLET_INK,
+                                          on_click=_toggle_cp_feature(fname),
+                                          style=ft.ButtonStyle(
+                                              padding=ft.Padding.all(2),
+                                              shape=ft.RoundedRectangleBorder(radius=4))),
+                            ft.Icon(ft.Icons.FOLDER_OUTLINED, size=14, color=T.VIOLET_INK),
+                            _txt(f"{fl}{fname}", size=11.5, weight=ft.FontWeight.BOLD,
+                                 color=T.VIOLET_INK),
+                            _txt(f"· {len(frows)} stories", size=11, color=T.INK_3),
+                        ], spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                        padding=ft.Padding.symmetric(vertical=4, horizontal=10),
+                        bgcolor=ft.Colors.with_opacity(0.06, T.VIOLET)))
+                    if not is_c:
+                        for r in frows:
+                            out.append(_story_row(r, i))
+                            i += 1
+
+            if total > 1:
+                def _cp_go(delta, p=pg, t=total):
+                    def _h(e):
+                        app._cp_table_page = max(0, min(p + delta, t - 1))
+                        try:
+                            plan_col.controls = [hdr] + _trows()
+                            plan_col.update()
+                        except Exception:
+                            app.render()
+                    return _h
+                pager = ft.Row([
+                    ghost_btn("← Prev", on_click=(None if pg == 0 else _cp_go(-1))),
+                    _txt(f"Page {pg + 1} of {total}  ·  "
+                         f"rows {pg * _CP_PAGE + 1}–{min((pg + 1) * _CP_PAGE, len(allrows))} "
+                         f"of {len(allrows)}", size=12, color=T.INK_3),
+                    ghost_btn("Next →", on_click=(None if pg >= total - 1 else _cp_go(1))),
+                ], alignment=ft.MainAxisAlignment.CENTER, spacing=16)
+                out = out + [ft.Container(pager,
+                                          padding=ft.Padding.symmetric(vertical=10))]
             return out
 
         kpi_strip = ft.Row(_kpis(), spacing=14)
@@ -1793,10 +2460,26 @@ def _create_screen(app):
             assign_note,
         ], spacing=0))
 
+    # Generating / loading indicator (same style as the Regression Plan spinner).
+    _cp_spin_label = ("Generating sprint plan…" if app._cp_busy
+                      else "Loading sprint stories from Azure DevOps…")
+    cp_spinner = ft.Container(
+        ft.Row([ft.ProgressRing(width=18, height=18, stroke_width=2.5, color=T.VIOLET),
+                ft.Text(_cp_spin_label,
+                        size=12.5, color=T.INK_3, weight=ft.FontWeight.W_500)],
+               spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        padding=ft.Padding.symmetric(vertical=10, horizontal=12),
+        margin=ft.Margin.only(top=10),
+        bgcolor=getattr(T, "VIOLET_SOFT", T.CARD_2), border_radius=T.R,
+        visible=bool(app._cp_stories_loading or app._cp_busy))
+
     body_children = [card1, ft.Container(height=14), card2,
-                     ft.Container(height=16), calc_btn, cp_calc_note_wrap]
+                     ft.Container(height=16), calc_btn, cp_spinner, cp_calc_note_wrap]
     if results is not None:
         body_children += [ft.Container(height=16), results]
+    elif app._cp_busy or app._cp_stories_loading:
+        from main import card as _card, skeleton_rows as _skel
+        body_children += [ft.Container(height=16), _card(_skel(6))]
     body = ft.Column(body_children, spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
     return app.shell("Sprint Plan",
                      "Plan & estimate test effort across a sprint’s stories", body,
@@ -2003,6 +2686,15 @@ def screen(app):
         return _calc_btn_cell[0]
 
     def _calculate(e):
+        # Don't let two plans generate at once — running both starves Python's GIL
+        # and makes every render freeze for tens of seconds (see qa_perf.log).
+        if app._cp_busy or app._cp_stories_loading:
+            app._err("The Sprint plan is still working — let it finish, then generate "
+                     "the Regression plan.")
+            return
+        if getattr(app, "_auto_running", False):
+            app._err("Automation is running — let it finish before generating a plan.")
+            return
         if not app._reg_plans_selected:
             app._reg_calc_msg = "Add at least one test plan first so effort can be " \
                                 "read from its existing test cases."
@@ -2059,8 +2751,30 @@ def screen(app):
                 app._reg_calc_msg = f"Couldn't read plan: {ex}"
             app._reg_selected_rows = rows
             app._reg_busy = False
-            app.ui_safe(app.render)
+            # Only repaint if still on the Regression screen — otherwise this
+            # background completion forces a heavy render of whatever screen the
+            # user navigated to (reads as a freeze).
+            if getattr(app, "active", None) == "regression":
+                app.ui_safe(app.render)
         threading.Thread(target=_work, daemon=True).start()
+
+    def _regenerate(e):
+        # Force-refresh: drop the cached suite maps, counts, metadata and features
+        # so the plan is rebuilt from a fresh Azure pull — this is how new test
+        # cases in existing suites (and changed priorities/states) get reflected.
+        # (Brand-new STORIES still need re-selecting the plan, which reloads the
+        # story list.) Slower than a cached re-run, but always current.
+        for _attr in ("_reg_case_count_cache", "_reg_meta_cache", "_reg_suite_cache",
+                      "_reg_story_features", "_reg_feature_name_cache"):
+            try:
+                setattr(app, _attr, {})
+            except Exception:
+                pass
+        # Mark this project's cache as already "loaded" (now empty) so the
+        # generate doesn't re-warm it from the stale disk copy. build_rows will
+        # refetch and then _cache_save() overwrites disk with fresh data.
+        app._reg_cache_loaded_project = getattr(app, "project", None)
+        _calculate(e)
 
     def _do_export_to(fmt, dest=None):
         try:
@@ -2382,6 +3096,7 @@ def screen(app):
     count_field = ft.TextField(
         value=("" if count is None else str(count)), hint_text="e.g. 3",
         keyboard_type=ft.KeyboardType.NUMBER, on_blur=_on_count, on_submit=_on_count,
+        input_filter=_digits_only(), max_length=3,
         width=92, text_size=13,
         border_color=(T.RED if mismatch else T.BORDER), focused_border_color=T.VIOLET,
         border_radius=T.R,
@@ -2494,9 +3209,9 @@ def screen(app):
             border=ft.Border.only(bottom=ft.BorderSide(1, T.BORDER)))
 
         maxh_story = max((x["hours"] for x in d["stories"]), default=0) or 1
-        body_rows = []
-        for i, s in enumerate(d["stories"]):
-            bg = "#FFFFFF" if i % 2 == 0 else ft.Colors.with_opacity(0.5, T.BG)
+
+        def _story_row(s, i):
+            bg = T.CARD if i % 2 == 0 else ft.Colors.with_opacity(0.5, T.BG)
             asg = s.get("assignee")
             asg_ctl = (ft.Row([_avatar(asg, 24),
                                _txt(asg, color=T.INK, weight=ft.FontWeight.W_500)],
@@ -2506,7 +3221,7 @@ def screen(app):
                 ft.Container(_bar(s["hours"] / maxh_story), width=70),
                 _txt(str(s["hours"]), color=T.INK, weight=ft.FontWeight.BOLD),
             ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER)
-            body_rows.append(ft.Container(
+            return ft.Container(
                 ft.Row([
                     _cell(34, ft.IconButton(
                         icon=ft.Icons.DELETE_OUTLINE, icon_size=18, icon_color=T.RED,
@@ -2524,11 +3239,103 @@ def screen(app):
                     _cell(128, hours_ctl),
                     _cell(140, asg_ctl),
                 ], spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                padding=ft.Padding.symmetric(vertical=9, horizontal=8), bgcolor=bg))
+                padding=ft.Padding.symmetric(vertical=9, horizontal=8), bgcolor=bg)
 
-        table = ft.Container(ft.Column([header] + body_rows, spacing=0),
-                             border=ft.Border.all(1, T.BORDER), border_radius=T.R,
-                             clip_behavior=ft.ClipBehavior.HARD_EDGE)
+        _PAGE = 25  # small page -> fast page.update() -> no event-loop freeze
+
+        # In-place table update (collapse / page-flip):
+        # Instead of full app.render() which rebuilds 800+ controls and blocks
+        # Flet's event loop while Flutter re-renders, we rebuild only the table
+        # body column and call table_body_col.update().  Keeps page.update() tiny.
+        def _build_table_body():
+            _all = d["stories"]
+            _total = max(1, -(-len(_all) // _PAGE))
+            _pg = max(0, min(getattr(app, "_reg_table_page", 0), _total - 1))
+            _ps = _all[_pg * _PAGE: (_pg + 1) * _PAGE]
+
+            from collections import OrderedDict as _OD
+            _fg = _OD()
+            for s in _ps:
+                _fg.setdefault(s.get("feature_name") or "No Feature", []).append(s)
+
+            rows = []
+            _ri = _pg * _PAGE
+            _coll = getattr(app, "_reg_collapsed_features", set())
+            for fname, fstories in _fg.items():
+                _is_c = fname in _coll
+                _fid = fstories[0].get("feature_id") if fstories else None
+                _fl = f"[{_fid}]  " if _fid else ""
+
+                def _make_tog(fn=fname):
+                    def _h(e):
+                        cf = set(getattr(app, "_reg_collapsed_features", set()))
+                        if fn in cf:
+                            cf.discard(fn)
+                        else:
+                            cf.add(fn)
+                        app._reg_collapsed_features = cf
+                        _refresh_table()
+                    return _h
+
+                _chev = (ft.Icons.KEYBOARD_ARROW_RIGHT if _is_c
+                         else ft.Icons.KEYBOARD_ARROW_DOWN)
+                rows.append(ft.Container(
+                    ft.Row([
+                        ft.IconButton(icon=_chev, icon_size=16, icon_color=T.VIOLET_INK,
+                                      on_click=_make_tog(),
+                                      style=ft.ButtonStyle(
+                                          padding=ft.Padding.all(2),
+                                          shape=ft.RoundedRectangleBorder(radius=4))),
+                        ft.Icon(ft.Icons.FOLDER_OUTLINED, size=14, color=T.VIOLET_INK),
+                        _txt(f"{_fl}{fname}", size=11.5,
+                             weight=ft.FontWeight.BOLD, color=T.VIOLET_INK),
+                        _txt(f"· {len(fstories)} stories", size=11, color=T.INK_3),
+                    ], spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    padding=ft.Padding.symmetric(vertical=4, horizontal=10),
+                    bgcolor=ft.Colors.with_opacity(0.06, T.VIOLET)))
+                if not _is_c:
+                    for s in fstories:
+                        rows.append(_story_row(s, _ri))
+                        _ri += 1
+
+            _pager = ft.Container()
+            if _total > 1:
+                def _go(delta, pg=_pg, tot=_total):
+                    def _h2(e):
+                        app._reg_table_page = max(0, min(pg + delta, tot - 1))
+                        _refresh_table()
+                    return _h2
+                _pager = ft.Row([
+                    ghost_btn("← Prev",
+                              on_click=(None if _pg == 0 else _go(-1))),
+                    _txt(f"Page {_pg + 1} of {_total}  ·  "
+                         f"rows {_pg*_PAGE+1}–{min((_pg+1)*_PAGE, len(_all))} "
+                         f"of {len(_all)}",
+                         size=12, color=T.INK_3),
+                    ghost_btn("Next →",
+                              on_click=(None if _pg >= _total - 1 else _go(1))),
+                ], alignment=ft.MainAxisAlignment.CENTER, spacing=16)
+
+            return rows + ([_pager] if _total > 1 else [])
+
+        table_body_col = ft.Column(_build_table_body(), spacing=0)
+
+        def _refresh_table():
+            """Swap table rows/pager in-place without a full page rebuild."""
+            try:
+                with _perf("table.rebuild_rows"):
+                    table_body_col.controls = _build_table_body()
+                with _perf("table.flet_update"):
+                    table_body_col.update()
+            except Exception:
+                _perf_log("table.refresh FELL BACK to full render()")
+                with _perf("table.full_render_fallback"):
+                    app.render()
+
+        table = ft.Container(
+            ft.Column([header, table_body_col], spacing=0),
+            border=ft.Border.all(1, T.BORDER), border_radius=T.R,
+            clip_behavior=ft.ClipBehavior.HARD_EDGE)
 
         kpi_strip = ft.Row([
             _kpi_tile("STORIES", str(d["total_stories"])),
@@ -2578,7 +3385,7 @@ def screen(app):
                                             color=T.INK)], spacing=8, tight=True),
                     on_click=_export(fmt), height=44,
                     style=ft.ButtonStyle(
-                        bgcolor={"": "#FFFFFF"},
+                        bgcolor={"": T.CARD},
                         side=ft.BorderSide(1, T.BORDER),
                         shape=ft.RoundedRectangleBorder(radius=T.R),
                         padding=ft.Padding.symmetric(horizontal=15, vertical=0)))
@@ -2623,8 +3430,18 @@ def screen(app):
                     weight=ft.FontWeight.W_500),
         ], spacing=6)
 
+        # Regenerate: re-run the plan on the current selection without scrolling
+        # back up to the Generate button. With the per-suite caches this is
+        # near-instant on an unchanged selection.
+        regen_btn = ghost_btn(
+            "Regenerating…" if app._reg_busy else "Regenerate",
+            icon=ft.Icons.REFRESH,
+            on_click=(None if app._reg_busy else _regenerate))
+
         results = card(ft.Column([
-            sec_head("4", "Plan"), ft.Container(height=12), kpi_strip,
+            ft.Row([sec_head("4", "Plan"), ft.Container(expand=True), regen_btn],
+                   vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            ft.Container(height=12), kpi_strip,
             ft.Container(height=14), table,
             workload_ui, ft.Divider(height=22, color=T.BORDER),
             ft.Text("EXPORT", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
@@ -2655,6 +3472,9 @@ def screen(app):
                      ft.Container(height=16), calc_btn, gen_spinner, calc_note_wrap]
     if results is not None:
         body_children += [ft.Container(height=16), results]
+    elif app._reg_busy:
+        from main import card as _card, skeleton_rows as _skel
+        body_children += [ft.Container(height=16), _card(_skel(6))]
 
     body = ft.Column(body_children, spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
     return app.shell("Regression Plan",
@@ -2662,3 +3482,4 @@ def screen(app):
                      right=ghost_btn("Use Setup selection", icon=ft.Icons.DOWNLOAD,
                                      on_click=_use_setup_selection),
                      badge="STEP R")
+# perf: lazy-build dropdown rows to keep full renders cheap

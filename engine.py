@@ -893,17 +893,24 @@ def sprint_summary(project, plan_id, pat=None):
                                                create_missing=False)
         except Exception:
             smap = {}
-    total_tc = 0
-    for s in stories:
+    # Count test cases per story CONCURRENTLY — one suite fetch per story serially
+    # made the sprint summary crawl on big sprints.
+    import concurrent.futures as _cf
+    def _count_story(s):
         suite_id = smap.get(s["id"])
-        tc = 0
-        if suite_id:
-            try:
-                tc = len(fetch_test_cases_for_suite(project, plan_id, suite_id))
-            except Exception:
-                tc = 0
-        s["test_cases"] = tc
-        total_tc += tc
+        if not suite_id:
+            return s["id"], 0
+        try:
+            return s["id"], len(fetch_test_cases_for_suite(project, plan_id, suite_id))
+        except Exception:
+            return s["id"], 0
+    total_tc = 0
+    if stories:
+        with _cf.ThreadPoolExecutor(max_workers=min(16, len(stories))) as _ex:
+            _counts = dict(_ex.map(_count_story, stories))
+        for s in stories:
+            s["test_cases"] = _counts.get(s["id"], 0)
+            total_tc += s["test_cases"]
 
     # 4) tally states
     by_state = {}
@@ -1250,8 +1257,13 @@ def describe_story_ui(screenshots, story_title=""):
 
 
 def fetch_test_cases_for_suite(project, plan_id, suite_id):
+    # witFields=System.Id keeps the response to the bare work-item id per case
+    # instead of the full test-case payload. The number of entries (what callers
+    # count) is unchanged, but each response is a fraction of the size, so the
+    # bulk per-suite counting during plan generation is dramatically faster.
     url = (f"https://dev.azure.com/{AZURE_ORG}/{project}/"
-           f"_apis/testplan/Plans/{plan_id}/Suites/{suite_id}/TestCase?api-version=7.0")
+           f"_apis/testplan/Plans/{plan_id}/Suites/{suite_id}/TestCase"
+           f"?witFields=System.Id&api-version=7.0")
     resp = requests.get(url, auth=("", AZURE_PAT), timeout=30)
     if resp.status_code == 200:
         return resp.json().get("value", [])
@@ -1634,21 +1646,28 @@ def dedupe_existing_suite(project, plan_id, suite_id, cb=None, do_delete=True):
         cb("log", {"msg": f"Could not read suite for dedup: {str(e)[:80]}", "tone": "warn"})
         return {"removed": [], "groups": 0}
 
-    # Build records: {id, title, step_count}
-    recs = []
-    for c in cases:
+    # Build records: {id, title, step_count}. The per-case step fetch is done
+    # CONCURRENTLY (was serial — slow on big suites).
+    import concurrent.futures as _cf
+
+    def _rec(c):
         wi = c.get("workItem", {})
         tc_id = wi.get("id")
         title = wi.get("name", "")
         if not tc_id:
-            continue
+            return None
         try:
-            steps = fetch_test_case_steps(tc_id)
-            sc = len(steps)
+            sc = len(fetch_test_case_steps(tc_id))
         except Exception:
             sc = 0
-        recs.append({"id": int(tc_id), "title": title, "steps": sc,
-                     "key": _semantic_key(title), "norm": _norm_title(title)})
+        return {"id": int(tc_id), "title": title, "steps": sc,
+                "key": _semantic_key(title), "norm": _norm_title(title)}
+
+    if cases:
+        with _cf.ThreadPoolExecutor(max_workers=min(16, len(cases))) as _ex:
+            recs = [r for r in _ex.map(_rec, cases) if r]
+    else:
+        recs = []
 
     # Group by semantic key (and exact-norm), then within each group decide keeper
     groups = {}
@@ -2171,18 +2190,49 @@ def validate_stories_in_plan(project, plan_id, story_ids):
     return found, missing
 
 
+def count_test_cases(project, plan_id, story_ids):
+    """Real number of existing test cases across the given stories (parallel).
+    Used for the live estimate so it shows a true count, not a guess."""
+    import concurrent.futures as _cf
+    try:
+        smap = discover_suites_for_stories(project, plan_id, set(story_ids),
+                                           create_missing=False)
+    except Exception:
+        return 0
+    suites = [sid for sid in smap.values() if sid]
+    if not suites:
+        return 0
+    def _one(suite_id):
+        try:
+            return len(fetch_test_cases_for_suite(project, plan_id, suite_id))
+        except Exception:
+            return 0
+    with _cf.ThreadPoolExecutor(max_workers=min(16, len(suites))) as _ex:
+        return sum(_ex.map(_one, suites))
+
+
 def count_existing_steps(project, plan_id, story_ids):
     """Count test cases that already have steps (for the existing-steps modal)."""
+    import concurrent.futures as _cf
     wit, test = connect_azure_sdk(project)
     smap = discover_suites_for_stories(project, plan_id, set(story_ids), create_missing=False)
+    # Fetch each suite's test cases CONCURRENTLY (was a serial loop per suite).
+    suites = [s for s in smap.values() if s]
     ids = []
-    for sid, suite_id in smap.items():
-        try:
-            for tc in fetch_test_cases_for_suite(project, plan_id, suite_id):
-                wid = tc.get("workItem", {}).get("id")
-                if wid: ids.append(wid)
-        except Exception:
-            pass
+    if suites:
+        def _fetch_ids(suite_id):
+            out = []
+            try:
+                for tc in fetch_test_cases_for_suite(project, plan_id, suite_id):
+                    wid = tc.get("workItem", {}).get("id")
+                    if wid:
+                        out.append(wid)
+            except Exception:
+                pass
+            return out
+        with _cf.ThreadPoolExecutor(max_workers=min(16, len(suites))) as _ex:
+            for _lst in _ex.map(_fetch_ids, suites):
+                ids.extend(_lst)
     have = 0
     for i in range(0, len(ids), 200):
         try:
@@ -4639,7 +4689,23 @@ def build_or_merge_project(out_dir, stories_payload, dom_elements, base_url,
     m = load_manifest(out_dir)
     counts = {"new": 0, "extended": 0, "reeval": 0, "kept": 0, "added_methods": 0}
 
+    def _persist_progress():
+        # Save the manifest + testng.xml as they stand so a stop / pause / app-close
+        # keeps every story already written to disk. A later re-run reads the
+        # manifest and resumes (regenerating only what's missing) instead of
+        # starting from scratch.
+        try:
+            _dc = sorted({r.get("test_class") for r in m["stories"].values()
+                          if r.get("test_class")})
+            _w(os.path.join(out_dir, "testng.xml"), _testng_xml(_dc, pkg))
+            save_manifest(out_dir, m)
+        except Exception:
+            pass
+
     for item in stories_payload:
+        # Persist BEFORE the stop check so a story finished on the previous pass is
+        # never lost to a stop that lands between stories.
+        _persist_progress()
         if should_stop():
             break
         story = item["story"]; tcs = item.get("test_cases", []) or []
@@ -5280,7 +5346,6 @@ def validate_and_sequence_suite(stories_payload, log=None, want_ai=True,
                 bucket = 1
             else:
                 bucket = 3
-                has_app = True
             low = _norm(tc.get("title", ""))
             positive_login = (pctx == "login" and ctype not in ("negative_login", "presence")
                               and any(k in low for k in ("نجاح", "صحيح", "الصحيحة", "valid",
@@ -5308,6 +5373,22 @@ def validate_and_sequence_suite(stories_payload, log=None, want_ai=True,
                         return out   # user chose Stop (should_stop is now True)
             if not intents:
                 intents = _intents_from_raw_steps(tc)
+            # A case that drives username/password fields belongs on the LOGIN page,
+            # not the app page — otherwise it runs logged-in against BASE_URL where
+            # those fields don't exist (guaranteed failure). Pull it back to a
+            # logged-out login bucket.
+            if bucket == 3:
+                _blob = _norm(" ".join(
+                    [i.get("target", "") for i in intents]
+                    + [w for i in intents for w in (i.get("keywords") or [])]
+                    + [tc.get("title", "")]))
+                if any(s in _blob for s in ("password", "username", "كلمة المرور",
+                                            "كلمه المرور", "البريد", "تسجيل الدخول",
+                                            "login button", "login field", "login submit")):
+                    bucket = 0
+                    pctx = "login"
+            if bucket == 3:
+                has_app = True
             n_act = sum(1 for i in intents if i["role"] == "action")
             has_assert = any(i["role"] == "assertion" for i in intents)
             if n_act == 0 and bucket != 2 and not has_assert:
@@ -5602,6 +5683,27 @@ public final class Healer {
         catch (Exception e) { return false; }
     }
 
+    /** Verify by PAGE TEXT — true if the rendered page contains ANY of the given
+     *  keywords. Used for error/validation/message checks instead of locating an
+     *  element (no AI call; tolerant of where the message renders). Polls up to 8s
+     *  so async messages have time to appear. Case-insensitive. */
+    public boolean assertTextPresent(String[] keywords) {
+        long end = System.currentTimeMillis() + 8000;
+        do {
+            String txt = "";
+            try {
+                Object r = ((JavascriptExecutor) driver).executeScript(
+                    "return document.body ? document.body.innerText : '';");
+                txt = r == null ? "" : r.toString().toLowerCase();
+            } catch (Exception ignored) {}
+            for (String k : keywords) {
+                if (k != null && !k.isEmpty() && txt.contains(k.toLowerCase())) return true;
+            }
+            try { Thread.sleep(300); } catch (InterruptedException e) { break; }
+        } while (System.currentTimeMillis() < end);
+        return false;
+    }
+
     private WebElement tryFind(By by) {
         try { return wait.until(ExpectedConditions.visibilityOfElementLocated(by)); }
         catch (Exception e) { return null; }
@@ -5659,10 +5761,33 @@ public abstract class BaseTest {
     @AfterClass
     public void tearDown() { if (driver != null) driver.quit(); }
 
-    /** Fresh, logged-out login page (clears any session). */
+    /** Fresh, logged-out login page (clears any session).
+     *  Navigates to the app ROOT and lets it redirect to a freshly-issued login
+     *  page. OAuth/OIDC params (code_challenge, nonce, state) are generated per
+     *  session, so a frozen LOGIN_URL can go stale — only fall back to it if the
+     *  app doesn't redirect to a login form on its own. */
     protected void openLoginPage() {
         try { driver.manage().deleteAllCookies(); } catch (Exception ignored) {}
-        driver.get(Config.LOGIN_URL);
+        driver.get(Config.BASE_URL);
+        if (!loginFieldPresent(4000)) {
+            driver.get(Config.LOGIN_URL);
+            loginFieldPresent(4000);
+        }
+    }
+
+    /** True once a username/password field is on the page (polls up to ms). */
+    protected boolean loginFieldPresent(long ms) {
+        long end = System.currentTimeMillis() + ms;
+        do {
+            try {
+                Object r = ((JavascriptExecutor) driver).executeScript(
+                    "return !!document.querySelector("
+                    + "'input[type=password],#username,input[name=username]');");
+                if (Boolean.TRUE.equals(r)) return true;
+            } catch (Exception ignored) {}
+            try { Thread.sleep(250); } catch (InterruptedException e) { return false; }
+        } while (System.currentTimeMillis() < end);
+        return false;
     }
 
     /** Perform a real successful login using the seed login locators + healing. */
@@ -5673,10 +5798,16 @@ public abstract class BaseTest {
         heal.act("login.password", "type",
             Healer.toBy("cssSelector", "#password,input[type=password]"),
             "{\\"target\\":\\"password field\\",\\"kind\\":\\"input\\"}", Config.PASS);
+        String beforeUrl = driver.getCurrentUrl();
         heal.act("login.submit", "click",
             Healer.toBy("cssSelector", "#kc-login,button[type=submit],input[type=submit]"),
             "{\\"target\\":\\"login submit button\\",\\"kind\\":\\"button\\"}", "");
-        try { Thread.sleep(2500); } catch (InterruptedException ignored) {}
+        // Wait for the post-login navigation (URL change) instead of a blind sleep.
+        long end = System.currentTimeMillis() + 12000;
+        while (System.currentTimeMillis() < end) {
+            try { if (!driver.getCurrentUrl().equals(beforeUrl)) break; } catch (Exception ignored) {}
+            try { Thread.sleep(250); } catch (InterruptedException e) { break; }
+        }
     }
 }
 """.replace("__PKG__", pkg))
@@ -5742,6 +5873,17 @@ def _emit_intent(lines, key, intent):
         lines.append('        // precondition (no UI action): %s' % _java_str(target)[:70])
         return
     if role == "assertion":
+        kind = (intent.get("kind") or "").lower()
+        kws = [k for k in (intent.get("keywords") or []) if k] or ([target] if target else [])
+        # Text/message/menu checks with no locatable element → verify by PAGE TEXT
+        # (no AI heal): faster, cheaper, and robust to where the message renders.
+        if seed == "null" and (kind in ("text", "message", "menu", "validation", "error")
+                               or not kind):
+            arr = ", ".join('"%s"' % _java_str(k) for k in kws)
+            lines.append('        org.testng.Assert.assertTrue('
+                         'heal.assertTextPresent(new String[]{%s}),' % arr)
+            lines.append('            "expected text: %s");' % _java_str(target)[:60])
+            return
         lines.append('        org.testng.Assert.assertTrue(heal.assertVisible("%s", %s, "%s"),'
                      % (_java_str(key), seed, _java_str(ij)))
         lines.append('            "expected: %s");%s' % (_java_str(target)[:60], todo))
@@ -5791,11 +5933,28 @@ def generate_selfhealing_test_class(story, cases, pkg):
     return "\n".join(L) + "\n", cls
 
 
+def _sh_write_testng(out_dir, pkg, m):
+    """(Re)write testng.xml from EVERY story recorded in the manifest so a push
+    after a partial/resumed run carries all generated classes, not just this run's."""
+    classes = sorted({r.get("test_class") for r in (m.get("stories") or {}).values()
+                      if r.get("test_class")})
+    items = "\n".join('      <class name="%s.tests.%s"/>' % (pkg, c) for c in classes)
+    with open(os.path.join(out_dir, "testng.xml"), "w", encoding="utf-8") as f:
+        f.write('<?xml version="1.0" encoding="UTF-8"?>\n'
+                '<!DOCTYPE suite SYSTEM "https://testng.org/testng-1.0.dtd">\n'
+                '<suite name="QA Studio Self-Healing Suite" verbose="1">\n'
+                '  <test name="Sequenced Tests"><classes>\n%s\n  </classes></test>\n'
+                '</suite>\n' % items)
+
+
 def build_selfhealing_project(out_dir, sequenced, base_url, login=None,
                               group_id="com.qastudio", artifact_id="automation-tests",
-                              cb=None, should_stop=lambda: False):
+                              cb=None, should_stop=lambda: False, orig_tcs=None):
     """Write a full self-healing Maven/TestNG project (no browser was driven).
-    `sequenced` = output of validate_and_sequence_suite(). Returns written paths."""
+    `sequenced` = output of validate_and_sequence_suite(). Returns written paths.
+    `orig_tcs` = {story_id: [original test-case dicts]} so each generated story is
+    recorded in the manifest — that's what lets a stopped/closed run RESUME instead
+    of regenerating from scratch (classify_selection reads the manifest)."""
     cb = cb or (lambda *a, **k: None)
     pkg = group_id
     pkg_path = pkg.replace(".", "/")
@@ -5806,6 +5965,9 @@ def build_selfhealing_project(out_dir, sequenced, base_url, login=None,
         os.makedirs(d, exist_ok=True)
     login_url = (login or {}).get("url") or base_url
     written = []
+    orig_tcs = orig_tcs or {}
+    m = load_manifest(out_dir)          # resume: record of already-generated stories
+    m.setdefault("stories", {})
 
     def _w(path, content):
         with open(path, "w", encoding="utf-8") as f:
@@ -5831,19 +5993,30 @@ def build_selfhealing_project(out_dir, sequenced, base_url, login=None,
         story = entry["story"]
         if not entry.get("cases"):
             continue
+        sid = str(story.get("id"))
         cb(f"  generating tests for story {story.get('id')} "
            f"({len(entry['cases'])} case(s))", "dim")
         java, cls = generate_selfhealing_test_class(story, entry["cases"], pkg)
         _w(os.path.join(src_test, "%s.java" % cls), java)
         test_classes.append(cls)
+        # Record + persist this story immediately so a stop / pause / app-close keeps
+        # it; the keys mirror what classify_selection() computes from the original
+        # test cases, so a re-run recognises it as done and skips it.
+        m["stories"][sid] = {
+            "test_class": cls,
+            "test_cases": {_tc_key(tc): _method_name(tc.get("title", ""))
+                           for tc in orig_tcs.get(sid, [])},
+        }
+        try:
+            save_manifest(out_dir, m)
+            _sh_write_testng(out_dir, pkg, m)
+        except Exception:
+            pass
 
-    items = "\n".join('      <class name="%s.tests.%s"/>' % (pkg, c) for c in test_classes)
-    _w(os.path.join(out_dir, "testng.xml"),
-       '<?xml version="1.0" encoding="UTF-8"?>\n'
-       '<!DOCTYPE suite SYSTEM "https://testng.org/testng-1.0.dtd">\n'
-       '<suite name="QA Studio Self-Healing Suite" verbose="1">\n'
-       '  <test name="Sequenced Tests"><classes>\n%s\n  </classes></test>\n</suite>\n' % items)
-    cb(f"Wrote {len(written)} files, {len(test_classes)} test class(es).", "ok")
+    # Final testng + manifest across EVERY recorded class (this run + prior runs).
+    _sh_write_testng(out_dir, pkg, m)
+    save_manifest(out_dir, m)
+    cb(f"Wrote {len(written)} files, {len(test_classes)} test class(es) this run.", "ok")
     return written
 
 
@@ -5862,5 +6035,9 @@ def generate_and_push_selfhealing(out_dir, stories_payload, base_url, login=None
                                             gate=gate)
     if should_stop():
         return []
+    # Original test cases per story → recorded in the manifest for resume support.
+    _orig_tcs = {str(sp.get("story", {}).get("id")): (sp.get("test_cases", []) or [])
+                 for sp in stories_payload}
     return build_selfhealing_project(out_dir, sequenced, base_url, login,
-                                     group_id, artifact_id, cb, should_stop)
+                                     group_id, artifact_id, cb, should_stop,
+                                     orig_tcs=_orig_tcs)
