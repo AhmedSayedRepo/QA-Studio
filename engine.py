@@ -4913,6 +4913,14 @@ def push_to_git(repo_dir, remote_url, token, branch="main", message="Add QA Stud
     # scrub token from any echoed output
     if token:
         out = out.replace(token, "***")
+    # SECURITY: `git remote add` wrote the authenticated URL (with the PAT) into
+    # .git/config. Reset origin to the token-less URL so the secret is not left in
+    # plaintext on disk after the push.
+    try:
+        if auth_url != remote_url:
+            run(["git", "remote", "set-url", "origin", remote_url])
+    except Exception:
+        pass
     if p.returncode == 0:
         cb("Push complete.", "ok")
         return True, "Pushed successfully."
@@ -5109,8 +5117,10 @@ del "%~f0" >nul 2>&1
 '''
 
 def _latest_release(timeout=6):
-    """Return (tag, (asset_name, asset_url)) for the newest GitHub release.
-    asset is None when the release has no .exe attached."""
+    """Return (tag, (asset_name, asset_url), sums) for the newest GitHub release.
+    `asset` is None when the release has no .exe attached; `sums` is the
+    (name, url) of a published SHA-256 checksum file (SHA256SUMS / *.sha256), or
+    None when the release doesn't publish one."""
     headers = {"Accept": "application/vnd.github+json"}
     token = _github_token()
     if token:
@@ -5122,11 +5132,55 @@ def _latest_release(timeout=6):
     data = r.json()
     tag = (data.get("tag_name") or "").lstrip("vV")
     asset = None
+    sums = None
     for a in data.get("assets", []):
-        if str(a.get("name", "")).lower().endswith(".exe"):
+        nm = str(a.get("name", "")).lower()
+        if asset is None and nm.endswith(".exe"):
             asset = (a["name"], a["browser_download_url"])
+        if sums is None and (nm in ("sha256sums", "sha256sums.txt", "checksums.txt")
+                             or nm.endswith(".sha256")):
+            sums = (a["name"], a["browser_download_url"])
+    return tag, asset, sums
+
+
+def _sha256_file(path):
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _verify_download(path, name, sums, headers, cb):
+    """Verify a downloaded artifact against the release's published SHA-256.
+    Enforced when a checksum file exists; if none is published the download
+    proceeds but is flagged as unverified (so existing releases keep working)."""
+    if not sums:
+        cb("Note: this update is not checksum-verified (no SHA256SUMS published "
+           "in the release).", "warn")
+        return True, ""
+    try:
+        sr = requests.get(sums[1], timeout=30, headers=headers)
+        sr.raise_for_status()
+        text = sr.text
+    except Exception as e:
+        return False, f"Couldn't fetch the release checksum file: {str(e)[:140]}"
+    want = None
+    for line in text.splitlines():
+        parts = line.replace("*", " ").split()
+        if len(parts) >= 2 and parts[1].lower().endswith(name.lower()):
+            want = parts[0].lower()
             break
-    return tag, asset
+        if len(parts) == 1 and len(parts[0]) == 64:   # bare single-asset hash
+            want = parts[0].lower()
+    if not want:
+        return False, "The release checksum file has no entry for this download."
+    if _sha256_file(path).lower() != want:
+        return False, ("Checksum mismatch — the download may be corrupted or "
+                       "tampered with. Update aborted.")
+    cb("Checksum verified.", "ok")
+    return True, ""
 
 def _apply_update_exe(cb):
     """Frozen-build updater: download the new .exe, then hand off to a detached
@@ -5134,7 +5188,7 @@ def _apply_update_exe(cb):
     import sys, time, tempfile, subprocess
     cb = cb or (lambda *a, **k: None)
     try:
-        tag, asset = _latest_release()
+        tag, asset, sums = _latest_release()
     except Exception as e:
         return (False, f"Couldn't reach GitHub releases: {str(e)[:160]}")
     if not asset:
@@ -5157,6 +5211,14 @@ def _apply_update_exe(cb):
                         f.write(chunk)
     except Exception as e:
         return (False, f"Download failed: {str(e)[:160]}")
+    # SECURITY: verify the downloaded binary against the release SHA-256 before we
+    # ever swap/execute it. Aborts on mismatch; warns (but proceeds) if the release
+    # publishes no checksum, so existing releases keep updating.
+    ok_v, vmsg = _verify_download(new, _name, sums, headers, cb)
+    if not ok_v:
+        try: os.remove(new)
+        except Exception: pass
+        return (False, vmsg)
     bat = os.path.join(tempfile.gettempdir(), "qastudio_update.bat")
     script = (_SWAP_BAT.replace("__PID__", str(os.getpid()))
                        .replace("__NEW__", new).replace("__CUR__", cur))

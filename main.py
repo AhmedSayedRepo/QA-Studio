@@ -1380,6 +1380,13 @@ class QAStudio:
                         "and sprint effort, and build self-healing Selenium tests — "
                         "all from one place.",
                         size=13, color=T.INK_2, weight=ft.FontWeight.W_500),
+                ft.Container(height=12),
+                _item(ft.Icons.AUTO_AWESOME, "Titles or full steps",
+                      "Concise titles or complete step-by-step cases — your choice per run."),
+                _item(_ic("LANGUAGE", "DESCRIPTION_OUTLINED"), "English & Arabic",
+                      "Produce test content in either language with one toggle.", "green"),
+                _item(ft.Icons.DOWNLOAD, "Writes back to Azure DevOps",
+                      "Pushes the generated cases straight into your test plans.", "amber"),
             ], spacing=0, tight=True)
 
         def _how():
@@ -1430,28 +1437,51 @@ class QAStudio:
              "A couple of shortcuts worth knowing.", _ready),
         ]
 
-        body = ft.Container()
+        import threading
+        body = ft.Container(
+            height=380,
+            animate_opacity=ft.Animation(260, ft.AnimationCurve.EASE_OUT),
+            animate_offset=ft.Animation(260, ft.AnimationCurve.EASE_OUT),
+            clip_behavior=ft.ClipBehavior.HARD_EDGE, border_radius=T.R_LG)
         dots = ft.Row([], spacing=6)
         back_holder = ft.Container()
         next_holder = ft.Container()
 
+        def _hero_badge(icon):
+            # white "glass" tile on the gradient header; pops in via animate_scale
+            return ft.Container(
+                ft.Icon(icon, size=26, color="#FFFFFF"),
+                width=58, height=58, border_radius=16,
+                bgcolor=ft.Colors.with_opacity(0.18, "#FFFFFF"),
+                border=ft.Border.all(1, ft.Colors.with_opacity(0.30, "#FFFFFF")),
+                alignment=ft.Alignment.CENTER,
+                scale=0.6, animate_scale=ft.Animation(320, ft.AnimationCurve.EASE_OUT))
+
         def _paint():
             i = self._onb_i
             icon, tone, title, sub, build = steps[i]
-            body.content = ft.Column([
-                ft.Row([_badge(icon, tone),
+            hg = T.GRAD_GREEN if tone == "green" else T.GRAD_LOGO
+            badge_ctl = _hero_badge(icon)
+            header = ft.Container(
+                ft.Row([badge_ctl,
                         ft.Column([
-                            ft.Text(title, size=16, weight=ft.FontWeight.BOLD, color=T.INK),
-                            ft.Text(sub, size=12, color=T.INK_2, weight=ft.FontWeight.W_500),
-                        ], spacing=2, expand=True)],
-                       spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                ft.Container(height=16),
-                build(),
-            ], spacing=0, tight=True)
+                            ft.Text(title, size=18, weight=ft.FontWeight.BOLD, color="#FFFFFF"),
+                            ft.Text(sub, size=12.5, weight=ft.FontWeight.W_500,
+                                    color=ft.Colors.with_opacity(0.88, "#FFFFFF")),
+                        ], spacing=3, expand=True)],
+                       spacing=14, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                gradient=grad(hg),
+                padding=ft.Padding.symmetric(vertical=22, horizontal=22),
+                border_radius=ft.BorderRadius.only(top_left=T.R_LG, top_right=T.R_LG))
+            content = ft.Container(
+                build(), padding=ft.Padding.only(left=22, right=22, top=18, bottom=8))
+            body.content = ft.Column([header, content], spacing=0,
+                                     scroll=ft.ScrollMode.AUTO, tight=True)
             dots.controls = [
-                ft.Container(width=(18 if j == i else 7), height=7,
+                ft.Container(width=(20 if j == i else 7), height=7,
                              bgcolor=(T.VIOLET if j == i else T.BORDER),
-                             border_radius=4, animate=160)
+                             border_radius=4,
+                             animate=ft.Animation(180, ft.AnimationCurve.EASE_OUT))
                 for j in range(len(steps))]
             last = (i == len(steps) - 1)
             back_holder.content = (ghost_btn("Back", on_click=lambda e: _go(-1))
@@ -1462,28 +1492,48 @@ class QAStudio:
                 if last else
                 primary_btn("Next", icon=ft.Icons.ARROW_FORWARD,
                             on_click=lambda e: _go(1)))
-            for c in (body, dots, back_holder, next_holder):
+            # set the "from" state (invisible + slid + small badge), then animate to "to"
+            body.opacity = 0
+            body.offset = ft.Offset(0.06, 0)
+            for c in (dots, back_holder, next_holder):
+                try: c.update()
+                except Exception: pass
+            try: body.update()
+            except Exception: pass
+
+            def _reveal():
                 try:
-                    c.update()
+                    badge_ctl.scale = 1.0
+                    body.opacity = 1
+                    body.offset = ft.Offset(0, 0)
+                    self.page.update()
                 except Exception:
                     pass
+            try:
+                threading.Timer(0.05, lambda: (self.page.run_thread(_reveal)
+                    if callable(getattr(self.page, "run_thread", None)) else _reveal())).start()
+            except Exception:
+                _reveal()
 
         def _go(delta):
             self._onb_i = max(0, min(len(steps) - 1, self._onb_i + delta))
             _paint()
 
         skip = ft.TextButton("Skip", on_click=lambda e: self._finish_onboarding())
-        footer = ft.Row([skip, ft.Container(expand=True), dots,
-                         ft.Container(width=14), back_holder, next_holder],
-                        vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=8)
+        footer = ft.Container(
+            ft.Row([skip, ft.Container(expand=True), dots,
+                    ft.Container(width=14), back_holder, next_holder],
+                   vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=8),
+            padding=ft.Padding.only(left=20, right=20, top=4, bottom=2))
         _paint()
         dlg = ft.AlertDialog(
             modal=True, bgcolor=T.CARD,
             shape=ft.RoundedRectangleBorder(radius=T.R_LG),
-            content=ft.Container(width=540, content=ft.Column([
+            content=ft.Container(width=600, padding=0, content=ft.Column([
                 body,
-                ft.Container(height=20),
+                ft.Container(height=14),
                 footer,
+                ft.Container(height=6),
             ], spacing=0, tight=True)))
         self._show_dialog(dlg)
 
