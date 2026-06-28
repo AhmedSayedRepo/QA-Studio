@@ -2992,7 +2992,8 @@ class QAStudio:
                     ], spacing=5, tight=True),
                     padding=ft.Padding.only(left=10, right=7, top=5, bottom=5),
                     bgcolor=T.VIOLET_SOFT, border_radius=T.R_SM,
-                    border=ft.Border.all(1, "#D9D2FF")))
+                    border=ft.Border.all(1, "#D9D2FF"),
+                    on_hover=regression._chip_hover, animate_scale=120))
             self._chip_row.controls = chips
             self._chip_wrap.visible = bool(self.story_ids)
             # Keep the story checkbox-multiselect in sync with the chips: removing a

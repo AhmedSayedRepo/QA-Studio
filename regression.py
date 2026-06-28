@@ -263,6 +263,47 @@ def _fetch_feature_names(app, parent_ids):
     return names
 
 
+def _resolve_reg_features(app, stories, gen=None):
+    """Resolve each story's parent → Feature (id + title), cache it, and tag the
+    stories with feature_id/feature_name. Called from _reload_plan_stories DURING
+    story load (so it's covered by the 'Loading stories…' wait) instead of as a
+    separate background pass — by Generate time the caches are warm, so build_rows
+    does no feature network and nothing lingers to freeze the plan table later.
+    Aborts early if the selection changed (gen token)."""
+    try:
+        feat_cache = dict(getattr(app, "_reg_story_features", {}) or {})
+        sids = [int(s["id"]) for s in stories if int(s["id"]) not in feat_cache]
+        if not sids:
+            return
+        org, proj = E.AZURE_ORG, app.project
+        parent_map = {}
+        for i in range(0, len(sids), 200):
+            if gen is not None and gen != getattr(app, "_reg_stories_gen", gen):
+                return                  # selection changed -> stop
+            joined = ",".join(map(str, sids[i:i + 200]))
+            url = (f"https://dev.azure.com/{org}/{proj}/_apis/wit/workitems"
+                   f"?ids={joined}&fields=System.Id,System.Parent&api-version=7.0")
+            try:
+                data = E._azure_get(url)
+            except Exception:
+                data = {}
+            for w in data.get("value", []):
+                pid2 = w.get("fields", {}).get("System.Parent")
+                if pid2:
+                    parent_map[int(w["id"])] = pid2
+            _time.sleep(0.04)           # yield GIL during the load
+        names = _fetch_feature_names(app, list(set(parent_map.values())))
+        for sid, pid2 in parent_map.items():
+            feat_cache[sid] = (pid2, names.get(pid2, ""))
+        app._reg_story_features = feat_cache
+        for s in stories:
+            fdata = feat_cache.get(int(s["id"]), (None, ""))
+            s["feature_id"] = fdata[0]
+            s["feature_name"] = fdata[1]
+    except Exception:
+        pass
+
+
 def _fetch_cp_complexity(app, ids):
     """Rough 'amount of work' units per story from its CONTENT — acceptance
     criteria (weighted most), description, and title word counts. Lets the sprint
@@ -345,9 +386,12 @@ def _discover_suite_map(app, plan_id, story_ids):
     return smap
 
 
-def _count_cases(app, selected):
+def _count_cases(app, selected, progress=None):
     """Phase 1: suite map per plan (1 call/plan, parallel, cached).
-    Phase 2: test case count per suite (parallel, up to 16 workers)."""
+    Phase 2: test case count per suite (parallel, up to 16 workers).
+
+    progress(done, total) — optional callback invoked as suites are counted, so the
+    UI can show live progress instead of a blank 'Generating…'."""
     import concurrent.futures as _cf
     counts = {int(s["id"]): 0 for s in selected}
     by_plan = {}
@@ -394,20 +438,32 @@ def _count_cases(app, selected):
         # 16 workers: 24 measured SLOWER (Azure rate-limits) and starved the UI
         # thread's GIL share, which is what made renders freeze during a parallel
         # generate. Fewer concurrent JSON parses = a more responsive UI.
-        with _cf.ThreadPoolExecutor(max_workers=min(16, len(todo))) as ex:
-            for sid, suite_id, n in ex.map(_one, todo):
+        _total, _done = len(todo), 0
+        if progress:
+            try: progress(0, _total)
+            except Exception: pass
+        with _cf.ThreadPoolExecutor(max_workers=min(16, _total)) as ex:
+            _futs = [ex.submit(_one, t) for t in todo]
+            for _f in _cf.as_completed(_futs):    # as-completed -> accurate progress
+                sid, suite_id, n = _f.result()
                 counts[sid] = n
                 cache[suite_id] = n
+                _done += 1
+                if progress and (_done % 5 == 0 or _done == _total):
+                    try: progress(_done, _total)
+                    except Exception: pass
+                if _done % 8 == 0:
+                    _time.sleep(0.01)             # yield GIL so the UI stays responsive
     return counts
 
 
-def build_rows(app, selected):
+def build_rows(app, selected, progress=None):
     _cache_load(app)   # warm caches from disk on the first generate of a session
     ids = [int(s["id"]) for s in selected]
     with _perf(f"build_rows.fetch_meta ({len(ids)} stories)"):
         meta = _fetch_meta(app, ids)
     with _perf(f"build_rows.count_cases ({len(selected)} stories)"):
-        counts = _count_cases(app, selected)
+        counts = _count_cases(app, selected, progress=progress)
     _cache_save(app)   # persist freshly-fetched counts/meta/features for next launch
     story_features = getattr(app, "_reg_story_features", {})
     feat_cache = getattr(app, "_reg_feature_name_cache", {}) or {}
@@ -439,28 +495,22 @@ def build_rows(app, selected):
                      "cases": cases, "boost": boost, "hours": hours,
                      "plan_id": s.get("plan_id"), "assignee": "",
                      "feature_id": fid, "feature_name": fname})
-    # Resolve any still-missing feature names WITHOUT blocking the generate: fetch
-    # them in the background, patch the same row dicts in place, and repaint once —
-    # only if the user is still on the Regression screen (navigating away must not
-    # trigger a heavy forced render, which is what read as a freeze before).
+    # Feature ids come from meta (free); names normally come from the cache that
+    # _reload_plan_stories warmed during story load (fast path -> the loop below is
+    # a no-op). Fallback: if that pre-warm didn't apply to THIS selection — after
+    # Regenerate / Clear caches (which drop the feature caches), or a selection that
+    # didn't reload stories — resolve the still-missing names here so the plan still
+    # groups by feature. No network happens when the cache is already warm.
     _missing = sorted({r["feature_id"] for r in rows
                        if r.get("feature_id") and not r.get("feature_name")})
     if _missing:
-        def _bg_feature_names(_rows=rows, _ids=_missing):
-            try:
-                names = _fetch_feature_names(app, _ids)
-                changed = False
-                for _r in _rows:
-                    if not _r.get("feature_name"):
-                        _nm = names.get(_r.get("feature_id"))
-                        if _nm:
-                            _r["feature_name"] = _nm
-                            changed = True
-                if changed and getattr(app, "active", None) == "regression":
-                    app.ui_safe(app.render)
-            except Exception:
-                pass
-        threading.Thread(target=_bg_feature_names, daemon=True).start()
+        try:
+            _names = _fetch_feature_names(app, _missing)
+            for _r in rows:
+                if not _r.get("feature_name"):
+                    _r["feature_name"] = _names.get(_r.get("feature_id"), "")
+        except Exception:
+            pass
     return rows
 
 
@@ -1299,6 +1349,31 @@ def _txt(s, **kw):
     return ft.Text(s, **kw)
 
 
+def _id_link(app, sid, **kw):
+    """Story id rendered as a clickable link to its Azure DevOps work item — the
+    in-app plan tables, mirroring the hyperlinks already in the exports. Opens via
+    app._open_url (OS browser). Falls back to plain text on any error."""
+    kw.setdefault("tooltip", f"Open story {sid} in Azure DevOps")
+    txt = _txt(str(sid), **kw)
+    try:
+        url = _wi_url(app.project, sid)
+    except Exception:
+        return txt
+    return ft.GestureDetector(content=txt,
+                              on_tap=lambda e: app._open_url(url),
+                              mouse_cursor=ft.MouseCursor.CLICK)
+
+
+def _chip_hover(e):
+    """Shared hover feedback for chips across the app — a small scale pop. Pair with
+    `on_hover=_chip_hover, animate_scale=120` on a chip Container."""
+    try:
+        e.control.scale = 1.06 if (e.data in (True, "true", "True")) else 1.0
+        e.control.update()
+    except Exception:
+        pass
+
+
 def _avatar(name, size=26):
     """Round initial-avatar; colour is stable per name."""
     init, col = _av(name)
@@ -1510,57 +1585,17 @@ def _reload_plan_stories(app):
         agg.sort(key=lambda s: (s.get("sprint", "") or "~", s["id"]))
         if _gen != getattr(app, "_reg_stories_gen", _gen):
             return                      # selection changed mid-fetch -> drop results
+        # Resolve each story's parent → Feature WHILE we're still loading (covered by
+        # the "Loading stories…" wait) and tag the stories. This warms the feature
+        # caches so a later Generate is fast and the plan groups by feature
+        # immediately — with NO separate background pass churning afterwards (that
+        # lingering pass is what used to freeze the table's collapse/paging).
+        _resolve_reg_features(app, agg, _gen)
+        if _gen != getattr(app, "_reg_stories_gen", _gen):
+            return
         app._reg_plan_stories = agg
         app._reg_stories_loading = False
         app.ui_safe(app.render)
-
-        def _fetch_features():
-            if _gen != getattr(app, "_reg_stories_gen", _gen):
-                return
-            try:
-                feat_cache = dict(getattr(app, "_reg_story_features", {}) or {})
-                # INCREMENTAL: only resolve stories we haven't resolved before, so
-                # re-selecting plans or re-generating issues zero network for the
-                # stories already known. The first pass for a brand-new selection
-                # still runs, but it no longer re-does work on every plan tweak and
-                # no longer fights an in-flight generate over the same data.
-                sids = [int(s["id"]) for s in agg if int(s["id"]) not in feat_cache]
-                if not sids:
-                    return
-                org, proj = E.AZURE_ORG, app.project
-                parent_map = {}
-                for i in range(0, len(sids), 200):
-                    batch = sids[i:i + 200]
-                    joined = ",".join(map(str, batch))
-                    url = (f"https://dev.azure.com/{org}/{proj}/_apis/wit/workitems"
-                           f"?ids={joined}&fields=System.Id,System.Parent&api-version=7.0")
-                    try:
-                        data = E._azure_get(url)
-                    except Exception:
-                        data = {}
-                    for w in data.get("value", []):
-                        pid2 = w.get("fields", {}).get("System.Parent")
-                        if pid2:
-                            parent_map[int(w["id"])] = pid2
-                    _time.sleep(0.05)   # yield GIL: keep the plan table responsive
-                feature_names = _fetch_feature_names(app, list(set(parent_map.values())))
-                for sid, pid2 in parent_map.items():
-                    feat_cache[sid] = (pid2, feature_names.get(pid2, ""))
-                app._reg_story_features = feat_cache   # merged, not replaced
-                for s in app._reg_plan_stories:
-                    fdata = feat_cache.get(int(s["id"]), (None, ""))
-                    s["feature_id"] = fdata[0]
-                    s["feature_name"] = fdata[1]
-                for r in (app._reg_selected_rows or []):
-                    fdata = feat_cache.get(int(r["id"]), (None, ""))
-                    if not r.get("feature_name"):
-                        r["feature_id"] = fdata[0]
-                        r["feature_name"] = fdata[1]
-                # No render here — avoids concurrent page-rebuild race with generate.
-                # build_rows reads _reg_story_features at generate time.
-            except Exception:
-                pass
-        threading.Thread(target=_fetch_features, daemon=True).start()
     threading.Thread(target=_work, daemon=True).start()
 
 
@@ -2063,18 +2098,26 @@ def _create_screen(app):
 
     picked = ft.Container()
     if app._cp_sprint_paths:
-        snames = _sprint_names()
-        sprint_chips = ft.Row(
-            [ft.Container(
+        def _sprint_chip(path, name):
+            return ft.Container(
                 ft.Row([
-                    ft.Text(n, size=12, weight=ft.FontWeight.BOLD, color=T.VIOLET_INK,
+                    ft.Text(name, size=12, weight=ft.FontWeight.BOLD, color=T.VIOLET_INK,
                             font_family=T.F_MONO),
-                ], spacing=4, tight=True),
-                padding=ft.Padding.symmetric(vertical=4, horizontal=10),
+                    ft.GestureDetector(
+                        content=ft.Icon(ft.Icons.CLOSE, size=12, color=T.VIOLET_INK),
+                        on_tap=(lambda e, pp=path: _toggle_sprint(pp, False)),
+                        mouse_cursor=ft.MouseCursor.CLICK),
+                ], spacing=5, tight=True),
+                padding=ft.Padding.only(left=10, right=7, top=5, bottom=5),
                 bgcolor=T.VIOLET_SOFT, border_radius=T.R_SM,
-                border=ft.Border.all(1, "#D9D2FF"))
-             for n in snames],
-            wrap=True, spacing=6, run_spacing=6)
+                border=ft.Border.all(1, "#D9D2FF"),
+                on_hover=_chip_hover, animate_scale=120)
+        _sp_chips = []
+        for _p in app._cp_sprint_paths:
+            _it = next((x for x in app._cp_iterations if x["path"] == _p), None)
+            _nm = (_sprint_num(_it["name"]) or _it["name"]) if _it else _p
+            _sp_chips.append(_sprint_chip(_p, _nm))
+        sprint_chips = ft.Row(_sp_chips, wrap=True, spacing=6, run_spacing=6)
         # While loading we show nothing here — the bottom "Loading sprint stories…"
         # spinner already indicates progress. Once loaded, show the story count.
         _stories_status = (ft.Container()
@@ -2200,7 +2243,8 @@ def _create_screen(app):
                     mouse_cursor=ft.MouseCursor.CLICK)],
                spacing=7, tight=True),
             padding=ft.Padding.only(left=5, right=9, top=4, bottom=4),
-            bgcolor=T.CARD_2, border_radius=999, border=ft.Border.all(1, T.BORDER_2))
+            bgcolor=T.CARD_2, border_radius=999, border=ft.Border.all(1, T.BORDER_2),
+            on_hover=_chip_hover, animate_scale=120)
 
     name_chips = ft.Row([_res_chip(n) for n in app._cp_res_names],
                         wrap=True, spacing=8, run_spacing=8)
@@ -2319,24 +2363,12 @@ def _create_screen(app):
         try: cp_calc_note_wrap.update()
         except Exception: pass
 
-        # Show busy state (disable button + spinner) BEFORE the heavy full render,
-        # so the click gives immediate feedback. The render itself is the slow part
-        # for large plans, so we defer it (ui_safe) to let the busy paint flush.
+        # Flip to busy and re-render once so the previous sprint table is replaced
+        # immediately by the spinner + skeleton. results is gated off while busy, so
+        # this repaint is light; _do() then runs the estimate/assign and the final
+        # render (deferred via ui_safe) swaps in the fresh table.
         app._cp_busy = True
-        cb = _cp_calc_btn_cell[0]
-        if cb is not None:
-            try:
-                cb.opacity = 0.55
-                cb.on_click = None
-                cb.update()
-            except Exception:
-                pass
-        try:
-            cp_spinner.content.controls[1].value = "Generating sprint plan…"
-            cp_spinner.visible = True
-            cp_spinner.update()
-        except Exception:
-            pass
+        app.render()
 
         def _do():
             with _perf(f"cp.generate_render ({len(app._cp_rows)} stories)"):
@@ -2355,7 +2387,9 @@ def _create_screen(app):
 
     # ── results / plan (after Assign & Estimate) ──
     results = None
-    if app._cp_calculated and app._cp_rows and app._cp_res_names:
+    # While generating, don't build the old table — the body shows the spinner +
+    # skeleton instead, then the fresh table replaces it on completion.
+    if app._cp_calculated and app._cp_rows and app._cp_res_names and not app._cp_busy:
 
         # --- live, in-place builders (no full re-render → scroll is preserved) ---
         def _kpis():
@@ -2467,8 +2501,9 @@ def _create_screen(app):
                                      shape=ft.RoundedRectangleBorder(radius=8)))
             return ft.Container(
                 ft.Row([ft.Container(del_btn, width=34),
-                        _txt(str(r["id"]), color=T.VIOLET_INK, weight=ft.FontWeight.BOLD,
-                             width=84, font_family=T.F_MONO),
+                        _id_link(app, r["id"], color=T.VIOLET_INK,
+                                 weight=ft.FontWeight.BOLD, width=84,
+                                 font_family=T.F_MONO),
                         _txt(r["title"] or "—", color=T.INK, expand=True),
                         ft.Container(_pri_pill(r.get("priority", DEFAULT_PRIORITY)), width=44),
                         ft.Container(hours_f, width=110),
@@ -3011,8 +3046,23 @@ def screen(app):
         app.render()
 
         def _work():
+            def _progress(done, total):
+                # Live count feedback in the spinner so a long cold count clearly
+                # reads as "working", not stuck. Throttled by _count_cases.
+                def _upd():
+                    sp = getattr(app, "_reg_gen_spinner", None)   # the on-screen one
+                    if sp is None:
+                        return
+                    try:
+                        sp.content.controls[1].value = (
+                            f"Counting test cases — {done} / {total} suites…")
+                        sp.visible = True
+                        sp.update()
+                    except Exception:
+                        pass
+                app.ui_safe(_upd)
             try:
-                rows = build_rows(app, app._reg_selected)
+                rows = build_rows(app, app._reg_selected, progress=_progress)
             except Exception as ex:
                 rows = []
                 app._reg_calc_msg = f"Couldn't read plan: {ex}"
@@ -3026,13 +3076,13 @@ def screen(app):
         threading.Thread(target=_work, daemon=True).start()
 
     def _regenerate(e):
-        # Force-refresh: drop the cached suite maps, counts, metadata and features
-        # so the plan is rebuilt from a fresh Azure pull — this is how new test
-        # cases in existing suites (and changed priorities/states) get reflected.
-        # (Brand-new STORIES still need re-selecting the plan, which reloads the
-        # story list.) Slower than a cached re-run, but always current.
-        for _attr in ("_reg_case_count_cache", "_reg_meta_cache", "_reg_suite_cache",
-                      "_reg_story_features", "_reg_feature_name_cache"):
+        # Force-refresh: drop the cached suite maps, counts and metadata so the plan
+        # is rebuilt from a fresh Azure pull — this is how new test cases in existing
+        # suites (and changed priorities/states) get reflected. We KEEP the feature
+        # caches (_reg_story_features / _reg_feature_name_cache): feature names rarely
+        # change, and re-resolving them on every regenerate is what made it slow and
+        # briefly drop the grouping. (Use Settings → Clear caches for a full reset.)
+        for _attr in ("_reg_case_count_cache", "_reg_meta_cache", "_reg_suite_cache"):
             try:
                 setattr(app, _attr, {})
             except Exception:
@@ -3296,7 +3346,8 @@ def screen(app):
                    spacing=5, tight=True),
             padding=ft.Padding.only(left=10, right=7, top=5, bottom=5),
             bgcolor=T.VIOLET_SOFT, border_radius=T.R_SM,
-            border=ft.Border.all(1, "#D9D2FF"))
+            border=ft.Border.all(1, "#D9D2FF"),
+            on_hover=_chip_hover, animate_scale=120)
 
     def _plan_chip_label(p):
         # Show ONLY the sprint number; fall back to iteration tail or id so a
@@ -3401,7 +3452,8 @@ def screen(app):
                spacing=7, tight=True),
             padding=ft.Padding.only(left=5, right=9, top=4, bottom=4),
             bgcolor=T.CARD_2, border_radius=999,
-            border=ft.Border.all(1, T.BORDER_2))
+            border=ft.Border.all(1, T.BORDER_2),
+            on_hover=_chip_hover, animate_scale=120)
 
     name_chips = ft.Row(
         [_res_chip(n, (lambda e, x=n: _remove_name(x))) for n in app._reg_res_names],
@@ -3514,8 +3566,8 @@ def screen(app):
                         on_click=_delete_row(s["id"]), width=34, height=34,
                         style=ft.ButtonStyle(padding=ft.Padding.all(0),
                                              shape=ft.RoundedRectangleBorder(radius=8)))),
-                    _cell(64, _txt(str(s["id"]), font_family=T.F_MONO,
-                                   color=T.VIOLET_INK, weight=ft.FontWeight.BOLD)),
+                    _cell(64, _id_link(app, s["id"], font_family=T.F_MONO,
+                                       color=T.VIOLET_INK, weight=ft.FontWeight.BOLD)),
                     _cell(0, _txt(s["title"] or "—", color=T.INK, no_wrap=False),
                           expand=True),
                     _cell(84, _state_pill(s["state"])),
@@ -3762,6 +3814,9 @@ def screen(app):
         bgcolor=getattr(T, "VIOLET_SOFT", T.CARD_2), border_radius=T.R,
         visible=app._reg_busy)
     _gen_spinner_cell[0] = gen_spinner   # so _calculate can show it in place
+    app._reg_gen_spinner = gen_spinner   # current on-screen spinner, for live count
+                                         # progress (the _work closure may predate the
+                                         # busy re-render, so target the latest one)
 
     body_children = [card1, ft.Container(height=14),
                      ft.Row([ft.Container(card2, expand=1),

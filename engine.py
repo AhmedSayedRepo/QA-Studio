@@ -1293,10 +1293,31 @@ def fetch_test_cases_for_suite(project, plan_id, suite_id):
     url = (f"https://dev.azure.com/{AZURE_ORG}/{project}/"
            f"_apis/testplan/Plans/{plan_id}/Suites/{suite_id}/TestCase"
            f"?witFields=System.Id&api-version=7.0")
-    resp = _az_session().get(url, auth=("", AZURE_PAT), timeout=30)
-    if resp.status_code == 200:
-        return resp.json().get("value", [])
-    raise RuntimeError(f"HTTP {resp.status_code}")
+    # Retry on throttling / transient server errors. Azure DevOps rate-limits bulk
+    # counting (hundreds of suites) and returns HTTP 429 with a Retry-After header;
+    # honoring it (instead of failing -> a silent count of 0, or hammering) keeps
+    # the counts correct and avoids wasted requests.
+    # Bounded retry: enough to ride out brief throttling, but capped so a heavily
+    # rate-limited cold count (e.g. Regenerate over hundreds of suites) can't stall
+    # for minutes. Worst case ≈ 3 attempts × ~6 s ≈ 18 s for a single stubborn suite.
+    last = 0
+    for _attempt in range(3):
+        resp = _az_session().get(url, auth=("", AZURE_PAT), timeout=30)
+        last = resp.status_code
+        if last == 200:
+            return resp.json().get("value", [])
+        if last == 429:
+            try:
+                wait = float(resp.headers.get("Retry-After", "1"))
+            except Exception:
+                wait = 1.0
+            time.sleep(min(max(wait, 0.5), 6))     # honor Retry-After, capped at 6 s
+            continue
+        if 500 <= last < 600:
+            time.sleep(0.4 * (_attempt + 1))       # transient server error -> brief backoff
+            continue
+        break                                       # other 4xx -> not retryable
+    raise RuntimeError(f"HTTP {last}")
 
 
 def _strip_html(s):
