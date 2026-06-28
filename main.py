@@ -448,6 +448,7 @@ class QAStudio:
         self.story_ids = []
         self._setup_story_open = False
         self._dd_closers = []  # in-place close callables, reset each render
+        self._dd_syncers = {}  # in-place "untick from selection" callables, by key
         self.emails = ""
         self.existing_mode = "evaluate"
 
@@ -1558,6 +1559,7 @@ class QAStudio:
             # Reset dropdown closer registry so stale closers from the previous
             # render don't linger. Each _checkbox_multiselect re-registers itself.
             self._dd_closers = []
+            self._dd_syncers = {}
             if getattr(self, "_last_active", None) != self.active:
                 self._scroll_offset = 0
                 self._last_active = self.active
@@ -2993,6 +2995,15 @@ class QAStudio:
                     border=ft.Border.all(1, "#D9D2FF")))
             self._chip_row.controls = chips
             self._chip_wrap.visible = bool(self.story_ids)
+            # Keep the story checkbox-multiselect in sync with the chips: removing a
+            # chip unticks its checkbox; adding via search/manual entry ticks it.
+            # (No-op at first build — the picker registers its syncer just below.)
+            _sync = (getattr(self, "_dd_syncers", {}) or {}).get("setup_stories")
+            if _sync:
+                try:
+                    _sync([str(s) for s in self.story_ids])
+                except Exception:
+                    pass
 
         def _update_summary_inplace():
             # update the THIS RUN stats + estimate labels without a full render
@@ -3209,7 +3220,7 @@ class QAStudio:
                 is_open=self._setup_story_open, on_open=_open_setup_stories,
                 placeholder="Select stories", height=260,
                 empty="No stories found in this plan.",
-                page=self.page, app=self)
+                page=self.page, app=self, sync_key="setup_stories")
 
         story_box = ft.Column([
             story_picker,

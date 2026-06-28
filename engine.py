@@ -530,10 +530,39 @@ def ai_complete(prompt_text, images=None, max_tokens=4096, timeout=None,
 # ═══════════════════════════════════════════════════════════════════════════════
 #  AZURE REST HELPERS
 # ═══════════════════════════════════════════════════════════════════════════════
+from requests.adapters import HTTPAdapter
+
+_AZ_SESSION = None
+
+
+def _az_session():
+    """Shared, connection-pooled requests.Session for Azure DevOps calls.
+
+    A cold plan generation fires hundreds of small GETs — one per test suite, 16
+    in parallel. A bare requests.get() opens a brand-new TCP+TLS connection every
+    time; those handshakes are slow AND CPU-heavy, and the CPU work holds Python's
+    GIL, which is what made the nav/UI stutter during a cold generate. Reusing
+    pooled keep-alive connections removes the per-call handshake entirely: the same
+    requests return the same results, but far faster and much lighter on the GIL —
+    so we keep the worker count high without starving the UI thread. urllib3's
+    connection pool is thread-safe, and we never mutate shared session state (auth
+    is passed per request), so sharing it across the worker pool is safe."""
+    global _AZ_SESSION
+    if _AZ_SESSION is None:
+        s = requests.Session()
+        # Headroom so 16 concurrent workers (plus other fetches) never block on a
+        # free connection. max_retries=0 keeps the existing raise-on-error behavior.
+        ad = HTTPAdapter(pool_connections=16, pool_maxsize=32, max_retries=0)
+        s.mount("https://", ad)
+        s.mount("http://", ad)
+        _AZ_SESSION = s
+    return _AZ_SESSION
+
+
 def _azure_get(url, pat=None, timeout=12):
     pat = pat or AZURE_PAT
     try:
-        r = requests.get(url, auth=("", pat), timeout=timeout)
+        r = _az_session().get(url, auth=("", pat), timeout=timeout)
     except requests.exceptions.SSLError:
         raise RuntimeError("SSL error reaching Azure DevOps. Your network may block dev.azure.com.")
     except requests.exceptions.ConnectionError:
@@ -1264,7 +1293,7 @@ def fetch_test_cases_for_suite(project, plan_id, suite_id):
     url = (f"https://dev.azure.com/{AZURE_ORG}/{project}/"
            f"_apis/testplan/Plans/{plan_id}/Suites/{suite_id}/TestCase"
            f"?witFields=System.Id&api-version=7.0")
-    resp = requests.get(url, auth=("", AZURE_PAT), timeout=30)
+    resp = _az_session().get(url, auth=("", AZURE_PAT), timeout=30)
     if resp.status_code == 200:
         return resp.json().get("value", [])
     raise RuntimeError(f"HTTP {resp.status_code}")

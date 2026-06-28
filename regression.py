@@ -256,6 +256,10 @@ def _fetch_feature_names(app, parent_ids):
                 nm = f2.get("System.Title", str(w["id"]))
                 names[int(w["id"])] = nm
                 cache[int(w["id"])] = nm
+            # Every caller runs off the UI thread. Yield the GIL each batch so a
+            # large background resolve can't monopolize it and freeze the plan
+            # table's collapse / pagination for the minute-or-two it runs.
+            _time.sleep(0.04)
     return names
 
 
@@ -293,6 +297,7 @@ def _fetch_cp_complexity(app, ids):
                      + len(desc.split()) * 0.4
                      + len(title.split()) * 0.2)
             out[int(w["id"])] = max(1.0, units)
+        _time.sleep(0.05)   # background; yield GIL so the Sprint table stays responsive
     return out
 
 
@@ -405,17 +410,18 @@ def build_rows(app, selected):
         counts = _count_cases(app, selected)
     _cache_save(app)   # persist freshly-fetched counts/meta/features for next launch
     story_features = getattr(app, "_reg_story_features", {})
-    # Each story's parent work item IS its Feature — _fetch_meta already pulled
-    # System.Parent, so resolve those parent ids to titles once (cached) and group
-    # the child stories under them instead of dumping everything in "No Feature".
+    feat_cache = getattr(app, "_reg_feature_name_cache", {}) or {}
+    # Each story's parent work item IS its Feature. _fetch_meta already pulled
+    # System.Parent (free), so the feature id is known with no extra request. The
+    # feature NAME is read from cache only here — resolving uncached names is done
+    # OFF the generate path (background, below) so a cold cache can never block the
+    # UI / freeze the nav while the heavy test-case counting is running.
     parent_of = {}
     for s in selected:
         sid = int(s["id"])
         p = meta.get(sid, {}).get("parent_id")
         if p:
             parent_of[sid] = int(p)
-    with _perf(f"build_rows.feature_names ({len(set(parent_of.values()))} features)"):
-        feat_names = _fetch_feature_names(app, sorted(set(parent_of.values())))
     rows = []
     for s in selected:
         sid = int(s["id"])
@@ -427,12 +433,34 @@ def build_rows(app, selected):
         _pfeat = parent_of.get(sid)
         fid = (s.get("feature_id") or story_features.get(sid, (None, ""))[0] or _pfeat)
         fname = (s.get("feature_name") or story_features.get(sid, (None, ""))[1]
-                 or (feat_names.get(_pfeat) if _pfeat else "") or "")
+                 or (feat_cache.get(_pfeat) if _pfeat else "") or "")
         rows.append({"id": sid, "title": m.get("title", "") or s.get("title", ""),
                      "state": m.get("state", "Unknown"), "priority": pri,
                      "cases": cases, "boost": boost, "hours": hours,
                      "plan_id": s.get("plan_id"), "assignee": "",
                      "feature_id": fid, "feature_name": fname})
+    # Resolve any still-missing feature names WITHOUT blocking the generate: fetch
+    # them in the background, patch the same row dicts in place, and repaint once —
+    # only if the user is still on the Regression screen (navigating away must not
+    # trigger a heavy forced render, which is what read as a freeze before).
+    _missing = sorted({r["feature_id"] for r in rows
+                       if r.get("feature_id") and not r.get("feature_name")})
+    if _missing:
+        def _bg_feature_names(_rows=rows, _ids=_missing):
+            try:
+                names = _fetch_feature_names(app, _ids)
+                changed = False
+                for _r in _rows:
+                    if not _r.get("feature_name"):
+                        _nm = names.get(_r.get("feature_id"))
+                        if _nm:
+                            _r["feature_name"] = _nm
+                            changed = True
+                if changed and getattr(app, "active", None) == "regression":
+                    app.ui_safe(app.render)
+            except Exception:
+                pass
+        threading.Thread(target=_bg_feature_names, daemon=True).start()
     return rows
 
 
@@ -1427,8 +1455,14 @@ def _reload_plan_stories(app):
     """Aggregate the user stories that live in the currently-selected test plans
     (their requirement suites). Runs off the UI thread."""
     plans = list(app._reg_plans_selected or [])
+    # Cancellation token: every (re)load bumps this; an in-flight fetch whose token
+    # is stale must NOT apply its results. So select-all then deselect-all stops the
+    # old fetch from repopulating the list instead of waiting for it to finish.
+    app._reg_stories_gen = getattr(app, "_reg_stories_gen", 0) + 1
+    _gen = app._reg_stories_gen
     if not plans:
         app._reg_plan_stories = []
+        app._reg_stories_loading = False
         app.ui_safe(app.render)
         return
     app._reg_stories_loading = True
@@ -1474,11 +1508,15 @@ def _reload_plan_stories(app):
                             "plan_id": pid})
         # group by sprint then id so the picker lists them clustered by sprint
         agg.sort(key=lambda s: (s.get("sprint", "") or "~", s["id"]))
+        if _gen != getattr(app, "_reg_stories_gen", _gen):
+            return                      # selection changed mid-fetch -> drop results
         app._reg_plan_stories = agg
         app._reg_stories_loading = False
         app.ui_safe(app.render)
 
         def _fetch_features():
+            if _gen != getattr(app, "_reg_stories_gen", _gen):
+                return
             try:
                 feat_cache = dict(getattr(app, "_reg_story_features", {}) or {})
                 # INCREMENTAL: only resolve stories we haven't resolved before, so
@@ -1504,6 +1542,7 @@ def _reload_plan_stories(app):
                         pid2 = w.get("fields", {}).get("System.Parent")
                         if pid2:
                             parent_map[int(w["id"])] = pid2
+                    _time.sleep(0.05)   # yield GIL: keep the plan table responsive
                 feature_names = _fetch_feature_names(app, list(set(parent_map.values())))
                 for sid, pid2 in parent_map.items():
                     feat_cache[sid] = (pid2, feature_names.get(pid2, ""))
@@ -1546,8 +1585,9 @@ def _cp_load_iterations(app):
         except Exception:
             its = []
         sprints = [it for it in its if _cp_is_sprint(it)] or its
-        # newest sprint number first
-        sprints.sort(key=lambda it: _sprint_sort_key(it), reverse=True)
+        # Ascending by sprint number (Sprint 0, 1, 2, …) so Sprint 0 reads first
+        # instead of being stranded at the end; un-numbered iterations sort last.
+        sprints.sort(key=lambda it: (_sprint_sort_key(it) < 0, _sprint_sort_key(it)))
         app._cp_iterations = sprints
         app._cp_iter_loading = False
         app.ui_safe(app.render)
@@ -1561,7 +1601,7 @@ def _sprint_sort_key(it):
 
 def _checkbox_multiselect(options, selected, on_toggle, on_all, *, is_open, on_open,
                           placeholder="Select…", height=240, empty="No options.",
-                          page=None, app=None, invalid=False):
+                          page=None, app=None, invalid=False, sync_key=None):
     """Collapsible checkbox multiselect.
 
     When page= is supplied every interaction (open/close AND checkbox tick) is
@@ -1741,6 +1781,27 @@ def _checkbox_multiselect(options, selected, on_toggle, on_all, *, is_open, on_o
         except Exception:
             pass
 
+    # External in-place sync: when a chip is removed elsewhere, the caller calls
+    # this with the authoritative selection so the dropdown's checkboxes + header
+    # untick in place (no full render, and correct even while the panel is open).
+    if app is not None and sync_key is not None:
+        def _sync_selected(new_keys):
+            new = {str(k) for k in (new_keys or [])}
+            sel.clear()
+            sel.update(new)
+            for _k2, _cb in row_cbs.items():
+                _cb.value = (_k2 in sel)
+            _refresh_header()
+            if page is not None:
+                try:
+                    page.update()
+                except Exception:
+                    pass
+        try:
+            app._dd_syncers[sync_key] = _sync_selected
+        except Exception:
+            pass
+
     field_container = ft.Container(
         ft.Row([field_label_ref, arrow_icon],
                vertical_alignment=ft.CrossAxisAlignment.CENTER),
@@ -1764,8 +1825,13 @@ def _checkbox_multiselect(options, selected, on_toggle, on_all, *, is_open, on_o
 
 def _cp_load_stories(app):
     paths = list(app._cp_sprint_paths or [])
+    # Cancellation token (see _reload_plan_stories): deselecting sprints aborts an
+    # in-flight fetch instead of waiting for it to complete and repopulate.
+    app._cp_stories_gen = getattr(app, "_cp_stories_gen", 0) + 1
+    _gen = app._cp_stories_gen
     if not paths:
         app._cp_rows = []
+        app._cp_stories_loading = False
         app.ui_safe(app.render)
         return
     app._cp_stories_loading = True
@@ -1795,6 +1861,8 @@ def _cp_load_stories(app):
                         seen.add(s["id"])
                         agg.append({"id": s["id"], "title": s.get("title", ""),
                                     "hours": 0.0, "assignee": ""})
+        if _gen != getattr(app, "_cp_stories_gen", _gen):
+            return                      # sprint selection changed mid-fetch -> drop
         app._cp_rows = agg
         # Pull real Azure DevOps priority (+ state) for these stories so the plan
         # table and email show P1–P4 like the Regression Plan report (not a bare "P").
@@ -1824,6 +1892,8 @@ def _cp_load_stories(app):
         except Exception:
             pass
         _cp_estimate_and_assign(app)
+        if _gen != getattr(app, "_cp_stories_gen", _gen):
+            return                      # selection changed mid-fetch -> drop results
         app._cp_stories_loading = False
         # Only repaint if the user is still on the Sprint Plan screen — otherwise
         # this background completion would force a full (heavy) render of whatever
@@ -1988,7 +2058,7 @@ def _create_screen(app):
             is_open=app._cp_sprint_open, on_open=_open_sprints,
             placeholder="Select sprint(s)",
             empty="No sprints found for this project.",
-            page=app.page, app=app,
+            page=app.page, app=app, sync_key="cp_sprints",
             invalid=getattr(app, "_cp_sprint_invalid", False)))
 
     picked = ft.Container()
@@ -2658,7 +2728,10 @@ def _create_screen(app):
                      ft.Container(height=16), calc_btn, cp_spinner, cp_calc_note_wrap]
     if results is not None:
         body_children += [ft.Container(height=16), results]
-    elif app._cp_busy or app._cp_stories_loading:
+    elif app._cp_busy:
+        # Skeleton only while GENERATING (matches the Regression Plan). During the
+        # pre-generation story fetch the small "Loading sprint stories…" spinner is
+        # enough — the big skeleton there just made the screen jump/expand.
         from main import card as _card, skeleton_rows as _skel
         body_children += [ft.Container(height=16), _card(_skel(6))]
     body = ft.Column(body_children, spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
@@ -2759,6 +2832,12 @@ def screen(app):
             app.plan_name = (app._reg_plans_selected[0]["name"] if app._reg_plans_selected else "")
         app._reg_selected_rows = []
         app._reg_export_msg = app._reg_calc_msg = None
+        _sync = (getattr(app, "_dd_syncers", {}) or {}).get("reg_plans")
+        if _sync:                        # untick the plan in the open dropdown
+            try:
+                _sync([str(p["id"]) for p in app._reg_plans_selected])
+            except Exception:
+                pass
         _reload_plan_stories(app)
         app.render()
 
@@ -2778,9 +2857,18 @@ def screen(app):
 
     def _remove_story(sid):
         app._reg_selected = [s for s in app._reg_selected if s["id"] != sid]
-        app._reg_selected_rows = []
         app._reg_export_msg = app._reg_calc_msg = None
-        app.render()
+        _had_results = bool(app._reg_selected_rows)
+        app._reg_selected_rows = []
+        _sync = (getattr(app, "_dd_syncers", {}) or {}).get("reg_stories")
+        if _had_results or not _sync:
+            app.render()                 # a generated table must clear -> full render
+        else:
+            try:
+                _sync([str(s["id"]) for s in app._reg_selected])   # untick in dropdown
+                _refresh_story_externals()                         # chips + button
+            except Exception:
+                app.render()
 
     def _delete_row(sid):
         # inline-delete from the calculated plan table + recalculate
@@ -2916,35 +3004,11 @@ def screen(app):
         app._reg_count_invalid = False
         app._reg_res_invalid = False
         calc_note_wrap.visible = False
-        btn = _get_calc_btn()
-        if btn is not None:
-            # primary_btn returns a Container (_grad_button); .disabled doesn't work on it.
-            # Update opacity + remove click handler to signal busy state visually.
-            try:
-                btn.opacity = 0.55
-                btn.on_click = None
-                # also update the label text inside the Row>Text
-                inner = btn.content.controls if hasattr(btn, "content") else []
-                for ctrl in (inner if inner else []):
-                    if hasattr(ctrl, "controls"):
-                        for c in ctrl.controls:
-                            if hasattr(c, "value"):
-                                c.value = "Generating…"
-                                break
-                btn.update()
-            except Exception:
-                pass
-        try:
-            calc_note_wrap.update()
-        except Exception:
-            pass
-        sp = _gen_spinner_cell[0]
-        if sp is not None:
-            try:
-                sp.visible = True
-                sp.update()
-            except Exception:
-                pass
+        # Re-render once so the previous plan table is immediately replaced by the
+        # progress spinner + loading skeleton (the button also flips to "Generating…"
+        # and the table is rebuilt from scratch when _work completes below).
+        # build_rows runs off the UI thread, so this single repaint stays snappy.
+        app.render()
 
         def _work():
             try:
@@ -3149,7 +3213,7 @@ def screen(app):
             _toggle_plan, _all_plans, is_open=app._reg_plan_open, on_open=_open_plans,
             placeholder="Select test plan(s)", height=200,
             empty="No test plans found for this project.",
-            page=app.page, app=app,
+            page=app.page, app=app, sync_key="reg_plans",
             invalid=getattr(app, "_reg_plan_invalid", False)))
 
     # ── Stories: checkbox multiselect with Select all ──
@@ -3219,7 +3283,7 @@ def screen(app):
             _toggle_story, _all_stories, is_open=app._reg_story_open, on_open=_open_stories,
             placeholder="Select stories", height=260,
             empty="No stories in the selected plan(s).",
-            page=app.page, app=app,
+            page=app.page, app=app, sync_key="reg_stories",
             invalid=getattr(app, "_reg_story_invalid", False))
 
     def _chip(label, on_close):
@@ -3404,7 +3468,9 @@ def screen(app):
 
     # ── results ──
     results = None
-    if app._reg_selected_rows:
+    # While (re)generating, don't build the old table — the body shows the
+    # progress spinner + skeleton instead, then the fresh table on completion.
+    if app._reg_selected_rows and not app._reg_busy:
         d = plan_payload(app)
 
         def _cell(w, content, expand=False):
