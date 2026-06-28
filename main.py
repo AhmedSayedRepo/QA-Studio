@@ -4858,6 +4858,34 @@ class QAStudio:
         # resetting them would make the spinner animate and stories show "Running"
         # again. These flags are initialized only in _launch_run().
 
+        # Idle state: when no run has started this session (e.g. reached via the
+        # command palette) show a friendly empty state — NOT the live "Starting…"
+        # scaffolding or a Stop button.
+        if (not getattr(self, "_run_active", False)
+                and not getattr(self, "_run_started", False)
+                and not getattr(self, "_run_finished", False)
+                and getattr(self, "last_report", None) is None):
+            idle = ft.Container(
+                ft.Column([
+                    ft.Container(ft.Icon(ft.Icons.MONITOR_HEART, size=23, color=T.VIOLET_INK),
+                                 width=50, height=50, bgcolor=T.VIOLET_SOFT,
+                                 border_radius=14, alignment=ft.Alignment.CENTER),
+                    ft.Container(height=12),
+                    ft.Text("No run yet", size=15, weight=ft.FontWeight.BOLD, color=T.INK),
+                    ft.Container(height=4),
+                    ft.Text("Pick your tool, language and stories on Setup, then press "
+                            "Start run — live progress will show here.",
+                            size=12.5, color=T.INK_3, weight=ft.FontWeight.W_500,
+                            text_align=ft.TextAlign.CENTER),
+                    ft.Container(height=16),
+                    primary_btn("Go to Setup", icon=ft.Icons.ARROW_FORWARD,
+                                on_click=lambda e: self.goto("setup")),
+                ], horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                   alignment=ft.MainAxisAlignment.CENTER, spacing=0, tight=True),
+                alignment=ft.Alignment.CENTER, expand=True,
+                padding=ft.Padding.symmetric(vertical=40, horizontal=20))
+            return self.shell("Run", "no run in progress", idle)
+
         is_steps = (self.tool == "steps")
         if is_steps:
             self._stats_row = ft.Row([
@@ -5530,7 +5558,7 @@ class QAStudio:
                 ft.Container(height=12),
                 self._auto_counts_header(),
                 ft.Container(height=12),
-                ft.Container(ft.SelectionArea(content=self._auto_log_col), expand=True, bgcolor="#FCFCFE",
+                ft.Container(ft.SelectionArea(content=self._auto_log_col), expand=True, bgcolor=T.CARD_2,
                              border=ft.Border.all(1, T.BORDER), border_radius=T.R, padding=12),
             ], spacing=0, expand=True), expand=True),
         ], spacing=14, expand=True)

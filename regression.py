@@ -405,6 +405,17 @@ def build_rows(app, selected):
         counts = _count_cases(app, selected)
     _cache_save(app)   # persist freshly-fetched counts/meta/features for next launch
     story_features = getattr(app, "_reg_story_features", {})
+    # Each story's parent work item IS its Feature — _fetch_meta already pulled
+    # System.Parent, so resolve those parent ids to titles once (cached) and group
+    # the child stories under them instead of dumping everything in "No Feature".
+    parent_of = {}
+    for s in selected:
+        sid = int(s["id"])
+        p = meta.get(sid, {}).get("parent_id")
+        if p:
+            parent_of[sid] = int(p)
+    with _perf(f"build_rows.feature_names ({len(set(parent_of.values()))} features)"):
+        feat_names = _fetch_feature_names(app, sorted(set(parent_of.values())))
     rows = []
     for s in selected:
         sid = int(s["id"])
@@ -413,8 +424,10 @@ def build_rows(app, selected):
         cases = counts.get(sid, 0)
         boost = PRIORITY_BOOST.get(pri, 1.0)
         hours = round(cases * (AVG_MINUTES_PER_CASE / 60.0) * boost, 2)
-        fid = s.get("feature_id") or story_features.get(sid, (None, ""))[0]
-        fname = s.get("feature_name") or story_features.get(sid, (None, ""))[1]
+        _pfeat = parent_of.get(sid)
+        fid = (s.get("feature_id") or story_features.get(sid, (None, ""))[0] or _pfeat)
+        fname = (s.get("feature_name") or story_features.get(sid, (None, ""))[1]
+                 or (feat_names.get(_pfeat) if _pfeat else "") or "")
         rows.append({"id": sid, "title": m.get("title", "") or s.get("title", ""),
                      "state": m.get("state", "Unknown"), "priority": pri,
                      "cases": cases, "boost": boost, "hours": hours,
@@ -425,16 +438,26 @@ def build_rows(app, selected):
 
 def assign_resources(rows, names):
     """Greedy balance: largest story → least-loaded resource. Sets r['assignee'].
-    Returns {name: total_hours}."""
+    Returns {name: total_hours}.
+
+    Stories with no test cases have 0 estimated hours; balancing on hours alone
+    dumps all of them onto whichever resource is least-loaded (it stays least-
+    loaded after a 0-hour add). So zero-effort stories are instead spread by head-
+    count, and hour-ties are broken by head-count too, keeping the split even."""
     if not names:
         for r in rows:
             r["assignee"] = ""
         return {}
     load = {n: 0.0 for n in names}
+    cnt = {n: 0 for n in names}
     for r in sorted(rows, key=lambda x: -x["hours"]):
-        n = min(load, key=lambda k: load[k])
+        if r["hours"] > 0:
+            n = min(names, key=lambda k: (load[k], cnt[k]))   # by effort, then count
+        else:
+            n = min(names, key=lambda k: cnt[k])              # no cases -> even by count
         r["assignee"] = n
         load[n] = round(load[n] + r["hours"], 2)
+        cnt[n] += 1
     return load
 
 
@@ -498,6 +521,20 @@ def _email_pri(p):
             4: ("#E5F6EC", "#1F9D57")}.get(p, ("#F4F6FB", "#6E7180")) + (f"P{p}",)
 
 
+def _wi_url(project, sid):
+    """Azure DevOps work-item URL for a story id — used to hyperlink story IDs in
+    every export (xlsx/docx/pdf/json) and the email so a reader can jump straight
+    to the work item. Org comes from the configured Azure org; project is encoded
+    so names with spaces still produce a valid link."""
+    from urllib.parse import quote
+    try:
+        org = E.AZURE_ORG or ""
+    except Exception:
+        org = ""
+    return (f"https://dev.azure.com/{quote(str(org), safe='')}/"
+            f"{quote(str(project or ''), safe='')}/_workitems/edit/{sid}")
+
+
 def _plan_html(d):
     """Polished, Outlook-safe HTML summary of the plan for the email body.
 
@@ -551,7 +588,9 @@ def _plan_html(d):
         return (
             f"<tr style='border-top:1px solid #f0f3f9'>"
             f"<td style='padding:12px 14px;font-family:Consolas,monospace;font-size:13px;"
-            f"font-weight:600;color:#3A57D6;white-space:nowrap'>{r['id']}</td>"
+            f"font-weight:600;white-space:nowrap'>"
+            f"<a href='{_wi_url(d['project'], r['id'])}' "
+            f"style='color:#3A57D6;text-decoration:none'>{r['id']}</a></td>"
             f"<td style='padding:12px 8px;font-size:13.5px;font-weight:600;color:#1f2940'>"
             f"{(r['title'] or '—')}</td>"
             f"<td style='padding:12px 8px;text-align:center'>"
@@ -723,9 +762,12 @@ def _ask_save_path(fmt, default_name):
 
 
 def export_json(app):
+    d = plan_payload(app)
+    for s in d.get("stories", []):          # link each story id to its Azure work item
+        s["url"] = _wi_url(d["project"], s["id"])
     p = os.path.join(_out_dir(), _stamp(app) + ".json")
     with open(p, "w", encoding="utf-8") as f:
-        json.dump(plan_payload(app), f, ensure_ascii=False, indent=2)
+        json.dump(d, f, ensure_ascii=False, indent=2)
     return p
 
 
@@ -787,6 +829,9 @@ def export_xlsx(app):
             for c, v in enumerate(vals, 1):
                 cell = ws.cell(r, c, v)
                 cell.border = thin
+                if c == 2:                                       # story id -> Azure link
+                    cell.hyperlink = _wi_url(d["project"], s["id"])
+                    cell.font = Font(color="3A57D6", underline="single")
                 if c in (2, _hours_col) or c == _cases_col:      # ids / hours / cases
                     cell.alignment = _AR
                 elif c in (4, 5):                                # state / priority
@@ -828,7 +873,27 @@ def export_docx(app):
     from docx import Document
     from docx.shared import Pt, RGBColor
     from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.oxml.shared import OxmlElement, qn
     d = plan_payload(app)
+
+    def _add_hyperlink(paragraph, url, text, color="3A57D6"):
+        """python-docx has no native hyperlink API — build the w:hyperlink run by
+        hand (external relationship + blue underlined run) so the story id links to
+        its Azure work item."""
+        r_id = paragraph.part.relate_to(
+            url, "http://schemas.openxmlformats.org/officeDocument/2006/"
+                 "relationships/hyperlink", is_external=True)
+        link = OxmlElement("w:hyperlink")
+        link.set(qn("r:id"), r_id)
+        run = OxmlElement("w:r")
+        rpr = OxmlElement("w:rPr")
+        col = OxmlElement("w:color"); col.set(qn("w:val"), color); rpr.append(col)
+        und = OxmlElement("w:u"); und.set(qn("w:val"), "single"); rpr.append(und)
+        run.append(rpr)
+        t = OxmlElement("w:t"); t.text = str(text); run.append(t)
+        link.append(run)
+        paragraph.append(link)
+        return link
     doc = Document()
     try:
         _ns = doc.styles["Normal"]
@@ -882,7 +947,10 @@ def export_docx(app):
                      + [str(s["hours"]), s.get("assignee") or "—"])
             _last = len(_vals) - 1
             for i, v in enumerate(_vals):
-                c[i].text = v
+                if i == 0:                                  # story id -> Azure link
+                    _add_hyperlink(c[i].paragraphs[0], _wi_url(d["project"], s["id"]), v)
+                else:
+                    c[i].text = v
                 if i in (0, _last - 1) or (show_cases and i == 4):     # id / hours / cases
                     _al = WD_ALIGN_PARAGRAPH.RIGHT
                 elif i in (2, 3):                                       # state / priority
@@ -986,6 +1054,14 @@ def export_pdf(app):
     for _sn in ("Title", "Normal", "Heading2"):
         try: styles[_sn].fontName = _fn
         except Exception: pass
+    from reportlab.lib.styles import ParagraphStyle
+    _id_style = ParagraphStyle("wid", parent=styles["Normal"], fontName=_fn,
+                               fontSize=7.5, alignment=1,        # 1 = centered
+                               textColor=colors.HexColor("#3A57D6"))
+
+    def _id_cell(sid):                       # story id -> clickable Azure link
+        return Paragraph(
+            f'<link href="{_wi_url(d["project"], sid)}"><u>{sid}</u></link>', _id_style)
     elems = [Paragraph(_ar(d.get("report_title") or "Regression Test Plan"), styles["Title"]),
              Paragraph(_ar(d['plan_name'] or d['project']),
                        styles["Normal"]),
@@ -995,7 +1071,7 @@ def export_pdf(app):
     data = [["Story", "Title", "State", "Pri"]
             + (["Cases"] if show_cases else []) + ["Hours", "Assignee"]]
     for s in d["stories"]:
-        data.append([str(s["id"]), _ar((s["title"] or "")[:38]), _ar(s["state"]),
+        data.append([_id_cell(s["id"]), _ar((s["title"] or "")[:38]), _ar(s["state"]),
                      str(s["priority"])]
                     + ([str(s["cases"])] if show_cases else [])
                     + [str(s["hours"]), _ar(s.get("assignee") or "—")])
@@ -2158,6 +2234,13 @@ def _create_screen(app):
             app._cp_res_invalid = True
             app.render()   # repaint so the resource field turns red
             return
+        if app._cp_res_count != len(app._cp_res_names):
+            app._cp_calc_msg = (f"Resource count ({app._cp_res_count}) must match the "
+                                f"number of names added ({len(app._cp_res_names)}).")
+            app._cp_count_invalid = True
+            app._cp_res_invalid = True
+            app.render()   # repaint so both fields turn red
+            return
         app._cp_calc_msg = None
         app._cp_sprint_invalid = False
         app._cp_count_invalid = False
@@ -2243,6 +2326,7 @@ def _create_screen(app):
             kpi_strip.update(); workload_holder.update()
 
         def _refresh_all():
+            _cp_row_cache.clear()          # row set changed (delete) -> drop memo
             plan_col.controls = [hdr] + _trows()
             plan_col.update(); _refresh_totals()
 
@@ -2284,6 +2368,11 @@ def _create_screen(app):
             bgcolor=T.CARD_2,
             border=ft.Border.only(bottom=ft.BorderSide(1, T.BORDER)))
 
+        # Memoize editable rows by story id so a collapse / page-flip REUSES the
+        # already-built Dropdown+TextField controls instead of reconstructing them
+        # (rebuilding ~25 dropdowns per interaction was the Sprint-table lag).
+        _cp_row_cache = {}
+
         def _story_row(r, i):
             hours_f = ft.TextField(
                 value=str(r["hours"]), on_change=_edit_hours(r["id"]),
@@ -2319,6 +2408,15 @@ def _create_screen(app):
                 bgcolor=(T.CARD if i % 2 == 0 else T.CARD_2),
                 border=ft.Border.only(bottom=ft.BorderSide(1, T.BORDER_2)))
 
+        def _row_for(r, i):
+            c = _cp_row_cache.get(r["id"])
+            if c is None:
+                c = _story_row(r, i)
+                _cp_row_cache[r["id"]] = c
+            else:
+                c.bgcolor = (T.CARD if i % 2 == 0 else T.CARD_2)   # keep zebra correct
+            return c
+
         def _toggle_cp_feature(fname):
             def _h(e):
                 _off = getattr(app, "_scroll_offset", 0) or 0
@@ -2342,6 +2440,12 @@ def _create_screen(app):
             # the cause of the multi-second / multi-minute Sprint Plan renders.
             from collections import OrderedDict as _OD
             allrows = app._cp_rows or []
+            # If the resource roster changed, cached dropdown options are stale —
+            # drop the cache so rows rebuild with the new assignee list.
+            _sig = tuple(app._cp_res_names or [])
+            if _cp_row_cache.get("__sig") != _sig:
+                _cp_row_cache.clear()
+                _cp_row_cache["__sig"] = _sig
             total = max(1, -(-len(allrows) // _CP_PAGE))
             pg = max(0, min(getattr(app, "_cp_table_page", 0), total - 1))
             page_rows = allrows[pg * _CP_PAGE:(pg + 1) * _CP_PAGE]
@@ -2353,7 +2457,7 @@ def _create_screen(app):
 
             out, i = [], 0
             if not has_features:
-                out = [_story_row(r, k) for k, r in enumerate(page_rows)]
+                out = [_row_for(r, k) for k, r in enumerate(page_rows)]
             else:
                 coll = getattr(app, "_cp_collapsed_features", set())
                 for fname, frows in groups.items():
@@ -2378,7 +2482,7 @@ def _create_screen(app):
                         bgcolor=ft.Colors.with_opacity(0.06, T.VIOLET)))
                     if not is_c:
                         for r in frows:
-                            out.append(_story_row(r, i))
+                            out.append(_row_for(r, i))
                             i += 1
 
             if total > 1:
@@ -2797,6 +2901,13 @@ def screen(app):
             app._reg_calc_msg = "Add at least one resource name."
             app._reg_res_invalid = True
             app.render()   # repaint so the resource field turns red
+            return
+        if app._reg_res_count != len(app._reg_res_names):
+            app._reg_calc_msg = (f"Resource count ({app._reg_res_count}) must match the "
+                                 f"number of names added ({len(app._reg_res_names)}).")
+            app._reg_count_invalid = True
+            app._reg_res_invalid = True
+            app.render()   # repaint so both fields turn red
             return
         app._reg_busy = True
         app._reg_calc_msg = app._reg_export_msg = None
@@ -3315,6 +3426,9 @@ def screen(app):
 
         maxh_story = max((x["hours"] for x in d["stories"]), default=0) or 1
 
+        # Memoize rows by story id so collapse / page-flip reuse built controls.
+        _reg_row_cache = {}
+
         def _story_row(s, i):
             bg = T.CARD if i % 2 == 0 else ft.Colors.with_opacity(0.5, T.BG)
             asg = s.get("assignee")
@@ -3345,6 +3459,16 @@ def screen(app):
                     _cell(140, asg_ctl),
                 ], spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                 padding=ft.Padding.symmetric(vertical=9, horizontal=8), bgcolor=bg)
+
+        def _reg_row_for(s, i):
+            c = _reg_row_cache.get(s["id"])
+            if c is None:
+                c = _story_row(s, i)
+                _reg_row_cache[s["id"]] = c
+            else:
+                c.bgcolor = (T.CARD if i % 2 == 0
+                             else ft.Colors.with_opacity(0.5, T.BG))   # keep zebra
+            return c
 
         _PAGE = 25  # small page -> fast page.update() -> no event-loop freeze
 
@@ -3400,7 +3524,7 @@ def screen(app):
                     bgcolor=ft.Colors.with_opacity(0.06, T.VIOLET)))
                 if not _is_c:
                     for s in fstories:
-                        rows.append(_story_row(s, _ri))
+                        rows.append(_reg_row_for(s, _ri))
                         _ri += 1
 
             _pager = ft.Container()
