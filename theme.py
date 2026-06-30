@@ -16,32 +16,33 @@ INK       = "#181A24"
 INK_2     = "#6E7180"
 INK_3     = "#9FA2B2"
 
-# Dark sidebar — deep indigo-navy (echoes the blue end of the logo gradient)
-RAIL      = "#121529"
-RAIL_2    = "#1B1F3A"
-RAIL_LINE = "#272C49"
-RAIL_INK  = "#EAECF7"
-RAIL_DIM  = "#878BA8"
+# Dark sidebar — deep teal-navy (so cyan accents read as neon on it)
+RAIL      = "#0C1330"
+RAIL_2    = "#142044"
+RAIL_LINE = "#21314F"
+RAIL_INK  = "#E8F3F8"
+RAIL_DIM  = "#8198AC"
 
-# Brand — indigo primary (logo gradient midpoint) + its tints
-VIOLET      = "#3A57D6"   # primary (buttons, nav active, accents)
-VIOLET_H    = "#2C44BE"   # hover / pressed
-VIOLET_SOFT = "#E7ECFF"   # soft fill behind icons / badges
-VIOLET_INK  = "#2940C2"   # text on soft fills
-STORY       = "#6A52F0"   # story / log accent (leans to the purple end)
+# Brand — CYAN primary (neon-cyan design language) + its tints. (Variable names
+# kept as VIOLET* so call sites don't change — only the values are cyan now.)
+VIOLET      = "#0E9CC0"   # primary (buttons, nav active, accents) — readable cyan
+VIOLET_H    = "#0B7E9B"   # hover / pressed (darker cyan)
+VIOLET_SOFT = "#D6F4FB"   # soft fill behind icons / badges (light cyan)
+VIOLET_INK  = "#0B6E86"   # text on soft fills (deep cyan)
+STORY       = "#22D3EE"   # story / log accent (bright neon cyan)
 
-# Logo gradient endpoints — use for brand fills (tile fallbacks, hero accents)
-BRAND_GRAD_1 = "#1C80E0"  # azure
-BRAND_GRAD_2 = "#6A33A8"  # royal purple
+# Brand gradient endpoints — use for brand fills (tile fallbacks, hero accents)
+BRAND_GRAD_1 = "#22D3EE"  # bright cyan
+BRAND_GRAD_2 = "#0E7490"  # deep cyan
 
 # ── Gradient stops (built into ft.LinearGradient by main.grad) ────────────────
-GRAD_BRAND   = ["#1C80E0", "#6A33A8"]   # azure → royal purple (hero/brand bands)
-GRAD_PRIMARY = ["#4F6BF6", "#5B54F0"]   # primary buttons / main CTAs
+GRAD_BRAND   = ["#22D3EE", "#0E7490"]   # bright → deep cyan (hero/brand bands)
+GRAD_PRIMARY = ["#19BDDC", "#0E9CC0"]   # primary buttons / main CTAs (cyan)
 GRAD_GREEN   = ["#27A866", "#178A4B"]   # export / confirm buttons — tints of GREEN (#1F9D57) so gradient + solid green buttons read as one tone
-GRAD_RAIL    = ["#171B36", "#0E1124"]   # sidebar (top → bottom)
-GRAD_LOGO    = ["#4F6BF6", "#7C5CFF"]   # logo tile + small brand chips
+GRAD_RAIL    = ["#0E1430", "#080C1E"]   # sidebar (top → bottom) — deep teal-navy
+GRAD_LOGO    = ["#22D3EE", "#0891B2"]   # logo tile + small brand chips (cyan)
 GRAD_PAGE    = ["#F7F8FE", "#EDF0F8"]   # content background wash
-GRAD_NAV_ACT = ["#2C3BC9", "#3A57D6"]   # active nav item highlight
+GRAD_NAV_ACT = ["#0B89A8", "#0E9CC0"]   # active nav item highlight (cyan)
 
 GREEN       = "#1F9D57"; GREEN_SOFT = "#E5F6EC"
 RED         = "#E0474D"; RED_SOFT   = "#FCEBEC"
@@ -56,15 +57,15 @@ _PALETTES = {
     "light": dict(
         BG="#FAFBFE", CARD="#FFFFFF", CARD_2="#F4F6FB", BORDER="#E6E8F1",
         BORDER_2="#EDEFF6", INK="#181A24", INK_2="#6E7180", INK_3="#9FA2B2",
-        VIOLET_SOFT="#E7ECFF", VIOLET_INK="#2940C2",
+        VIOLET_SOFT="#D6F4FB", VIOLET_INK="#0B6E86",
         GREEN_SOFT="#E5F6EC", RED_SOFT="#FCEBEC", AMBER_SOFT="#FAF1DD",
         GRAD_PAGE=["#F7F8FE", "#EDF0F8"]),
     "dark": dict(
-        BG="#0F1330", CARD="#1B2042", CARD_2="#252B4E", BORDER="#333B6B",
-        BORDER_2="#2B325A", INK="#EEF0FA", INK_2="#B4B9D6", INK_3="#868BA8",
-        VIOLET_SOFT="#2B3366", VIOLET_INK="#B7C6FF",
+        BG="#0B1024", CARD="#121A38", CARD_2="#1A2344", BORDER="#26365F",
+        BORDER_2="#1F2A4A", INK="#EAF6FB", INK_2="#A9C0D2", INK_3="#7C90A8",
+        VIOLET_SOFT="#0C3A47", VIOLET_INK="#67E8F9",
         GREEN_SOFT="#15331E", RED_SOFT="#3A1E20", AMBER_SOFT="#33280F",
-        GRAD_PAGE=["#0F1330", "#0A0E22"]),
+        GRAD_PAGE=["#0B1024", "#070B1A"]),
 }
 
 

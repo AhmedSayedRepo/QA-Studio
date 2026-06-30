@@ -9,6 +9,10 @@ import theme as T
 import store
 import engine as E
 import regression
+import sprint_titles
+import auth_supabase as auth
+import auth_screen
+import users_screen
 
 # ── Flet version-compatibility shim ───────────────────────────────────────────
 # Flet renamed ft.icons→ft.Icons and ft.colors→ft.Colors around 0.25+. Support both.
@@ -303,9 +307,15 @@ def logo_img(size=38, fallback_icon=None, fallback_color="#FFFFFF"):
     return fb
 
 
+# Global read-only flag: when True (a signed-in Viewer), every button built via the
+# helpers below renders disabled, so the whole app becomes look-but-don't-touch.
+# render() sets this each frame based on the current user's role.
+_READONLY = False
+
+
 def primary_btn(text, icon=None, on_click=None, expand=False, disabled=False):
     return _grad_button(text, icon, on_click, T.GRAD_PRIMARY, T.VIOLET, 0.6,
-                        expand=expand, disabled=disabled, height=46)
+                        expand=expand, disabled=disabled or _READONLY, height=46)
 
 
 def _disabled_wrap(w, disabled, op=0.45):
@@ -320,11 +330,17 @@ def _disabled_wrap(w, disabled, op=0.45):
     return w
 
 
-def green_btn(text, icon=None, on_click=None, expand=False, height=42, disabled=False):
+def green_btn(text, icon=None, on_click=None, expand=False, height=42, disabled=False,
+              ignore_ro=False):
+    # ignore_ro=True: this button is gated by its OWN per-action permission (passed
+    # as `disabled`), not by the screen-level read-only flag.
     return _grad_button(text, icon, on_click, T.GRAD_GREEN, T.GREEN, 0.5,
-                        expand=expand, height=height, disabled=disabled)
+                        expand=expand, height=height,
+                        disabled=disabled or (_READONLY and not ignore_ro))
 
-def ghost_btn(text, icon=None, on_click=None, expand=False, disabled=False):
+def ghost_btn(text, icon=None, on_click=None, expand=False, disabled=False,
+              ignore_ro=False):
+    disabled = disabled or (_READONLY and not ignore_ro)
     btn = ft.OutlinedButton(
         text, icon=icon, on_click=(None if disabled else on_click), height=46,
         style=ft.ButtonStyle(color=(T.INK_3 if disabled else T.INK_2),
@@ -334,6 +350,7 @@ def ghost_btn(text, icon=None, on_click=None, expand=False, disabled=False):
     return _disabled_wrap(_wrap_btn(btn, expand), disabled, op=0.55)
 
 def danger_btn(text, icon=None, on_click=None, disabled=False):
+    disabled = disabled or _READONLY
     btn = ft.FilledButton(
         text, icon=icon, on_click=(None if disabled else on_click), height=40,
         style=ft.ButtonStyle(
@@ -509,12 +526,31 @@ class QAStudio:
             T.NAV.insert(_ti + 1, {"id": "testplan", "label": "Sprint Plan",
                                    "icon": "ASSIGNMENT", "ix": "T"})
 
+        # Sprint Titles tab (after Sprint Plan)
+        if not any(n.get("id") == "titles" for n in T.NAV):
+            _si = next((i for i, n in enumerate(T.NAV) if n.get("id") == "testplan"),
+                       len(T.NAV) - 1)
+            T.NAV.insert(_si + 1, {"id": "titles", "label": "Sprint Report",
+                                   "icon": "SUMMARIZE", "ix": "SR"})
+
         # Useful Links tab (last in the rail)
         if not any(n.get("id") == "links" for n in T.NAV):
             T.NAV.append({"id": "links", "label": "Useful Links",
                           "icon": "BOOKMARKS", "ix": "L"})
 
+        # Users tab (admin-only; rail() hides it for non-admins).
+        if not any(n.get("id") == "users" for n in T.NAV):
+            T.NAV.append({"id": "users", "label": "Users",
+                          "icon": "GROUP", "ix": "U"})
+
+        # External-auth (Supabase): None until restored / signed in. When auth is
+        # not configured, this stays None and the app is un-gated (runs as before).
+        self.user = None
+
         self._build()
+        # Resume a prior session in the background so a returning user skips the
+        # gate without blocking startup on the network.
+        self._restore_session_async()
 
     # ---- credential helpers ----
     def _provider_options(self):
@@ -568,10 +604,73 @@ class QAStudio:
         # "Connected" status is tracked separately via self.connected.
         return bool((self.creds["keys"].get(name) or "").strip())
 
+    # ---- external auth (Supabase) ----
+    def _restore_session_async(self):
+        """Silently restore a signed-in session on startup (off the UI thread)."""
+        if not auth.configured():
+            return
+        def work():
+            try:
+                u = auth.acquire_silent()
+                if u:
+                    self.user = u
+                    self.ui_safe(self.render)
+            except Exception:
+                pass
+        try:
+            self._bg(work)
+        except Exception:
+            threading.Thread(target=work, daemon=True).start()
+
+    def can(self, capability):
+        """True if the current user may use `capability`. When auth is unconfigured
+        the app is un-gated, so everything is allowed."""
+        if not auth.configured():
+            return True
+        return auth.has(getattr(self, "user", None), capability)
+
+    def _screen_nav_cap(self, screen):
+        """Capability needed to OPEN a screen (None = open to everyone)."""
+        return {"setup": "nav.setup", "run": "nav.run", "report": "nav.report",
+                "regression": "nav.regression", "testplan": "nav.sprint_plan",
+                "titles": "nav.sprint_report", "automation": "nav.automation",
+                "links": "nav.links", "settings": "nav.settings",
+                "users": "nav.users"}.get(screen)
+
+    def _screen_action_cap(self, screen):
+        """Capability needed to ACT on a screen (None = the screen has no actions).
+        Drives the per-screen read-only state."""
+        return {"setup": "act.connect", "run": "act.run", "report": "act.export",
+                "regression": "act.regression", "testplan": "act.sprint",
+                "titles": "act.sprint_report", "automation": "act.automation",
+                "settings": "act.settings", "users": "act.manage_users"}.get(screen)
+
+    def _first_allowed_screen(self):
+        for n in T.NAV:
+            c = self._screen_nav_cap(n["id"])
+            if not c or self.can(c):
+                return n["id"]
+        return "setup"
+
+    def _sign_out(self, e=None):
+        try:
+            auth.sign_out()
+        except Exception:
+            pass
+        self.user = None
+        self._auth_shown = False        # replay the entrance animation
+        self.active = "setup"
+        self.render()
+
     # ---- window shell ----
     def rail(self):
+        # Show each tab only if the user is permitted to open it (per-user nav
+        # capabilities). When auth is off, can() is True so every tab shows.
         nav_items = []
         for n in T.NAV:
+            _nv = self._screen_nav_cap(n["id"])
+            if _nv and not self.can(_nv):
+                continue
             st = self.nav_state.get(n["id"], "")
             is_active = (n["id"] == self.active)
             color = "#FFFFFF" if is_active else ("#B8B5C2" if st == "done" else T.RAIL_DIM)
@@ -592,7 +691,9 @@ class QAStudio:
                          or (n["id"] == "automation")
                          or (n["id"] == "regression")
                          or (n["id"] == "testplan")
+                         or (n["id"] == "titles")
                          or (n["id"] == "links")
+                         or (n["id"] == "users")
                          or (n["id"] == "run" and (getattr(self, "_run_active", False)
                                                    or st == "active"
                                                    or self.last_report is not None)))
@@ -620,7 +721,7 @@ class QAStudio:
                         ft.Text(ix, size=10.5, weight=ft.FontWeight.BOLD, color=ixcolor,
                                 font_family=T.F_MONO),
                     ], spacing=9),
-                    padding=ft.Padding.only(left=6, right=12, top=12, bottom=12),
+                    padding=ft.Padding.only(left=6, right=12, top=9, bottom=9),
                     bgcolor=(None if is_active else bg),
                     gradient=(grad(T.GRAD_NAV_ACT) if is_active else None),
                     border_radius=11,
@@ -666,10 +767,11 @@ class QAStudio:
                     ], spacing=11), padding=ft.Padding.symmetric(vertical=16, horizontal=6)),
                 ft.Container(ft.Text("PIPELINE", size=10, weight=ft.FontWeight.BOLD,
                                      color="#615E6E"), padding=ft.Padding.only(left=18, top=14, bottom=6)),
-                ft.Container(ft.Column(nav_items, spacing=3), padding=ft.Padding.symmetric(vertical=10, horizontal=12)),
+                ft.Container(ft.Column(nav_items, spacing=2),
+                             padding=ft.Padding.symmetric(vertical=8, horizontal=12)),
                 ft.Container(expand=True),
-                # Settings entry
-                ft.Container(
+                # Settings entry — shown only to users permitted to open it.
+                (ft.Container(
                     ft.Row([
                         ft.Icon(ft.Icons.SETTINGS_OUTLINED, size=16,
                                 color=("#FFFFFF" if self.active == "settings" else T.RAIL_INK)),
@@ -684,7 +786,8 @@ class QAStudio:
                     border_radius=10,
                     bgcolor=(ft.Colors.with_opacity(0.16, T.VIOLET) if self.active == "settings"
                              else ft.Colors.with_opacity(0.04, "#FFFFFF")),
-                    border=ft.Border.all(1, T.RAIL_LINE)),
+                    border=ft.Border.all(1, T.RAIL_LINE))
+                 if self.can("nav.settings") else ft.Container(height=0)),
                 # theme toggle (light default · dark secondary)
                 ft.Container(
                     ft.Row([
@@ -724,6 +827,36 @@ class QAStudio:
                     border_radius=10, border=ft.Border.all(1, T.RAIL_LINE)),
             ], spacing=0, expand=True),
         )
+
+    def _account_chip(self):
+        """Signed-in user pill (avatar + name + role) with a sign-out button — lives
+        in the top-right of the header so it's always visible, regardless of how many
+        nav tabs there are. Returns None when auth is off / nobody is signed in."""
+        u = getattr(self, "user", None)
+        if not auth.configured() or not u:
+            return None
+        initial = (u.get("name") or u.get("email") or "?").strip()[:1].upper()
+        name = u.get("name") or u.get("email") or "Signed in"
+        return ft.Container(
+            ft.Row([
+                ft.Container(ft.Text(initial, size=12.5, weight=ft.FontWeight.BOLD,
+                                     color="#FFFFFF"),
+                             width=30, height=30, bgcolor=T.VIOLET, border_radius=15,
+                             alignment=ft.Alignment.CENTER),
+                ft.Column([
+                    ft.Text(name, size=12.5, weight=ft.FontWeight.W_700, color=T.INK,
+                            max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                    ft.Text(u.get("role", "Viewer"), size=10.5, color=T.INK_3,
+                            weight=ft.FontWeight.BOLD),
+                ], spacing=0, tight=True),
+                ft.Container(width=2),
+                ft.Container(ft.Icon(ft.Icons.LOGOUT, size=16, color=T.INK_2),
+                             on_click=self._sign_out, ink=True, border_radius=9,
+                             padding=8, tooltip="Sign out"),
+            ], spacing=9, tight=True,
+               vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=ft.Padding.only(left=10, right=4, top=4, bottom=4),
+            bgcolor=T.CARD_2, border_radius=999, border=ft.Border.all(1, T.BORDER))
 
     def _toggle_theme(self):
         new = "dark" if getattr(T, "MODE", "light") == "light" else "light"
@@ -826,6 +959,9 @@ class QAStudio:
         row = [ft.Column(left, spacing=3, tight=True), ft.Container(expand=True)]
         if right:
             row.append(right)
+        _acct = self._account_chip()
+        if _acct is not None:
+            row.append(_acct)
         # Glass top bar: a translucent frosted gradient with a backdrop blur so
         # scrolled content shows softly behind it. Falls back to an opaque bar on
         # older Flet builds that lack ft.Blur.
@@ -1103,6 +1239,8 @@ class QAStudio:
 
     # ---- settings ----
     def settings_screen(self):
+        ro = bool(getattr(self, "readonly", False))   # no 'act.settings' → read-only
+
         def srow(title, desc, control):
             return ft.Container(
                 ft.Row([
@@ -1130,8 +1268,8 @@ class QAStudio:
                     padding=ft.Padding.symmetric(vertical=0, horizontal=16),
                     bgcolor=(T.VIOLET_SOFT if sel else None), border_radius=T.R_SM,
                     border=ft.Border.all(1, T.VIOLET if sel else ft.Colors.TRANSPARENT),
-                    on_click=lambda e, m=mode: (None if T.MODE == m
-                                                else self._toggle_theme()))
+                    on_click=(None if ro else (lambda e, m=mode: (None if T.MODE == m
+                                                                  else self._toggle_theme()))))
             return ft.Container(
                 ft.Row([seg("Light", ft.Icons.LIGHT_MODE_OUTLINED, "light"),
                         seg("Dark", ft.Icons.DARK_MODE_OUTLINED, "dark")],
@@ -1150,7 +1288,9 @@ class QAStudio:
         ], spacing=0))
 
         perf_switch = ft.Switch(value=regression.perf_on(), active_color=T.VIOLET,
-                                on_change=lambda e: self._set_perf(e.control.value))
+                                disabled=ro,
+                                on_change=(None if ro else
+                                           (lambda e: self._set_perf(e.control.value))))
         data = card(ft.Column([
             ft.Text("DATA & DIAGNOSTICS", size=11, weight=ft.FontWeight.BOLD, color=T.INK_3),
             ft.Container(height=4),
@@ -1186,6 +1326,8 @@ class QAStudio:
         return self.shell("Settings", "Preferences for this device", body)
 
     def _set_perf(self, on):
+        if getattr(self, "readonly", False):
+            return
         try:
             regression.set_perf(on)
             self.creds["perf"] = bool(on)
@@ -1194,6 +1336,8 @@ class QAStudio:
             pass
 
     def _clear_caches(self):
+        if getattr(self, "readonly", False):
+            return self._toast("Read-only — you can’t change settings.")
         try:
             regression.clear_caches(self)
         except Exception:
@@ -1201,6 +1345,8 @@ class QAStudio:
         self._toast("Caches cleared — the next plan will rebuild from Azure.")
 
     def _reset_prefs(self):
+        if getattr(self, "readonly", False):
+            return self._toast("Read-only — you can’t change settings.")
         try:
             T.apply_theme("light")
         except Exception:
@@ -1540,6 +1686,14 @@ class QAStudio:
 
     # ---- navigation ----
     def goto(self, screen):
+        # Permission gate: block navigation to a screen the user can't open.
+        _nv = self._screen_nav_cap(screen)
+        if _nv and not self.can(_nv):
+            try:
+                self._toast("You don’t have access to that screen.")
+            except Exception:
+                pass
+            return
         # Persist automation inputs when leaving the Automation screen so they
         # are preserved until the user changes them.
         if self.active == "automation" and screen != "automation":
@@ -1563,7 +1717,23 @@ class QAStudio:
             if getattr(self, "_last_active", None) != self.active:
                 self._scroll_offset = 0
                 self._last_active = self.active
-            if self.active == "setup":
+            # Per-user permissions: if the active screen isn't permitted, bounce to
+            # the first one that is. Then set per-screen read-only (all action
+            # buttons disabled) when the user lacks THIS screen's action capability.
+            if auth.configured() and getattr(self, "user", None):
+                _nv = self._screen_nav_cap(self.active)
+                if _nv and not self.can(_nv):
+                    self.active = self._first_allowed_screen()
+            _av = self._screen_action_cap(self.active)
+            self.readonly = bool(auth.configured() and getattr(self, "user", None)
+                                 and _av and not self.can(_av))
+            global _READONLY
+            _READONLY = self.readonly
+            # Hard gate: when external auth is configured and nobody is signed in,
+            # show the sign-in / sign-up screen instead of the app.
+            if auth.configured() and not getattr(self, "user", None):
+                view = auth_screen.screen(self)
+            elif self.active == "setup":
                 view = self.setup_screen()
             elif self.active == "run":
                 view = self.run_screen()
@@ -1573,6 +1743,10 @@ class QAStudio:
                 view = regression.screen(self)
             elif self.active == "testplan":
                 view = regression.test_plan_screen(self)
+            elif self.active == "titles":
+                view = sprint_titles.screen(self)
+            elif self.active == "users":
+                view = users_screen.screen(self)
             elif self.active == "links":
                 view = self.useful_links_screen()
             elif self.active == "settings":
@@ -1671,6 +1845,14 @@ class QAStudio:
                 self.page.window_height = 760
                 self.page.window_min_width = 980
                 self.page.window_min_height = 660
+            # centre the window on screen (else some Flet builds open it low/left)
+            try:
+                if hasattr(self.page, "window") and self.page.window is not None:
+                    self.page.window.center()
+                elif hasattr(self.page, "window_center"):
+                    self.page.window_center()
+            except Exception:
+                pass
         except Exception:
             pass
         # Window close handling (desktop only). We do NOT force prevent_close,
@@ -2665,6 +2847,8 @@ class QAStudio:
             padding=4, bgcolor=T.CARD_2, border_radius=T.R, border=ft.Border.all(1, T.BORDER))
 
     def _set_lang(self, k):
+        if getattr(self, "readonly", False):
+            return
         self.lang = "en" if k == "en" else "ar"
         try:
             self.creds["lang"] = self.lang
@@ -2678,6 +2862,13 @@ class QAStudio:
         prev = getattr(self, "_provider_choice", None)
         self._provider_choice = self.prov_dd.value
         name = self._provider_choice
+        # Cancel any in-flight Connect for the old provider: bump the generation
+        # token (so its worker's results are ignored) and drop the spinner now.
+        self._connect_gen = getattr(self, "_connect_gen", 0) + 1
+        if getattr(self, "_connecting", False):
+            self._connecting = False
+            self._connect_status = ""
+            self._err("")
         # changing provider while connected invalidates the connection
         if prev and prev != name and getattr(self, "connected", False):
             self._disconnect(f"Provider changed to {T.disp_name(name)} — reconnect to continue.")
@@ -2888,8 +3079,15 @@ class QAStudio:
             sb = ft.SnackBar(content=ft.Text(msg, color="#FFFFFF"),
                              bgcolor=color, duration=6000)
         try:
-            # drop any stale snackbars, then mount + open this one explicitly
-            # (most reliable across Flet builds; page.open alone wasn't showing).
+            # dismiss any showing snackbar (open=False) THEN drop it, so Flet — which
+            # shows one snackbar at a time — reliably shows this one. Just removing it
+            # from the overlay left its state "open" and could block the next.
+            for c in list(self.page.overlay):
+                if isinstance(c, ft.SnackBar):
+                    try:
+                        c.open = False
+                    except Exception:
+                        pass
             self.page.overlay[:] = [c for c in self.page.overlay
                                     if not isinstance(c, ft.SnackBar)]
         except Exception:
@@ -2994,6 +3192,8 @@ class QAStudio:
                     bgcolor=T.VIOLET_SOFT, border_radius=T.R_SM,
                     border=ft.Border.all(1, "#D9D2FF"),
                     on_hover=regression._chip_hover, animate_scale=120))
+            if len(self.story_ids) > 1:
+                chips.append(regression._clear_chip(_clear_all_stories))
             self._chip_row.controls = chips
             self._chip_wrap.visible = bool(self.story_ids)
             # Keep the story checkbox-multiselect in sync with the chips: removing a
@@ -3024,6 +3224,18 @@ class QAStudio:
         def _remove_story(sid):
             self.story_ids = [s for s in self.story_ids if s != sid]
             self.story_field.value = ", ".join(str(s) for s in self.story_ids)
+            _build_chips()
+            self._estimated_tc = None
+            try:
+                self.story_field.update(); self._chip_row.update(); self._chip_wrap.update()
+            except Exception:
+                pass
+            _update_summary_inplace()
+            self._fetch_estimate()
+
+        def _clear_all_stories(e=None):
+            self.story_ids = []
+            self.story_field.value = ""
             _build_chips()
             self._estimated_tc = None
             try:
@@ -3239,7 +3451,7 @@ class QAStudio:
 
         # Sprint summary button — green (like Create) when a plan is selected,
         # grey/disabled when no plan is chosen yet.
-        _sum_enabled = bool(self.plan_id)
+        _sum_enabled = bool(self.plan_id) and self.can("act.sprint_summary")
         self._summary_btn = ft.FilledButton(
             "Sprint Summary report",
             icon=ft.Icons.SUMMARIZE_OUTLINED, height=42,
@@ -3261,12 +3473,14 @@ class QAStudio:
         _summary_row = self._summary_shadow
 
         # Open-in-Azure button beside the Test Plan ID (refreshed in _on_plan_change)
+        _can_open_plan = self.can("act.open_plan")
         self._open_plan_btn = ft.IconButton(
             ft.Icons.OPEN_IN_NEW, icon_size=17,
-            icon_color=(T.VIOLET_INK if self.plan_id else T.INK_3),
-            tooltip=("Open this test plan in Azure DevOps"
-                     if self.plan_id else "Select a test plan first"),
-            disabled=not bool(self.plan_id),
+            icon_color=(T.VIOLET_INK if (self.plan_id and _can_open_plan) else T.INK_3),
+            tooltip=("Open this test plan in Azure DevOps" if self.plan_id
+                     else "Select a test plan first") if _can_open_plan
+            else "You don’t have permission to open the plan",
+            disabled=not (bool(self.plan_id) and _can_open_plan),
             on_click=lambda e: self._open_azure(),
             style=ft.ButtonStyle(
                 bgcolor={"": T.VIOLET_SOFT} if self.plan_id else {"": T.CARD_2},
@@ -3300,7 +3514,8 @@ class QAStudio:
             ft.Row([
                 ft.Container(
                     green_btn("Create Plan", icon=ft.Icons.ADD, expand=True,
-                              on_click=lambda e: self._open_create_plan()),
+                              on_click=lambda e: self._open_create_plan(),
+                              disabled=not self.can("act.create_plan"), ignore_ro=True),
                     expand=1),
                 ft.Container(_summary_row, expand=1),
             ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
@@ -3361,9 +3576,10 @@ class QAStudio:
                 self.plan_id_field.update(); updated_any = True
         except Exception:
             pass
-        # Enable/recolor the Open-in-Azure button now that a plan is chosen
+        # Enable/recolor the Open-in-Azure button now that a plan is chosen — but
+        # only if the user actually has permission to open the plan.
         try:
-            if hasattr(self, "_open_plan_btn"):
+            if hasattr(self, "_open_plan_btn") and self.can("act.open_plan"):
                 self._open_plan_btn.disabled = False
                 self._open_plan_btn.icon_color = T.VIOLET_INK
                 self._open_plan_btn.tooltip = "Open this test plan in Azure DevOps"
@@ -3373,9 +3589,10 @@ class QAStudio:
                 self._open_plan_btn.update(); updated_any = True
         except Exception:
             pass
-        # Enable/recolor the Sprint Summary button now that a plan is chosen
+        # Enable/recolor the Sprint Summary button now that a plan is chosen —
+        # only if the user has permission to generate it.
         try:
-            if hasattr(self, "_summary_btn"):
+            if hasattr(self, "_summary_btn") and self.can("act.sprint_summary"):
                 self._summary_btn.disabled = False
                 self._summary_btn.style = ft.ButtonStyle(
                     bgcolor={"": T.GREEN}, color={"": "#FFFFFF"}, elevation=0,
@@ -3476,7 +3693,19 @@ class QAStudio:
     def _fetch_estimate(self):
         """Fetch the real number of test cases across selected stories (steps mode).
         Updates only the estimate labels in place — no full render, so scroll stays put."""
-        if not (self.connected and self.project and self.plan_id and self.story_ids):
+        if not self.story_ids:
+            # No stories selected (e.g. just cleared) -> reset the estimate in place
+            # instead of leaving the previous count stale on the THIS RUN panel.
+            self._estimated_tc = 0
+            try:
+                if hasattr(self, "_est_num"):
+                    self._est_num.value = "~0"
+                    self._est_sub.value = "test cases\nacross 0 stories"
+                    self._est_num.update(); self._est_sub.update()
+            except Exception:
+                pass
+            return
+        if not (self.connected and self.project and self.plan_id):
             return
         def work():
             try:
@@ -3657,6 +3886,11 @@ class QAStudio:
                           org=org, gmail_sender=sender,
                           model=(self._saved_model(name) or None))
         self._err("")
+        # Bump the connect-generation token: this attempt supersedes any earlier
+        # one, and switching the provider (or starting another connect) bumps it
+        # again so this worker's slow/stale results get ignored.
+        self._connect_gen = getattr(self, "_connect_gen", 0) + 1
+        my_gen = self._connect_gen
         self._connecting = True
         self._connect_status = "Validating PAT & loading projects…"
         self.render()   # show the spinner immediately
@@ -3676,11 +3910,18 @@ class QAStudio:
             return f"Connection failed: {(msg or '')[:90]}"
 
         def work():
+            def alive():
+                # False once a newer connect started or the provider was switched.
+                return my_gen == self._connect_gen
             try:
                 # 1) Validate the AI provider key first (cheap ping)
+                if not alive():
+                    return
                 self._connect_status = "Checking AI provider key…"
                 self._safe_render()
                 kok, kmsg = E.validate_api_key()
+                if not alive():
+                    return            # provider switched / re-connected mid-ping
                 if not kok:
                     prov = E.T_disp(E.AI_PROVIDER)
                     if kmsg == "auth":
@@ -3714,9 +3955,13 @@ class QAStudio:
                             f"generation may pause and retry.")
                     self.ui_safe(lambda: self._toast(warn))
                 # 2) Validate the Azure PAT
+                if not alive():
+                    return
                 self._connect_status = "Validating PAT & loading projects…"
                 self._safe_render()
                 ok, msg = E.validate_pat(pat)
+                if not alive():
+                    return
                 if not ok:
                     self._err(_friendly(msg))
                     return
@@ -3729,12 +3974,15 @@ class QAStudio:
                     self.project = self._projects[0]
                     self._load_plans()
             except Exception as ex:
-                self._err(_friendly(str(ex)))
+                if alive():
+                    self._err(_friendly(str(ex)))
             finally:
-                # ALWAYS clear the loading state and repaint, success or fail
-                self._connecting = False
-                self._connect_status = ""
-                self._safe_render()
+                # Clear the loading state only if we're still the current attempt;
+                # otherwise a superseded worker would wipe the newer one's spinner.
+                if alive():
+                    self._connecting = False
+                    self._connect_status = ""
+                    self._safe_render()
         self._bg(work)
 
     def _bg(self, fn):
@@ -3752,6 +4000,20 @@ class QAStudio:
         except Exception:
             pass
 
+    def _rail_nav_column(self, nav_items):
+        # Scrollable nav list; the same instance is stored each render so
+        # _restore_scroll can reapply the remembered offset (no jump on select).
+        self._rail_scroll = ft.Column(
+            nav_items, spacing=2, expand=True, scroll=ft.ScrollMode.AUTO,
+            key="rail_scroll", on_scroll=self._track_rail_scroll)
+        return self._rail_scroll
+
+    def _track_rail_scroll(self, e):
+        try:
+            self._rail_scroll_offset = e.pixels
+        except Exception:
+            pass
+
     def _restore_scroll(self):
         # Restore scroll after a full render so opening a dropdown / ticking a
         # checkbox / pressing Generate doesn't snap to the top.
@@ -3762,17 +4024,25 @@ class QAStudio:
         # settles. The closure re-reads _left_scroll each time so it always acts
         # on the freshest reference (in case another render fires mid-flight).
         off = getattr(self, "_scroll_offset", 0) or 0
-        if not off:
+        rail_off = getattr(self, "_rail_scroll_offset", 0) or 0
+        if not off and not rail_off:
             return
 
         def _do():
-            col = getattr(self, "_left_scroll", None)
-            if col is None:
-                return
-            try:
-                col.scroll_to(offset=off, duration=0)
-            except Exception:
-                pass
+            if off:
+                col = getattr(self, "_left_scroll", None)
+                if col is not None:
+                    try:
+                        col.scroll_to(offset=off, duration=0)
+                    except Exception:
+                        pass
+            if rail_off:
+                rc = getattr(self, "_rail_scroll", None)
+                if rc is not None:
+                    try:
+                        rc.scroll_to(offset=rail_off, duration=0)
+                    except Exception:
+                        pass
             try:
                 self.page.update()
             except Exception:
@@ -3879,6 +4149,8 @@ class QAStudio:
     #  CREATE TEST PLAN MODAL
     # ═══════════════════════════════════════════════════════════════════════════
     def _open_create_plan(self):
+        if not self.can("act.create_plan"):
+            return self._toast("You don’t have permission to create a test plan.")
         if not self.project:
             self._err("Select a project first."); return
 
@@ -4074,6 +4346,8 @@ class QAStudio:
 
     # ── Sprint summary report (read-only, before a run) ────────────────────
     def _open_sprint_summary(self):
+        if not self.can("act.sprint_summary"):
+            return self._toast("You don’t have permission to generate the sprint summary.")
         if not (self.project and self.plan_id):
             self._toast("Select a test plan first.")
             return
@@ -4399,6 +4673,65 @@ class QAStudio:
             dlg.open = False
             self.page.update()
 
+    def _confirm(self, title, message, on_yes, yes_label="Remove", danger=True,
+                 icon=ft.Icons.HELP_OUTLINE):
+        """Lightweight confirm via a floating snackbar with an action button. Shows
+        INSTANTLY even over a heavy table — a modal AlertDialog has to render over
+        (and re-lay-out) the whole page behind its barrier, which made it lag; the
+        floating snackbar is the same fast path as the toasts. Calls on_yes() only
+        when the user taps the action."""
+        try:
+            sb = ft.SnackBar(
+                content=ft.Row([
+                    ft.Icon(icon, color="#FFFFFF", size=18),
+                    ft.Text(message, color="#FFFFFF", size=13,
+                            weight=ft.FontWeight.W_600, expand=True),
+                ], spacing=10),
+                bgcolor=T.INK, duration=7000,
+                behavior=ft.SnackBarBehavior.FLOATING,
+                shape=ft.RoundedRectangleBorder(radius=12),
+                margin=ft.Margin.all(16),
+                padding=ft.Padding.symmetric(vertical=12, horizontal=16),
+                action=yes_label,
+                action_color=(T.RED if danger else T.GREEN),
+                # Run the action directly on the page thread. (Deferring it through
+                # ui_safe -> page.run_thread executed the heavy delete + re-render
+                # OFF the UI thread, which wedged Flet's event loop — the whole app
+                # stopped responding after a couple of deletes.)
+                on_action=lambda e: on_yes())
+            # Properly dismiss any showing snackbar first (Flet shows one at a time;
+            # just dropping it from the overlay left its state "open" and blocked
+            # the next one), then mount + open this one.
+            for c in list(self.page.overlay):
+                if isinstance(c, ft.SnackBar):
+                    try:
+                        c.open = False
+                    except Exception:
+                        pass
+            self.page.overlay[:] = [c for c in self.page.overlay
+                                    if not isinstance(c, ft.SnackBar)]
+            self.page.overlay.append(sb)
+            sb.open = True
+            self.page.update()
+        except Exception:
+            # If the action snackbar isn't supported, fall back to the modal dialog.
+            _yes_btn = danger_btn if danger else green_btn
+            dlg = ft.AlertDialog(
+                modal=True,
+                title=ft.Row([ft.Icon(icon, size=20, color=(T.RED if danger else T.VIOLET)),
+                              ft.Text(title, size=15, weight=ft.FontWeight.BOLD,
+                                      color=T.INK)], spacing=9),
+                content=ft.Container(width=380, content=ft.Text(
+                    message, size=12.5, color=T.INK_2, weight=ft.FontWeight.W_500)),
+                actions=[
+                    ghost_btn("Cancel", on_click=lambda e: self._close_dialog()),
+                    _yes_btn(yes_label, on_click=lambda e: (self._close_dialog(),
+                                                            on_yes())),
+                ],
+                actions_alignment=ft.MainAxisAlignment.END,
+                shape=ft.RoundedRectangleBorder(radius=T.R_LG))
+            self._show_dialog(dlg)
+
     # ═══════════════════════════════════════════════════════════════════════════
     #  EXISTING STEPS MODAL
     # ═══════════════════════════════════════════════════════════════════════════
@@ -4475,6 +4808,10 @@ class QAStudio:
     #  RUN — start + live screen
     # ═══════════════════════════════════════════════════════════════════════════
     def _start_run(self):
+        # RBAC: Viewers (or any role without RUN) can't start a run.
+        if not self.can(auth.CAP_RUN):
+            self._err("Your role doesn’t allow starting a run. Ask an admin for access.")
+            return
         # Commit any ID still sitting in the input box
         inp = getattr(self, "_story_input", None)
         if inp is not None and (inp.value or "").strip():
@@ -5326,7 +5663,8 @@ class QAStudio:
             primary_btn("New run", icon=ft.Icons.ARROW_FORWARD, expand=True,
                         on_click=lambda e: self._new_run()),
             ghost_btn("Open plan in Azure", icon=ft.Icons.FOLDER_OUTLINED, expand=True,
-                      on_click=lambda e: self._open_azure()),
+                      on_click=lambda e: self._open_azure(),
+                      disabled=not self.can("act.open_plan"), ignore_ro=True),
         ], spacing=14, expand=True)
         body = ft.Row([ft.Container(left, expand=True),
                        ft.Container(right, width=340)], spacing=22,
@@ -5372,6 +5710,8 @@ class QAStudio:
             pass
 
     def _open_azure(self):
+        if not self.can("act.open_plan"):
+            return self._toast("You don’t have permission to open the plan.")
         if self.project and self.plan_id:
             url = (f"https://dev.azure.com/{E.AZURE_ORG}/{self.project}"
                    f"/_testPlans/define?planId={self.plan_id}")
@@ -6042,10 +6382,13 @@ class QAStudio:
 
 # ═══════════════════════════════════════════════════════════════════════════════
 def main(page: ft.Page):
+    # Flet needs direct font-FILE urls (.ttf), not Google's CSS endpoint — the old
+    # css2?family=… links silently failed and the UI fell back to Roboto. These are
+    # the variable .ttf files from the google/fonts repo (jsDelivr mirror).
     page.fonts = {
-        T.F_UI: "https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800",
-        T.F_MONO: "https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700",
-        T.F_AR: "https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;600;700",
+        T.F_UI: "https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/plusjakartasans/PlusJakartaSans%5Bwght%5D.ttf",
+        T.F_MONO: "https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/jetbrainsmono/JetBrainsMono%5Bwght%5D.ttf",
+        T.F_AR: "https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/ibmplexsansarabic/IBMPlexSansArabic-Regular.ttf",
     }
     try:
         page.theme = ft.Theme(font_family=T.F_UI, color_scheme_seed=T.VIOLET)
@@ -6069,6 +6412,29 @@ if __name__ == "__main__":
     else:
         # Default: native DESKTOP window. Requires the flet desktop client binary.
         # If it is missing/blocked, install it from PyPI:  pip install flet-desktop
+        #
+        # External login: show the Stitch glass login (native WebView2 via pywebview)
+        # BEFORE the Flet window whenever no session exists. On success the session is
+        # cached, so the Flet app boots straight in. If pywebview is unavailable we
+        # fall through to the in-app Flet gate (auth_screen) so the app still runs.
+        try:
+            if auth.configured() and auth.acquire_silent() is None:
+                import web_login
+                _res = web_login.run_login(1120, 760)
+                if _res is None:
+                    raise SystemExit(0)            # window closed without signing in
+                if isinstance(_res, dict) and _res.get("user"):
+                    _th = _res.get("theme")
+                    if _th in ("light", "dark"):
+                        try:
+                            T.apply_theme(_th)
+                        except Exception:
+                            pass
+                # _res == {"unavailable": True}  → fall through to the Flet gate
+        except SystemExit:
+            raise
+        except Exception:
+            pass
         try:
             _launch()
         except Exception as _e:

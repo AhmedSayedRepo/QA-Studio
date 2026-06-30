@@ -586,12 +586,14 @@ def validate_pat(pat):
     except Exception as e:
         return False, str(e)
 
-def validate_api_key():
+def validate_api_key(timeout=20):
     """Cheap check that the configured AI provider key works.
     Returns (ok, category). category is one of: ok, credit, ratelimited, auth,
     bad_model, network, timeout, content_filter, server, overloaded,
     missing-package:<pkg>, or error:<message>. The UI maps these to friendly text.
-    Uses a single direct call (no retry) so Connect is fast.
+    Uses a single direct call (no retry) so Connect is fast, with a short
+    `timeout` (seconds) so a slow/unreachable provider can't hang Connect — the
+    OpenAI SDK otherwise defaults to a 600s timeout.
     """
     cfg = _ai_cfg(); provider = AI_PROVIDER
     if provider == "manus":
@@ -600,7 +602,8 @@ def validate_api_key():
         try:
             from openai import OpenAI
             client = OpenAI(base_url=cfg.get("base_url") or "https://api.manus.im",
-                            api_key="placeholder", default_headers={"API_KEY": cfg["api_key"]})
+                            api_key="placeholder", timeout=timeout,
+                            default_headers={"API_KEY": cfg["api_key"]})
             client.get("/v1/tasks?limit=1", cast_to=object)
             return True, "ok"
         except ModuleNotFoundError as e:
@@ -618,7 +621,7 @@ def validate_api_key():
                 return False, cat
             return False, "error:" + friendly
     try:
-        _ai_call_once(provider, cfg, "ping", [], 8, None)
+        _ai_call_once(provider, cfg, "ping", [], 8, timeout)
         return True, "ok"
     except CreditBalanceError:
         return True, "credit"          # key valid, just out of credit
@@ -867,6 +870,109 @@ def create_test_plan(project, name, iteration_path, pat=None):
 def _get_root_suite_id(project, plan_id, pat=None):
     data = _azure_get(f"https://dev.azure.com/{AZURE_ORG}/{project}/_apis/testplan/plans/{plan_id}?api-version=7.0", pat)
     return data.get("rootSuite", {}).get("id")
+
+
+def sprint_report_data(project, iteration_path, pat=None):
+    """Pull the User Stories AND Bugs in a sprint iteration with their states, for
+    the Sprint (closure) Report. Returns:
+        {"stories":[{id,title,state,parent,epic}], "bugs":[{id,title,state,tags}],
+         "story_by_state":{state:count}, "bug_by_state":{state:count},
+         "total_bugs":int, "regression_bugs":int, "sprint_bugs":int}
+    'regression_bugs' = bugs tagged with 'Regression' (System.Tags); the rest are
+    counted as sprint bugs. Best-effort: any failed call yields empty data."""
+    from collections import Counter
+    pat = pat or AZURE_PAT
+    safe = (iteration_path or "").replace("'", "''")
+
+    def _ids(wit):
+        wiql = {"query": ("SELECT [System.Id] FROM WorkItems WHERE "
+                          f"[System.WorkItemType] = '{wit}' AND "
+                          f"[System.IterationPath] = '{safe}' ORDER BY [System.Id]")}
+        url = f"https://dev.azure.com/{AZURE_ORG}/{project}/_apis/wit/wiql?api-version=7.0"
+        try:
+            r = _az_session().post(url, json=wiql, auth=("", pat), timeout=30)
+            return [w["id"] for w in r.json().get("workItems", [])] if r.status_code == 200 else []
+        except Exception:
+            return []
+
+    def _items(ids, fields):
+        out = []
+        for i in range(0, len(ids), 200):
+            b = ids[i:i + 200]
+            url = (f"https://dev.azure.com/{AZURE_ORG}/{project}/_apis/wit/workitems"
+                   f"?ids={','.join(map(str, b))}&fields={fields}&api-version=7.0")
+            try:
+                r = _az_session().get(url, auth=("", pat), timeout=30)
+                if r.status_code == 200:
+                    out += r.json().get("value", [])
+            except Exception:
+                pass
+        return out
+
+    stories = []
+    for w in _items(_ids("User Story"),
+                    "System.Id,System.Title,System.State,System.Parent"):
+        f = w.get("fields", {})
+        stories.append({"id": w["id"], "title": f.get("System.Title", ""),
+                        "state": f.get("System.State", "Unknown"),
+                        "parent": f.get("System.Parent")})
+
+    # Resolve each story's Epic by walking the parent chain (Story → Feature →
+    # Epic). We cache every work item we fetch and climb at most a few hops; if no
+    # Epic is found we fall back to the nearest ancestor's title (usually the
+    # Feature), and to "" when the story has no parent at all. Used to group the
+    # report by epic (e.g. Admin Portal / Subscriber Portal).
+    _wi = {}  # id -> {"type","title","parent"}
+
+    def _fetch_wi(ids):
+        ids = [i for i in ids if i and i not in _wi]
+        if not ids:
+            return
+        for w in _items(ids, "System.Id,System.Title,System.WorkItemType,System.Parent"):
+            f = w.get("fields", {})
+            _wi[w["id"]] = {"type": f.get("System.WorkItemType", ""),
+                            "title": f.get("System.Title", ""),
+                            "parent": f.get("System.Parent")}
+
+    try:
+        pending = [s["parent"] for s in stories if s.get("parent")]
+        for _hop in range(5):
+            _fetch_wi(pending)
+            pending = [v["parent"] for v in _wi.values()
+                       if v.get("parent") and v["parent"] not in _wi]
+            if not pending:
+                break
+
+        def _epic_of(pid):
+            seen, cur, nearest = set(), pid, ""
+            while cur and cur in _wi and cur not in seen:
+                seen.add(cur)
+                node = _wi[cur]
+                if (node.get("type") or "").strip().lower() == "epic":
+                    return node.get("title") or ""
+                nearest = nearest or node.get("title") or ""
+                cur = node.get("parent")
+            return nearest
+
+        for s in stories:
+            s["epic"] = _epic_of(s.get("parent"))
+    except Exception:
+        for s in stories:
+            s.setdefault("epic", "")
+
+    bugs = []
+    for w in _items(_ids("Bug"),
+                    "System.Id,System.Title,System.State,System.Tags"):
+        f = w.get("fields", {})
+        bugs.append({"id": w["id"], "title": f.get("System.Title", ""),
+                     "state": f.get("System.State", "Unknown"),
+                     "tags": f.get("System.Tags", "") or ""})
+    reg = sum(1 for b in bugs if "regression" in (b["tags"] or "").lower())
+    return {"stories": stories, "bugs": bugs,
+            "story_by_state": dict(Counter(s["state"] for s in stories)),
+            "bug_by_state": dict(Counter(b["state"] for b in bugs)),
+            "total_bugs": len(bugs), "regression_bugs": reg,
+            "sprint_bugs": len(bugs) - reg}
 
 
 def sprint_summary(project, plan_id, pat=None):

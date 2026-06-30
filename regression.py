@@ -1374,6 +1374,62 @@ def _chip_hover(e):
         pass
 
 
+def _clear_chip(on_click, label="Clear all"):
+    """Small trailing 'clear all' pill placed after a row of selection chips."""
+    return ft.Container(
+        ft.Row([ft.Icon(ft.Icons.CLOSE_ROUNDED, size=12, color=T.INK_3),
+                ft.Text(label, size=11, weight=ft.FontWeight.BOLD, color=T.INK_3)],
+               spacing=4, tight=True),
+        padding=ft.Padding.symmetric(vertical=4, horizontal=10),
+        border_radius=999, border=ft.Border.all(1, T.BORDER_2),
+        on_click=on_click, tooltip="Remove all",
+        on_hover=_chip_hover, animate_scale=120)
+
+
+def _feature_header(app, label, count, collapsed, on_toggle):
+    """Polished, whole-row-clickable feature-group header for the plan tables: a
+    violet gradient icon chip, the feature name, a count badge, and a chevron on the
+    right, on a soft violet-tinted card. Clicking anywhere toggles collapse (an ink
+    ripple gives click feedback)."""
+    chev = (ft.Icons.KEYBOARD_ARROW_RIGHT if collapsed
+            else ft.Icons.KEYBOARD_ARROW_DOWN)
+    icon_chip = ft.Container(
+        ft.Icon(ft.Icons.FOLDER_ROUNDED, size=15, color="#FFFFFF"),
+        width=28, height=28, border_radius=9, alignment=ft.Alignment.CENTER,
+        gradient=ft.LinearGradient(begin=ft.Alignment.TOP_LEFT,
+                                   end=ft.Alignment.BOTTOM_RIGHT,
+                                   colors=[T.VIOLET, T.VIOLET_INK]),
+        shadow=ft.BoxShadow(blur_radius=8, spread_radius=-3, offset=ft.Offset(0, 3),
+                            color=ft.Colors.with_opacity(0.40, T.VIOLET)))
+    count_badge = ft.Container(
+        ft.Text(f"{count} {'story' if count == 1 else 'stories'}",
+                size=11, weight=ft.FontWeight.W_800, color=T.VIOLET_INK),
+        padding=ft.Padding.symmetric(vertical=3, horizontal=10), border_radius=999,
+        bgcolor=ft.Colors.with_opacity(0.14, T.VIOLET))
+    return ft.Container(
+        ft.Row([
+            icon_chip,
+            ft.Row([_txt(label, size=13, weight=ft.FontWeight.W_900, color=T.INK,
+                         no_wrap=True),
+                    count_badge],
+                   spacing=10, expand=True,
+                   vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            ft.Icon(chev, size=22, color=T.VIOLET_INK),
+        ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        on_click=on_toggle, ink=True,
+        tooltip="Collapse / expand this feature",
+        padding=ft.Padding.only(left=10, right=12, top=9, bottom=9),
+        margin=ft.Margin.only(top=10, bottom=4, left=2, right=2),
+        gradient=ft.LinearGradient(
+            begin=ft.Alignment.CENTER_LEFT, end=ft.Alignment.CENTER_RIGHT,
+            colors=[ft.Colors.with_opacity(0.13, T.VIOLET),
+                    ft.Colors.with_opacity(0.04, T.VIOLET)]),
+        border=ft.Border.all(1, ft.Colors.with_opacity(0.40, T.VIOLET)),
+        border_radius=12,
+        shadow=ft.BoxShadow(blur_radius=12, spread_radius=-5, offset=ft.Offset(0, 5),
+                            color=ft.Colors.with_opacity(0.16, T.VIOLET)))
+
+
 def _avatar(name, size=26):
     """Round initial-avatar; colour is stable per name."""
     init, col = _av(name)
@@ -2117,6 +2173,8 @@ def _create_screen(app):
             _it = next((x for x in app._cp_iterations if x["path"] == _p), None)
             _nm = (_sprint_num(_it["name"]) or _it["name"]) if _it else _p
             _sp_chips.append(_sprint_chip(_p, _nm))
+        if len(_sp_chips) > 1:
+            _sp_chips.append(_clear_chip(lambda e: _all_sprints(False)))
         sprint_chips = ft.Row(_sp_chips, wrap=True, spacing=6, run_spacing=6)
         # While loading we show nothing here — the bottom "Loading sprint stories…"
         # spinner already indicates progress. Once loaded, show the story count.
@@ -2152,7 +2210,8 @@ def _create_screen(app):
         # enable/disable calc_btn in-place based on current state
         cb = _cp_calc_btn_cell[0]
         if cb is not None:
-            should_enable = bool(app._cp_rows and app._cp_res_names)
+            should_enable = bool(app._cp_rows and app._cp_res_names) \
+                and not getattr(app, "readonly", False)
             try:
                 cb.opacity = 1.0 if should_enable else 0.45
                 cb.on_click = _calculate if should_enable else None
@@ -2324,6 +2383,8 @@ def _create_screen(app):
         cp_calc_note_text.value = app._cp_calc_msg
 
     def _calculate(e):
+        if getattr(app, "readonly", False):
+            return app._toast("Read-only — your role can’t generate plans.")
         # Don't let two plans generate at once — running both starves Python's GIL
         # and makes every render freeze for tens of seconds (see qa_perf.log).
         if app._reg_busy:
@@ -2455,9 +2516,21 @@ def _create_screen(app):
             return _a
 
         def _delete_story(sid):
-            def _d(e):
+            def _do():
                 app._cp_rows = [r for r in app._cp_rows if r["id"] != sid]
                 _refresh_all()             # rebuild table + recalc, no scroll jump
+                try:
+                    app._toast(f"Removed story {sid} from the sprint plan.")
+                except Exception:
+                    pass
+            def _d(e):
+                if getattr(app, "readonly", False):
+                    return app._toast("Read-only — your role can’t modify the plan.")
+                app._confirm(
+                    "Remove story?",
+                    f"Remove story {sid} from the sprint plan and recalculate the "
+                    "workload? This doesn't change anything in Azure DevOps.",
+                    _do, yes_label="Remove")
             return _d
 
         hdr = ft.Container(
@@ -2569,22 +2642,8 @@ def _create_screen(app):
                     is_c = fname in coll
                     fid = frows[0].get("feature_id") if frows else None
                     fl = f"[{fid}]  " if fid else ""
-                    chev = (ft.Icons.KEYBOARD_ARROW_RIGHT if is_c
-                            else ft.Icons.KEYBOARD_ARROW_DOWN)
-                    out.append(ft.Container(
-                        ft.Row([
-                            ft.IconButton(icon=chev, icon_size=16, icon_color=T.VIOLET_INK,
-                                          on_click=_toggle_cp_feature(fname),
-                                          style=ft.ButtonStyle(
-                                              padding=ft.Padding.all(2),
-                                              shape=ft.RoundedRectangleBorder(radius=4))),
-                            ft.Icon(ft.Icons.FOLDER_OUTLINED, size=14, color=T.VIOLET_INK),
-                            _txt(f"{fl}{fname}", size=11.5, weight=ft.FontWeight.BOLD,
-                                 color=T.VIOLET_INK),
-                            _txt(f"· {len(frows)} stories", size=11, color=T.INK_3),
-                        ], spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                        padding=ft.Padding.symmetric(vertical=4, horizontal=10),
-                        bgcolor=ft.Colors.with_opacity(0.06, T.VIOLET)))
+                    out.append(_feature_header(app, f"{fl}{fname}", len(frows),
+                                               is_c, _toggle_cp_feature(fname)))
                     if not is_c:
                         for r in frows:
                             out.append(_row_for(r, i))
@@ -2907,12 +2966,24 @@ def screen(app):
 
     def _delete_row(sid):
         # inline-delete from the calculated plan table + recalculate
-        def _d(e):
+        def _do():
             app._reg_selected_rows = [r for r in (app._reg_selected_rows or [])
                                       if r.get("id") != sid]
             app._reg_selected = [s for s in app._reg_selected if s["id"] != sid]
             app._reg_export_msg = app._reg_calc_msg = None
             app.render()
+            try:
+                app._toast(f"Removed story {sid} from the regression plan.")
+            except Exception:
+                pass
+        def _d(e):
+            if getattr(app, "readonly", False):
+                return app._toast("Read-only — your role can’t modify the plan.")
+            app._confirm(
+                "Remove story?",
+                f"Remove story {sid} from the regression plan and recalculate the "
+                "effort? This doesn't change anything in Azure DevOps.",
+                _do, yes_label="Remove")
         return _d
 
     def _use_setup_selection(e):
@@ -2995,6 +3066,8 @@ def screen(app):
         return _calc_btn_cell[0]
 
     def _calculate(e):
+        if getattr(app, "readonly", False):
+            return app._toast("Read-only — your role can’t generate plans.")
         # Don't let two plans generate at once — running both starves Python's GIL
         # and makes every render freeze for tens of seconds (see qa_perf.log).
         if app._cp_busy or app._cp_stories_loading:
@@ -3076,6 +3149,8 @@ def screen(app):
         threading.Thread(target=_work, daemon=True).start()
 
     def _regenerate(e):
+        if getattr(app, "readonly", False):
+            return app._toast("Read-only — your role can’t regenerate plans.")
         # Force-refresh: drop the cached suite maps, counts and metadata so the plan
         # is rebuilt from a fresh Azure pull — this is how new test cases in existing
         # suites (and changed priorities/states) get reflected. We KEEP the feature
@@ -3355,11 +3430,19 @@ def screen(app):
         return (_sprint_num(p.get("sprint") or "") or _sprint_num(p.get("name") or "")
                 or (p.get("sprint") or "").strip() or f"[{p['id']}]")
 
-    plan_chips = ft.Row(
-        [_chip(_plan_chip_label(p), (lambda e, x=p["id"]: _remove_plan(x)))
-         for p in app._reg_plans_selected], wrap=True, spacing=6, run_spacing=6)
+    _plan_chip_list = [_chip(_plan_chip_label(p), (lambda e, x=p["id"]: _remove_plan(x)))
+                       for p in app._reg_plans_selected]
+    if len(_plan_chip_list) > 1:
+        _plan_chip_list.append(_clear_chip(lambda e: _all_plans(False)))
+    plan_chips = ft.Row(_plan_chip_list, wrap=True, spacing=6, run_spacing=6)
 
     _STORY_CHIP_CAP = 40
+
+    def _clear_stories(e=None):
+        app._reg_selected = []
+        app._reg_selected_rows = []
+        app._reg_export_msg = app._reg_calc_msg = None
+        app.render()
 
     def _story_chip_controls():
         sel = app._reg_selected
@@ -3371,6 +3454,8 @@ def screen(app):
                         weight=ft.FontWeight.BOLD, color=T.INK_3),
                 padding=ft.Padding.only(left=10, right=10, top=5, bottom=5),
                 bgcolor=T.CARD_2, border_radius=T.R_SM))
+        if len(sel) > 1:
+            ctrls.append(_clear_chip(_clear_stories))
         return ctrls
 
     story_chips = ft.Row(_story_chip_controls(), wrap=True, spacing=6, run_spacing=6)
@@ -3396,7 +3481,8 @@ def screen(app):
                 pass
         cb = _calc_btn_cell[0]
         if cb is not None:
-            should = bool(app._reg_selected) and not app._reg_busy
+            should = bool(app._reg_selected) and not app._reg_busy \
+                and not getattr(app, "readonly", False)
             try:
                 cb.opacity = 1.0 if should else 0.45
                 cb.on_click = _calculate if should else None
@@ -3624,22 +3710,8 @@ def screen(app):
                         _refresh_table()
                     return _h
 
-                _chev = (ft.Icons.KEYBOARD_ARROW_RIGHT if _is_c
-                         else ft.Icons.KEYBOARD_ARROW_DOWN)
-                rows.append(ft.Container(
-                    ft.Row([
-                        ft.IconButton(icon=_chev, icon_size=16, icon_color=T.VIOLET_INK,
-                                      on_click=_make_tog(),
-                                      style=ft.ButtonStyle(
-                                          padding=ft.Padding.all(2),
-                                          shape=ft.RoundedRectangleBorder(radius=4))),
-                        ft.Icon(ft.Icons.FOLDER_OUTLINED, size=14, color=T.VIOLET_INK),
-                        _txt(f"{_fl}{fname}", size=11.5,
-                             weight=ft.FontWeight.BOLD, color=T.VIOLET_INK),
-                        _txt(f"· {len(fstories)} stories", size=11, color=T.INK_3),
-                    ], spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                    padding=ft.Padding.symmetric(vertical=4, horizontal=10),
-                    bgcolor=ft.Colors.with_opacity(0.06, T.VIOLET)))
+                rows.append(_feature_header(app, f"{_fl}{fname}", len(fstories),
+                                            _is_c, _make_tog()))
                 if not _is_c:
                     for s in fstories:
                         rows.append(_reg_row_for(s, _ri))
