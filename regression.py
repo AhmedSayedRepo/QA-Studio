@@ -2891,7 +2891,6 @@ def screen(app):
             "the test plans right here once connected.")
 
     app._reg_mode = "existing"
-    _t0 = _time.perf_counter()   # perf: measure the whole screen() build
 
     # lazy-load test plans
     if not app._plans and not app._reg_plans_loading:
@@ -2992,11 +2991,7 @@ def screen(app):
                 try:
                     _fn()          # in-place refresh (fast) instead of full render
                     _ok = True
-                    _perf_log("reg.delete_row: in-place refresh")
                 except Exception:
-                    import traceback as _tb
-                    _perf_log("reg.delete_row FELL BACK to render():\n"
-                              + _tb.format_exc())
                     _ok = False
             if not _ok:
                 app.render()        # last row removed, or in-place refresh failed
@@ -3641,9 +3636,7 @@ def screen(app):
     # While (re)generating, don't build the old table — the body shows the
     # progress spinner + skeleton instead, then the fresh table on completion.
     if app._reg_selected_rows and not app._reg_busy:
-        _tpp = _time.perf_counter()
         d = plan_payload(app)
-        _perf_log("reg.plan_payload: %.0f ms" % ((_time.perf_counter() - _tpp) * 1000))
 
         def _cell(w, content, expand=False):
             return ft.Container(content, width=(None if expand else w), expand=expand,
@@ -3771,9 +3764,7 @@ def screen(app):
 
             return rows + ([_pager] if _total > 1 else [])
 
-        _ttb = _time.perf_counter()
         table_body_col = ft.Column(_build_table_body(), spacing=0)
-        _perf_log("reg.table_build: %.0f ms" % ((_time.perf_counter() - _ttb) * 1000))
 
         def _refresh_table():
             """Swap table rows/pager in-place without a full page rebuild.
@@ -3966,13 +3957,9 @@ def screen(app):
         body_children += [ft.Container(height=16), _card(_skel(6))]
 
     body = ft.Column(body_children, spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
-    _tsh = _time.perf_counter()
-    _view = app.shell("Regression Plan",
-                      "Build a regression plan from your test plans & their stories", body,
-                      right=ghost_btn("Use Setup selection", icon=ft.Icons.DOWNLOAD,
-                                      on_click=_use_setup_selection),
-                      badge="STEP R")
-    _perf_log("reg.shell: %.0f ms" % ((_time.perf_counter() - _tsh) * 1000))
-    _perf_log("reg.screen TOTAL: %.0f ms" % ((_time.perf_counter() - _t0) * 1000))
-    return _view
+    return app.shell("Regression Plan",
+                     "Build a regression plan from your test plans & their stories", body,
+                     right=ghost_btn("Use Setup selection", icon=ft.Icons.DOWNLOAD,
+                                     on_click=_use_setup_selection),
+                     badge="STEP R")
 # perf: lazy-build dropdown rows to keep full renders cheap

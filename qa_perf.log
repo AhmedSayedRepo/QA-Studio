@@ -1227,3 +1227,5 @@
 09:37:36  table.flet_update: 30 ms
 09:38:29  render[regression]: build 2517 ms + page.update 41 ms = 2558 ms
 09:41:21  render[setup]: build 469 ms + page.update 11 ms = 480 ms
+20:58:34  render[setup]: build 25 ms + page.update 4 ms = 29 ms
+20:58:34  render[setup]: build 81 ms + page.update 10 ms = 92 ms
