@@ -14,11 +14,42 @@ set "DEST=%LOCALAPPDATA%\QA Studio"
 set "ZIP=%TEMP%\qastudio_src.zip"
 set "WORK=%TEMP%\qastudio_src"
 
-rem --- find Python (prefer the py launcher, else python on PATH) ---
-set "PY=py -3"
-where py >nul 2>&1 || set "PY=python"
-%PY% --version >nul 2>&1 || (
-  echo Python 3 was not found. Install it from https://www.python.org/downloads/ ^(tick "Add to PATH"^) and re-run.
+rem --- find Python; if missing, INSTALL IT AUTOMATICALLY (no manual download) ---
+set "PY="
+if not defined PY ( py -3 --version   >nul 2>&1 && set "PY=py -3" )
+if not defined PY ( python --version  >nul 2>&1 && set "PY=python" )
+
+if not defined PY (
+  echo Python 3 was not found - installing it automatically. Please wait...
+  rem 1) winget (built into Windows 10/11) - silent, adds Python to PATH
+  where winget >nul 2>&1 && winget install --id Python.Python.3.12 -e --scope user --silent --accept-package-agreements --accept-source-agreements
+)
+if not defined PY ( py -3 --version   >nul 2>&1 && set "PY=py -3" )
+if not defined PY ( python --version  >nul 2>&1 && set "PY=python" )
+
+if not defined PY (
+  rem 2) fall back to the official python.org installer (silent, per-user, on PATH)
+  echo Downloading the Python installer...
+  powershell -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; try { Invoke-WebRequest -UseBasicParsing -Uri 'https://www.python.org/ftp/python/3.12.8/python-3.12.8-amd64.exe' -OutFile '%TEMP%\python-setup.exe' } catch { exit 1 }"
+  if exist "%TEMP%\python-setup.exe" (
+    echo Installing Python ^(this can take a minute^)...
+    "%TEMP%\python-setup.exe" /quiet InstallAllUsers=0 PrependPath=1 Include_pip=1 Include_launcher=1
+    del "%TEMP%\python-setup.exe" >nul 2>&1
+  )
+)
+if not defined PY ( py -3 --version   >nul 2>&1 && set "PY=py -3" )
+if not defined PY ( python --version  >nul 2>&1 && set "PY=python" )
+if not defined PY (
+  rem 3) last resort: use python.exe from the standard per-user install location
+  for /f "delims=" %%P in ('dir /b /s "%LOCALAPPDATA%\Programs\Python\Python3*\python.exe" 2^>nul') do (
+    set "PATH=%%~dpP;%PATH%" & set "PY=python"
+  )
+)
+
+if not defined PY (
+  echo.
+  echo Automatic Python setup did not complete. Please install Python from
+  echo https://www.python.org/downloads/ ^(tick "Add to PATH"^) and re-run this installer.
   pause
   exit /b 1
 )
@@ -70,6 +101,7 @@ echo Launching installer...
 start "" %PYW% "%DEST%\installer.py"
 
 endlocal
+
 
 
 

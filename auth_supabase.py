@@ -125,6 +125,28 @@ def _client():
     return _http
 
 
+def _post_retry(url, tries=3, **kw):
+    """POST with a short backoff for TRANSIENT failures only — network drops and
+    502/503/504 from the gateway. Auth errors (400/401/422) are returned as-is on
+    the first try, never retried. This is what stops the intermittent 'failed to
+    authenticate' when the request just hit a hiccup rather than a real rejection.
+    Raises the last exception if every attempt fails at the socket level."""
+    kw.setdefault("timeout", _TIMEOUT)
+    last = None
+    for i in range(max(1, tries)):
+        try:
+            r = _client().post(url, **kw)
+        except Exception as ex:
+            last = ex
+            time.sleep(0.4 * (i + 1))
+            continue
+        if r.status_code in (502, 503, 504) and i < tries - 1:
+            time.sleep(0.4 * (i + 1))
+            continue
+        return r
+    raise last if last else RuntimeError("request failed")
+
+
 def _friendly(resp):
     """Pull a human message out of a GoTrue error response."""
     try:
@@ -254,8 +276,8 @@ def sign_in(email, password):
         return False, "Auth is not configured.", None
     body = {"email": (email or "").strip(), "password": password or ""}
     try:
-        r = _client().post(f"{SUPABASE_URL}/auth/v1/token?grant_type=password",
-                           json=body, timeout=_TIMEOUT)
+        r = _post_retry(f"{SUPABASE_URL}/auth/v1/token?grant_type=password",
+                        json=body)
     except Exception as ex:
         return False, f"Network error: {ex}", None
     if r.status_code != 200:
@@ -271,8 +293,8 @@ def sign_in(email, password):
 
 def _refresh(refresh_token):
     try:
-        r = _client().post(f"{SUPABASE_URL}/auth/v1/token?grant_type=refresh_token",
-                           json={"refresh_token": refresh_token}, timeout=_TIMEOUT)
+        r = _post_retry(f"{SUPABASE_URL}/auth/v1/token?grant_type=refresh_token",
+                        json={"refresh_token": refresh_token})
     except Exception:
         return None
     if r.status_code != 200:

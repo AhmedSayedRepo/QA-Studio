@@ -979,6 +979,14 @@ def export_docx(app):
         _ns.font.size = Pt(10)
     except Exception:
         pass
+
+    def _sty(_t, _name):
+        # Built-in table styles differ across python-docx template versions. If the
+        # name isn't in this template, skip it instead of crashing the export.
+        try:
+            _t.style = _name
+        except Exception:
+            pass
     h = doc.add_heading(d.get("report_title", "Regression Test Plan"), level=0)
     h.alignment = WD_ALIGN_PARAGRAPH.CENTER
     sub = doc.add_paragraph()
@@ -987,7 +995,7 @@ def export_docx(app):
     rn.font.size = Pt(11)
     rn.font.color.rgb = RGBColor(0x6A, 0x4D, 0xFF)
     meta = doc.add_table(rows=0, cols=2)
-    meta.style = "Light List Accent 1"
+    _sty(meta, "Light List Accent 1")
     for k, v in (("Project", d["project"]), ("Test plan", d["plan_name"]),
                  ("Plan ID", str(d["plan_id"])),
                  ("Generated", d["generated"]),
@@ -1014,7 +1022,7 @@ def export_docx(app):
         fh = doc.add_heading(f"Feature: {feat_name}", level=2)
         fh.runs[0].font.color.rgb = RGBColor(0x6A, 0x4D, 0xFF)
         tbl = doc.add_table(rows=1, cols=len(_heads))
-        tbl.style = "Medium Shading 1 Accent 1"
+        _sty(tbl, "Medium Shading 1 Accent 1")
         for i, hd in enumerate(_heads):
             tbl.rows[0].cells[i].text = hd
         for s in fstories:
@@ -1026,7 +1034,11 @@ def export_docx(app):
             _last = len(_vals) - 1
             for i, v in enumerate(_vals):
                 if i == 0:                                  # story id -> Azure link
-                    _add_hyperlink(c[i].paragraphs[0], _wi_url(d["project"], s["id"]), v)
+                    try:
+                        _add_hyperlink(c[i].paragraphs[0],
+                                       _wi_url(d["project"], s["id"]), v)
+                    except Exception:
+                        c[i].text = v                        # fall back to plain text
                 else:
                     c[i].text = v
                 if i in (0, _last - 1) or (show_cases and i == 4):     # id / hours / cases
@@ -1040,7 +1052,7 @@ def export_docx(app):
         doc.add_paragraph()
     doc.add_paragraph()
     tot = doc.add_table(rows=0, cols=2)
-    tot.style = "Light List Accent 1"
+    _sty(tot, "Light List Accent 1")
     _tot_rows = ([("Total stories", d["total_stories"])]
                  + ([("Total test cases", d["total_cases"])] if show_cases else [])
                  + [("Total estimated hours", d["total_hours"]),
@@ -1057,7 +1069,7 @@ def export_docx(app):
         _wh = (["Resource", "Stories"] + (["Test cases"] if show_cases else [])
                + ["Hours"])
         wt = doc.add_table(rows=1, cols=len(_wh))
-        wt.style = "Medium Shading 1 Accent 1"
+        _sty(wt, "Medium Shading 1 Accent 1")
         for i, hd in enumerate(_wh):
             wt.rows[0].cells[i].text = hd
         for w in d["workload"]:
@@ -1271,6 +1283,8 @@ def _export_row(app, set_status=None):
                 except ModuleNotFoundError:
                     _notify("err", f"Missing dependency: {_MISSING_DEP.get(fmt, fmt)}")
                 except Exception as ex:
+                    import traceback as _tb
+                    _perf_log(f"sprint export {fmt} FAILED:\n{_tb.format_exc()}")
                     _notify("err", f"Export failed: {str(ex)[:160]}")
             threading.Thread(target=work, daemon=True).start()
         return _do
@@ -2877,6 +2891,7 @@ def screen(app):
             "the test plans right here once connected.")
 
     app._reg_mode = "existing"
+    _t0 = _time.perf_counter()   # perf: measure the whole screen() build
 
     # lazy-load test plans
     if not app._plans and not app._reg_plans_loading:
@@ -2971,7 +2986,20 @@ def screen(app):
                                       if r.get("id") != sid]
             app._reg_selected = [s for s in app._reg_selected if s["id"] != sid]
             app._reg_export_msg = app._reg_calc_msg = None
-            app.render()
+            _fn = getattr(app, "_reg_refresh_results", None)
+            _ok = False
+            if app._reg_selected_rows and callable(_fn):
+                try:
+                    _fn()          # in-place refresh (fast) instead of full render
+                    _ok = True
+                    _perf_log("reg.delete_row: in-place refresh")
+                except Exception:
+                    import traceback as _tb
+                    _perf_log("reg.delete_row FELL BACK to render():\n"
+                              + _tb.format_exc())
+                    _ok = False
+            if not _ok:
+                app.render()        # last row removed, or in-place refresh failed
             try:
                 app._toast(f"Removed story {sid} from the regression plan.")
             except Exception:
@@ -3175,6 +3203,8 @@ def screen(app):
             app._reg_export_msg = ("err", f"{fmt.upper()} needs {_MISSING_DEP.get(fmt, fmt)}")
             return None
         except Exception as ex:
+            import traceback as _tb
+            _perf_log(f"export {fmt} FAILED (build):\n{_tb.format_exc()}")
             app._reg_export_msg = ("err", f"Export failed: {ex}")
             return None
         if dest:
@@ -3186,6 +3216,8 @@ def screen(app):
                     shutil.move(path, dest)
                 path = dest
             except Exception as ex:
+                import traceback as _tb
+                _perf_log(f"export {fmt} FAILED (save to {dest}):\n{_tb.format_exc()}")
                 app._reg_export_msg = ("err", f"Couldn't save there: {ex}")
                 return None
         app._reg_export_msg = ("ok", f"Saved {fmt.upper()}: {path}")
@@ -3609,7 +3641,9 @@ def screen(app):
     # While (re)generating, don't build the old table — the body shows the
     # progress spinner + skeleton instead, then the fresh table on completion.
     if app._reg_selected_rows and not app._reg_busy:
+        _tpp = _time.perf_counter()
         d = plan_payload(app)
+        _perf_log("reg.plan_payload: %.0f ms" % ((_time.perf_counter() - _tpp) * 1000))
 
         def _cell(w, content, expand=False):
             return ft.Container(content, width=(None if expand else w), expand=expand,
@@ -3737,7 +3771,9 @@ def screen(app):
 
             return rows + ([_pager] if _total > 1 else [])
 
+        _ttb = _time.perf_counter()
         table_body_col = ft.Column(_build_table_body(), spacing=0)
+        _perf_log("reg.table_build: %.0f ms" % ((_time.perf_counter() - _ttb) * 1000))
 
         def _refresh_table():
             """Swap table rows/pager in-place without a full page rebuild.
@@ -3767,9 +3803,10 @@ def screen(app):
             _kpi_tile("PER PERSON", f"{d['hours_per_person']} h", T.GREEN),
         ], spacing=10)
 
-        workload_ui = ft.Container()
-        if d["workload"]:
-            maxw = max((w["hours"] for w in d["workload"]), default=0) or 1
+        def _mk_workload(_d):
+            if not _d["workload"]:
+                return None
+            maxw = max((w["hours"] for w in _d["workload"]), default=0) or 1
             cards_wl = [ft.Container(ft.Column([
                 ft.Row([_avatar(w["name"], 32),
                         ft.Column([_txt(w["name"], color=T.INK, weight=ft.FontWeight.BOLD,
@@ -3784,14 +3821,40 @@ def screen(app):
                 _bar(w["hours"] / maxw, T.VIOLET, 8),
             ], spacing=0), width=300, padding=14, bgcolor=T.CARD,
                 border=ft.Border.all(1, T.BORDER_2), border_radius=T.R)
-                for w in d["workload"]]
-            workload_ui = ft.Column([
+                for w in _d["workload"]]
+            return ft.Column([
                 ft.Container(height=16),
                 ft.Text("RESOURCE WORKLOAD", size=10.5, weight=ft.FontWeight.BOLD,
                         color=T.INK_3),
                 ft.Container(height=10),
                 ft.Row(cards_wl, spacing=12, wrap=True, run_spacing=12,
                        vertical_alignment=ft.CrossAxisAlignment.START)], spacing=0)
+
+        # Holder so a row delete can refresh the workload in place (no full render).
+        workload_holder = ft.Container(content=_mk_workload(d))
+        workload_ui = workload_holder
+
+        def _refresh_results():
+            """In-place refresh of the generated plan after an inline row delete —
+            rebinds the payload and swaps table body + KPIs + workload + chips
+            without a full app.render() (which costs 0.6–5 s on Flet 0.85)."""
+            nonlocal d
+            d = plan_payload(app)
+            _refresh_table()
+            kpi_strip.controls = [
+                _kpi_tile("STORIES", str(d["total_stories"])),
+                _kpi_tile("TEST CASES", str(d["total_cases"])),
+                _kpi_tile("TOTAL EFFORT", f"{d['total_hours']} h", T.VIOLET),
+                _kpi_tile("PER PERSON", f"{d['hours_per_person']} h", T.GREEN),
+            ]
+            kpi_strip.update()
+            workload_holder.content = _mk_workload(d)
+            workload_holder.update()
+            try:
+                _refresh_story_externals()
+            except Exception:
+                pass
+        app._reg_refresh_results = _refresh_results   # let earlier handlers reach it
 
         if mismatch:
             exports = ft.Container(
@@ -3903,9 +3966,13 @@ def screen(app):
         body_children += [ft.Container(height=16), _card(_skel(6))]
 
     body = ft.Column(body_children, spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
-    return app.shell("Regression Plan",
-                     "Build a regression plan from your test plans & their stories", body,
-                     right=ghost_btn("Use Setup selection", icon=ft.Icons.DOWNLOAD,
-                                     on_click=_use_setup_selection),
-                     badge="STEP R")
+    _tsh = _time.perf_counter()
+    _view = app.shell("Regression Plan",
+                      "Build a regression plan from your test plans & their stories", body,
+                      right=ghost_btn("Use Setup selection", icon=ft.Icons.DOWNLOAD,
+                                      on_click=_use_setup_selection),
+                      badge="STEP R")
+    _perf_log("reg.shell: %.0f ms" % ((_time.perf_counter() - _tsh) * 1000))
+    _perf_log("reg.screen TOTAL: %.0f ms" % ((_time.perf_counter() - _t0) * 1000))
+    return _view
 # perf: lazy-build dropdown rows to keep full renders cheap

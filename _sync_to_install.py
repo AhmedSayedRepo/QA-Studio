@@ -21,19 +21,29 @@ def _digest(p):
         return None
 
 synced = []
-for src_path in glob.glob(os.path.join(SRC, "*.py")):
-    fname = os.path.basename(src_path)
-    if fname.startswith("_sync") or fname.startswith("patch_"):
-        continue
-    dst_path = os.path.join(DST, fname)
-    if (not os.path.exists(dst_path)) or _digest(src_path) != _digest(dst_path):
-        shutil.copy2(src_path, dst_path)
-        synced.append(fname)
-        # remove stale pyc
-        pyc_glob = os.path.join(DST, "__pycache__", fname.replace(".py", "") + ".cpython-*.pyc")
-        for pyc in glob.glob(pyc_glob):
-            try: os.remove(pyc)
-            except: pass
+# Copy .py sources PLUS assets the app reads at runtime (VERSION drives the footer
+# version; icons/backgrounds for anything not embedded). Without VERSION here the
+# installed app keeps showing its old version even after a code sync.
+patterns = ["*.py", "VERSION", "*.png", "*.jpg", "*.ico"]
+seen = set()
+for pat in patterns:
+    for src_path in glob.glob(os.path.join(SRC, pat)):
+        fname = os.path.basename(src_path)
+        if fname in seen:
+            continue
+        seen.add(fname)
+        if fname.startswith("_sync") or fname.startswith("patch_"):
+            continue
+        dst_path = os.path.join(DST, fname)
+        if (not os.path.exists(dst_path)) or _digest(src_path) != _digest(dst_path):
+            shutil.copy2(src_path, dst_path)
+            synced.append(fname)
+            if fname.endswith(".py"):
+                pyc_glob = os.path.join(DST, "__pycache__",
+                                        fname[:-3] + ".cpython-*.pyc")
+                for pyc in glob.glob(pyc_glob):
+                    try: os.remove(pyc)
+                    except: pass
 
 if synced:
     print("Synced:", ", ".join(synced))

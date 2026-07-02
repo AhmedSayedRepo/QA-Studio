@@ -11,7 +11,6 @@ import engine as E
 import regression
 import sprint_titles
 import auth_supabase as auth
-import auth_screen
 import users_screen
 
 # ── Flet version-compatibility shim ───────────────────────────────────────────
@@ -546,6 +545,18 @@ class QAStudio:
         # External-auth (Supabase): None until restored / signed in. When auth is
         # not configured, this stays None and the app is un-gated (runs as before).
         self.user = None
+        # Restore a cached session SYNCHRONOUSLY before the first render. Right
+        # after the WebView2 login the session is already on disk, so this makes
+        # the app open straight into the signed-in UI — no flash of a sign-in
+        # screen. The just-issued token is unexpired, so this is a local read (no
+        # network). The async restore below still covers the token-refresh case.
+        try:
+            if auth.configured():
+                _u0 = auth.acquire_silent()
+                if _u0:
+                    self.user = _u0
+        except Exception:
+            pass
 
         self._build()
         # Resume a prior session in the background so a returning user skips the
@@ -661,6 +672,593 @@ class QAStudio:
         self._auth_shown = False        # replay the entrance animation
         self.active = "setup"
         self.render()
+
+    def _with_window_chrome(self, root):
+        """Overlay a draggable top strip + minimize/maximize/close buttons for the
+        frameless window (the OS title bar is hidden), so the background can fill
+        the entire window. Applies to every screen. Fully guarded."""
+        win = getattr(self.page, "window", None)
+        if win is None:
+            return root
+
+        def _min(e):
+            try:
+                win.minimized = True; self.page.update()
+            except Exception:
+                pass
+
+        def _tmax(e):
+            try:
+                win.maximized = not bool(getattr(win, "maximized", False))
+                self.page.update()
+            except Exception:
+                pass
+
+        def _close(e):
+            # Use the app's own shutdown: it destroys the Flet CLIENT window first,
+            # then taskkills the process tree. (Calling os._exit here killed Python
+            # but orphaned the client window -> the stuck "Working…" screen.)
+            try:
+                self._force_close()
+            except Exception:
+                try:
+                    win.destroy()
+                except Exception:
+                    pass
+
+        def _wb(icon, cb, danger=False):
+            cc = ft.Container(ft.Icon(icon, size=15, color=T.INK_2),
+                              width=46, height=32, alignment=ft.Alignment.CENTER,
+                              ink=True, on_click=cb, border_radius=6)
+
+            def _h(e, _c=cc, _d=danger):
+                try:
+                    on = e.data in (True, "true", "True")
+                    _c.bgcolor = (("#E0474D" if _d else ft.Colors.with_opacity(0.12, T.INK))
+                                  if on else None)
+                    if _d:
+                        _c.content.color = "#FFFFFF" if on else T.INK_2
+                    _c.update()
+                except Exception:
+                    pass
+            cc.on_hover = _h
+            return cc
+
+        buttons = ft.Row([
+            _wb(ft.Icons.REMOVE, _min),
+            _wb(ft.Icons.CROP_SQUARE, _tmax),
+            _wb(ft.Icons.CLOSE, _close, danger=True),
+        ], spacing=0, tight=True)
+
+        drag = ft.WindowDragArea(ft.Container(bgcolor=ft.Colors.TRANSPARENT, expand=True),
+                                 expand=True)
+        return ft.Stack([
+            root,
+            # draggable strip across the top (leaves room on the right for buttons)
+            ft.Container(drag, top=0, left=0, right=150, height=34),
+            # window controls, top-right
+            ft.Container(buttons, top=0, right=4),
+        ], expand=True)
+
+    def _entrance(self, child, dy=0.05, scale=0.98, dur=460):
+        """Wrap a control so it fades + rises into place (a soft 'landing'). Flet
+        animates a property change made AFTER the control is on the page, so we
+        start offset/scaled/transparent and settle to normal from a bg tick."""
+        c = ft.Container(child, offset=ft.Offset(0, dy), scale=scale, opacity=0.0,
+                         animate_offset=dur, animate_scale=dur, animate_opacity=dur)
+
+        def _go():
+            import time
+            time.sleep(0.05)
+            try:
+                c.offset = ft.Offset(0, 0)
+                c.scale = 1.0
+                c.opacity = 1.0
+                c.update()
+            except Exception:
+                pass
+        try:
+            self._bg(_go)
+        except Exception:
+            threading.Thread(target=_go, daemon=True).start()
+        return c
+
+    def _login_parallax(self, e):
+        """Shift the login backdrop with the cursor (like the WebView2 parallax).
+
+        Flet 0.85's HoverEvent exposes the cursor via `local_position` (an Offset),
+        NOT `local_x`/`local_y` — reading the old names returned None, so the
+        backdrop never tracked. We read local_position (with legacy fallbacks)."""
+        lay = getattr(self, "_login_bg_layer", None)
+        if lay is None:
+            return
+        try:
+            lx = ly = None
+            pos = getattr(e, "local_position", None)
+            if pos is not None:
+                lx = getattr(pos, "x", None)
+                ly = getattr(pos, "y", None)
+            if lx is None:
+                lx = getattr(e, "local_x", None)
+                ly = getattr(e, "local_y", None)
+            if lx is None:
+                return
+            w = (self.page.width or 1440) or 1440
+            h = (self.page.height or 900) or 900
+            mx = (lx or 0) / w - 0.5
+            my = (ly or 0) / h - 0.5
+            lay.offset = ft.Offset(-mx * 0.06, -my * 0.06)
+            lay.update()
+        except Exception:
+            pass
+
+    def _login_gate(self):
+        """Native Flet sign-in — the app's only login (replaces the old WebView2
+        window that kept freezing). Full-bleed neon backdrop + frosted-glass card,
+        email/password with sign-up + forgot-password, matching the previous look
+        but 100% Flet, so there is no embedded browser that can freeze."""
+        import os as _os
+        # The login keeps its OWN theme (defaults to dark, like the old WebView2
+        # login) with a working toggle; the choice is applied to the whole app on
+        # successful sign-in.
+        if getattr(self, "_login_theme", None) not in ("dark", "light"):
+            # Default the login to DARK (the neon look). Safe now that the window is
+            # frameless — there's no OS title bar to mismatch the theme.
+            self._login_theme = "dark"
+        dark = (self._login_theme == "dark")
+        signup = (getattr(self, "_auth_mode", "signin") == "signup")
+        busy = bool(getattr(self, "_gate_busy", False))
+        msg = getattr(self, "_auth_msg", None)
+        DISP = "Space Grotesk"     # display font (headings) — matches the old login
+        MONO = T.F_MONO            # JetBrains Mono (captions / button)
+
+        def _op(c, o):
+            return ft.Colors.with_opacity(o, c)
+
+        # Exact palette lifted from the former WebView2 login (dark neon / light).
+        if dark:
+            accent = "#00dbe7"
+            HEAD = "#e1fdff"; INK = "#e2dffd"; INK2 = "#b9cacb"; CAP = "#8fa6a8"
+            LEFT_HEAD = "#eef7ff"
+            FIELD_BG = _op("#0c0c21", 0.55); FIELD_BD = "#333349"
+            FIELD_IC = "#849495"; FIELD_INK = "#e1fdff"
+            CARD_GRAD = [_op("#160A33", 0.66), _op("#062A3A", 0.34), _op("#25123A", 0.42)]
+            CARD_BD = _op("#00dbe7", 0.38); CARD_GLOW = _op("#00dbe7", 0.22)
+            BTN = ["#006a71", "#00dbe7"]; BTN_INK = "#00363a"
+            SCRIM = [_op("#05060F", 0.74), _op("#05060F", 0.0)]
+        else:
+            # Exact values from the WebView2 login's `html.light` theme.
+            accent = "#2563eb"                                     # --accent / --link
+            HEAD = "#0f1830"; INK = "#101a30"; INK2 = "#5a6273"; CAP = "#8a93a8"
+            LEFT_HEAD = "#0f1830"                                  # --headline
+            FIELD_BG = _op("#ffffff", 0.70); FIELD_BD = "#dbe2ee"  # --input-bg / --input-bd
+            FIELD_IC = "#8a93a8"; FIELD_INK = "#101a30"            # --input-ic / --input-ink
+            # --panel-grad: 135deg rgba(255,255,255,.78) / (37,99,235,.05) / (34,211,238,.05)
+            CARD_GRAD = [_op("#ffffff", 0.78), _op("#2563eb", 0.05), _op("#22d3ee", 0.05)]
+            CARD_BD = _op("#2563eb", 0.45); CARD_GLOW = _op("#2563eb", 0.16)  # --panel-bd/glow
+            BTN = ["#2563eb", "#22d3ee"]; BTN_INK = "#ffffff"      # --btn / --btn-ink
+            SCRIM = [_op("#ffffff", 0.66), _op("#ffffff", 0.0)]
+
+        # Match the window shell AND native title bar to the login theme the moment
+        # the login opens (no dark title bar / navy band in light mode).
+        try:
+            self.page.bgcolor = ("#05060F" if dark else "#eef3fb")
+            self.page.theme_mode = (ft.ThemeMode.DARK if dark else ft.ThemeMode.LIGHT)
+        except Exception:
+            pass
+
+        # Theme toggle lives in the card header (so it can't overlap the card).
+        def _toggle_login_theme(_e=None):
+            self._login_theme = "light" if dark else "dark"
+            self.ui_safe(self.render)
+        theme_btn = ft.Container(
+            ft.Icon(ft.Icons.LIGHT_MODE if dark else ft.Icons.DARK_MODE,
+                    size=18, color=(HEAD if dark else INK)),
+            width=40, height=40, border_radius=11, alignment=ft.Alignment.CENTER,
+            bgcolor=_op("#FFFFFF" if dark else "#0f1830", 0.12),
+            border=ft.Border.all(1, _op(accent, 0.35)), ink=True,
+            on_click=_toggle_login_theme, tooltip="Toggle theme",
+            scale=1.0, animate_scale=140, animate=140, rotate=0)
+
+        def _theme_hover(e, _c=theme_btn):
+            try:
+                on = e.data in (True, "true", "True")
+                _c.scale = 1.1 if on else 1.0
+                _c.bgcolor = _op(accent, 0.22 if on else (0.12))
+                _c.update()
+            except Exception:
+                pass
+        theme_btn.on_hover = _theme_hover
+
+        # background image (decode embedded jpeg once to a cached temp file)
+        def _bg():
+            key = "_login_bg_d" if dark else "_login_bg_l"
+            p = getattr(self, key, None)
+            if not p or not _os.path.exists(p):
+                try:
+                    import login_bg_assets as _LBA, base64 as _b64, tempfile as _tf
+                    data = _b64.b64decode(_LBA.LOGIN_BG_DARK_B64 if dark
+                                          else _LBA.LOGIN_BG_LIGHT_B64)
+                    _f = _tf.NamedTemporaryFile(suffix=".jpg", delete=False)
+                    _f.write(data); _f.close()
+                    p = _f.name
+                    setattr(self, key, p)
+                except Exception:
+                    p = None
+            _cover = getattr(getattr(ft, "ImageFit", None), "COVER", None)
+            # Paint the image as a CONTAINER background (DecorationImage) so it
+            # cover-fills the whole window reliably. A plain ft.Image won't stretch
+            # to fill a Stack on this Flet build (leaves gutters), which is the
+            # bug that left gray/dark bands around the photo.
+            _base = "#05060F" if dark else T.BG
+            if p and hasattr(ft, "DecorationImage"):
+                try:
+                    di = (ft.DecorationImage(src=p, fit=_cover) if _cover
+                          else ft.DecorationImage(src=p))
+                    return ft.Container(expand=True, image=di, bgcolor=_base)
+                except Exception:
+                    pass
+            if p:
+                try:
+                    W = int(self.page.width or 0) or 1440
+                    H = int(self.page.height or 0) or 900
+                    return (ft.Image(src=p, width=W, height=H, fit=_cover) if _cover
+                            else ft.Image(src=p, width=W, height=H))
+                except Exception:
+                    pass
+            return ft.Container(expand=True, bgcolor=_base)
+
+        def _field(cap, hint, icon, value="", password=False):
+            tf = ft.TextField(
+                hint_text=hint, value=value or "", password=password,
+                can_reveal_password=password, prefix_icon=icon, filled=True,
+                bgcolor=FIELD_BG, border_color=FIELD_BD,
+                focused_border_color=accent, focused_bgcolor=_op(accent, 0.06),
+                cursor_color=accent, text_size=15, color=FIELD_INK,
+                hint_style=ft.TextStyle(size=14, color=FIELD_IC),
+                content_padding=ft.Padding.symmetric(vertical=17, horizontal=14),
+                border_radius=12)
+            col = ft.Column([
+                ft.Text(cap, size=11, color=CAP, font_family=MONO,
+                        weight=ft.FontWeight.W_600,
+                        style=ft.TextStyle(letter_spacing=1.8)),
+                ft.Container(height=7),
+                tf,
+            ], spacing=0)
+            return tf, col
+
+        name_tf, name_col = (_field("FULL NAME", "Full name", ft.Icons.PERSON_OUTLINE,
+                                    getattr(self, "_auth_name", "")) if signup
+                             else (None, None))
+        email_tf, email_col = _field("ACCESS IDENTIFIER", "Email", ft.Icons.MAIL_OUTLINE,
+                                     getattr(self, "_auth_email", ""))
+        pwd_tf, pwd_col = _field("SECURE PROTOCOL", "Password", ft.Icons.LOCK_OUTLINE,
+                                 password=True)
+
+        def _stash():
+            self._auth_email = email_tf.value or ""
+            if name_tf is not None:
+                self._auth_name = name_tf.value or ""
+
+        def _switch(_e=None):
+            _stash()
+            self._auth_mode = "signin" if signup else "signup"
+            self._auth_msg = None
+            self.ui_safe(self.render)
+
+        def _submit(_e=None):
+            if getattr(self, "_gate_busy", False):
+                return
+            _stash()
+            if not (email_tf.value or "").strip() or not (pwd_tf.value or ""):
+                self._auth_msg = ("err", "Enter your email and password.")
+                self.ui_safe(self.render); return
+            self._gate_busy = True; self._auth_msg = None
+            self.ui_safe(self.render)
+
+            def work():
+                try:
+                    if signup:
+                        ok, m, user = auth.sign_up(
+                            email_tf.value, pwd_tf.value,
+                            name=(name_tf.value if name_tf is not None else None))
+                    else:
+                        ok, m, user = auth.sign_in(email_tf.value, pwd_tf.value)
+                    self._gate_busy = False
+                    if user:
+                        # Apply the login's chosen theme to the whole app.
+                        try:
+                            T.apply_theme(self._login_theme)
+                            self.creds["theme"] = self._login_theme
+                            store.save(self.creds)
+                            self.page.bgcolor = T.RAIL
+                            self.page.theme_mode = (ft.ThemeMode.DARK
+                                if self._login_theme == "dark" else ft.ThemeMode.LIGHT)
+                        except Exception:
+                            pass
+                        self.user = user; self._auth_msg = None
+                        self.active = "setup"
+                        self._land_app = True   # play the entrance on the app view
+                        self.ui_safe(self.render); return
+                    self._auth_msg = ("ok" if ok else "err", m)
+                    if ok and signup:
+                        self._auth_mode = "signin"
+                    self.ui_safe(self.render)
+                except Exception as ex:
+                    self._gate_busy = False
+                    self._auth_msg = ("err", f"Something went wrong: {ex}")
+                    self.ui_safe(self.render)
+            try:
+                self._bg(work)
+            except Exception:
+                threading.Thread(target=work, daemon=True).start()
+
+        def _forgot(_e=None):
+            _stash()
+            em = (email_tf.value or "").strip()
+            if not em:
+                self._auth_msg = ("err", "Enter your email above first, then tap "
+                                         "Forgot password.")
+                self.ui_safe(self.render); return
+            self._gate_busy = True; self._auth_msg = None
+            self.ui_safe(self.render)
+
+            def work():
+                try:
+                    ok, m = auth.request_password_reset(em)
+                except Exception as ex:
+                    ok, m = False, f"Something went wrong: {ex}"
+                self._gate_busy = False
+                self._auth_msg = ("ok" if ok else "err", m)
+                self.ui_safe(self.render)
+            try:
+                self._bg(work)
+            except Exception:
+                threading.Thread(target=work, daemon=True).start()
+
+        blabel = ("CREATING…" if (busy and signup) else "SIGNING IN…" if busy
+                  else "CREATE ACCOUNT" if signup else "SIGN IN")
+
+        def _btn_hover(e):
+            try:
+                hov = e.data in (True, "true", "True")
+                e.control.scale = 1.02 if hov else 1.0
+                e.control.shadow = ft.BoxShadow(
+                    blur_radius=(40 if hov else 30), spread_radius=-4,
+                    offset=ft.Offset(0, 12 if hov else 10),
+                    color=_op(accent, 0.75 if hov else 0.5))
+                e.control.update()
+            except Exception:
+                pass
+
+        btn = ft.Container(
+            ft.Row([
+                ft.Text(blabel, size=13.5, weight=ft.FontWeight.W_700, color=BTN_INK,
+                        font_family=MONO, style=ft.TextStyle(letter_spacing=1.5)),
+                (ft.ProgressRing(width=16, height=16, stroke_width=2.4, color=BTN_INK)
+                 if busy else ft.Icon(ft.Icons.ARROW_FORWARD, size=18, color=BTN_INK)),
+            ], alignment=ft.MainAxisAlignment.CENTER, spacing=10, tight=True),
+            height=54, border_radius=13, alignment=ft.Alignment.CENTER,
+            gradient=ft.LinearGradient(begin=ft.Alignment.CENTER_LEFT,
+                                       end=ft.Alignment.CENTER_RIGHT, colors=BTN),
+            shadow=ft.BoxShadow(blur_radius=30, spread_radius=-4, offset=ft.Offset(0, 10),
+                                color=_op(accent, 0.5)),
+            ink=True, on_click=(None if busy else _submit),
+            on_hover=(None if busy else _btn_hover),
+            scale=1.0, animate_scale=140, animate=140,
+            opacity=(0.7 if busy else 1.0))
+
+        banner = None
+        if msg:
+            kind, text = msg
+            ok = (kind == "ok")
+            banner = ft.Container(
+                ft.Row([ft.Icon(ft.Icons.CHECK_CIRCLE if ok else ft.Icons.ERROR_OUTLINE,
+                                size=18, color=(T.GREEN if ok else T.RED)),
+                        ft.Text(text, size=12.5, no_wrap=False, expand=True,
+                                color=(T.GREEN if ok else T.RED))],
+                       spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                padding=ft.Padding.symmetric(vertical=11, horizontal=13),
+                bgcolor=_op(T.GREEN if ok else T.RED, 0.12), border_radius=10,
+                border=ft.Border.all(1, _op(T.GREEN if ok else T.RED, 0.4)))
+
+        def _link(text, on_click):
+            c = ft.Container(
+                ft.Text(text, size=12.5, weight=ft.FontWeight.W_700, color=accent),
+                on_click=on_click, ink=True, border_radius=8,
+                padding=ft.Padding.symmetric(vertical=4, horizontal=8),
+                scale=1.0, animate_scale=110, animate=110)
+
+            def _h(e, _c=c):
+                try:
+                    on = e.data in (True, "true", "True")
+                    _c.bgcolor = _op(accent, 0.12) if on else None
+                    _c.scale = 1.06 if on else 1.0
+                    _c.update()
+                except Exception:
+                    pass
+            c.on_hover = _h
+            return c
+
+        rows = [
+            ft.Row([ft.Container(logo_img(28), width=40, height=40, border_radius=12,
+                                 bgcolor="#FFFFFF", alignment=ft.Alignment.CENTER),
+                    ft.Text("QA Studio", size=17, weight=ft.FontWeight.W_700,
+                            color=HEAD, font_family=DISP),
+                    ft.Container(expand=True),
+                    theme_btn],
+                   spacing=11, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            ft.Container(height=24),
+            ft.Text("Welcome back" if not signup else "Create your account",
+                    size=34, weight=ft.FontWeight.W_700, color=HEAD, font_family=DISP),
+            ft.Container(height=6),
+            ft.Text("Sign in to continue to QA Studio" if not signup
+                    else "It only takes a moment to get started",
+                    size=13, color=INK2, font_family=MONO,
+                    style=ft.TextStyle(letter_spacing=0.4)),
+            ft.Container(height=26),
+        ]
+        for col in [c for c in (name_col, email_col, pwd_col) if c is not None]:
+            rows += [col, ft.Container(height=16)]
+        if not signup:
+            rows.append(ft.Row([_link("Forgot password?", _forgot)],
+                               alignment=ft.MainAxisAlignment.END))
+        if banner:
+            rows += [ft.Container(height=8), banner]
+        rows += [ft.Container(height=20), btn, ft.Container(height=18),
+                 ft.Row([ft.Text("New to QA Studio?" if not signup
+                                 else "Already have an account?",
+                                 size=12.5, color=INK2, weight=ft.FontWeight.W_600),
+                         _link("Create one" if not signup else "Sign in", _switch)],
+                        spacing=6, alignment=ft.MainAxisAlignment.CENTER, tight=True)]
+        form = ft.Column(rows, spacing=0, width=352, tight=True)
+
+        card = ft.Container(
+            form, width=440, padding=42, border_radius=26,
+            gradient=ft.LinearGradient(begin=ft.Alignment.TOP_LEFT,
+                                       end=ft.Alignment.BOTTOM_RIGHT, colors=CARD_GRAD),
+            border=ft.Border.all(1.5, CARD_BD),
+            shadow=ft.BoxShadow(blur_radius=60, spread_radius=-10, offset=ft.Offset(0, 20),
+                                color=CARD_GLOW))
+        try:
+            if hasattr(ft, "Blur"):
+                card.blur = ft.Blur(24, 24)
+        except Exception:
+            pass
+
+        def _card_hover(e):
+            try:
+                hov = e.data in (True, "true", "True")
+                card.border = ft.Border.all(
+                    2.0 if hov else 1.5,
+                    _op(accent, (0.95 if hov else (0.38 if dark else 0.45))))
+                card.shadow = ft.BoxShadow(
+                    blur_radius=(84 if hov else 60), spread_radius=-8,
+                    offset=ft.Offset(0, 20),
+                    color=_op(accent, (0.45 if hov else 0.22) if dark
+                             else (0.30 if hov else 0.16)))
+                card.update()
+            except Exception:
+                pass
+        card.on_hover = _card_hover
+        try:
+            card.animate = 180
+        except Exception:
+            pass
+
+        def _feature(icon, title, desc):
+            return ft.Row([
+                ft.Container(ft.Icon(icon, size=20, color=accent), width=44, height=44,
+                             border_radius=13, alignment=ft.Alignment.CENTER,
+                             bgcolor=_op(accent, 0.16 if dark else 0.10),
+                             border=ft.Border.all(1, _op(accent, 0.5 if dark else 0.3))),
+                ft.Column([
+                    ft.Text(title, size=15, color=LEFT_HEAD, weight=ft.FontWeight.W_700),
+                    ft.Container(height=2),
+                    ft.Text(desc, size=12.5, color=INK2, no_wrap=False),
+                ], spacing=0, tight=True, expand=True)],
+                spacing=15, vertical_alignment=ft.CrossAxisAlignment.START)
+
+        value_prop = ft.Column([
+            ft.Row([ft.Container(logo_img(34), width=48, height=48, border_radius=14,
+                                 bgcolor="#FFFFFF", alignment=ft.Alignment.CENTER),
+                    ft.Text("QA Studio", size=22, weight=ft.FontWeight.W_700,
+                            color=LEFT_HEAD, font_family=DISP)],
+                   spacing=13, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            ft.Container(height=44),
+            ft.Text("Ship better\ntests, faster.", size=52, weight=ft.FontWeight.W_700,
+                    color=LEFT_HEAD, font_family=DISP, style=ft.TextStyle(height=1.05)),
+            ft.Container(height=16),
+            ft.Text("AI-generated Azure DevOps test cases, regression & sprint plans, "
+                    "and one-click sprint closure reports.",
+                    size=14, color=INK2, no_wrap=False),
+            ft.Container(height=34),
+            _feature(ft.Icons.AUTO_AWESOME, "Generate test titles & steps with AI",
+                     "Leverage advanced LLMs to automate boilerplate test creation."),
+            ft.Container(height=20),
+            _feature(ft.Icons.CHECKLIST, "Regression & sprint test plans",
+                     "Orchestrate complex release cycles with modular planning tools."),
+            ft.Container(height=20),
+            _feature(ft.Icons.DESCRIPTION_OUTLINED, "One-click sprint closure reports",
+                     "Instant stakeholder visibility with automated PDF exports."),
+        ], spacing=0)
+
+        bg = _bg()
+        # Over-scale the backdrop so it ALWAYS over-covers the window (no dark
+        # "shell" showing through) and leaves room to shift for the parallax.
+        # scale 1.3 => 15% overhang on every side, so the parallax shift (max ~3.5%)
+        # can never expose an edge/gap. animate kept short so it tracks the cursor.
+        bg_layer = ft.Container(bg, expand=True, scale=1.3, offset=ft.Offset(0, 0),
+                                animate_offset=120, animate_scale=120)
+
+        try:
+            width = self.page.width or 0
+        except Exception:
+            width = 0
+
+        # Play the card entrance on show / mode-switch / theme-toggle, but NOT on the
+        # busy re-render triggered by clicking Sign in (that made it flash/rebuild
+        # right before the app opens).
+        _card_shown = card if busy else self._entrance(card, dy=0.06, scale=0.97, dur=480)
+        centered_card = ft.Column([_card_shown],
+                                  alignment=ft.MainAxisAlignment.CENTER,
+                                  horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                                  expand=True)
+        if width and width < 900:
+            content = ft.Container(centered_card, expand=True, padding=24)
+        else:
+            content = ft.Row([
+                ft.Container(ft.Column([value_prop], alignment=ft.MainAxisAlignment.CENTER,
+                                       expand=True),
+                             expand=5, padding=56,
+                             gradient=ft.LinearGradient(
+                                 begin=ft.Alignment.CENTER_LEFT,
+                                 end=ft.Alignment.CENTER_RIGHT, colors=SCRIM)),
+                ft.Container(centered_card, expand=4, padding=30),
+            ], spacing=0, expand=True)
+
+        # Footer (version • copyright • status), like the original login.
+        _ver = ""
+        try:
+            with open(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                                    "VERSION"), encoding="utf-8") as _vf:
+                _ver = _vf.read().strip()
+        except Exception:
+            _ver = ""
+        _fmono = MONO
+        footer = ft.Container(
+            ft.Row([
+                ft.Text(("QA STUDIO v" + _ver) if _ver else "QA STUDIO", size=11,
+                        color=_op(accent, 0.85), font_family=_fmono,
+                        style=ft.TextStyle(letter_spacing=1.4)),
+                ft.Container(expand=True),
+                ft.Text("© 2026 QA Studio Terminal. All rights reserved.", size=11,
+                        color=INK2, font_family=_fmono,
+                        style=ft.TextStyle(letter_spacing=0.4)),
+                ft.Container(expand=True),
+                ft.Row([ft.Container(width=8, height=8, border_radius=4, bgcolor="#22c55e"),
+                        ft.Text("System Status", size=11, color=INK2, font_family=_fmono,
+                                style=ft.TextStyle(letter_spacing=1.0))],
+                       spacing=7, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            left=0, right=0, bottom=0,
+            padding=ft.Padding.symmetric(vertical=14, horizontal=44))
+
+        # Expose the backdrop layer so the app's top-level gesture layer can drive
+        # the mouse-move parallax (see render() / _login_parallax).
+        self._login_bg_layer = bg_layer
+        _stack = ft.Stack([bg_layer, content, footer], expand=True)
+        # Mouse-move parallax via a GestureDetector wrapping the whole login
+        # (on_hover passed as a constructor arg for reliable registration).
+        try:
+            return ft.GestureDetector(content=_stack, on_hover=self._login_parallax,
+                                      hover_interval=16, expand=True)
+        except Exception:
+            try:
+                return ft.GestureDetector(content=_stack,
+                                          on_hover=self._login_parallax, expand=True)
+            except Exception:
+                return _stack
 
     # ---- window shell ----
     def rail(self):
@@ -1732,7 +2330,7 @@ class QAStudio:
             # Hard gate: when external auth is configured and nobody is signed in,
             # show the sign-in / sign-up screen instead of the app.
             if auth.configured() and not getattr(self, "user", None):
-                view = auth_screen.screen(self)
+                view = self._login_gate()
             elif self.active == "setup":
                 view = self.setup_screen()
             elif self.active == "run":
@@ -1753,6 +2351,13 @@ class QAStudio:
                 view = self.settings_screen()
             else:
                 view = self.report_screen()
+            # After a fresh sign-in, let the main app fade + rise into place slowly.
+            if getattr(self, "_land_app", False) and getattr(self, "user", None):
+                self._land_app = False
+                try:
+                    view = self._entrance(view, dy=0.025, scale=0.99, dur=560)
+                except Exception:
+                    pass
             try:
                 view = ft.GestureDetector(content=view, on_tap=self._close_dropdowns,
                                           expand=True)
@@ -1765,10 +2370,15 @@ class QAStudio:
             except Exception:
                 banner = None
             if banner is not None:
-                self.page.add(ft.Column([banner, ft.Container(view, expand=True)],
-                                        spacing=0, expand=True))
+                _root = ft.Column([banner, ft.Container(view, expand=True)],
+                                  spacing=0, expand=True)
             else:
-                self.page.add(view)
+                _root = view
+            try:
+                _root = self._with_window_chrome(_root)
+            except Exception:
+                pass
+            self.page.add(_root)
             _build_ms = (_pt.perf_counter() - _r0) * 1000
             _u0 = _pt.perf_counter()
             self.page.update()
@@ -1837,14 +2447,22 @@ class QAStudio:
             # Flet >= 0.23 uses page.window.* ; older uses page.window_*
             if hasattr(self.page, "window") and self.page.window is not None:
                 self.page.window.width = 1120
-                self.page.window.height = 760
+                self.page.window.height = 720
                 self.page.window.min_width = 980
-                self.page.window.min_height = 660
+                self.page.window.min_height = 620
+                # Frameless: hide the OS title bar so the background fills the ENTIRE
+                # window (no dark title-bar band in any theme). Custom minimize /
+                # maximize / close buttons + a drag strip are added in render().
+                try:
+                    self.page.window.title_bar_hidden = True
+                    self.page.window.title_bar_buttons_hidden = True
+                except Exception:
+                    pass
             else:
                 self.page.window_width = 1120
-                self.page.window_height = 760
+                self.page.window_height = 720
                 self.page.window_min_width = 980
-                self.page.window_min_height = 660
+                self.page.window_min_height = 620
             # centre the window on screen (else some Flet builds open it low/left)
             try:
                 if hasattr(self.page, "window") and self.page.window is not None:
@@ -6389,6 +7007,8 @@ def main(page: ft.Page):
         T.F_UI: "https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/plusjakartasans/PlusJakartaSans%5Bwght%5D.ttf",
         T.F_MONO: "https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/jetbrainsmono/JetBrainsMono%5Bwght%5D.ttf",
         T.F_AR: "https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/ibmplexsansarabic/IBMPlexSansArabic-Regular.ttf",
+        # Space Grotesk — the display font used by the (former WebView2) login.
+        "Space Grotesk": "https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/spacegrotesk/SpaceGrotesk%5Bwght%5D.ttf",
     }
     try:
         page.theme = ft.Theme(font_family=T.F_UI, color_scheme_seed=T.VIOLET)
@@ -6403,6 +7023,124 @@ def _launch(view=None):
         return ft.run(main, view=view) if view is not None else ft.run(main)
     return ft.app(target=main, view=view) if view is not None else ft.app(target=main)
 
+
+def _make_kill_on_close_job():
+    """A Win32 Job Object set to KILL_ON_JOB_CLOSE: every process in the job dies
+    when its handle closes. We put the login child in it so WebView2's helper
+    processes (the msedgewebview2.exe tree) can NEVER leak across launches — the
+    leak was what wedged the app from the 3rd launch on. Returns a handle or None."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateJobObjectW.restype = wintypes.HANDLE
+        k32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+        job = k32.CreateJobObjectW(None, None)
+        if not job:
+            return None
+
+        class _BASIC(ctypes.Structure):
+            _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64),
+                        ("PerJobUserTimeLimit", ctypes.c_int64),
+                        ("LimitFlags", wintypes.DWORD),
+                        ("MinimumWorkingSetSize", ctypes.c_size_t),
+                        ("MaximumWorkingSetSize", ctypes.c_size_t),
+                        ("ActiveProcessLimit", wintypes.DWORD),
+                        ("Affinity", ctypes.c_size_t),
+                        ("PriorityClass", wintypes.DWORD),
+                        ("SchedulingClass", wintypes.DWORD)]
+
+        class _IO(ctypes.Structure):
+            _fields_ = [("ReadOperationCount", ctypes.c_uint64),
+                        ("WriteOperationCount", ctypes.c_uint64),
+                        ("OtherOperationCount", ctypes.c_uint64),
+                        ("ReadTransferCount", ctypes.c_uint64),
+                        ("WriteTransferCount", ctypes.c_uint64),
+                        ("OtherTransferCount", ctypes.c_uint64)]
+
+        class _EXT(ctypes.Structure):
+            _fields_ = [("BasicLimitInformation", _BASIC),
+                        ("IoInfo", _IO),
+                        ("ProcessMemoryLimit", ctypes.c_size_t),
+                        ("JobMemoryLimit", ctypes.c_size_t),
+                        ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                        ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+        info = _EXT()
+        info.BasicLimitInformation.LimitFlags = 0x2000   # KILL_ON_JOB_CLOSE
+        k32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int,
+                                                wintypes.LPVOID, wintypes.DWORD]
+        if not k32.SetInformationJobObject(job, 9, ctypes.byref(info),
+                                           ctypes.sizeof(info)):
+            k32.CloseHandle(job)
+            return None
+        return job
+    except Exception:
+        return None
+
+
+def _assign_to_job(job, proc):
+    import ctypes
+    from ctypes import wintypes
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    k32.AssignProcessToJobObject(job, int(proc._handle))
+
+
+def _close_job(job):
+    if not job:
+        return
+    try:
+        import ctypes
+        ctypes.WinDLL("kernel32").CloseHandle(job)
+    except Exception:
+        pass
+
+
+def _run_web_login_subprocess(width=1120, height=700):
+    """Show the WebView2 login in a SEPARATE process and return its outcome.
+
+    Isolation keeps WebView2's COM/GPU state out of the Flet process. Two details
+    are critical (they were the actual freeze causes):
+      • Popen with stdout/stdin/stderr = DEVNULL, NOT a PIPE. WebView2's helper
+        processes inherit the child's handles and can outlive it; a PIPE keeps its
+        write end open and hangs the parent forever waiting on EOF.
+      • The child runs inside a KILL_ON_JOB_CLOSE Job Object, so every WebView2
+        helper process is killed when we close the job — no leaks across launches.
+    Outcome is read from the child EXIT CODE: 0=dark, 3=light (signed in),
+    1=closed without login, anything else=unavailable.
+    """
+    import os as _os, sys as _sys, subprocess as _sp
+    if getattr(_sys, "frozen", False):
+        cmd = [_sys.executable, "--web-login"]                 # packaged exe
+    else:
+        cmd = [_sys.executable, _os.path.abspath(__file__), "--web-login"]
+    job = _make_kill_on_close_job() if _os.name == "nt" else None
+    try:
+        proc = _sp.Popen(cmd, stdin=_sp.DEVNULL, stdout=_sp.DEVNULL,
+                         stderr=_sp.DEVNULL)
+    except Exception:
+        _close_job(job)
+        return None
+    try:
+        if job is not None:
+            _assign_to_job(job, proc)          # child + its WebView2 tree
+    except Exception:
+        pass
+    try:
+        code = proc.wait()
+    except Exception:
+        code = None
+    finally:
+        _close_job(job)   # closing the job kills any leftover WebView2 processes
+    if code == 0:
+        return "dark"
+    if code == 3:
+        return "light"
+    if code == 1:
+        return "__cancelled__"
+    return None                                                    # unavailable
+
 if __name__ == "__main__":
     import os
     # Force web mode explicitly with:  set WEB_MODE=1
@@ -6410,31 +7148,9 @@ if __name__ == "__main__":
     if _web:
         _launch(view=ft.AppView.WEB_BROWSER)
     else:
-        # Default: native DESKTOP window. Requires the flet desktop client binary.
-        # If it is missing/blocked, install it from PyPI:  pip install flet-desktop
-        #
-        # External login: show the Stitch glass login (native WebView2 via pywebview)
-        # BEFORE the Flet window whenever no session exists. On success the session is
-        # cached, so the Flet app boots straight in. If pywebview is unavailable we
-        # fall through to the in-app Flet gate (auth_screen) so the app still runs.
-        try:
-            if auth.configured() and auth.acquire_silent() is None:
-                import web_login
-                _res = web_login.run_login(1120, 760)
-                if _res is None:
-                    raise SystemExit(0)            # window closed without signing in
-                if isinstance(_res, dict) and _res.get("user"):
-                    _th = _res.get("theme")
-                    if _th in ("light", "dark"):
-                        try:
-                            T.apply_theme(_th)
-                        except Exception:
-                            pass
-                # _res == {"unavailable": True}  → fall through to the Flet gate
-        except SystemExit:
-            raise
-        except Exception:
-            pass
+        # Native desktop window. Login is handled entirely inside the Flet app by
+        # the sign-in gate (_login_gate) — there is no WebView2/pywebview anymore,
+        # so no embedded browser window can freeze.
         try:
             _launch()
         except Exception as _e:
@@ -6446,4 +7162,10 @@ if __name__ == "__main__":
             print("\nThen run again:  python main.py")
             print("\nOr run in the browser instead:")
             print("  set WEB_MODE=1   &&   python main.py")
+        # Guarantee the process fully terminates once the Flet window closes, even
+        # if background/daemon-less threads (webview, updater, requests) remain.
+        try:
+            os._exit(0)
+        except Exception:
+            pass
             print("="*64)
