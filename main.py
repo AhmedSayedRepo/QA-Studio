@@ -1433,28 +1433,77 @@ class QAStudio:
         u = getattr(self, "user", None)
         if not auth.configured() or not u:
             return None
+        _op = lambda c, o: ft.Colors.with_opacity(o, c)
         initial = (u.get("name") or u.get("email") or "?").strip()[:1].upper()
         name = u.get("name") or u.get("email") or "Signed in"
-        return ft.Container(
+        role = u.get("role", "Viewer")
+        role_col = {"Admin": T.VIOLET, "Member": getattr(T, "GREEN", "#1F9D57"),
+                    "Viewer": T.INK_3}.get(role, T.INK_3)
+
+        # gradient avatar + a small "online" dot cut out from the chip background
+        avatar = ft.Container(
+            ft.Text(initial, size=14, weight=ft.FontWeight.W_800, color="#FFFFFF"),
+            width=34, height=34, border_radius=17, alignment=ft.Alignment.CENTER,
+            gradient=ft.LinearGradient(begin=ft.Alignment.TOP_LEFT,
+                                       end=ft.Alignment.BOTTOM_RIGHT,
+                                       colors=[T.VIOLET, getattr(T, "VIOLET_H", T.VIOLET)]),
+            shadow=ft.BoxShadow(blur_radius=10, spread_radius=-2, offset=ft.Offset(0, 2),
+                                color=_op(T.VIOLET, 0.5)))
+        avatar_wrap = ft.Stack([
+            avatar,
+            ft.Container(width=11, height=11, border_radius=6, bgcolor="#22C55E",
+                         border=ft.Border.all(2, T.CARD), right=-1, bottom=-1),
+        ], width=34, height=34)
+
+        role_pill = ft.Container(
+            ft.Text(role.upper(), size=8.5, weight=ft.FontWeight.W_800, color=role_col,
+                    style=ft.TextStyle(letter_spacing=0.7)),
+            bgcolor=_op(role_col, 0.14), border_radius=6,
+            padding=ft.Padding.symmetric(vertical=2, horizontal=6))
+
+        logout = ft.Container(
+            ft.Icon(ft.Icons.LOGOUT, size=16, color=T.INK_2),
+            on_click=self._sign_out, ink=True, border_radius=10, padding=9,
+            tooltip="Sign out", animate=120)
+
+        def _lo_hover(e, _c=logout):
+            try:
+                on = e.data in (True, "true", "True")
+                _c.bgcolor = _op(T.RED, 0.12) if on else None
+                _c.content.color = T.RED if on else T.INK_2
+                _c.update()
+            except Exception:
+                pass
+        logout.on_hover = _lo_hover
+
+        chip = ft.Container(
             ft.Row([
-                ft.Container(ft.Text(initial, size=12.5, weight=ft.FontWeight.BOLD,
-                                     color="#FFFFFF"),
-                             width=30, height=30, bgcolor=T.VIOLET, border_radius=15,
-                             alignment=ft.Alignment.CENTER),
+                avatar_wrap,
                 ft.Column([
-                    ft.Text(name, size=12.5, weight=ft.FontWeight.W_700, color=T.INK,
+                    ft.Text(name, size=12.5, weight=ft.FontWeight.W_800, color=T.INK,
                             max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
-                    ft.Text(u.get("role", "Viewer"), size=10.5, color=T.INK_3,
-                            weight=ft.FontWeight.BOLD),
+                    ft.Container(role_pill, margin=ft.Margin.only(top=3)),
                 ], spacing=0, tight=True),
                 ft.Container(width=2),
-                ft.Container(ft.Icon(ft.Icons.LOGOUT, size=16, color=T.INK_2),
-                             on_click=self._sign_out, ink=True, border_radius=9,
-                             padding=8, tooltip="Sign out"),
-            ], spacing=9, tight=True,
-               vertical_alignment=ft.CrossAxisAlignment.CENTER),
-            padding=ft.Padding.only(left=10, right=4, top=4, bottom=4),
-            bgcolor=T.CARD_2, border_radius=999, border=ft.Border.all(1, T.BORDER))
+                logout,
+            ], spacing=10, tight=True, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=ft.Padding.only(left=7, right=5, top=5, bottom=5),
+            bgcolor=T.CARD, border_radius=999, border=ft.Border.all(1, T.BORDER),
+            shadow=ft.BoxShadow(blur_radius=20, spread_radius=-8, offset=ft.Offset(0, 6),
+                                color=_op("#000000", 0.22)),
+            animate=140)
+
+        def _chip_hover(e, _c=chip):
+            try:
+                on = e.data in (True, "true", "True")
+                _c.border = ft.Border.all(1.4 if on else 1,
+                                          _op(T.VIOLET, 0.55) if on else T.BORDER)
+                _c.bgcolor = _op(T.VIOLET, 0.05) if on else T.CARD
+                _c.update()
+            except Exception:
+                pass
+        chip.on_hover = _chip_hover
+        return chip
 
     def _toggle_theme(self):
         new = "dark" if getattr(T, "MODE", "light") == "light" else "light"
@@ -1657,7 +1706,10 @@ class QAStudio:
             ft.Container(
                 ft.Stack([
                     ft.Container(
-                        body, expand=True,
+                        # Selection scoped to the content body only — the left nav
+                        # (self.rail()) and the header sit outside it, so they stay
+                        # non-selectable. Content text is drag-select + Ctrl+C.
+                        ft.SelectionArea(content=body), expand=True,
                         padding=ft.Padding.only(left=22, right=22, bottom=22),
                         clip_behavior=ft.ClipBehavior.HARD_EDGE),
                     header,

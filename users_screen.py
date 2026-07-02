@@ -15,12 +15,30 @@ import theme as T
 import auth_supabase as auth
 
 _ROLES = ["Viewer", "Member", "Admin"]
+_PAGE = 25   # users per page
+
+
+def _fmt_last(ts):
+    """Format a Supabase ISO timestamp as local 'YYYY-MM-DD HH:MM' (date + time)."""
+    if not ts:
+        return "never"
+    try:
+        from datetime import datetime
+        dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        try:
+            dt = dt.astimezone()          # show in the viewer's local time
+        except Exception:
+            pass
+        return dt.strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return str(ts)[:16].replace("T", " ") or "—"
 
 
 def _init(app):
     for k, v in (("_users_list", None), ("_users_loading", False),
                  ("_users_msg", None), ("_users_busy", None),
-                 ("_users_expanded", set())):
+                 ("_users_expanded", set()),
+                 ("_users_search", ""), ("_users_page", 0)):
         if not hasattr(app, k):
             setattr(app, k, v)
 
@@ -190,7 +208,7 @@ def screen(app):
         role = u.get("role") or "Viewer"
         caps = u.get("caps")
         confirmed = u.get("confirmed")
-        last = (u.get("last_sign_in_at") or "")[:10] or "—"
+        last = _fmt_last(u.get("last_sign_in_at"))
         is_self = bool(me and me.get("id") == uid)
         busy = (app._users_busy == uid)
         expanded = uid in app._users_expanded
@@ -233,24 +251,94 @@ def screen(app):
             padding=ft.Padding.symmetric(vertical=12, horizontal=14),
             border=ft.Border.all(1, T.BORDER), border_radius=T.R, bgcolor=T.CARD)
 
-    if app._users_loading and app._users_list is None:
-        rows = [ft.Container(ft.Row([
-            ft.ProgressRing(width=18, height=18, stroke_width=2.5, color=T.VIOLET),
-            ft.Text("Loading users…", size=12.5, color=T.INK_3)], spacing=10), padding=14)]
-    elif app._users_msg and app._users_msg[0] == "err":
-        rows = [ft.Container(ft.Row([
-            ft.Icon(ft.Icons.ERROR_OUTLINE, color=T.RED, size=18),
-            ft.Text(app._users_msg[1], size=12.5, color=T.RED, no_wrap=False, expand=True)],
-            spacing=10), padding=ft.Padding.symmetric(vertical=12, horizontal=14),
-            bgcolor=ft.Colors.with_opacity(0.10, T.RED), border_radius=T.R,
-            border=ft.Border.all(1, ft.Colors.with_opacity(0.4, T.RED)))]
-    elif not app._users_list:
-        rows = [ft.Container(ft.Text("No users found.", size=12.5, color=T.INK_3), padding=14)]
-    else:
-        rows = []
-        for u in app._users_list:
-            rows.append(_row(u))
-            rows.append(ft.Container(height=8))
+    # ── filter (search) + paginate (25/page) ──
+    def _compute():
+        allu = app._users_list or []
+        q = (app._users_search or "").strip().lower()
+        if q:
+            filt = [u for u in allu
+                    if q in (u.get("email") or "").lower()
+                    or q in (u.get("role") or "").lower()]
+        else:
+            filt = allu
+        tot = max(1, -(-len(filt) // _PAGE))
+        p = max(0, min(getattr(app, "_users_page", 0), tot - 1))
+        app._users_page = p
+        return filt, tot, p, filt[p * _PAGE:(p + 1) * _PAGE]
+
+    def _list_controls():
+        if app._users_loading and app._users_list is None:
+            return [ft.Container(ft.Row([
+                ft.ProgressRing(width=18, height=18, stroke_width=2.5, color=T.VIOLET),
+                ft.Text("Loading users…", size=12.5, color=T.INK_3)], spacing=10),
+                padding=14)]
+        if app._users_msg and app._users_msg[0] == "err":
+            return [ft.Container(ft.Row([
+                ft.Icon(ft.Icons.ERROR_OUTLINE, color=T.RED, size=18),
+                ft.Text(app._users_msg[1], size=12.5, color=T.RED, no_wrap=False,
+                        expand=True)], spacing=10),
+                padding=ft.Padding.symmetric(vertical=12, horizontal=14),
+                bgcolor=ft.Colors.with_opacity(0.10, T.RED), border_radius=T.R,
+                border=ft.Border.all(1, ft.Colors.with_opacity(0.4, T.RED)))]
+        if not (app._users_list or []):
+            return [ft.Container(ft.Text("No users found.", size=12.5, color=T.INK_3),
+                                 padding=14)]
+        filt, tot, p, page_u = _compute()
+        if not filt:
+            return [ft.Container(ft.Row([
+                ft.Icon(ft.Icons.SEARCH_OFF, size=18, color=T.INK_3),
+                ft.Text("No users match your search.", size=12.5, color=T.INK_3)],
+                spacing=10), padding=14)]
+        out = []
+        for u in page_u:
+            out.append(_row(u))
+            out.append(ft.Container(height=8))
+        return out
+
+    def _pager_controls():
+        if not (app._users_list or []):
+            return ft.Container()
+        filt, tot, p, _ = _compute()
+        if tot <= 1:
+            return ft.Container()
+        return ft.Row([
+            ghost_btn("← Prev", on_click=(None if p == 0 else (lambda e: _goto(p - 1)))),
+            ft.Text(f"Page {p + 1} of {tot}  ·  {len(filt)} users", size=12,
+                    color=T.INK_3, weight=ft.FontWeight.W_600),
+            ghost_btn("Next →", on_click=(None if p >= tot - 1
+                                          else (lambda e: _goto(p + 1)))),
+        ], alignment=ft.MainAxisAlignment.CENTER, spacing=16)
+
+    # scrollable list with its own scrollbar (bounded height)
+    _h = max(300, int((getattr(app.page, "height", None) or 720) - 360))
+    list_view = ft.ListView(controls=_list_controls(), spacing=0, padding=0, expand=True)
+    list_holder = ft.Container(list_view, height=_h)
+    pager_holder = ft.Container(_pager_controls(), margin=ft.Margin.only(top=12),
+                                alignment=ft.Alignment.CENTER)
+
+    def _refresh_list():
+        try:
+            list_view.controls = _list_controls()
+            list_view.update()
+            pager_holder.content = _pager_controls()
+            pager_holder.update()
+        except Exception:
+            app.ui_safe(app.render)
+
+    def _goto(p):
+        app._users_page = p
+        _refresh_list()
+
+    def _on_search(e):
+        app._users_search = e.control.value or ""
+        app._users_page = 0
+        _refresh_list()       # in-place so the search box keeps focus while typing
+
+    search = ft.TextField(
+        value=app._users_search or "", hint_text="Search users by email or role…",
+        prefix_icon=ft.Icons.SEARCH, on_change=_on_search, text_size=13, dense=True,
+        border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
+        content_padding=ft.Padding.symmetric(vertical=11, horizontal=12))
 
     body = card(ft.Column([
         ft.Row([sec_head("U", "Users & permissions"), ft.Container(expand=True),
@@ -262,7 +350,10 @@ def screen(app):
                 "individual tabs and actions.", size=12, color=T.INK_3,
                 weight=ft.FontWeight.BOLD, no_wrap=False),
         ft.Container(height=14),
-        ft.Column(rows, spacing=0),
+        search,
+        ft.Container(height=12),
+        list_holder,
+        pager_holder,
     ], spacing=0))
 
     return app.shell("Users",
