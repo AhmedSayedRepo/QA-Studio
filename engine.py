@@ -5413,12 +5413,13 @@ def _apply_update_zip(cb):
     installs that aren't git clones and aren't frozen exes."""
     import sys, tempfile, zipfile, shutil, subprocess
     cb = cb or (lambda *a, **k: None)
-    try:
-        tag, zb = _latest_zipball()
-    except Exception as e:
-        return (False, f"Couldn't reach GitHub releases: {str(e)[:160]}")
-    if not zb:
-        return (False, "No release archive found — publish a release on GitHub first.")
+    # Pull the latest code from the BRANCH — the same source check_for_update reads
+    # its VERSION from, and the same archive install.bat uses. Using the branch (not
+    # a release tag/zipball) keeps "apply update" consistent with the version banner:
+    # a stale or lagging release tag can no longer make the app reinstall old code
+    # forever (which left the version stuck and the banner permanently showing).
+    zb = (f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}"
+          f"/zipball/{GITHUB_BRANCH}")
     headers = {"Accept": "application/vnd.github+json"}
     token = _github_token()
     if token:
@@ -5463,6 +5464,15 @@ def _apply_update_zip(cb):
         return (False, f"Couldn't write update files: {str(e)[:160]}. "
                        f"Close the app and try again.")
     shutil.rmtree(tmp, ignore_errors=True)
+    # Drop stale bytecode so Python recompiles from the freshly-copied sources. Zip
+    # file mtimes can be OLDER than the cached .pyc, in which case Python would keep
+    # running the old code even though the .py files were replaced.
+    try:
+        _pyc = os.path.join(dst, "__pycache__")
+        if os.path.isdir(_pyc):
+            shutil.rmtree(_pyc, ignore_errors=True)
+    except Exception:
+        pass
     # best-effort: install any new dependencies the update introduced
     try:
         req = os.path.join(dst, "requirements.txt")
