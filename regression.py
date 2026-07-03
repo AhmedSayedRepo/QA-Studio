@@ -1599,6 +1599,8 @@ def _sprint_num(text):
 def _reload_plan_stories(app):
     """Aggregate the user stories that live in the currently-selected test plans
     (their requirement suites). Runs off the UI thread."""
+    if not (app.connected and app.project):
+        return                      # no connection → don't load/re-render (viewers)
     plans = list(app._reg_plans_selected or [])
     # Cancellation token: every (re)load bumps this; an in-flight fetch whose token
     # is stale must NOT apply its results. So select-all then deselect-all stops the
@@ -1680,21 +1682,31 @@ def _cp_is_sprint(it):
 
 
 def _cp_load_iterations(app):
-    if app._cp_iterations or app._cp_iter_loading:
+    if not (app.connected and app.project):
+        return                      # no connection → don't fetch (read-only viewers)
+    # Key on the project: an EMPTY result must count as "loaded", or the old
+    # `if app._cp_iterations` guard (falsy for []) re-loads + full-renders on every
+    # pass → the perpetual "loading sprints" + nav-flashing loop.
+    if app._cp_iter_loading or getattr(app, "_cp_iter_for", None) == app.project:
         return
     app._cp_iter_loading = True
+    _proj = app.project
+    app._cp_iter_for = _proj
 
     def _work():
         try:
-            its = E.fetch_iterations(app.project) or []
+            its = E.fetch_iterations(_proj) or []
         except Exception:
             its = []
         sprints = [it for it in its if _cp_is_sprint(it)] or its
         # Ascending by sprint number (Sprint 0, 1, 2, …) so Sprint 0 reads first
         # instead of being stranded at the end; un-numbered iterations sort last.
         sprints.sort(key=lambda it: (_sprint_sort_key(it) < 0, _sprint_sort_key(it)))
-        app._cp_iterations = sprints
         app._cp_iter_loading = False
+        if app.project != _proj:      # project changed mid-load → drop stale result
+            app._cp_iter_for = None
+            return
+        app._cp_iterations = sprints
         app.ui_safe(app.render)
     threading.Thread(target=_work, daemon=True).start()
 
@@ -1929,6 +1941,8 @@ def _checkbox_multiselect(options, selected, on_toggle, on_all, *, is_open, on_o
     return ft.Column([field_container, panel_wrap], spacing=0)
 
 def _cp_load_stories(app):
+    if not (app.connected and app.project):
+        return                      # no connection → don't load/re-render (viewers)
     paths = list(app._cp_sprint_paths or [])
     # Cancellation token (see _reload_plan_stories): deselecting sprints aborts an
     # in-flight fetch instead of waiting for it to complete and repopulate.
@@ -2103,7 +2117,7 @@ def test_plan_screen(app):
     """Entry point for the 'Test Plan' nav tab — a sprint-based effort report."""
     _init(app)
     from main import card, sec_head, field_label, green_btn, ghost_btn  # noqa: F401
-    if not (app.connected and app.project):
+    if not app.readonly and not (app.connected and app.project):
         return locked_state(
             app, "Sprint Plan",
             "Plan & estimate test effort across a sprint’s stories",
@@ -2883,7 +2897,7 @@ def screen(app):
                       primary_btn, searchable_dropdown)
 
     # ── gate: only needs a connection + a project ──
-    if not (app.connected and app.project):
+    if not app.readonly and not (app.connected and app.project):
         return locked_state(
             app, "Regression Plan",
             "Build a regression plan from your test plans & their stories",
@@ -2892,9 +2906,14 @@ def screen(app):
 
     app._reg_mode = "existing"
 
-    # lazy-load test plans
-    if not app._plans and not app._reg_plans_loading:
+    # lazy-load test plans (only when connected — a read-only viewer never is, so
+    # an empty fetch can't loop into perpetual "loading" + re-render flashing)
+    # Key on project: an empty plan list must count as "loaded" (the old
+    # `not app._plans` guard is falsy for [] → reload + full-render loop).
+    if (app.connected and not app._reg_plans_loading
+            and getattr(app, "_reg_plans_for", None) != app.project):
         app._reg_plans_loading = True
+        app._reg_plans_for = app.project
 
         def _lp():
             try:

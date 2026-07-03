@@ -89,20 +89,29 @@ def _sort_key(it):
 
 
 def _load_iterations(app):
-    if app._st_iterations or app._st_iter_loading:
+    if not (app.connected and app.project):
+        return                      # no connection → don't fetch (read-only viewers)
+    # Key on project so an empty result counts as "loaded" (falsy `if app._st_iterations`
+    # otherwise reloads + full-renders every pass → the flashing loop).
+    if app._st_iter_loading or getattr(app, "_st_iter_for", None) == app.project:
         return
     app._st_iter_loading = True
+    _proj = app.project
+    app._st_iter_for = _proj
 
     def _work():
         try:
-            its = E.fetch_iterations(app.project) or []
+            its = E.fetch_iterations(_proj) or []
         except Exception:
             its = []
         sprints = [it for it in its
                    if (_sprint_num(it.get("name", "")) or _sprint_num(it.get("path", "")))] or its
         sprints.sort(key=lambda it: (_sort_key(it) < 0, _sort_key(it)))
-        app._st_iterations = sprints
         app._st_iter_loading = False
+        if app.project != _proj:      # project changed mid-load → drop stale result
+            app._st_iter_for = None
+            return
+        app._st_iterations = sprints
         app.ui_safe(app.render)
     threading.Thread(target=_work, daemon=True).start()
 
@@ -608,7 +617,7 @@ def screen(app):
     import regression as R
     from main import (card, sec_head, field_label, primary_btn, green_btn, ghost_btn)
 
-    if not (app.connected and app.project):
+    if not app.readonly and not (app.connected and app.project):
         return R.locked_state(
             app, "Sprint Report",
             "A sprint closure report — stories by status + bug summary, Arabic or English",

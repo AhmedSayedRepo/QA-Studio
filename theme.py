@@ -92,10 +92,10 @@ F_AR   = "IBM Plex Sans Arabic"
 
 # ── Navigation steps ──────────────────────────────────────────────────────────
 NAV = [
-    {"id": "setup",  "label": "Setup",  "ix": "01", "icon": "TUNE"},
-    {"id": "run",    "label": "Run",    "ix": "02", "icon": "MONITOR_HEART"},
-    {"id": "report", "label": "Report", "ix": "03", "icon": "DESCRIPTION_OUTLINED"},
-    {"id": "automation", "label": "Automation", "ix": "04", "icon": "CODE"},
+    {"id": "setup",  "label": "Setup",  "ix": "S",  "icon": "TUNE"},
+    {"id": "run",    "label": "Run",    "ix": "Ru", "icon": "MONITOR_HEART"},
+    {"id": "report", "label": "Report", "ix": "Rp", "icon": "DESCRIPTION_OUTLINED"},
+    {"id": "automation", "label": "Automation", "ix": "A", "icon": "CODE"},
 ]
 
 # Provider smart-casing

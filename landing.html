@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QA Studio — AI test cases for Azure DevOps</title>
+<meta name="description" content="QA Studio generates Azure DevOps test-case titles or full steps, in English or Arabic. Download the installer for Windows.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#080B16; --bg2:#0B1022; --ink:#EAF0FF; --ink2:#AEB9D9; --ink3:#7E89AE;
+    --cyan:#12B5CE; --cyan2:#0E9CC0; --violet:#7C6CF6; --violet2:#5A45D6;
+    --card:rgba(20,27,50,.55); --border:rgba(124,140,255,.14);
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{font-family:'Plus Jakarta Sans',system-ui,-apple-system,Segoe UI,sans-serif;
+    background:var(--bg);color:var(--ink);-webkit-font-smoothing:antialiased;overflow-x:hidden;}
+  code,.mono{font-family:'JetBrains Mono',ui-monospace,monospace;}
+  a{text-decoration:none;color:inherit;}
+  ::selection{background:rgba(124,108,246,.4);color:#fff;}
+  .wrap{max-width:1040px;margin:0 auto;padding:0 24px;}
+  .grad{background:linear-gradient(100deg,var(--cyan) 0%,var(--violet) 100%);
+    -webkit-background-clip:text;background-clip:text;color:transparent;}
+
+  /* ambient background */
+  .bg-glow{position:fixed;inset:0;z-index:-1;overflow:hidden;background:
+    radial-gradient(1100px 620px at 78% -8%,rgba(18,181,206,.16),transparent 60%),
+    radial-gradient(900px 560px at 12% 8%,rgba(124,108,246,.15),transparent 60%),
+    linear-gradient(180deg,var(--bg) 0%,var(--bg2) 100%);}
+  .bg-grid{position:fixed;inset:0;z-index:-1;opacity:.35;
+    background-image:linear-gradient(rgba(124,140,255,.05) 1px,transparent 1px),
+      linear-gradient(90deg,rgba(124,140,255,.05) 1px,transparent 1px);
+    background-size:44px 44px;mask-image:radial-gradient(circle at 50% 12%,#000,transparent 72%);}
+
+  /* nav */
+  nav{position:sticky;top:0;z-index:20;backdrop-filter:blur(14px);
+    background:rgba(8,11,22,.55);border-bottom:1px solid var(--border);}
+  .nav-in{max-width:1040px;margin:0 auto;padding:14px 24px;display:flex;align-items:center;justify-content:space-between;}
+  .brand{display:flex;align-items:center;gap:11px;}
+  .brand img{width:34px;height:34px;border-radius:9px;}
+  .brand b{font-weight:800;font-size:16px;letter-spacing:-.2px;}
+  .brand span{font-size:11px;color:var(--ink3);font-family:'JetBrains Mono',monospace;}
+  .nlink{color:var(--ink2);font-size:13.5px;font-weight:600;transition:.15s;}
+  .nlink:hover{color:#fff;}
+
+  /* hero */
+  header{padding:78px 0 40px;text-align:center;position:relative;}
+  .pill{display:inline-flex;align-items:center;gap:8px;padding:7px 14px;border-radius:999px;
+    background:var(--card);border:1px solid var(--border);font-size:12.5px;color:var(--ink2);
+    font-weight:600;margin-bottom:26px;}
+  .dot{width:7px;height:7px;border-radius:9px;background:var(--cyan);box-shadow:0 0 10px var(--cyan);}
+  h1{font-size:clamp(34px,6vw,60px);line-height:1.04;font-weight:800;letter-spacing:-1.4px;margin:0 0 20px;}
+  .sub{max-width:640px;margin:0 auto 34px;font-size:clamp(15px,2.2vw,18px);line-height:1.6;color:var(--ink2);}
+  .cta{display:flex;gap:14px;justify-content:center;flex-wrap:wrap;align-items:center;}
+  .btn{display:inline-flex;align-items:center;gap:10px;font-weight:700;font-size:15px;
+    padding:15px 26px;border-radius:14px;transition:transform .12s,box-shadow .2s;}
+  .btn-primary{color:#04121A;background:linear-gradient(100deg,var(--cyan),var(--cyan2));
+    box-shadow:0 12px 34px -10px rgba(18,181,206,.6);}
+  .btn-primary:hover{transform:translateY(-2px);box-shadow:0 18px 42px -10px rgba(18,181,206,.75);}
+  .btn-ghost{color:var(--ink);background:var(--card);border:1px solid var(--border);font-weight:600;}
+  .btn-ghost:hover{border-color:rgba(124,140,255,.34);}
+  .cta-note{margin-top:14px;font-size:12.5px;color:var(--ink3);}
+
+  .ps{margin:30px auto 0;max-width:680px;}
+  .ps .lbl{font-size:11px;letter-spacing:1.6px;color:var(--ink3);font-weight:700;margin-bottom:9px;}
+  .ps-box{display:flex;align-items:center;gap:12px;background:rgba(6,9,18,.7);border:1px solid var(--border);
+    border-radius:12px;padding:13px 15px;text-align:left;}
+  .ps-box code{font-size:12.5px;color:#BFE9F2;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;}
+  .copy{cursor:pointer;font-size:12px;font-weight:700;color:var(--cyan);white-space:nowrap;
+    padding:5px 10px;border:1px solid var(--border);border-radius:8px;background:transparent;}
+  .copy:hover{background:rgba(18,181,206,.1);}
+
+  /* sections */
+  section{padding:56px 0;}
+  .eyebrow{text-align:center;font-size:11.5px;letter-spacing:2px;font-weight:700;color:var(--cyan2);margin-bottom:10px;}
+  h2{text-align:center;font-size:clamp(24px,3.6vw,34px);font-weight:800;letter-spacing:-.8px;margin:0 0 40px;}
+
+  .steps{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;}
+  .step{background:var(--card);border:1px solid var(--border);border-radius:18px;padding:26px 22px;
+    backdrop-filter:blur(10px);position:relative;}
+  .step .n{width:34px;height:34px;border-radius:10px;display:flex;align-items:center;justify-content:center;
+    font-weight:800;font-size:15px;color:#04121A;background:linear-gradient(100deg,var(--cyan),var(--violet));margin-bottom:15px;}
+  .step h3{margin:0 0 8px;font-size:16.5px;font-weight:700;}
+  .step h3 code{font-size:14px;color:var(--cyan);background:rgba(18,181,206,.1);padding:2px 7px;border-radius:6px;}
+  .step p{margin:0;font-size:13.5px;line-height:1.55;color:var(--ink2);}
+
+  .feat{display:grid;grid-template-columns:repeat(2,1fr);gap:18px;}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:18px;padding:24px;
+    backdrop-filter:blur(10px);transition:.2s;}
+  .card:hover{border-color:rgba(124,140,255,.3);transform:translateY(-2px);}
+  .card .ic{width:44px;height:44px;border-radius:12px;display:flex;align-items:center;justify-content:center;
+    font-size:22px;background:rgba(18,181,206,.12);border:1px solid var(--border);margin-bottom:14px;}
+  .card h3{margin:0 0 7px;font-size:16.5px;font-weight:700;}
+  .card p{margin:0;font-size:13.5px;line-height:1.55;color:var(--ink2);}
+
+  .note{max-width:820px;margin:0 auto;background:rgba(124,108,246,.08);border:1px solid rgba(124,108,246,.25);
+    border-radius:16px;padding:22px 24px;display:flex;gap:14px;}
+  .note .ic{font-size:20px;}
+  .note b{color:#fff;}
+  .note p{margin:0;font-size:13.5px;line-height:1.6;color:var(--ink2);}
+
+  .final{text-align:center;background:
+    radial-gradient(600px 300px at 50% 0%,rgba(18,181,206,.14),transparent 70%);
+    border:1px solid var(--border);border-radius:24px;padding:52px 24px;margin:20px 0;}
+  .final h2{margin-bottom:24px;}
+
+  footer{border-top:1px solid var(--border);padding:26px 0;text-align:center;color:var(--ink3);font-size:12.5px;}
+
+  @media(max-width:760px){.steps,.feat{grid-template-columns:1fr;}h1{letter-spacing:-.8px;}}
+</style>
+</head>
+<body>
+<div class="bg-glow"></div><div class="bg-grid"></div>
+
+<nav><div class="nav-in">
+  <div class="brand">
+    <img src="https://ahmedsayedrepo.github.io/QA-Studio/qa-logo.png" alt="QA Studio">
+    <div><b>QA Studio</b> &nbsp;<span>v2.8.1</span></div>
+  </div>
+  <a class="nlink" href="https://github.com/AhmedSayedRepo/QA-Studio/releases">Releases &amp; changelog ↗</a>
+</div></nav>
+
+<header><div class="wrap">
+  <div class="pill"><span class="dot"></span> Windows desktop app · v2.8.1</div>
+  <h1>AI test cases for<br><span class="grad">Azure DevOps</span>, in minutes</h1>
+  <p class="sub">QA Studio reads your sprint &amp; stories and generates test-case titles or full steps —
+    in English or Arabic — straight into your test plans. One clean <b>Setup → Run → Report</b> flow.</p>
+  <div class="cta">
+    <a class="btn btn-primary" href="https://github.com/AhmedSayedRepo/QA-Studio/releases/latest/download/install.bat">↓ Download installer</a>
+    <a class="btn btn-ghost" href="https://github.com/AhmedSayedRepo/QA-Studio/releases">View all releases</a>
+  </div>
+  <div class="cta-note"><code>install.bat</code> · ~50 KB · sets up everything automatically</div>
+
+  <div class="ps">
+    <div class="lbl">— OR PASTE THIS IN POWERSHELL —</div>
+    <div class="ps-box">
+      <code id="ps">powershell -c "irm https://github.com/AhmedSayedRepo/QA-Studio/releases/latest/download/install.bat -OutFile $env:TEMP\install.bat; &amp; $env:TEMP\install.bat"</code>
+      <button class="copy" onclick="navigator.clipboard.writeText(document.getElementById('ps').innerText);this.innerText='Copied'">Copy</button>
+    </div>
+  </div>
+</div></header>
+
+<section><div class="wrap">
+  <div class="eyebrow">GET STARTED</div>
+  <h2>Up and running in about a minute</h2>
+  <div class="steps">
+    <div class="step"><div class="n">1</div><h3>Download <code>install.bat</code></h3>
+      <p>One small file — no ZIP to unzip, nothing to configure.</p></div>
+    <div class="step"><div class="n">2</div><h3>Double-click it</h3>
+      <p>It installs Python if needed, pulls the app, adds dependencies, and drops a Desktop icon.</p></div>
+    <div class="step"><div class="n">3</div><h3>Open QA Studio</h3>
+      <p>Launch from the new Desktop icon, add your keys in Setup, and run.</p></div>
+  </div>
+</div></section>
+
+<section style="padding-top:8px"><div class="wrap">
+  <div class="eyebrow">WHAT IT DOES</div>
+  <h2>Built for the Azure DevOps test workflow</h2>
+  <div class="feat">
+    <div class="card"><div class="ic">📝</div><h3>Titles or full steps</h3>
+      <p>Generate concise test-case titles, or complete step-by-step cases — your choice per run.</p></div>
+    <div class="card"><div class="ic">🌐</div><h3>English &amp; Arabic</h3>
+      <p>Produce test content in either language with a single toggle in Setup.</p></div>
+    <div class="card"><div class="ic">🔄</div><h3>Writes back to Azure DevOps</h3>
+      <p>Pulls your projects, test plans &amp; stories and pushes generated cases straight into them.</p></div>
+    <div class="card"><div class="ic">✦</div><h3>Your choice of model</h3>
+      <p>Anthropic, OpenAI, Gemini, NVIDIA, Azure OpenAI, DeepSeek, Qwen or Ollama — bring your own key.</p></div>
+  </div>
+</div></section>
+
+<section style="padding-top:8px"><div class="wrap">
+  <div class="note">
+    <div class="ic">🛡️</div>
+    <p><b>A couple of things to know.</b> Windows may show a blue "Windows protected your PC" notice for the
+      <code>.bat</code> — click <b>More info → Run anyway</b>. If it says Python was just installed, close the
+      window and run <code>install.bat</code> once more. Your API keys &amp; Azure PAT are stored
+      <b>locally only</b> and never uploaded.</p>
+  </div>
+</div></section>
+
+<section><div class="wrap">
+  <div class="final">
+    <h2>Ready to generate your first test plan?</h2>
+    <div class="cta">
+      <a class="btn btn-primary" href="https://github.com/AhmedSayedRepo/QA-Studio/releases/latest/download/install.bat">↓ Download installer</a>
+      <a class="btn btn-ghost" href="https://github.com/AhmedSayedRepo/QA-Studio/releases">View all releases</a>
+    </div>
+  </div>
+</div></section>
+
+<footer>QA Studio · v2.8.1 · Windows 10/11 · Python auto-installed · keys stay on your device</footer>
+</body>
+</html>

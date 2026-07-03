@@ -31,3 +31,6 @@ desktop.ini
 # Flet build output
 build/
 storage/
+
+# Runtime perf log
+qa_perf.log

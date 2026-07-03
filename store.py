@@ -13,7 +13,25 @@ import os, json, base64, ctypes
 import ctypes.wintypes as wintypes
 
 CRED_DIR  = os.path.join(os.path.expanduser("~"), ".qa_tool")
-CRED_FILE = os.path.join(CRED_DIR, "creds.dat")
+_DEFAULT_FILE = os.path.join(CRED_DIR, "creds.dat")
+# Active credential file. Switched to a per-user file via set_user() so different
+# signed-in accounts on the same device don't share keys / PAT / prefs.
+CRED_FILE = _DEFAULT_FILE
+
+import re as _re
+
+
+def set_user(user_id):
+    """Point load()/save() at a per-user credential file. Pass None/'' for the
+    shared default file (before sign-in, or when auth is unconfigured)."""
+    global CRED_FILE
+    uid = (str(user_id).strip() if user_id else "")
+    if uid:
+        safe = _re.sub(r"[^A-Za-z0-9._-]", "_", uid)[:80]
+        CRED_FILE = os.path.join(CRED_DIR, f"creds_{safe}.dat")
+    else:
+        CRED_FILE = _DEFAULT_FILE
+    return CRED_FILE
 
 _DPAPI_MAGIC = b"DPAPI1\n"   # marks a DPAPI-encrypted file (vs legacy base64)
 

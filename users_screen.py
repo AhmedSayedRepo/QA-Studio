@@ -145,6 +145,17 @@ def screen(app):
         else:
             _save(app, uid, lambda: auth.admin_set_role(uid, role))
 
+    def _revoke(uid, email):
+        is_self = bool(me and me.get("id") == uid)
+        msg = (f"{email} keeps their account and can still sign in, but will have "
+               "access to nothing until you set a role for them again.")
+        if is_self:
+            msg = ("You’re revoking your OWN access — you’ll be locked out until "
+                   "another admin restores you. ") + msg
+        app._confirm("Revoke this user’s access?", msg,
+                     lambda: _save(app, uid, lambda: auth.admin_revoke_access(uid)),
+                     yes_label="Revoke access", danger=True)
+
     def _perm_chip(uid, key, label, granted, busy):
         def _do(e):
             eff = set(auth.caps_for({"role": _cur_role[0], "caps": _cur_caps[0]}))
@@ -207,6 +218,7 @@ def screen(app):
         email = u.get("email") or "(no email)"
         role = u.get("role") or "Viewer"
         caps = u.get("caps")
+        revoked = isinstance(caps, list) and len(caps) == 0   # custom caps, none granted
         confirmed = u.get("confirmed")
         last = _fmt_last(u.get("last_sign_in_at"))
         is_self = bool(me and me.get("id") == uid)
@@ -228,19 +240,35 @@ def screen(app):
                                   bgcolor=T.VIOLET_SOFT, border_radius=999)
                      if is_self else ft.Container(width=0)),
                 ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                ft.Text(("✓ confirmed" if confirmed else "✗ not confirmed")
-                        + f"  ·  last sign-in {last}",
-                        size=11, color=(T.GREEN if confirmed else T.AMBER),
-                        weight=ft.FontWeight.BOLD),
+                ft.Row([
+                    ft.Text(("✓ confirmed" if confirmed else "✗ not confirmed")
+                            + f"  ·  last sign-in {last}",
+                            size=11, color=(T.GREEN if confirmed else T.AMBER),
+                            weight=ft.FontWeight.BOLD),
+                    (ft.Container(ft.Text("ACCESS REVOKED", size=9.5,
+                                          weight=ft.FontWeight.BOLD, color=T.RED),
+                                  padding=ft.Padding.symmetric(vertical=1, horizontal=7),
+                                  bgcolor=ft.Colors.with_opacity(0.12, T.RED),
+                                  border_radius=999)
+                     if revoked else ft.Container(width=0)),
+                ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
             ], spacing=2, expand=True),
             (ft.Row([ft.ProgressRing(width=18, height=18, stroke_width=2.4,
                                      color=T.VIOLET)], tight=True)
-             if busy else _role_chip(uid, role, busy)),
+             if busy else _role_chip(uid, (None if revoked else role), busy)),
             ft.Container(
                 ft.Icon(ft.Icons.EXPAND_LESS if expanded else ft.Icons.TUNE,
                         size=18, color=T.INK_3),
                 on_click=lambda e, x=uid: _toggle_expand(x), ink=True, border_radius=8,
                 padding=8, tooltip="Per-permission access"),
+            ft.Container(
+                ft.Icon(ft.Icons.REMOVE_CIRCLE_OUTLINE, size=18,
+                        color=(T.INK_3 if (busy or revoked) else T.RED)),
+                on_click=(None if (busy or revoked)
+                          else (lambda e, x=uid, em=email: _revoke(x, em))),
+                ink=True, border_radius=8, padding=8,
+                tooltip=("Access already revoked — set a role to restore"
+                         if revoked else "Revoke access")),
         ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
         children = [head]
@@ -309,8 +337,9 @@ def screen(app):
                                           else (lambda e: _goto(p + 1)))),
         ], alignment=ft.MainAxisAlignment.CENTER, spacing=16)
 
-    # scrollable list with its own scrollbar (bounded height)
-    _h = max(300, int((getattr(app.page, "height", None) or 720) - 360))
+    # scrollable list with its own scrollbar (bounded height). Taller container —
+    # fills more of the screen (was leaving a large empty gap below the list).
+    _h = max(440, int((getattr(app.page, "height", None) or 800) - 270))
     list_view = ft.ListView(controls=_list_controls(), spacing=0, padding=0, expand=True)
     list_holder = ft.Container(list_view, height=_h)
     pager_holder = ft.Container(_pager_controls(), margin=ft.Margin.only(top=12),

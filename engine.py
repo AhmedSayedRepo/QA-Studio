@@ -278,91 +278,234 @@ def _extract_openai_text(resp):
         raise EmptyAIResponse("response truncated (max_tokens) with no content")
     return text
 
+# ── HTTP adapter layer ────────────────────────────────────────────────────────
+# Every provider is called over pure HTTP (requests) — no vendor SDKs — so
+# connecting + generating never depend on an SDK's pinned Python/dependency
+# versions (the cause of "provider won't connect" on end-user machines). One
+# uniform transport for anthropic / openai-compatible (openai, nvidia, deepseek,
+# qwen, ollama) / azure / gemini / manus. See PROVIDERS_REFACTOR_PLAN.md.
+
+
+def _http_post_json(url, headers, payload, timeout):
+    """POST JSON, return parsed dict. Pure-Python (requests). Raises RuntimeError
+    with a short body on non-200."""
+    r = requests.post(url, headers=headers, json=payload, timeout=(timeout or 120))
+    if r.status_code != 200:
+        try:
+            body = (r.text or "")[:300]
+        except Exception:
+            body = ""
+        raise RuntimeError(f"HTTP {r.status_code} from provider: {body}")
+    return r.json()
+
+
+def _extract_openai_text_json(data):
+    """Same defensive extraction as _extract_openai_text, over a JSON dict."""
+    choices = (data or {}).get("choices") or []
+    if not choices:
+        raise EmptyAIResponse("provider returned no choices")
+    ch = choices[0] or {}
+    fr = ch.get("finish_reason")
+    msg = ch.get("message") or {}
+    text = msg.get("content")
+    if text is None:
+        refusal = msg.get("refusal")
+        if refusal:
+            raise EmptyAIResponse(f"model refused: {refusal}")
+        if fr == "content_filter":
+            raise EmptyAIResponse("response blocked by content filter")
+        raise EmptyAIResponse("empty content from provider")
+    if fr == "length" and not str(text).strip():
+        raise EmptyAIResponse("response truncated (max_tokens) with no content")
+    return text
+
+
+def _openai_compat_http(cfg, prompt_text, images, max_tokens, timeout, want_json=False):
+    """Pure-HTTP chat completion for any OpenAI-compatible endpoint. Mirrors the
+    openai SDK branch (text or text+images, optional JSON mode)."""
+    base = (cfg.get("base_url") or "https://api.openai.com/v1").rstrip("/")
+    if images:
+        content = [{"type": "text", "text": prompt_text}]
+        for im in images:
+            content.append({"type": "image_url", "image_url": {
+                "url": f"data:{im['media_type']};base64,{im['data']}"}})
+    else:
+        content = prompt_text
+    payload = {"model": cfg["model"], "max_tokens": max_tokens,
+               "messages": [{"role": "user", "content": content}]}
+    if want_json:
+        payload["response_format"] = {"type": "json_object"}
+    headers = {"Content-Type": "application/json"}
+    key = (cfg.get("api_key") or "").strip()
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    data = _http_post_json(base + "/chat/completions", headers, payload, timeout)
+    return _extract_openai_text_json(data)
+
+
+def _openai_compat_models_http(base_url, key, timeout=15):
+    """Pure-HTTP GET /models for any OpenAI-compatible endpoint. Returns id list."""
+    base = (base_url or "https://api.openai.com/v1").rstrip("/")
+    headers = {"Content-Type": "application/json"}
+    if (key or "").strip():
+        headers["Authorization"] = f"Bearer {key.strip()}"
+    r = requests.get(base + "/models", headers=headers, timeout=(timeout or 15))
+    r.raise_for_status()
+    return [m.get("id") for m in ((r.json() or {}).get("data") or []) if m.get("id")]
+
+
+def _http_get_json(url, headers, timeout):
+    """GET JSON, return parsed dict. Pure-Python (requests)."""
+    r = requests.get(url, headers=headers, timeout=(timeout or 30))
+    if r.status_code != 200:
+        try:
+            body = (r.text or "")[:300]
+        except Exception:
+            body = ""
+        raise RuntimeError(f"HTTP {r.status_code} from provider: {body}")
+    return r.json()
+
+
+def _anthropic_http(cfg, prompt_text, images, max_tokens, timeout):
+    """Pure-HTTP Anthropic Messages API (drops the `anthropic` SDK)."""
+    content = []
+    for im in images:
+        content.append({"type": "image", "source": {"type": "base64",
+            "media_type": im["media_type"], "data": im["data"]}})
+    content.append({"type": "text", "text": prompt_text})
+    headers = {"x-api-key": (cfg.get("api_key") or "").strip(),
+               "anthropic-version": "2023-06-01", "content-type": "application/json"}
+    payload = {"model": cfg["model"], "max_tokens": max_tokens,
+               "messages": [{"role": "user", "content": content}]}
+    data = _http_post_json("https://api.anthropic.com/v1/messages", headers, payload, timeout)
+    blocks = (data or {}).get("content") or []
+    out = "".join(b.get("text", "") for b in blocks if b.get("type") == "text").strip()
+    if not out:
+        raise EmptyAIResponse(f"empty response (stop_reason={(data or {}).get('stop_reason')})")
+    return out
+
+
+def _anthropic_models_http(key, timeout=15):
+    headers = {"x-api-key": (key or "").strip(), "anthropic-version": "2023-06-01"}
+    data = _http_get_json("https://api.anthropic.com/v1/models?limit=100", headers, timeout)
+    return [m.get("id") for m in ((data or {}).get("data") or []) if m.get("id")]
+
+
+def _azure_http(cfg, prompt_text, images, max_tokens, timeout):
+    """Pure-HTTP Azure OpenAI chat completion (drops the openai SDK)."""
+    if images:
+        content = [{"type": "text", "text": prompt_text}]
+        for im in images:
+            content.append({"type": "image_url", "image_url": {
+                "url": f"data:{im['media_type']};base64,{im['data']}"}})
+    else:
+        content = prompt_text
+    endpoint = (cfg.get("endpoint") or "").rstrip("/")
+    ver = cfg.get("api_version", "2024-06-01")
+    url = f"{endpoint}/openai/deployments/{cfg['deployment']}/chat/completions?api-version={ver}"
+    headers = {"api-key": (cfg.get("api_key") or "").strip(), "content-type": "application/json"}
+    payload = {"messages": [{"role": "user", "content": content}], "max_tokens": max_tokens}
+    return _extract_openai_text_json(_http_post_json(url, headers, payload, timeout))
+
+
+def _azure_models_http(cfg, timeout=15):
+    endpoint = (cfg.get("endpoint") or "").rstrip("/")
+    ver = cfg.get("api_version", "2024-06-01")
+    headers = {"api-key": (cfg.get("api_key") or "").strip()}
+    data = _http_get_json(f"{endpoint}/openai/models?api-version={ver}", headers, timeout)
+    return [m.get("id") for m in ((data or {}).get("data") or []) if m.get("id")]
+
+
+def _gemini_http(cfg, prompt_text, images, max_tokens, timeout, want_json=False):
+    """Pure-HTTP Gemini generateContent (drops google-generativeai/grpcio/protobuf)."""
+    parts = [{"text": prompt_text}]
+    for im in images:
+        parts.append({"inline_data": {"mime_type": im["media_type"], "data": im["data"]}})
+    gen_cfg = {"maxOutputTokens": max_tokens}
+    if want_json:
+        gen_cfg["responseMimeType"] = "application/json"
+    key = (cfg.get("api_key") or "").strip()
+    url = ("https://generativelanguage.googleapis.com/v1beta/models/"
+           f"{cfg['model']}:generateContent?key={key}")
+    payload = {"contents": [{"parts": parts}], "generationConfig": gen_cfg}
+    data = _http_post_json(url, {"content-type": "application/json"}, payload, timeout)
+    cands = (data or {}).get("candidates") or []
+    if not cands:
+        fb = ((data or {}).get("promptFeedback") or {}).get("blockReason")
+        raise EmptyAIResponse(f"blocked by Gemini (block_reason={fb})")
+    parts_out = ((cands[0].get("content") or {}).get("parts")) or []
+    txt = "".join(p.get("text", "") for p in parts_out).strip()
+    if not txt:
+        raise EmptyAIResponse(f"empty response from Gemini (finish_reason={cands[0].get('finishReason')})")
+    return txt
+
+
+def _gemini_models_http(key, timeout=15):
+    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={(key or '').strip()}"
+    data = _http_get_json(url, {}, timeout)
+    ids = []
+    for m in ((data or {}).get("models") or []):
+        if "generateContent" in (m.get("supportedGenerationMethods") or []):
+            nm = m.get("name", "") or ""
+            ids.append(nm.split("/", 1)[1] if nm.startswith("models/") else nm)
+    return ids
+
+
+def _manus_http(cfg, prompt_text, images, max_tokens, timeout):
+    """Pure-HTTP Manus Responses API (create → poll → read). Drops the openai SDK."""
+    base = (cfg.get("base_url") or "https://api.manus.im").rstrip("/")
+    headers = {"API_KEY": (cfg.get("api_key") or "").strip(), "content-type": "application/json"}
+    content = [{"type": "input_text", "text": prompt_text}]
+    for im in images:
+        content.append({"type": "input_image",
+                        "image_url": f"data:{im['media_type']};base64,{im['data']}"})
+    payload = {"model": cfg["model"], "input": [{"role": "user", "content": content}],
+               "task_mode": cfg.get("task_mode") or "chat", "agent_profile": cfg["model"]}
+    data = _http_post_json(base + "/responses", headers, payload, timeout)
+    rid = (data or {}).get("id")
+    status = (data or {}).get("status")
+    deadline = time.time() + (timeout if timeout else 600)
+    while status == "running" and time.time() < deadline:
+        _interruptible_sleep(5)
+        if _STOP_EVENT.is_set():
+            break
+        try:
+            data = _http_get_json(f"{base}/responses/{rid}", headers, timeout)
+        except Exception:
+            break
+        status = (data or {}).get("status")
+    if status == "error":
+        raise RuntimeError(f"Manus task failed (id {rid})")
+    texts = []
+    for msg in ((data or {}).get("output") or []):
+        if msg.get("role") != "assistant":
+            continue
+        for part in (msg.get("content") or []):
+            t = part.get("text")
+            if t:
+                texts.append(t)
+    out = "\n".join(texts).strip()
+    if not out:
+        raise EmptyAIResponse(f"Manus returned no assistant text (status={status})")
+    return out
+
+
 def _ai_call_once(provider, cfg, prompt_text, images, max_tokens, timeout, want_json=False):
     """One provider call. Returns text or raises (EmptyAIResponse / SDK error).
     want_json=True asks the provider for strict JSON output where supported (used
     for the intent-compiler calls), so models like Gemini don't wrap the JSON in
     reasoning prose ('Wait, let's…') which then fails to parse."""
     if provider == "anthropic":
-        import anthropic
-        content = []
-        for im in images:
-            content.append({"type": "image", "source": {"type": "base64",
-                "media_type": im["media_type"], "data": im["data"]}})
-        content.append({"type": "text", "text": prompt_text})
-        resp = anthropic.Anthropic(api_key=cfg["api_key"]).messages.create(
-            model=cfg["model"], max_tokens=max_tokens, timeout=timeout,
-            messages=[{"role": "user", "content": content}])
-        blocks = getattr(resp, "content", None) or []
-        texts = [getattr(b, "text", "") for b in blocks if getattr(b, "type", "") == "text"]
-        out = "".join(texts).strip()
-        if not out:
-            sr = getattr(resp, "stop_reason", None)
-            raise EmptyAIResponse(f"empty response (stop_reason={sr})")
-        return out
+        return _anthropic_http(cfg, prompt_text, images, max_tokens, timeout)
 
     if provider in ("openai", "nvidia", "deepseek", "qwen"):
-        from openai import OpenAI
-        client = OpenAI(api_key=cfg["api_key"], base_url=cfg.get("base_url")) if cfg.get("base_url") \
-                 else OpenAI(api_key=cfg["api_key"])
-        if images:
-            content = [{"type": "text", "text": prompt_text}]
-            for im in images:
-                content.append({"type": "image_url", "image_url": {
-                    "url": f"data:{im['media_type']};base64,{im['data']}"}})
-        else:
-            # text-only: plain string. Some providers reject the typed-array form
-            # for non-vision models.
-            content = prompt_text
-        kwargs = {"model": cfg["model"], "max_tokens": max_tokens,
-                  "messages": [{"role": "user", "content": content}]}
-        if timeout is not None:
-            kwargs["timeout"] = timeout
-        resp = client.chat.completions.create(**kwargs)
-        return _extract_openai_text(resp)
+        return _openai_compat_http(cfg, prompt_text, images, max_tokens, timeout, want_json)
 
     if provider == "azure_openai":
-        from openai import AzureOpenAI
-        client = AzureOpenAI(api_key=cfg["api_key"], azure_endpoint=cfg["endpoint"],
-                             api_version=cfg["api_version"])
-        if images:
-            content = [{"type": "text", "text": prompt_text}]
-            for im in images:
-                content.append({"type": "image_url", "image_url": {
-                    "url": f"data:{im['media_type']};base64,{im['data']}"}})
-        else:
-            content = prompt_text
-        kwargs = {"model": cfg["deployment"], "max_tokens": max_tokens,
-                  "messages": [{"role": "user", "content": content}]}
-        if timeout is not None:
-            kwargs["timeout"] = timeout
-        resp = client.chat.completions.create(**kwargs)
-        return _extract_openai_text(resp)
+        return _azure_http(cfg, prompt_text, images, max_tokens, timeout)
 
     if provider == "gemini":
-        import google.generativeai as genai
-        genai.configure(api_key=cfg["api_key"])
-        model = genai.GenerativeModel(cfg["model"])
-        parts = [prompt_text]
-        for im in images:
-            parts.append({"mime_type": im["media_type"], "data": base64.b64decode(im["data"])})
-        gen_cfg = {"max_output_tokens": max_tokens}
-        if want_json:
-            # Force strict JSON so Gemini 2.x doesn't emit reasoning prose around
-            # the JSON (the cause of "Cannot parse JSON … Wait, let's…" failures).
-            gen_cfg["response_mime_type"] = "application/json"
-        resp = model.generate_content(parts, generation_config=gen_cfg)
-        # Gemini raises on .text if the candidate was blocked; surface that cleanly
-        try:
-            txt = resp.text
-        except Exception:
-            fb = getattr(getattr(resp, "prompt_feedback", None), "block_reason", None)
-            cands = getattr(resp, "candidates", None) or []
-            fr = getattr(cands[0], "finish_reason", None) if cands else None
-            raise EmptyAIResponse(f"blocked by Gemini (block_reason={fb}, finish_reason={fr})")
-        if not (txt or "").strip():
-            raise EmptyAIResponse("empty response from Gemini")
-        return txt
+        return _gemini_http(cfg, prompt_text, images, max_tokens, timeout, want_json)
 
     if provider == "ollama":
         payload = {"model": cfg["model"],
@@ -376,51 +519,7 @@ def _ai_call_once(provider, cfg, prompt_text, images, max_tokens, timeout, want_
         return txt
 
     if provider == "manus":
-        # Manus speaks the OpenAI *Responses* API and runs tasks ASYNCHRONOUSLY:
-        # create → poll until status leaves "running" → read the assistant text.
-        # Auth is via the API_KEY header (the api_key arg is just a placeholder).
-        from openai import OpenAI
-        import time as _t
-        base = cfg.get("base_url") or "https://api.manus.im"
-        client = OpenAI(base_url=base, api_key="placeholder",
-                        default_headers={"API_KEY": cfg["api_key"]})
-        content = [{"type": "input_text", "text": prompt_text}]
-        for im in images:
-            content.append({"type": "input_image",
-                            "image_url": f"data:{im['media_type']};base64,{im['data']}"})
-        resp = client.responses.create(
-            model=cfg["model"],
-            input=[{"role": "user", "content": content}],
-            extra_body={"task_mode": cfg.get("task_mode") or "chat",
-                        "agent_profile": cfg["model"]})
-        rid = getattr(resp, "id", None)
-        status = getattr(resp, "status", None)
-        # poll (Manus tasks are slow); honor Stop via the interruptible sleep
-        deadline = _t.time() + (timeout if timeout else 600)
-        while status == "running" and _t.time() < deadline:
-            _interruptible_sleep(5)
-            if _STOP_EVENT.is_set():
-                break
-            try:
-                resp = client.responses.retrieve(response_id=rid)
-            except Exception:
-                break
-            status = getattr(resp, "status", None)
-        if status == "error":
-            raise RuntimeError(f"Manus task failed (id {rid})")
-        # assistant text lives in output[].content[].text (skip files/empties)
-        texts = []
-        for msg in (getattr(resp, "output", None) or []):
-            if getattr(msg, "role", None) != "assistant":
-                continue
-            for part in (getattr(msg, "content", None) or []):
-                t = getattr(part, "text", None)
-                if t:
-                    texts.append(t)
-        out = "\n".join(texts).strip()
-        if not out:
-            raise EmptyAIResponse(f"Manus returned no assistant text (status={status})")
-        return out
+        return _manus_http(cfg, prompt_text, images, max_tokens, timeout)
 
     raise RuntimeError(f"Unhandled provider '{provider}'")
 
@@ -597,18 +696,21 @@ def validate_api_key(timeout=20):
     """
     cfg = _ai_cfg(); provider = AI_PROVIDER
     if provider == "manus":
-        # A normal "ping" would create a real (billed, slow) Manus task. Instead
-        # verify the key cheaply by listing tasks (no task creation, no credits).
+        # Cheap key check: list tasks (no task creation / credits) via HTTP.
         try:
-            from openai import OpenAI
-            client = OpenAI(base_url=cfg.get("base_url") or "https://api.manus.im",
-                            api_key="placeholder", timeout=timeout,
-                            default_headers={"API_KEY": cfg["api_key"]})
-            client.get("/v1/tasks?limit=1", cast_to=object)
-            return True, "ok"
-        except ModuleNotFoundError as e:
-            missing = str(e).split("'")[-2] if "'" in str(e) else str(e)
-            return False, f"missing-package:{missing}"
+            base = (cfg.get("base_url") or "https://api.manus.im").rstrip("/")
+            r = requests.get(base + "/v1/tasks?limit=1",
+                             headers={"API_KEY": (cfg.get("api_key") or "").strip()},
+                             timeout=timeout)
+            if r.status_code in (200, 201):
+                return True, "ok"
+            if r.status_code in (401, 403):
+                return False, "auth"
+            if r.status_code == 429:
+                return True, "ratelimited"
+            if r.status_code == 402:
+                return True, "credit"
+            return False, f"error:HTTP {r.status_code}"
         except Exception as e:
             cat, friendly = classify_ai_error(e)
             if cat == "auth":
@@ -707,39 +809,20 @@ def list_models(provider=None, api_key=None, base_url=None, timeout=15):
 
     try:
         if p == "anthropic":
-            import anthropic
-            res = anthropic.Anthropic(api_key=key).models.list(limit=100)
-            ids = [getattr(m, "id", None) for m in getattr(res, "data", []) or []]
-            ids = _ok([i for i in ids if i])
+            ids = _ok(_anthropic_models_http(key, timeout))
             return (ids or static), ("live" if ids else "static")
 
         if p in ("openai", "nvidia", "deepseek", "qwen"):
-            from openai import OpenAI
-            client = OpenAI(api_key=key, base_url=burl) if burl else OpenAI(api_key=key)
-            res = client.models.list()
-            ids = [getattr(m, "id", None) for m in getattr(res, "data", []) or []]
-            ids = _ok([i for i in ids if i])
+            ids = _ok(_openai_compat_models_http(burl, key, timeout))
             ids.sort()
             return (ids or static), ("live" if ids else "static")
 
         if p == "azure_openai":
-            from openai import AzureOpenAI
-            client = AzureOpenAI(api_key=key, azure_endpoint=cfg.get("endpoint"),
-                                 api_version=cfg.get("api_version", "2024-06-01"))
-            res = client.models.list()
-            ids = _ok([getattr(m, "id", None) for m in getattr(res, "data", []) or [] if getattr(m, "id", None)])
+            ids = _ok(_azure_models_http({**cfg, "api_key": key}, timeout))
             return (ids or static), ("live" if ids else "static")
 
         if p == "gemini":
-            import google.generativeai as genai
-            genai.configure(api_key=key)
-            ids = []
-            for m in genai.list_models():
-                methods = getattr(m, "supported_generation_methods", []) or []
-                if "generateContent" in methods:
-                    nm = getattr(m, "name", "") or ""
-                    ids.append(nm.split("/", 1)[1] if nm.startswith("models/") else nm)
-            ids = _ok(ids)
+            ids = _ok(_gemini_models_http(key, timeout))
             return (ids or static), ("live" if ids else "static")
 
         if p == "ollama":

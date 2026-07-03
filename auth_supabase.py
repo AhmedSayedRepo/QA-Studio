@@ -390,6 +390,37 @@ def current_user():
     return _user_dict(data.get("user")) if data else None
 
 
+def revalidate():
+    """Fetch the CURRENT user record from the server (fresh app_metadata role/caps)
+    and update the cached session, so an admin's revoke/role change takes effect
+    without waiting for a token refresh or re-login. GET /auth/v1/user returns the
+    live DB record (not the JWT's baked-in metadata). Returns fresh user dict / None."""
+    if not configured():
+        return None
+    tok = access_token()
+    if not tok:
+        return None
+    try:
+        r = _client().get(f"{SUPABASE_URL}/auth/v1/user",
+                          headers={"Authorization": f"Bearer {tok}"}, timeout=_TIMEOUT)
+    except Exception:
+        return None
+    if r.status_code != 200:
+        return None
+    try:
+        raw = r.json()
+    except Exception:
+        return None
+    if not (raw and raw.get("id")):
+        return None
+    with _lock:
+        data = _load_session()
+        if data:
+            data["user"] = raw
+            _save_session(data)
+    return _user_dict(raw)
+
+
 def caps_for(user):
     """The set of capability keys granted to a user. Uses the per-user custom list
     (app_metadata.caps) when present, otherwise the role preset. No user → empty."""
@@ -485,3 +516,12 @@ def admin_set_caps(user_id, caps):
     caps = [c for c in (caps or []) if c in ALL_KEYS]
     ok, err = _admin_post({"user_id": user_id, "caps": sorted(caps)})
     return (True, "Permissions updated.") if ok else (False, err)
+
+
+def admin_revoke_access(user_id):
+    """Admin-only SOFT revoke: strip every capability so the account remains and the
+    user can still sign in, but has access to nothing until a role is set again.
+    Fully reversible (set any role to restore). Uses the existing admin-users Edge
+    Function — no backend change. Returns (ok, msg)."""
+    ok, err = _admin_post({"user_id": user_id, "caps": []})
+    return (True, "Access revoked.") if ok else (False, err)

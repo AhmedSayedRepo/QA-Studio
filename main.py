@@ -12,6 +12,17 @@ import regression
 import sprint_titles
 import auth_supabase as auth
 import users_screen
+import useful_links
+import settings
+import run
+import report
+import automation
+import setup
+import dialogs
+import updater_ui
+import window_chrome
+import login
+import modals
 
 # ── Flet version-compatibility shim ───────────────────────────────────────────
 # Flet renamed ft.icons→ft.Icons and ft.colors→ft.Colors around 0.25+. Support both.
@@ -26,393 +37,15 @@ if not hasattr(ft, "Colors") and hasattr(ft, "colors"):
     ft.Colors = ft.colors
 
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  Small reusable builders
-# ═══════════════════════════════════════════════════════════════════════════════
-def _ic(name, fallback="CIRCLE"):
-    """Safe icon lookup: some Material icon names vary across Flet builds, so fall
-    back to a always-present icon instead of raising AttributeError at render."""
-    return getattr(ft.Icons, name, None) or getattr(ft.Icons, fallback, ft.Icons.CIRCLE)
-
-
-def card(content, padding=18, expand=False, bg=None, radius=T.R_LG):
-    # bg read at CALL time (not as a default) so cards follow theme switches.
-    return ft.Container(content=content, padding=padding,
-                        bgcolor=(bg if bg is not None else T.CARD),
-                        border=ft.Border.all(1, T.BORDER),
-                        border_radius=radius, expand=expand,
-                        # soft indigo-tinted elevation for depth
-                        shadow=ft.BoxShadow(blur_radius=22, spread_radius=-12,
-                                            offset=ft.Offset(0, 9),
-                                            color=ft.Colors.with_opacity(0.10, "#1B1F3A")))
-
-
-def empty_state(icon, title, hint, tone="violet"):
-    """Friendly placeholder for empty panels: a soft icon badge, a bold title,
-    and a dim one-line hint, centered. Theme-aware via tokens read at call time."""
-    soft = {"violet": T.VIOLET_SOFT, "green": T.GREEN_SOFT,
-            "amber": T.AMBER_SOFT}.get(tone, T.VIOLET_SOFT)
-    ink = {"violet": T.VIOLET_INK, "green": T.GREEN,
-           "amber": T.AMBER}.get(tone, T.VIOLET_INK)
-    return ft.Container(
-        ft.Column([
-            ft.Container(ft.Icon(icon, size=23, color=ink),
-                         width=50, height=50, bgcolor=soft, border_radius=14,
-                         alignment=ft.Alignment.CENTER),
-            ft.Container(height=12),
-            ft.Text(title, size=14, weight=ft.FontWeight.BOLD, color=T.INK,
-                    text_align=ft.TextAlign.CENTER),
-            ft.Container(height=4),
-            ft.Text(hint, size=12, color=T.INK_3, weight=ft.FontWeight.W_500,
-                    text_align=ft.TextAlign.CENTER),
-        ], horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-           alignment=ft.MainAxisAlignment.CENTER, spacing=0, tight=True),
-        alignment=ft.Alignment.CENTER, expand=True,
-        padding=ft.Padding.symmetric(vertical=28, horizontal=20))
-
-
-def grad_text(value, size=32, weight=None, stops=None, font_family=None):
-    """Brand-gradient text via ShaderMask (falls back to solid indigo on older
-    Flet). Use for hero KPI numbers so they tie to the logo gradient."""
-    weight = weight or ft.FontWeight.BOLD
-    stops = stops or T.GRAD_LOGO
-    txt = ft.Text(value, size=size, weight=weight, color="#FFFFFF",
-                  font_family=font_family)
-    try:
-        return ft.ShaderMask(
-            content=txt, blend_mode=ft.BlendMode.SRC_IN,
-            shader=ft.LinearGradient(begin=ft.Alignment.TOP_LEFT,
-                                     end=ft.Alignment.BOTTOM_RIGHT, colors=list(stops)))
-    except Exception:
-        txt.color = T.VIOLET_INK
-        return txt
-
-
-def skeleton_rows(n=4, row_h=46):
-    """Placeholder 'skeleton' rows for loading states — reads as content loading,
-    nicer than a bare spinner. Subtle pulse where the Flet build supports it."""
-    def _bar(w=None):
-        c = ft.Container(height=row_h, expand=(w is None), width=w,
-                         bgcolor=T.CARD_2, border_radius=T.R,
-                         border=ft.Border.all(1, T.BORDER_2))
-        try:
-            c.opacity = 0.7
-            c.animate_opacity = ft.Animation(800, ft.AnimationCurve.EASE_IN_OUT)
-        except Exception:
-            pass
-        return c
-    return ft.Column([ft.Row([_bar(110), _bar()], spacing=12) for _ in range(n)],
-                     spacing=10)
-
-def sec_head(num, title, right=None):
-    row = [
-        ft.Container(ft.Text(num, size=12, weight=ft.FontWeight.BOLD, color=T.VIOLET_INK),
-                     width=22, height=22, bgcolor=T.VIOLET_SOFT, border_radius=7,
-                     alignment=ft.Alignment.CENTER),
-        ft.Text(title, size=13.5, weight=ft.FontWeight.BOLD, color=T.INK),
-    ]
-    if right:
-        row += [ft.Container(expand=True), right]
-    return ft.Row(row, spacing=9, vertical_alignment=ft.CrossAxisAlignment.CENTER)
-
-def field_label(text, req=False, hint=None, info=None, info_url=None, on_info=None):
-    parts = [ft.Text(text, size=12, weight=ft.FontWeight.BOLD, color=T.INK_2)]
-    if req:
-        parts.append(ft.Text("*", size=12, color=T.RED, weight=ft.FontWeight.BOLD))
-    if info or info_url or on_info:
-        parts.append(ft.IconButton(
-            icon=ft.Icons.INFO_OUTLINE, icon_size=15, icon_color=T.INK_3,
-            tooltip=(info or "How to get this"), on_click=on_info,
-            style=ft.ButtonStyle(padding=ft.Padding.all(0)),
-            width=24, height=24))
-    if hint:
-        parts.append(ft.Container(
-            ft.Text(hint, size=10, color=T.INK_3, weight=ft.FontWeight.BOLD),
-            padding=ft.Padding.symmetric(vertical=2, horizontal=7),
-            bgcolor=T.CARD_2, border_radius=10, margin=ft.Margin.only(left=4)))
-    return ft.Row(parts, spacing=4, tight=True, height=24,
-                  vertical_alignment=ft.CrossAxisAlignment.CENTER)
-
-def grad(stops, diagonal=True):
-    """Build an ft.LinearGradient from a list of hex stops.
-    diagonal=True → top-left→bottom-right (buttons, tiles); False → top→bottom (rail)."""
-    if diagonal:
-        b, e = ft.Alignment.TOP_LEFT, ft.Alignment.BOTTOM_RIGHT
-    else:
-        b, e = ft.Alignment.TOP_CENTER, ft.Alignment.BOTTOM_CENTER
-    return ft.LinearGradient(begin=b, end=e, colors=list(stops))
-
-
-def _grad_button(text, icon, on_click, stops, shadow_rgb, shadow_a,
-                 expand=False, disabled=False, height=46):
-    """Gradient pill button (Container-based) matching the mockup CTAs.
-    Same call shape as primary_btn/green_btn so call sites don't change."""
-    inner = []
-    if icon:
-        inner.append(ft.Icon(icon, size=17, color="#FFFFFF"))
-    inner.append(ft.Text(text, size=14, weight=ft.FontWeight.W_700, color="#FFFFFF"))
-    row = ft.Row(inner, spacing=8, tight=True,
-                 alignment=ft.MainAxisAlignment.CENTER,
-                 vertical_alignment=ft.CrossAxisAlignment.CENTER)
-    c = ft.Container(
-        row, height=height, border_radius=T.R, alignment=ft.Alignment.CENTER,
-        padding=ft.Padding.symmetric(horizontal=18, vertical=0),
-        gradient=grad(stops), ink=True,
-        on_click=(None if disabled else on_click),
-        opacity=(0.45 if disabled else 1),
-        shadow=(None if disabled else _btn_shadow(shadow_rgb, shadow_a)))
-    # subtle hover lift (press-ready CTA feel)
-    if not disabled:
-        try:
-            c.animate_scale = ft.Animation(120, ft.AnimationCurve.EASE_OUT)
-
-            def _hov(e, _c=c):
-                try:
-                    _c.scale = 1.018 if e.data == "true" else 1.0
-                    _c.update()
-                except Exception:
-                    pass
-            c.on_hover = _hov
-        except Exception:
-            pass
-    if expand:
-        c.expand = True
-        return ft.Row([c], spacing=0)
-    return c
-
-
-def _btn_shadow(color_rgb, alpha=0.55):
-    """BoxShadow matching the design CSS: 0 6px 16px -6px rgba(color,a).
-    blur_style is version-dependent in Flet, so only pass it when available."""
-    kwargs = dict(spread_radius=-6, blur_radius=16, offset=ft.Offset(0, 6),
-                  color=ft.Colors.with_opacity(alpha, color_rgb))
-    _bs = getattr(ft, "ShadowBlurStyle", None) or getattr(ft, "BlurStyle", None)
-    if _bs is not None and hasattr(_bs, "OUTER"):
-        try:
-            kwargs["blur_style"] = _bs.OUTER
-        except Exception:
-            pass
-    return ft.BoxShadow(**kwargs)
-
-def _shadow_wrap(widget, color_rgb, alpha, expand, radius=None):
-    """Wrap a button in a Container carrying the design drop-shadow.
-    Keeps full-width behavior via the expand flag."""
-    radius = radius if radius is not None else T.R
-    cont = ft.Container(widget, border_radius=radius,
-                        shadow=_btn_shadow(color_rgb, alpha))
-    if expand:
-        cont.expand = True
-        return ft.Row([cont], spacing=0)   # full width, fixed height
-    return cont
-
-def _wrap_btn(btn, expand):
-    # expand=True → full WIDTH only. The button expands horizontally inside a Row.
-    # IMPORTANT: the Row must NOT have expand=True — in a Column that means vertical
-    # flex, which would split the leftover height with any spacer and create gaps.
-    if not expand:
-        return btn
-    btn.expand = True               # fill the Row horizontally
-    return ft.Row([btn], spacing=0) # Row height = button's fixed height (no vertical flex)
-
-# ── Brand logo (loaded once as base64 so it works without an assets_dir) ──────
-_LOGO_B64 = None
-def _logo_path():
-    """Absolute path to the logo file on disk, or '' if none is present.
-    A file-path image is cached by Flet's renderer and does NOT flash on
-    re-mount (unlike base64), which is what caused the logo to flicker on
-    every button click that rebuilds the page."""
-    global _LOGO_PATH
-    try:
-        return _LOGO_PATH
-    except NameError:
-        pass
-    _LOGO_PATH = ""
-    try:
-        import os
-        here = os.path.dirname(os.path.abspath(__file__))
-        for name in ("app.png", "qa-logo.png"):
-            p = os.path.join(here, name)
-            if os.path.exists(p):
-                _LOGO_PATH = p
-                break
-    except Exception:
-        _LOGO_PATH = ""
-    return _LOGO_PATH
-
-def _logo_b64():
-    global _LOGO_B64
-    if _LOGO_B64 is None:
-        _LOGO_B64 = ""
-        try:
-            import os, base64
-            here = os.path.dirname(os.path.abspath(__file__))
-            for name in ("app.png", "qa-logo.png"):
-                p = os.path.join(here, name)
-                if os.path.exists(p):
-                    with open(p, "rb") as f:
-                        _LOGO_B64 = base64.b64encode(f.read()).decode("ascii")
-                    break
-        except Exception:
-            _LOGO_B64 = ""
-    return _LOGO_B64
-
-_LOGO_CTL = {}
-def logo_img(size=38, fallback_icon=None, fallback_color="#FFFFFF"):
-    """Brand logo as an ft.Image; falls back to an icon if the file is missing.
-    The built control is cached per (size, fallback) and REUSED across renders so
-    Flet doesn't re-decode the base64 on every button click (which caused a flicker).
-    Avoids ft.ImageFit / Image.border_radius hard deps (absent in some Flet builds)."""
-    ckey = (size, fallback_icon, fallback_color)
-    cached = _LOGO_CTL.get(ckey)
-    if cached is not None:
-        return cached
-    b = _logo_b64()
-    path = _logo_path()
-    if path or b:
-        img = None
-        # Prefer a FILE PATH src: Flet's renderer caches file-path images and does
-        # not re-fetch/flash them when the page is rebuilt on each click. Fall back
-        # to a data: URI, then src_base64, for environments where the file isn't
-        # reachable (e.g. web mode serving from a different working dir).
-        for attempt in (
-            (lambda: ft.Image(src=path, width=size, height=size)) if path else None,
-            (lambda: ft.Image(src=f"data:image/png;base64,{b}", width=size, height=size)) if b else None,
-            (lambda: ft.Image(src_base64=b, width=size, height=size)) if b else None,
-        ):
-            if attempt is None:
-                continue
-            try:
-                img = attempt()
-                break
-            except Exception:
-                img = None
-        if img is not None:
-            _fit = getattr(ft, "ImageFit", None)
-            if _fit is not None and hasattr(_fit, "CONTAIN"):
-                try:
-                    img.fit = _fit.CONTAIN
-                except Exception:
-                    pass
-            try:
-                img.border_radius = int(size * 0.29)
-            except Exception:
-                pass
-            _LOGO_CTL[ckey] = img
-            return img
-    fb = ft.Icon(fallback_icon or ft.Icons.SCIENCE_OUTLINED,
-                 color=fallback_color, size=int(size * 0.55))
-    _LOGO_CTL[ckey] = fb
-    return fb
-
-
-# Global read-only flag: when True (a signed-in Viewer), every button built via the
-# helpers below renders disabled, so the whole app becomes look-but-don't-touch.
-# render() sets this each frame based on the current user's role.
-_READONLY = False
-
-
-def primary_btn(text, icon=None, on_click=None, expand=False, disabled=False):
-    return _grad_button(text, icon, on_click, T.GRAD_PRIMARY, T.VIOLET, 0.6,
-                        expand=expand, disabled=disabled or _READONLY, height=46)
-
-
-def _disabled_wrap(w, disabled, op=0.45):
-    """Uniform disabled look across ALL button types: dim + drop the shadow.
-    (Gradient buttons already dim themselves; this matches ghost/danger to them.)"""
-    if disabled:
-        try:
-            w.opacity = op
-            w.shadow = None
-        except Exception:
-            pass
-    return w
-
-
-def green_btn(text, icon=None, on_click=None, expand=False, height=42, disabled=False,
-              ignore_ro=False):
-    # ignore_ro=True: this button is gated by its OWN per-action permission (passed
-    # as `disabled`), not by the screen-level read-only flag.
-    return _grad_button(text, icon, on_click, T.GRAD_GREEN, T.GREEN, 0.5,
-                        expand=expand, height=height,
-                        disabled=disabled or (_READONLY and not ignore_ro))
-
-def ghost_btn(text, icon=None, on_click=None, expand=False, disabled=False,
-              ignore_ro=False):
-    disabled = disabled or (_READONLY and not ignore_ro)
-    btn = ft.OutlinedButton(
-        text, icon=icon, on_click=(None if disabled else on_click), height=46,
-        style=ft.ButtonStyle(color=(T.INK_3 if disabled else T.INK_2),
-            side=ft.BorderSide(1, T.BORDER),
-            shape=ft.RoundedRectangleBorder(radius=T.R),
-            padding=ft.Padding.symmetric(horizontal=16, vertical=0)))
-    return _disabled_wrap(_wrap_btn(btn, expand), disabled, op=0.55)
-
-def danger_btn(text, icon=None, on_click=None, disabled=False):
-    disabled = disabled or _READONLY
-    btn = ft.FilledButton(
-        text, icon=icon, on_click=(None if disabled else on_click), height=40,
-        style=ft.ButtonStyle(
-            bgcolor=T.RED, color="#FFFFFF", elevation=0,
-            shape=ft.RoundedRectangleBorder(radius=T.R),
-            padding=ft.Padding.symmetric(horizontal=18, vertical=0)))
-    # design shadow: 0 6px 16px -6px rgba(224,71,77,.6)
-    return _disabled_wrap(_shadow_wrap(btn, T.RED, 0.55, False), disabled)
-
-def searchable_dropdown(**kwargs):
-    """ft.Dropdown that is type-to-filter on newer Flet, degrading gracefully."""
-    try:
-        return ft.Dropdown(editable=True, enable_filter=True, menu_height=320, **kwargs)
-    except TypeError:
-        try:
-            return ft.Dropdown(menu_height=320, **kwargs)
-        except TypeError:
-            return ft.Dropdown(**kwargs)
-
-
-def progress_ring(pct, color, size=44, label=None):
-    """A circular progress ring with a percentage in the center."""
-    pct = max(0, min(100, int(pct)))
-    ring = ft.ProgressRing(value=pct/100, width=size, height=size, stroke_width=4,
-                           color=color, bgcolor="#ECEAF2")
-    center = ft.Text(str(label if label is not None else pct), size=12,
-                     weight=ft.FontWeight.BOLD, color=color)
-    return ft.Stack([ring, ft.Container(center, width=size, height=size,
-                                        alignment=ft.Alignment.CENTER)],
-                    width=size, height=size)
-
-def stat_tile(label, num, tone=None, sub=None):
-    tone_colors = {"green": T.GREEN, "amber": T.AMBER, "red": T.RED, "violet": T.VIOLET_INK}
-    numc = tone_colors.get(tone, T.INK)
-    label_row = [ft.Text(label, size=10.5, color=T.INK_2, weight=ft.FontWeight.BOLD,
-                         expand=True, no_wrap=True, overflow=ft.TextOverflow.ELLIPSIS,
-                         tooltip=label)]
-    if tone:  # colored status dot (matches design)
-        label_row.append(ft.Container(width=8, height=8, bgcolor=numc, border_radius=5))
-    _numstops = {"green": T.GRAD_GREEN, "violet": T.GRAD_LOGO}.get(tone, T.GRAD_LOGO)
-    children = [
-        ft.Row(label_row, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-        ft.Row([
-            grad_text(str(num), size=22, weight=ft.FontWeight.BOLD, stops=_numstops),
-            ft.Text(sub or "", size=12, color=T.INK_3, weight=ft.FontWeight.BOLD),
-        ], spacing=2, vertical_alignment=ft.CrossAxisAlignment.END),
-    ]
-    return ft.Container(ft.Column(children, spacing=3), padding=ft.Padding.symmetric(vertical=14, horizontal=12),
-                        bgcolor=T.CARD, border=ft.Border.all(1, T.BORDER),
-                        border_radius=T.R, expand=True)
-
-def badge(text, kind="grey", icon=None):
-    palette = {
-        "green": (T.GREEN_SOFT, T.GREEN), "amber": (T.AMBER_SOFT, T.AMBER),
-        "red": (T.RED_SOFT, T.RED), "violet": (T.VIOLET_SOFT, T.VIOLET_INK),
-        "grey": (T.CARD_2, T.INK_2),
-    }
-    bg, fg = palette.get(kind, palette["grey"])
-    row = []
-    if icon: row.append(ft.Icon(icon, size=12, color=fg))
-    row.append(ft.Text(text, size=11, weight=ft.FontWeight.BOLD, color=fg))
-    return ft.Container(ft.Row(row, spacing=4, tight=True),
-                        padding=ft.Padding.symmetric(vertical=8, horizontal=3), bgcolor=bg, border_radius=20)
+# Shared, stateless UI builders now live in ui.py (Step-1 modular refactor).
+# Re-imported here so main.py code and `from main import ...` in screen modules
+# keep working unchanged.
+from ui import (
+    _ic, card, empty_state, grad_text, skeleton_rows, sec_head, field_label,
+    grad, _grad_button, _btn_shadow, _shadow_wrap, _wrap_btn, _logo_path,
+    _logo_b64, logo_img, primary_btn, _disabled_wrap, green_btn, ghost_btn,
+    danger_btn, searchable_dropdown, progress_ring, stat_tile, badge,
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -453,6 +86,9 @@ class QAStudio:
         self.lang = "ar"               # ar | en  (output language for titles/steps)
         try:
             self.lang = "en" if (self.creds.get("lang") == "en") else "ar"
+            # remember the default generator (what to generate) from Settings
+            _t = self.creds.get("tool")
+            self.tool = _t if _t in ("titles", "steps") else "steps"
         except Exception:
             self.lang = "ar"
         self.nav_state = {"setup": "active"}
@@ -517,13 +153,13 @@ class QAStudio:
         if not any(n.get("id") == "regression" for n in T.NAV):
             _ri = next((i for i, n in enumerate(T.NAV) if n.get("id") == "report"), len(T.NAV) - 1)
             T.NAV.insert(_ri + 1, {"id": "regression", "label": "Regression Plan",
-                                   "icon": "FACT_CHECK", "ix": "R"})
+                                   "icon": "FACT_CHECK", "ix": "Rg"})
 
         # Sprint Plan tab (after Regression Plan)
         if not any(n.get("id") == "testplan" for n in T.NAV):
             _ti = next((i for i, n in enumerate(T.NAV) if n.get("id") == "regression"), len(T.NAV) - 1)
             T.NAV.insert(_ti + 1, {"id": "testplan", "label": "Sprint Plan",
-                                   "icon": "ASSIGNMENT", "ix": "T"})
+                                   "icon": "ASSIGNMENT", "ix": "SP"})
 
         # Sprint Titles tab (after Sprint Plan)
         if not any(n.get("id") == "titles" for n in T.NAV):
@@ -625,6 +261,7 @@ class QAStudio:
                 u = auth.acquire_silent()
                 if u:
                     self.user = u
+                    self._switch_user_creds()   # load this user's own creds
                     self.ui_safe(self.render)
             except Exception:
                 pass
@@ -661,7 +298,100 @@ class QAStudio:
             c = self._screen_nav_cap(n["id"])
             if not c or self.can(c):
                 return n["id"]
-        return "setup"
+        return None   # nothing permitted (e.g. access revoked) → locked screen
+
+    def _maybe_revalidate(self):
+        """Throttled server re-check of the signed-in user's permissions so an admin
+        revoke/role change takes effect within ~25s. The JWT caches app_metadata, so
+        caps would otherwise stay stale until the user's next token refresh/re-login."""
+        import time as _t
+        now = _t.time()
+        if now - getattr(self, "_last_revalidate", 0.0) < 25:
+            return
+        self._last_revalidate = now
+        def _work():
+            try:
+                fresh = auth.revalidate()
+                if fresh is None:
+                    return
+                before = auth.caps_for(getattr(self, "user", None))
+                self.user = fresh
+                if auth.caps_for(fresh) != before:
+                    self.ui_safe(self.render)      # caps changed → re-gate
+            except Exception:
+                pass
+        try:
+            self._bg(_work)
+        except Exception:
+            threading.Thread(target=_work, daemon=True).start()
+
+    def _switch_user_creds(self):
+        """Load the signed-in user's OWN credential store (per-user), so accounts on
+        the same device don't share keys / PAT / prefs. Called after sign-in, silent
+        session restore, and sign-out (reverts to the shared default file)."""
+        try:
+            uid = (getattr(self, "user", None) or {}).get("id")
+        except Exception:
+            uid = None
+        try:
+            store.set_user(uid)
+            self.creds = store.load()
+        except Exception:
+            return
+        self.connected = False        # re-connect with THIS user's own creds
+        # a different account starts with a clean selection (not the previous user's)
+        self.project = None
+        self.plan_id = None
+        self.story_ids = []
+        self._projects = []
+        self._plans = []
+        self._setup_stories = None
+        self._cp_iterations = []       # clear per-project load caches + their keys so
+        self._cp_iter_for = None       # a new account reloads fresh (not the prev user's)
+        self._reg_plans_for = None
+        self._st_iterations = []
+        self._st_iter_for = None
+        try:
+            if hasattr(self, "_links"):
+                del self._links       # links are per-user too — reload for this user
+        except Exception:
+            pass
+        try:
+            th = self.creds.get("theme")
+            if th:                    # keep current theme if they have none saved yet
+                T.apply_theme(th)
+                self.page.theme_mode = (ft.ThemeMode.DARK if th == "dark"
+                                        else ft.ThemeMode.LIGHT)
+                self.page.bgcolor = T.RAIL
+        except Exception:
+            pass
+        try:
+            if self.creds.get("lang"):
+                self.lang = "en" if self.creds.get("lang") == "en" else "ar"
+            _t = self.creds.get("tool")
+            if _t in ("titles", "steps"):
+                self.tool = _t
+        except Exception:
+            pass
+
+    def _no_access_screen(self):
+        return ft.Container(
+            ft.Column([
+                ft.Container(ft.Icon(ft.Icons.LOCK_OUTLINE, size=34, color=T.RED),
+                             width=76, height=76,
+                             bgcolor=ft.Colors.with_opacity(0.12, T.RED),
+                             border_radius=20, alignment=ft.Alignment.CENTER),
+                ft.Container(height=16),
+                ft.Text("Access revoked", size=20, weight=ft.FontWeight.BOLD, color=T.INK),
+                ft.Container(height=8),
+                ft.Text("An administrator has removed your access to QA Studio. "
+                        "Contact an admin to restore it.", size=13, color=T.INK_3,
+                        text_align=ft.TextAlign.CENTER, no_wrap=False),
+                ft.Container(height=20),
+                ghost_btn("Sign out", icon=ft.Icons.LOGOUT, on_click=self._sign_out),
+            ], horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+               alignment=ft.MainAxisAlignment.CENTER, spacing=0, tight=True),
+            expand=True, alignment=ft.Alignment.CENTER, padding=ft.Padding.all(40))
 
     def _sign_out(self, e=None):
         try:
@@ -669,76 +399,13 @@ class QAStudio:
         except Exception:
             pass
         self.user = None
+        self._switch_user_creds()       # revert to the shared default cred file
         self._auth_shown = False        # replay the entrance animation
         self.active = "setup"
         self.render()
 
     def _with_window_chrome(self, root):
-        """Overlay a draggable top strip + minimize/maximize/close buttons for the
-        frameless window (the OS title bar is hidden), so the background can fill
-        the entire window. Applies to every screen. Fully guarded."""
-        win = getattr(self.page, "window", None)
-        if win is None:
-            return root
-
-        def _min(e):
-            try:
-                win.minimized = True; self.page.update()
-            except Exception:
-                pass
-
-        def _tmax(e):
-            try:
-                win.maximized = not bool(getattr(win, "maximized", False))
-                self.page.update()
-            except Exception:
-                pass
-
-        def _close(e):
-            # Use the app's own shutdown: it destroys the Flet CLIENT window first,
-            # then taskkills the process tree. (Calling os._exit here killed Python
-            # but orphaned the client window -> the stuck "Working…" screen.)
-            try:
-                self._force_close()
-            except Exception:
-                try:
-                    win.destroy()
-                except Exception:
-                    pass
-
-        def _wb(icon, cb, danger=False):
-            cc = ft.Container(ft.Icon(icon, size=15, color=T.INK_2),
-                              width=46, height=32, alignment=ft.Alignment.CENTER,
-                              ink=True, on_click=cb, border_radius=6)
-
-            def _h(e, _c=cc, _d=danger):
-                try:
-                    on = e.data in (True, "true", "True")
-                    _c.bgcolor = (("#E0474D" if _d else ft.Colors.with_opacity(0.12, T.INK))
-                                  if on else None)
-                    if _d:
-                        _c.content.color = "#FFFFFF" if on else T.INK_2
-                    _c.update()
-                except Exception:
-                    pass
-            cc.on_hover = _h
-            return cc
-
-        buttons = ft.Row([
-            _wb(ft.Icons.REMOVE, _min),
-            _wb(ft.Icons.CROP_SQUARE, _tmax),
-            _wb(ft.Icons.CLOSE, _close, danger=True),
-        ], spacing=0, tight=True)
-
-        drag = ft.WindowDragArea(ft.Container(bgcolor=ft.Colors.TRANSPARENT, expand=True),
-                                 expand=True)
-        return ft.Stack([
-            root,
-            # draggable strip across the top (leaves room on the right for buttons)
-            ft.Container(drag, top=0, left=0, right=150, height=34),
-            # window controls, top-right
-            ft.Container(buttons, top=0, right=4),
-        ], expand=True)
+        return window_chrome.with_window_chrome(self, root)
 
     def _entrance(self, child, dy=0.05, scale=0.98, dur=460):
         """Wrap a control so it fades + rises into place (a soft 'landing'). Flet
@@ -764,503 +431,11 @@ class QAStudio:
         return c
 
     def _login_parallax(self, e):
-        """Shift the login backdrop with the cursor (like the WebView2 parallax).
-
-        Flet 0.85's HoverEvent exposes the cursor via `local_position` (an Offset),
-        NOT `local_x`/`local_y` — reading the old names returned None, so the
-        backdrop never tracked. We read local_position (with legacy fallbacks)."""
-        lay = getattr(self, "_login_bg_layer", None)
-        if lay is None:
-            return
-        try:
-            lx = ly = None
-            pos = getattr(e, "local_position", None)
-            if pos is not None:
-                lx = getattr(pos, "x", None)
-                ly = getattr(pos, "y", None)
-            if lx is None:
-                lx = getattr(e, "local_x", None)
-                ly = getattr(e, "local_y", None)
-            if lx is None:
-                return
-            w = (self.page.width or 1440) or 1440
-            h = (self.page.height or 900) or 900
-            mx = (lx or 0) / w - 0.5
-            my = (ly or 0) / h - 0.5
-            lay.offset = ft.Offset(-mx * 0.06, -my * 0.06)
-            lay.update()
-        except Exception:
-            pass
+        return login.login_parallax(self, e)
 
     def _login_gate(self):
-        """Native Flet sign-in — the app's only login (replaces the old WebView2
-        window that kept freezing). Full-bleed neon backdrop + frosted-glass card,
-        email/password with sign-up + forgot-password, matching the previous look
-        but 100% Flet, so there is no embedded browser that can freeze."""
-        import os as _os
-        # The login keeps its OWN theme (defaults to dark, like the old WebView2
-        # login) with a working toggle; the choice is applied to the whole app on
-        # successful sign-in.
-        if getattr(self, "_login_theme", None) not in ("dark", "light"):
-            # Default the login to DARK (the neon look). Safe now that the window is
-            # frameless — there's no OS title bar to mismatch the theme.
-            self._login_theme = "dark"
-        dark = (self._login_theme == "dark")
-        signup = (getattr(self, "_auth_mode", "signin") == "signup")
-        busy = bool(getattr(self, "_gate_busy", False))
-        msg = getattr(self, "_auth_msg", None)
-        DISP = "Space Grotesk"     # display font (headings) — matches the old login
-        MONO = T.F_MONO            # JetBrains Mono (captions / button)
+        return login.login_gate(self)
 
-        def _op(c, o):
-            return ft.Colors.with_opacity(o, c)
-
-        # Exact palette lifted from the former WebView2 login (dark neon / light).
-        if dark:
-            accent = "#00dbe7"
-            HEAD = "#e1fdff"; INK = "#e2dffd"; INK2 = "#b9cacb"; CAP = "#8fa6a8"
-            LEFT_HEAD = "#eef7ff"
-            FIELD_BG = _op("#0c0c21", 0.55); FIELD_BD = "#333349"
-            FIELD_IC = "#849495"; FIELD_INK = "#e1fdff"
-            CARD_GRAD = [_op("#160A33", 0.66), _op("#062A3A", 0.34), _op("#25123A", 0.42)]
-            CARD_BD = _op("#00dbe7", 0.38); CARD_GLOW = _op("#00dbe7", 0.22)
-            BTN = ["#006a71", "#00dbe7"]; BTN_INK = "#00363a"
-            SCRIM = [_op("#05060F", 0.74), _op("#05060F", 0.0)]
-        else:
-            # Exact values from the WebView2 login's `html.light` theme.
-            accent = "#2563eb"                                     # --accent / --link
-            HEAD = "#0f1830"; INK = "#101a30"; INK2 = "#5a6273"; CAP = "#8a93a8"
-            LEFT_HEAD = "#0f1830"                                  # --headline
-            FIELD_BG = _op("#ffffff", 0.70); FIELD_BD = "#dbe2ee"  # --input-bg / --input-bd
-            FIELD_IC = "#8a93a8"; FIELD_INK = "#101a30"            # --input-ic / --input-ink
-            # --panel-grad: 135deg rgba(255,255,255,.78) / (37,99,235,.05) / (34,211,238,.05)
-            CARD_GRAD = [_op("#ffffff", 0.78), _op("#2563eb", 0.05), _op("#22d3ee", 0.05)]
-            CARD_BD = _op("#2563eb", 0.45); CARD_GLOW = _op("#2563eb", 0.16)  # --panel-bd/glow
-            BTN = ["#2563eb", "#22d3ee"]; BTN_INK = "#ffffff"      # --btn / --btn-ink
-            SCRIM = [_op("#ffffff", 0.66), _op("#ffffff", 0.0)]
-
-        # Match the window shell AND native title bar to the login theme the moment
-        # the login opens (no dark title bar / navy band in light mode).
-        try:
-            self.page.bgcolor = ("#05060F" if dark else "#eef3fb")
-            self.page.theme_mode = (ft.ThemeMode.DARK if dark else ft.ThemeMode.LIGHT)
-        except Exception:
-            pass
-
-        # Theme toggle lives in the card header (so it can't overlap the card).
-        def _toggle_login_theme(_e=None):
-            self._login_theme = "light" if dark else "dark"
-            self.ui_safe(self.render)
-        theme_btn = ft.Container(
-            ft.Icon(ft.Icons.LIGHT_MODE if dark else ft.Icons.DARK_MODE,
-                    size=18, color=(HEAD if dark else INK)),
-            width=40, height=40, border_radius=11, alignment=ft.Alignment.CENTER,
-            bgcolor=_op("#FFFFFF" if dark else "#0f1830", 0.12),
-            border=ft.Border.all(1, _op(accent, 0.35)), ink=True,
-            on_click=_toggle_login_theme, tooltip="Toggle theme",
-            scale=1.0, animate_scale=140, animate=140, rotate=0)
-
-        def _theme_hover(e, _c=theme_btn):
-            try:
-                on = e.data in (True, "true", "True")
-                _c.scale = 1.1 if on else 1.0
-                _c.bgcolor = _op(accent, 0.22 if on else (0.12))
-                _c.update()
-            except Exception:
-                pass
-        theme_btn.on_hover = _theme_hover
-
-        # background image (decode embedded jpeg once to a cached temp file)
-        def _bg():
-            key = "_login_bg_d" if dark else "_login_bg_l"
-            p = getattr(self, key, None)
-            if not p or not _os.path.exists(p):
-                try:
-                    import login_bg_assets as _LBA, base64 as _b64, tempfile as _tf
-                    data = _b64.b64decode(_LBA.LOGIN_BG_DARK_B64 if dark
-                                          else _LBA.LOGIN_BG_LIGHT_B64)
-                    _f = _tf.NamedTemporaryFile(suffix=".jpg", delete=False)
-                    _f.write(data); _f.close()
-                    p = _f.name
-                    setattr(self, key, p)
-                except Exception:
-                    p = None
-            _cover = getattr(getattr(ft, "ImageFit", None), "COVER", None)
-            # Paint the image as a CONTAINER background (DecorationImage) so it
-            # cover-fills the whole window reliably. A plain ft.Image won't stretch
-            # to fill a Stack on this Flet build (leaves gutters), which is the
-            # bug that left gray/dark bands around the photo.
-            _base = "#05060F" if dark else T.BG
-            if p and hasattr(ft, "DecorationImage"):
-                try:
-                    di = (ft.DecorationImage(src=p, fit=_cover) if _cover
-                          else ft.DecorationImage(src=p))
-                    return ft.Container(expand=True, image=di, bgcolor=_base)
-                except Exception:
-                    pass
-            if p:
-                try:
-                    W = int(self.page.width or 0) or 1440
-                    H = int(self.page.height or 0) or 900
-                    return (ft.Image(src=p, width=W, height=H, fit=_cover) if _cover
-                            else ft.Image(src=p, width=W, height=H))
-                except Exception:
-                    pass
-            return ft.Container(expand=True, bgcolor=_base)
-
-        def _field(cap, hint, icon, value="", password=False):
-            tf = ft.TextField(
-                hint_text=hint, value=value or "", password=password,
-                can_reveal_password=password, prefix_icon=icon, filled=True,
-                bgcolor=FIELD_BG, border_color=FIELD_BD,
-                focused_border_color=accent, focused_bgcolor=_op(accent, 0.06),
-                cursor_color=accent, text_size=15, color=FIELD_INK,
-                hint_style=ft.TextStyle(size=14, color=FIELD_IC),
-                content_padding=ft.Padding.symmetric(vertical=17, horizontal=14),
-                border_radius=12)
-            col = ft.Column([
-                ft.Text(cap, size=11, color=CAP, font_family=MONO,
-                        weight=ft.FontWeight.W_600,
-                        style=ft.TextStyle(letter_spacing=1.8)),
-                ft.Container(height=7),
-                tf,
-            ], spacing=0)
-            return tf, col
-
-        name_tf, name_col = (_field("FULL NAME", "Full name", ft.Icons.PERSON_OUTLINE,
-                                    getattr(self, "_auth_name", "")) if signup
-                             else (None, None))
-        email_tf, email_col = _field("ACCESS IDENTIFIER", "Email", ft.Icons.MAIL_OUTLINE,
-                                     getattr(self, "_auth_email", ""))
-        pwd_tf, pwd_col = _field("SECURE PROTOCOL", "Password", ft.Icons.LOCK_OUTLINE,
-                                 password=True)
-
-        def _stash():
-            self._auth_email = email_tf.value or ""
-            if name_tf is not None:
-                self._auth_name = name_tf.value or ""
-
-        def _switch(_e=None):
-            _stash()
-            self._auth_mode = "signin" if signup else "signup"
-            self._auth_msg = None
-            self.ui_safe(self.render)
-
-        def _submit(_e=None):
-            if getattr(self, "_gate_busy", False):
-                return
-            _stash()
-            if not (email_tf.value or "").strip() or not (pwd_tf.value or ""):
-                self._auth_msg = ("err", "Enter your email and password.")
-                self.ui_safe(self.render); return
-            self._gate_busy = True; self._auth_msg = None
-            self.ui_safe(self.render)
-
-            def work():
-                try:
-                    if signup:
-                        ok, m, user = auth.sign_up(
-                            email_tf.value, pwd_tf.value,
-                            name=(name_tf.value if name_tf is not None else None))
-                    else:
-                        ok, m, user = auth.sign_in(email_tf.value, pwd_tf.value)
-                    self._gate_busy = False
-                    if user:
-                        # Apply the login's chosen theme to the whole app.
-                        try:
-                            T.apply_theme(self._login_theme)
-                            self.creds["theme"] = self._login_theme
-                            store.save(self.creds)
-                            self.page.bgcolor = T.RAIL
-                            self.page.theme_mode = (ft.ThemeMode.DARK
-                                if self._login_theme == "dark" else ft.ThemeMode.LIGHT)
-                        except Exception:
-                            pass
-                        self.user = user; self._auth_msg = None
-                        self.active = "setup"
-                        self._land_app = True   # play the entrance on the app view
-                        self.ui_safe(self.render); return
-                    self._auth_msg = ("ok" if ok else "err", m)
-                    if ok and signup:
-                        self._auth_mode = "signin"
-                    self.ui_safe(self.render)
-                except Exception as ex:
-                    self._gate_busy = False
-                    self._auth_msg = ("err", f"Something went wrong: {ex}")
-                    self.ui_safe(self.render)
-            try:
-                self._bg(work)
-            except Exception:
-                threading.Thread(target=work, daemon=True).start()
-
-        def _forgot(_e=None):
-            _stash()
-            em = (email_tf.value or "").strip()
-            if not em:
-                self._auth_msg = ("err", "Enter your email above first, then tap "
-                                         "Forgot password.")
-                self.ui_safe(self.render); return
-            self._gate_busy = True; self._auth_msg = None
-            self.ui_safe(self.render)
-
-            def work():
-                try:
-                    ok, m = auth.request_password_reset(em)
-                except Exception as ex:
-                    ok, m = False, f"Something went wrong: {ex}"
-                self._gate_busy = False
-                self._auth_msg = ("ok" if ok else "err", m)
-                self.ui_safe(self.render)
-            try:
-                self._bg(work)
-            except Exception:
-                threading.Thread(target=work, daemon=True).start()
-
-        blabel = ("CREATING…" if (busy and signup) else "SIGNING IN…" if busy
-                  else "CREATE ACCOUNT" if signup else "SIGN IN")
-
-        def _btn_hover(e):
-            try:
-                hov = e.data in (True, "true", "True")
-                e.control.scale = 1.02 if hov else 1.0
-                e.control.shadow = ft.BoxShadow(
-                    blur_radius=(40 if hov else 30), spread_radius=-4,
-                    offset=ft.Offset(0, 12 if hov else 10),
-                    color=_op(accent, 0.75 if hov else 0.5))
-                e.control.update()
-            except Exception:
-                pass
-
-        btn = ft.Container(
-            ft.Row([
-                ft.Text(blabel, size=13.5, weight=ft.FontWeight.W_700, color=BTN_INK,
-                        font_family=MONO, style=ft.TextStyle(letter_spacing=1.5)),
-                (ft.ProgressRing(width=16, height=16, stroke_width=2.4, color=BTN_INK)
-                 if busy else ft.Icon(ft.Icons.ARROW_FORWARD, size=18, color=BTN_INK)),
-            ], alignment=ft.MainAxisAlignment.CENTER, spacing=10, tight=True),
-            height=54, border_radius=13, alignment=ft.Alignment.CENTER,
-            gradient=ft.LinearGradient(begin=ft.Alignment.CENTER_LEFT,
-                                       end=ft.Alignment.CENTER_RIGHT, colors=BTN),
-            shadow=ft.BoxShadow(blur_radius=30, spread_radius=-4, offset=ft.Offset(0, 10),
-                                color=_op(accent, 0.5)),
-            ink=True, on_click=(None if busy else _submit),
-            on_hover=(None if busy else _btn_hover),
-            scale=1.0, animate_scale=140, animate=140,
-            opacity=(0.7 if busy else 1.0))
-
-        banner = None
-        if msg:
-            kind, text = msg
-            ok = (kind == "ok")
-            banner = ft.Container(
-                ft.Row([ft.Icon(ft.Icons.CHECK_CIRCLE if ok else ft.Icons.ERROR_OUTLINE,
-                                size=18, color=(T.GREEN if ok else T.RED)),
-                        ft.Text(text, size=12.5, no_wrap=False, expand=True,
-                                color=(T.GREEN if ok else T.RED))],
-                       spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                padding=ft.Padding.symmetric(vertical=11, horizontal=13),
-                bgcolor=_op(T.GREEN if ok else T.RED, 0.12), border_radius=10,
-                border=ft.Border.all(1, _op(T.GREEN if ok else T.RED, 0.4)))
-
-        def _link(text, on_click):
-            c = ft.Container(
-                ft.Text(text, size=12.5, weight=ft.FontWeight.W_700, color=accent),
-                on_click=on_click, ink=True, border_radius=8,
-                padding=ft.Padding.symmetric(vertical=4, horizontal=8),
-                scale=1.0, animate_scale=110, animate=110)
-
-            def _h(e, _c=c):
-                try:
-                    on = e.data in (True, "true", "True")
-                    _c.bgcolor = _op(accent, 0.12) if on else None
-                    _c.scale = 1.06 if on else 1.0
-                    _c.update()
-                except Exception:
-                    pass
-            c.on_hover = _h
-            return c
-
-        rows = [
-            ft.Row([ft.Container(logo_img(28), width=40, height=40, border_radius=12,
-                                 bgcolor="#FFFFFF", alignment=ft.Alignment.CENTER),
-                    ft.Text("QA Studio", size=17, weight=ft.FontWeight.W_700,
-                            color=HEAD, font_family=DISP),
-                    ft.Container(expand=True),
-                    theme_btn],
-                   spacing=11, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-            ft.Container(height=24),
-            ft.Text("Welcome back" if not signup else "Create your account",
-                    size=34, weight=ft.FontWeight.W_700, color=HEAD, font_family=DISP),
-            ft.Container(height=6),
-            ft.Text("Sign in to continue to QA Studio" if not signup
-                    else "It only takes a moment to get started",
-                    size=13, color=INK2, font_family=MONO,
-                    style=ft.TextStyle(letter_spacing=0.4)),
-            ft.Container(height=26),
-        ]
-        for col in [c for c in (name_col, email_col, pwd_col) if c is not None]:
-            rows += [col, ft.Container(height=16)]
-        if not signup:
-            rows.append(ft.Row([_link("Forgot password?", _forgot)],
-                               alignment=ft.MainAxisAlignment.END))
-        if banner:
-            rows += [ft.Container(height=8), banner]
-        rows += [ft.Container(height=20), btn, ft.Container(height=18),
-                 ft.Row([ft.Text("New to QA Studio?" if not signup
-                                 else "Already have an account?",
-                                 size=12.5, color=INK2, weight=ft.FontWeight.W_600),
-                         _link("Create one" if not signup else "Sign in", _switch)],
-                        spacing=6, alignment=ft.MainAxisAlignment.CENTER, tight=True)]
-        form = ft.Column(rows, spacing=0, width=352, tight=True)
-
-        card = ft.Container(
-            form, width=440, padding=42, border_radius=26,
-            gradient=ft.LinearGradient(begin=ft.Alignment.TOP_LEFT,
-                                       end=ft.Alignment.BOTTOM_RIGHT, colors=CARD_GRAD),
-            border=ft.Border.all(1.5, CARD_BD),
-            shadow=ft.BoxShadow(blur_radius=60, spread_radius=-10, offset=ft.Offset(0, 20),
-                                color=CARD_GLOW))
-        try:
-            if hasattr(ft, "Blur"):
-                card.blur = ft.Blur(24, 24)
-        except Exception:
-            pass
-
-        def _card_hover(e):
-            try:
-                hov = e.data in (True, "true", "True")
-                card.border = ft.Border.all(
-                    2.0 if hov else 1.5,
-                    _op(accent, (0.95 if hov else (0.38 if dark else 0.45))))
-                card.shadow = ft.BoxShadow(
-                    blur_radius=(84 if hov else 60), spread_radius=-8,
-                    offset=ft.Offset(0, 20),
-                    color=_op(accent, (0.45 if hov else 0.22) if dark
-                             else (0.30 if hov else 0.16)))
-                card.update()
-            except Exception:
-                pass
-        card.on_hover = _card_hover
-        try:
-            card.animate = 180
-        except Exception:
-            pass
-
-        def _feature(icon, title, desc):
-            return ft.Row([
-                ft.Container(ft.Icon(icon, size=20, color=accent), width=44, height=44,
-                             border_radius=13, alignment=ft.Alignment.CENTER,
-                             bgcolor=_op(accent, 0.16 if dark else 0.10),
-                             border=ft.Border.all(1, _op(accent, 0.5 if dark else 0.3))),
-                ft.Column([
-                    ft.Text(title, size=15, color=LEFT_HEAD, weight=ft.FontWeight.W_700),
-                    ft.Container(height=2),
-                    ft.Text(desc, size=12.5, color=INK2, no_wrap=False),
-                ], spacing=0, tight=True, expand=True)],
-                spacing=15, vertical_alignment=ft.CrossAxisAlignment.START)
-
-        value_prop = ft.Column([
-            ft.Row([ft.Container(logo_img(34), width=48, height=48, border_radius=14,
-                                 bgcolor="#FFFFFF", alignment=ft.Alignment.CENTER),
-                    ft.Text("QA Studio", size=22, weight=ft.FontWeight.W_700,
-                            color=LEFT_HEAD, font_family=DISP)],
-                   spacing=13, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-            ft.Container(height=44),
-            ft.Text("Ship better\ntests, faster.", size=52, weight=ft.FontWeight.W_700,
-                    color=LEFT_HEAD, font_family=DISP, style=ft.TextStyle(height=1.05)),
-            ft.Container(height=16),
-            ft.Text("AI-generated Azure DevOps test cases, regression & sprint plans, "
-                    "and one-click sprint closure reports.",
-                    size=14, color=INK2, no_wrap=False),
-            ft.Container(height=34),
-            _feature(ft.Icons.AUTO_AWESOME, "Generate test titles & steps with AI",
-                     "Leverage advanced LLMs to automate boilerplate test creation."),
-            ft.Container(height=20),
-            _feature(ft.Icons.CHECKLIST, "Regression & sprint test plans",
-                     "Orchestrate complex release cycles with modular planning tools."),
-            ft.Container(height=20),
-            _feature(ft.Icons.DESCRIPTION_OUTLINED, "One-click sprint closure reports",
-                     "Instant stakeholder visibility with automated PDF exports."),
-        ], spacing=0)
-
-        bg = _bg()
-        # Over-scale the backdrop so it ALWAYS over-covers the window (no dark
-        # "shell" showing through) and leaves room to shift for the parallax.
-        # scale 1.3 => 15% overhang on every side, so the parallax shift (max ~3.5%)
-        # can never expose an edge/gap. animate kept short so it tracks the cursor.
-        bg_layer = ft.Container(bg, expand=True, scale=1.3, offset=ft.Offset(0, 0),
-                                animate_offset=120, animate_scale=120)
-
-        try:
-            width = self.page.width or 0
-        except Exception:
-            width = 0
-
-        # Play the card entrance on show / mode-switch / theme-toggle, but NOT on the
-        # busy re-render triggered by clicking Sign in (that made it flash/rebuild
-        # right before the app opens).
-        _card_shown = card if busy else self._entrance(card, dy=0.06, scale=0.97, dur=480)
-        centered_card = ft.Column([_card_shown],
-                                  alignment=ft.MainAxisAlignment.CENTER,
-                                  horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                                  expand=True)
-        if width and width < 900:
-            content = ft.Container(centered_card, expand=True, padding=24)
-        else:
-            content = ft.Row([
-                ft.Container(ft.Column([value_prop], alignment=ft.MainAxisAlignment.CENTER,
-                                       expand=True),
-                             expand=5, padding=56,
-                             gradient=ft.LinearGradient(
-                                 begin=ft.Alignment.CENTER_LEFT,
-                                 end=ft.Alignment.CENTER_RIGHT, colors=SCRIM)),
-                ft.Container(centered_card, expand=4, padding=30),
-            ], spacing=0, expand=True)
-
-        # Footer (version • copyright • status), like the original login.
-        _ver = ""
-        try:
-            with open(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
-                                    "VERSION"), encoding="utf-8") as _vf:
-                _ver = _vf.read().strip()
-        except Exception:
-            _ver = ""
-        _fmono = MONO
-        footer = ft.Container(
-            ft.Row([
-                ft.Text(("QA STUDIO v" + _ver) if _ver else "QA STUDIO", size=11,
-                        color=_op(accent, 0.85), font_family=_fmono,
-                        style=ft.TextStyle(letter_spacing=1.4)),
-                ft.Container(expand=True),
-                ft.Text("© 2026 QA Studio Terminal. All rights reserved.", size=11,
-                        color=INK2, font_family=_fmono,
-                        style=ft.TextStyle(letter_spacing=0.4)),
-                ft.Container(expand=True),
-                ft.Row([ft.Container(width=8, height=8, border_radius=4, bgcolor="#22c55e"),
-                        ft.Text("System Status", size=11, color=INK2, font_family=_fmono,
-                                style=ft.TextStyle(letter_spacing=1.0))],
-                       spacing=7, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-            ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
-            left=0, right=0, bottom=0,
-            padding=ft.Padding.symmetric(vertical=14, horizontal=44))
-
-        # Expose the backdrop layer so the app's top-level gesture layer can drive
-        # the mouse-move parallax (see render() / _login_parallax).
-        self._login_bg_layer = bg_layer
-        _stack = ft.Stack([bg_layer, content, footer], expand=True)
-        # Mouse-move parallax via a GestureDetector wrapping the whole login
-        # (on_hover passed as a constructor arg for reliable registration).
-        try:
-            return ft.GestureDetector(content=_stack, on_hover=self._login_parallax,
-                                      hover_interval=16, expand=True)
-        except Exception:
-            try:
-                return ft.GestureDetector(content=_stack,
-                                          on_hover=self._login_parallax, expand=True)
-            except Exception:
-                return _stack
-
-    # ---- window shell ----
     def rail(self):
         # Show each tab only if the user is permitted to open it (per-user nav
         # capabilities). When auth is off, can() is True so every tab shows.
@@ -1686,6 +861,14 @@ class QAStudio:
             body.clip_behavior = ft.ClipBehavior.HARD_EDGE
         except Exception:
             pass
+        # Read-only users (e.g. Viewers) can look but not touch: disabling the body
+        # propagates to every button / dropdown / field / toggle inside it, while the
+        # left nav + header stay interactive (so they can still browse and sign out).
+        # Scrolling is unaffected, so all content is still viewable.
+        try:
+            body.disabled = bool(getattr(self, "readonly", False))
+        except Exception:
+            pass
         _is_col_scroller = (isinstance(body, ft.Column)
                             and getattr(body, "scroll", None) is not None)
         if _is_col_scroller:
@@ -1709,7 +892,15 @@ class QAStudio:
                         # Selection scoped to the content body only — the left nav
                         # (self.rail()) and the header sit outside it, so they stay
                         # non-selectable. Content text is drag-select + Ctrl+C.
-                        ft.SelectionArea(content=body), expand=True,
+                        # Inner GestureDetector so an empty-space tap in the content
+                        # still closes open dropdowns: SelectionArea otherwise claims
+                        # taps in the arena, so the outer close-away detector never
+                        # fires. A child tap recognizer wins over the SelectionArea
+                        # ancestor for empty space, while checkboxes/buttons keep
+                        # their own taps and drag-to-select (pan) is unaffected.
+                        ft.SelectionArea(content=ft.GestureDetector(
+                            content=body, on_tap=self._close_dropdowns)),
+                        expand=True,
                         padding=ft.Padding.only(left=22, right=22, bottom=22),
                         clip_behavior=ft.ClipBehavior.HARD_EDGE),
                     header,
@@ -1722,12 +913,20 @@ class QAStudio:
 
     # ---- Useful Links ----
     def _links_path(self):
-        import os
+        import os, re
         d = os.path.join(os.path.expanduser("~"), ".qa_tool")
         try:
             os.makedirs(d, exist_ok=True)
         except Exception:
             pass
+        # Per-user file so accounts on the same device don't share links.
+        try:
+            uid = (getattr(self, "user", None) or {}).get("id")
+        except Exception:
+            uid = None
+        if uid:
+            safe = re.sub(r"[^A-Za-z0-9._-]", "_", str(uid))[:80]
+            return os.path.join(d, f"links_{safe}.json")
         return os.path.join(d, "links.json")
 
     def _load_links(self):
@@ -1752,228 +951,10 @@ class QAStudio:
             pass
 
     def useful_links_screen(self):
-        if not hasattr(self, "_links"):
-            self._links = self._load_links()
+        return useful_links.screen(self)
 
-        name_field = ft.TextField(
-            hint_text="e.g. Azure DevOps", text_size=14, border_color=T.BORDER,
-            focused_border_color=T.VIOLET, border_radius=T.R, bgcolor=T.CARD_2,
-            content_padding=ft.Padding.symmetric(vertical=11, horizontal=13))
-        url_field = ft.TextField(
-            hint_text="https://dev.azure.com/your-org", text_size=14,
-            border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
-            bgcolor=T.CARD_2, expand=True,
-            content_padding=ft.Padding.symmetric(vertical=11, horizontal=13))
-
-        def _add(e=None):
-            u = (url_field.value or "").strip()
-            if not u:
-                self._toast("Enter a URL."); return
-            if not u.lower().startswith(("http://", "https://")):
-                u = "https://" + u
-            nm = (name_field.value or "").strip() or u
-            self._links.append({"name": nm, "url": u})
-            self._save_links()
-            self.render()
-        url_field.on_submit = _add
-
-        def _open(u):
-            def _o(e):
-                import webbrowser
-                try:
-                    webbrowser.open(u)
-                except Exception:
-                    self._toast("Couldn't open the link.")
-            return _o
-
-        def _del(idx):
-            def _d(e):
-                try:
-                    self._links.pop(idx)
-                except Exception:
-                    pass
-                self._save_links(); self.render()
-            return _d
-
-        def _open_btn(u):
-            return ft.FilledButton(
-                "Open", icon=ft.Icons.OPEN_IN_NEW, on_click=_open(u), height=40,
-                style=ft.ButtonStyle(
-                    bgcolor={"": T.VIOLET}, color={"": "#FFFFFF"}, elevation=0,
-                    shape=ft.RoundedRectangleBorder(radius=T.R),
-                    padding=ft.Padding.symmetric(horizontal=16, vertical=0)))
-
-        add_card = card(ft.Column([
-            ft.Row([
-                ft.Container(ft.Icon(ft.Icons.ADD, size=16, color=T.VIOLET), width=30,
-                             height=30, bgcolor=T.VIOLET_SOFT, border_radius=9,
-                             alignment=ft.Alignment.CENTER),
-                ft.Text("Add a link", size=16, weight=ft.FontWeight.BOLD, color=T.INK),
-            ], spacing=11),
-            ft.Container(height=16),
-            ft.Row([
-                ft.Column([field_label("App name"),
-                           ft.Container(name_field, width=230,
-                                        padding=ft.Padding.only(top=4))],
-                          spacing=0, tight=True),
-                ft.Column([field_label("URL"),
-                           ft.Container(url_field, padding=ft.Padding.only(top=4))],
-                          spacing=0, expand=True),
-                green_btn("Add link", icon=ft.Icons.ADD, on_click=_add, height=44),
-            ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.END),
-        ], spacing=0))
-
-        palette = ["#4d5ad6", "#0f9586", "#7c45d4", "#C2860C", "#1C80E0", "#E0474D"]
-        rows = []
-        for i, l in enumerate(self._links):
-            nm = (l.get("name") or l.get("url") or "?")
-            init = nm.strip()[:1].upper() if nm.strip() else "?"
-            col = palette[sum(ord(c) for c in nm) % len(palette)]
-            rows.append(ft.Container(
-                ft.Row([
-                    ft.Container(ft.Text(init, size=15, weight=ft.FontWeight.BOLD,
-                                         color="#FFFFFF"), width=40, height=40,
-                                 bgcolor=col, border_radius=11,
-                                 alignment=ft.Alignment.CENTER),
-                    ft.Column([
-                        ft.Text(nm, size=14.5, weight=ft.FontWeight.BOLD, color=T.INK,
-                                no_wrap=True),
-                        ft.Text(l.get("url", ""), size=12.5, color=T.INK_2,
-                                font_family=T.F_MONO, no_wrap=True),
-                    ], spacing=1, tight=True, expand=True),
-                    _open_btn(l.get("url", "")),
-                    ft.IconButton(ft.Icons.DELETE_OUTLINE, icon_size=18,
-                                  icon_color=T.INK_3, tooltip="Remove", on_click=_del(i),
-                                  style=ft.ButtonStyle(
-                                      shape=ft.RoundedRectangleBorder(radius=8))),
-                ], spacing=14, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                padding=ft.Padding.symmetric(vertical=12, horizontal=16),
-                bgcolor=T.CARD, border=ft.Border.all(1, T.BORDER), border_radius=14))
-
-        if rows:
-            listing = ft.Column(rows, spacing=10)
-        else:
-            listing = ft.Container(
-                ft.Column([
-                    ft.Container(ft.Icon(ft.Icons.LINK, size=22, color=T.VIOLET),
-                                 width=48, height=48, bgcolor=T.VIOLET_SOFT,
-                                 border_radius=13, alignment=ft.Alignment.CENTER),
-                    ft.Container(height=14),
-                    ft.Text("No links yet", size=15, weight=ft.FontWeight.BOLD,
-                            color=T.INK),
-                    ft.Text("Add a name and URL above — they're saved on this device "
-                            "and open in your browser.", size=13, color=T.INK_2,
-                            text_align=ft.TextAlign.CENTER),
-                ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=3),
-                alignment=ft.Alignment.CENTER,
-                padding=ft.Padding.symmetric(vertical=46, horizontal=20),
-                bgcolor=T.CARD, border=ft.Border.all(1, T.BORDER), border_radius=16)
-
-        body = ft.Column([
-            add_card,
-            ft.Container(height=24),
-            ft.Row([ft.Text("SAVED LINKS", size=10.5, weight=ft.FontWeight.BOLD,
-                            color=T.INK_3),
-                    ft.Container(expand=True),
-                    ft.Text(f"{len(self._links)} "
-                            + ("link" if len(self._links) == 1 else "links"),
-                            size=12, color=T.INK_3, weight=ft.FontWeight.W_500)],
-                   vertical_alignment=ft.CrossAxisAlignment.CENTER),
-            ft.Container(height=12),
-            listing,
-        ], spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
-
-        return self.shell(
-            "Useful Links",
-            "Save links to the boards & apps you use — open them in one click", body)
-
-    # ---- settings ----
     def settings_screen(self):
-        ro = bool(getattr(self, "readonly", False))   # no 'act.settings' → read-only
-
-        def srow(title, desc, control):
-            return ft.Container(
-                ft.Row([
-                    ft.Column([
-                        ft.Text(title, size=13.5, weight=ft.FontWeight.BOLD, color=T.INK),
-                        ft.Text(desc, size=12, color=T.INK_3, weight=ft.FontWeight.W_500),
-                    ], spacing=2, expand=True),
-                    control,
-                ], vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=16),
-                padding=ft.Padding.symmetric(vertical=13))
-
-        def divider():
-            return ft.Container(height=1, bgcolor=T.BORDER_2)
-
-        def _theme_seg():
-            def seg(label, icon, mode):
-                sel = (T.MODE == mode)
-                return ft.Container(
-                    ft.Row([ft.Icon(icon, size=15,
-                                    color=(T.VIOLET_INK if sel else T.INK_2)),
-                            ft.Text(label, size=12, weight=ft.FontWeight.BOLD,
-                                    color=(T.VIOLET_INK if sel else T.INK_2))],
-                           spacing=7, tight=True),
-                    height=34, alignment=ft.Alignment.CENTER,
-                    padding=ft.Padding.symmetric(vertical=0, horizontal=16),
-                    bgcolor=(T.VIOLET_SOFT if sel else None), border_radius=T.R_SM,
-                    border=ft.Border.all(1, T.VIOLET if sel else ft.Colors.TRANSPARENT),
-                    on_click=(None if ro else (lambda e, m=mode: (None if T.MODE == m
-                                                                  else self._toggle_theme()))))
-            return ft.Container(
-                ft.Row([seg("Light", ft.Icons.LIGHT_MODE_OUTLINED, "light"),
-                        seg("Dark", ft.Icons.DARK_MODE_OUTLINED, "dark")],
-                       spacing=4, tight=True),
-                padding=4, bgcolor=T.CARD_2, border_radius=T.R,
-                border=ft.Border.all(1, T.BORDER))
-
-        appearance = card(ft.Column([
-            ft.Text("APPEARANCE", size=11, weight=ft.FontWeight.BOLD, color=T.INK_3),
-            ft.Container(height=4),
-            srow("Theme", "Light is the default; dark is easier on the eyes at night.",
-                 _theme_seg()),
-            divider(),
-            srow("Output language", "Default language for newly generated test cases.",
-                 self._lang_segment()),
-        ], spacing=0))
-
-        perf_switch = ft.Switch(value=regression.perf_on(), active_color=T.VIOLET,
-                                disabled=ro,
-                                on_change=(None if ro else
-                                           (lambda e: self._set_perf(e.control.value))))
-        data = card(ft.Column([
-            ft.Text("DATA & DIAGNOSTICS", size=11, weight=ft.FontWeight.BOLD, color=T.INK_3),
-            ft.Container(height=4),
-            srow("Regression & sprint caches",
-                 "Cached Azure data speeds up re-generating plans. Clear it if "
-                 "stories or test cases look out of date.",
-                 ghost_btn("Clear caches", icon=_ic("CLEANING_SERVICES_OUTLINED","DELETE_OUTLINE"),
-                           on_click=lambda e: self._clear_caches())),
-            divider(),
-            srow("Performance logging",
-                 "Append timing diagnostics to qa_perf.log. Leave on if I'm helping "
-                 "you troubleshoot speed.",
-                 perf_switch),
-        ], spacing=0))
-
-        reset = card(ft.Column([
-            ft.Text("HELP & RESET", size=11, weight=ft.FontWeight.BOLD, color=T.INK_3),
-            ft.Container(height=4),
-            srow("Welcome walkthrough",
-                 "Replay the first-run guided tour of the app.",
-                 ghost_btn("Replay", icon=_ic("SLIDESHOW_OUTLINED","PLAY_ARROW"),
-                           on_click=lambda e: self._open_onboarding())),
-            divider(),
-            srow("Restore default preferences",
-                 "Resets theme, language, and logging to defaults. Your saved "
-                 "credentials and links are kept.",
-                 danger_btn("Reset", icon=ft.Icons.RESTART_ALT,
-                            on_click=lambda e: self._reset_prefs())),
-        ], spacing=0))
-
-        body = ft.Column([appearance, data, reset], spacing=16,
-                         scroll=ft.ScrollMode.AUTO, expand=True)
-        return self.shell("Settings", "Preferences for this device", body)
+        return settings.screen(self)
 
     def _set_perf(self, on):
         if getattr(self, "readonly", False):
@@ -2150,191 +1131,8 @@ class QAStudio:
             self.goto("setup")
 
     def _open_onboarding(self):
-        self._onb_i = 0
+        return modals.open_onboarding(self)
 
-        def _badge(icon, tone="violet"):
-            soft = {"violet": T.VIOLET_SOFT, "green": T.GREEN_SOFT,
-                    "amber": T.AMBER_SOFT}.get(tone, T.VIOLET_SOFT)
-            ink = {"violet": T.VIOLET_INK, "green": T.GREEN,
-                   "amber": T.AMBER}.get(tone, T.VIOLET_INK)
-            return ft.Container(ft.Icon(icon, size=22, color=ink),
-                                width=46, height=46, bgcolor=soft, border_radius=13,
-                                alignment=ft.Alignment.CENTER)
-
-        def _item(icon, title, desc, tone="violet"):
-            return ft.Container(
-                ft.Row([_badge(icon, tone),
-                        ft.Column([
-                            ft.Text(title, size=13, weight=ft.FontWeight.BOLD, color=T.INK),
-                            ft.Text(desc, size=12, color=T.INK_3, weight=ft.FontWeight.W_500),
-                        ], spacing=1, expand=True)],
-                       spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                padding=ft.Padding.symmetric(vertical=7))
-
-        def _welcome():
-            return ft.Column([
-                ft.Text("Generate Azure DevOps test cases with AI, plan regression "
-                        "and sprint effort, and build self-healing Selenium tests — "
-                        "all from one place.",
-                        size=13, color=T.INK_2, weight=ft.FontWeight.W_500),
-                ft.Container(height=12),
-                _item(ft.Icons.AUTO_AWESOME, "Titles or full steps",
-                      "Concise titles or complete step-by-step cases — your choice per run."),
-                _item(_ic("LANGUAGE", "DESCRIPTION_OUTLINED"), "English & Arabic",
-                      "Produce test content in either language with one toggle.", "green"),
-                _item(ft.Icons.DOWNLOAD, "Writes back to Azure DevOps",
-                      "Pushes the generated cases straight into your test plans.", "amber"),
-            ], spacing=0, tight=True)
-
-        def _how():
-            return ft.Column([
-                _item(ft.Icons.TUNE, "1 · Setup",
-                      "Connect your AI provider and Azure DevOps, then pick a project, "
-                      "test plan and stories."),
-                _item(ft.Icons.MONITOR_HEART, "2 · Run",
-                      "Generate test-case titles or detailed steps in English or Arabic."),
-                _item(ft.Icons.DESCRIPTION_OUTLINED, "3 · Report",
-                      "Review what was created and email the summary."),
-                _item(_ic("CHECKLIST","LAYERS_OUTLINED"), "Plan & automate", "Regression and Sprint "
-                      "plans estimate effort; Automation builds Selenium tests.", "green"),
-            ], spacing=0, tight=True)
-
-        def _connect():
-            return ft.Column([
-                ft.Text("On the Setup screen you'll add three credentials "
-                        "(stored only on this device):",
-                        size=12.5, color=T.INK_2, weight=ft.FontWeight.W_500),
-                ft.Container(height=8),
-                _item(ft.Icons.AUTO_AWESOME, "AI provider key",
-                      "Anthropic, OpenAI, Gemini, and more — powers the generation."),
-                _item(ft.Icons.KEY_OUTLINED, "Azure DevOps PAT",
-                      "Read/write access to your test plans and work items."),
-                _item(ft.Icons.MAIL_OUTLINED, "Gmail app password",
-                      "Optional — only needed to email reports.", "amber"),
-            ], spacing=0, tight=True)
-
-        def _ready():
-            return ft.Column([
-                _item(_ic("KEYBOARD_COMMAND_KEY","TERMINAL"), "Command palette",
-                      "Press Ctrl/⌘-K anywhere to jump between screens and run actions."),
-                _item(ft.Icons.DARK_MODE_OUTLINED, "Light & dark",
-                      "Toggle the theme from the sidebar or Settings."),
-                _item(ft.Icons.SETTINGS_OUTLINED, "Settings",
-                      "Defaults, cache controls, and this walkthrough live there."),
-            ], spacing=0, tight=True)
-
-        steps = [
-            (_ic("WAVING_HAND_OUTLINED","AUTO_AWESOME"), "violet", "Welcome to QA Studio",
-             "Your AI test-engineering workspace.", _welcome),
-            (_ic("ACCOUNT_TREE_OUTLINED","LAYERS_OUTLINED"), "violet", "How it works",
-             "A simple pipeline, plus planning tools.", _how),
-            (ft.Icons.LINK, "green", "Get connected",
-             "Three quick credentials and you're set.", _connect),
-            (_ic("ROCKET_LAUNCH_OUTLINED","PLAY_ARROW"), "violet", "You're ready",
-             "A couple of shortcuts worth knowing.", _ready),
-        ]
-
-        import threading
-        body = ft.Container(
-            height=380,
-            animate_opacity=ft.Animation(260, ft.AnimationCurve.EASE_OUT),
-            animate_offset=ft.Animation(260, ft.AnimationCurve.EASE_OUT),
-            clip_behavior=ft.ClipBehavior.HARD_EDGE, border_radius=T.R_LG)
-        dots = ft.Row([], spacing=6)
-        back_holder = ft.Container()
-        next_holder = ft.Container()
-
-        def _hero_badge(icon):
-            # white "glass" tile on the gradient header; pops in via animate_scale
-            return ft.Container(
-                ft.Icon(icon, size=26, color="#FFFFFF"),
-                width=58, height=58, border_radius=16,
-                bgcolor=ft.Colors.with_opacity(0.18, "#FFFFFF"),
-                border=ft.Border.all(1, ft.Colors.with_opacity(0.30, "#FFFFFF")),
-                alignment=ft.Alignment.CENTER,
-                scale=0.6, animate_scale=ft.Animation(320, ft.AnimationCurve.EASE_OUT))
-
-        def _paint():
-            i = self._onb_i
-            icon, tone, title, sub, build = steps[i]
-            hg = T.GRAD_GREEN if tone == "green" else T.GRAD_LOGO
-            badge_ctl = _hero_badge(icon)
-            header = ft.Container(
-                ft.Row([badge_ctl,
-                        ft.Column([
-                            ft.Text(title, size=18, weight=ft.FontWeight.BOLD, color="#FFFFFF"),
-                            ft.Text(sub, size=12.5, weight=ft.FontWeight.W_500,
-                                    color=ft.Colors.with_opacity(0.88, "#FFFFFF")),
-                        ], spacing=3, expand=True)],
-                       spacing=14, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                gradient=grad(hg),
-                padding=ft.Padding.symmetric(vertical=22, horizontal=22),
-                border_radius=ft.BorderRadius.only(top_left=T.R_LG, top_right=T.R_LG))
-            content = ft.Container(
-                build(), padding=ft.Padding.only(left=22, right=22, top=18, bottom=8))
-            body.content = ft.Column([header, content], spacing=0,
-                                     scroll=ft.ScrollMode.AUTO, tight=True)
-            dots.controls = [
-                ft.Container(width=(20 if j == i else 7), height=7,
-                             bgcolor=(T.VIOLET if j == i else T.BORDER),
-                             border_radius=4,
-                             animate=ft.Animation(180, ft.AnimationCurve.EASE_OUT))
-                for j in range(len(steps))]
-            last = (i == len(steps) - 1)
-            back_holder.content = (ghost_btn("Back", on_click=lambda e: _go(-1))
-                                   if i > 0 else ft.Container(width=0))
-            next_holder.content = (
-                green_btn("Get started", icon=ft.Icons.ARROW_FORWARD,
-                          on_click=lambda e: self._finish_onboarding(goto_setup=True))
-                if last else
-                primary_btn("Next", icon=ft.Icons.ARROW_FORWARD,
-                            on_click=lambda e: _go(1)))
-            # set the "from" state (invisible + slid + small badge), then animate to "to"
-            body.opacity = 0
-            body.offset = ft.Offset(0.06, 0)
-            for c in (dots, back_holder, next_holder):
-                try: c.update()
-                except Exception: pass
-            try: body.update()
-            except Exception: pass
-
-            def _reveal():
-                try:
-                    badge_ctl.scale = 1.0
-                    body.opacity = 1
-                    body.offset = ft.Offset(0, 0)
-                    self.page.update()
-                except Exception:
-                    pass
-            try:
-                threading.Timer(0.05, lambda: (self.page.run_thread(_reveal)
-                    if callable(getattr(self.page, "run_thread", None)) else _reveal())).start()
-            except Exception:
-                _reveal()
-
-        def _go(delta):
-            self._onb_i = max(0, min(len(steps) - 1, self._onb_i + delta))
-            _paint()
-
-        skip = ft.TextButton("Skip", on_click=lambda e: self._finish_onboarding())
-        footer = ft.Container(
-            ft.Row([skip, ft.Container(expand=True), dots,
-                    ft.Container(width=14), back_holder, next_holder],
-                   vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=8),
-            padding=ft.Padding.only(left=20, right=20, top=4, bottom=2))
-        _paint()
-        dlg = ft.AlertDialog(
-            modal=True, bgcolor=T.CARD,
-            shape=ft.RoundedRectangleBorder(radius=T.R_LG),
-            content=ft.Container(width=600, padding=0, content=ft.Column([
-                body,
-                ft.Container(height=14),
-                footer,
-                ft.Container(height=6),
-            ], spacing=0, tight=True)))
-        self._show_dialog(dlg)
-
-    # ---- navigation ----
     def goto(self, screen):
         # Permission gate: block navigation to a screen the user can't open.
         _nv = self._screen_nav_cap(screen)
@@ -2371,18 +1169,29 @@ class QAStudio:
             # the first one that is. Then set per-screen read-only (all action
             # buttons disabled) when the user lacks THIS screen's action capability.
             if auth.configured() and getattr(self, "user", None):
+                self._maybe_revalidate()      # pick up admin revoke/role changes
                 _nv = self._screen_nav_cap(self.active)
                 if _nv and not self.can(_nv):
-                    self.active = self._first_allowed_screen()
+                    self.active = self._first_allowed_screen() or "_locked"
             _av = self._screen_action_cap(self.active)
-            self.readonly = bool(auth.configured() and getattr(self, "user", None)
-                                 and _av and not self.can(_av))
+            if auth.configured() and getattr(self, "user", None):
+                if _av:
+                    self.readonly = not self.can(_av)
+                else:
+                    # Screens with no action cap (e.g. Useful Links): read-only for
+                    # users who can't perform ANY action — i.e. Viewers (no act.* caps).
+                    _caps = auth.caps_for(self.user)
+                    self.readonly = not any(str(c).startswith("act.") for c in _caps)
+            else:
+                self.readonly = False
             global _READONLY
             _READONLY = self.readonly
             # Hard gate: when external auth is configured and nobody is signed in,
             # show the sign-in / sign-up screen instead of the app.
             if auth.configured() and not getattr(self, "user", None):
                 view = self._login_gate()
+            elif self.active == "_locked":
+                view = self._no_access_screen()
             elif self.active == "setup":
                 view = self.setup_screen()
             elif self.active == "run":
@@ -2653,57 +1462,7 @@ class QAStudio:
         self._show_dialog(dlg)
 
     def _force_close(self):
-        """Close the OS window / exit the process, trying every Flet API, and
-        as a final guarantee terminate the flet client window process so it can
-        never be left orphaned on screen."""
-        self._closing = True   # stop background loops (update checker, etc.)
-        closed = False
-        # 1) modern Flet: window.destroy()
-        try:
-            if hasattr(self.page, "window") and self.page.window is not None:
-                try:
-                    self.page.window.prevent_close = False
-                except Exception:
-                    pass
-                self.page.window.destroy()
-                closed = True
-        except Exception:
-            pass
-        # 2) older Flet: page.window_destroy()
-        if not closed:
-            try:
-                self.page.window_destroy()
-                closed = True
-            except Exception:
-                pass
-        # 3) Guarantee: terminate this process tree (kills the paired flet.exe
-        #    client window so it can't linger). Done last, slightly delayed so
-        #    the graceful close above can paint first.
-        def _hard_exit():
-            import os, time
-            time.sleep(0.4)
-            if os.name == "nt":
-                # Kill this process AND its children (the flet.exe window client)
-                # so no orphan taskbar entry remains.
-                try:
-                    import subprocess
-                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(os.getpid())],
-                                   creationflags=0x08000000, check=False)
-                    return
-                except Exception:
-                    pass
-            try:
-                import signal
-                os.kill(os.getpid(), signal.SIGTERM)
-            except Exception:
-                try:
-                    import sys; sys.exit(0)
-                except Exception:
-                    pass
-        try:
-            threading.Thread(target=_hard_exit, daemon=True).start()
-        except Exception:
-            _hard_exit()
+        return window_chrome.force_close(self)
 
     def _kickoff_update_check(self):
         """Check once at startup, then keep re-checking periodically while the
@@ -2781,327 +1540,35 @@ class QAStudio:
             pass
 
     def _update_banner(self):
-        """A slim banner shown at the top when a newer version is available."""
-        info = self._update_info or {}
-        if not info.get("update") or self._update_dismissed:
-            return None
-        remote = info.get("remote", "")
-        local = info.get("local", "")
-        if self._updating:
-            inner = ft.Row([
-                ft.ProgressRing(width=16, height=16, stroke_width=2, color="#FFFFFF"),
-                ft.Text("Updating…", size=12.5, color="#FFFFFF", weight=ft.FontWeight.BOLD),
-            ], spacing=10)
-        else:
-            update_btn = ft.Container(
-                ft.Row([
-                    ft.Icon(ft.Icons.DOWNLOAD, size=16, color=T.VIOLET_INK),
-                    ft.Text("Update now", size=13, color=T.VIOLET_INK,
-                            weight=ft.FontWeight.BOLD),
-                ], spacing=8, tight=True),
-                bgcolor="#FFFFFF", border_radius=T.R_SM,
-                padding=ft.Padding.symmetric(horizontal=18, vertical=11),
-                on_click=lambda e: self._do_update(), ink=True,
-                tooltip="Download and install the latest version",
-                shadow=ft.BoxShadow(blur_radius=14, spread_radius=-4,
-                                    offset=ft.Offset(0, 4),
-                                    color=ft.Colors.with_opacity(0.30, "#160F2E")))
-            inner = ft.Row([
-                ft.Container(ft.Icon(ft.Icons.SYSTEM_UPDATE_ALT, size=17, color="#FFFFFF"),
-                             width=32, height=32, border_radius=9,
-                             bgcolor=ft.Colors.with_opacity(0.18, "#FFFFFF"),
-                             alignment=ft.Alignment.CENTER),
-                ft.Column([
-                    ft.Text("Update available", size=12.5, color="#FFFFFF",
-                            weight=ft.FontWeight.BOLD),
-                    ft.Text(f"Version {remote} is ready \u2014 you\u2019re on {local}",
-                            size=11, weight=ft.FontWeight.W_500,
-                            color=ft.Colors.with_opacity(0.82, "#FFFFFF")),
-                ], spacing=1, expand=True),
-                update_btn,
-                ft.IconButton(ft.Icons.CLOSE, icon_size=16,
-                              icon_color=ft.Colors.with_opacity(0.85, "#FFFFFF"),
-                              tooltip="Dismiss",
-                              on_click=lambda e: self._dismiss_update()),
-            ], spacing=13, vertical_alignment=ft.CrossAxisAlignment.CENTER)
-        return ft.Container(inner, bgcolor=T.VIOLET,
-                            padding=ft.Padding.symmetric(horizontal=18, vertical=11),
-                            shadow=ft.BoxShadow(blur_radius=18, spread_radius=-6,
-                                                offset=ft.Offset(0, 6),
-                                                color=ft.Colors.with_opacity(0.30, T.VIOLET)))
+        return updater_ui.banner(self)
 
     def _dismiss_update(self):
-        self._update_dismissed = True
-        self.render()
+        return updater_ui.dismiss_update(self)
 
     def _do_update(self):
-        self._updating = True
-        self.render()
-
-        def work():
-            ok, msg = E.apply_update(cb=lambda m, t="dim": None)
-            def finish():
-                self._updating = False
-                if ok:
-                    self._update_info = {"update": False}
-                    self._update_dismissed = True
-                    self._show_restart_dialog(msg)
-                else:
-                    self.render()
-                    self._show_update_error(msg)
-            self.ui_safe(finish)
-        self._bg(work)
+        return updater_ui.do_update(self)
 
     def _show_update_error(self, msg):
-        dlg = ft.AlertDialog(
-            modal=True,
-            title=ft.Row([ft.Icon(ft.Icons.ERROR_OUTLINE, color=T.RED, size=20),
-                          ft.Text("Update failed", weight=ft.FontWeight.BOLD, size=16)],
-                         spacing=8, tight=True),
-            content=ft.Container(
-                ft.Column([
-                    ft.Text(msg, size=12.5, color=T.INK, selectable=True),
-                    ft.Container(height=6),
-                    ft.Text("If a new .exe isn't attached to the latest GitHub "
-                            "release, the app can't self-update — attach it as a "
-                            "release asset and try again.",
-                            size=11.5, color=T.INK_3, weight=ft.FontWeight.W_500),
-                ], spacing=2, tight=True), width=460),
-            actions=[green_btn("OK", on_click=lambda e: self._close_dialog())],
-            actions_alignment=ft.MainAxisAlignment.END)
-        self._show_dialog(dlg)
+        return updater_ui.show_update_error(self, msg)
 
     def _show_restart_dialog(self, msg):
-        dlg = ft.AlertDialog(
-            modal=True,
-            title=ft.Row([ft.Icon(ft.Icons.CHECK_CIRCLE, color=T.GREEN, size=22),
-                          ft.Text("Update complete", weight=ft.FontWeight.BOLD, size=17,
-                                  color=T.INK)],
-                         spacing=10, tight=True),
-            content=ft.Container(
-                ft.Column([
-                    ft.Text("QA Studio has been updated to the latest version.",
-                            size=13.5, color=T.INK, weight=ft.FontWeight.BOLD),
-                    ft.Container(height=6),
-                    ft.Text("It will restart to finish updating — closing and reopening "
-                            "on the new version automatically.",
-                            size=12.5, color=T.INK_2, weight=ft.FontWeight.W_500),
-                    ft.Container(height=22),
-                    ft.Row([
-                        ghost_btn("Later", on_click=lambda e: self._close_dialog()),
-                        green_btn("Restart now", icon=ft.Icons.RESTART_ALT,
-                                  on_click=lambda e: self._restart_app(), height=46),
-                    ], spacing=10, alignment=ft.MainAxisAlignment.END,
-                       vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                ], spacing=2, tight=True),
-                width=430),
-            actions_alignment=ft.MainAxisAlignment.END,
-        )
-        self._show_dialog(dlg)
+        return updater_ui.show_restart_dialog(self, msg)
 
     def _quit_after_update(self):
-        """Simply close the app cleanly so the user can reopen the updated version.
-        No auto-relaunch (that proved unreliable across Flet/Windows builds)."""
-        self._close_dialog()
-        self._run_active = False
-        self._auto_running = False
-        self._restart_close()
+        return updater_ui.quit_after_update(self)
 
     def _restart_app(self):
-        """Relaunch cleanly. We spawn a helper that is REPARENTED out of our
-        process tree (via `start`), so the `taskkill /T` we run on ourselves
-        below can't kill it. The helper waits for THIS pid to exit, then starts
-        a fresh app."""
-        self._close_dialog()
-        try:
-            import sys, os, subprocess, tempfile
-            app_dir = os.path.dirname(os.path.abspath(__file__))
-            main_py = os.path.join(app_dir, "main.py")
-            pyw = sys.executable
-            try:
-                cand = os.path.join(os.path.dirname(pyw), "pythonw.exe")
-                if os.path.exists(cand):
-                    pyw = cand
-            except Exception:
-                pass
-            pid = os.getpid()
-            if os.name == "nt":
-                bat = os.path.join(tempfile.gettempdir(), "qastudio_relaunch.bat")
-                script = ("@echo off\r\n"
-                          f'set "PID={pid}"\r\n'
-                          ":wait\r\n"
-                          'tasklist /FI "PID eq %PID%" 2>nul | find "%PID%" >nul '
-                          "&& (ping -n 2 127.0.0.1 >nul & goto wait)\r\n"
-                          "ping -n 2 127.0.0.1 >nul\r\n"
-                          f'start "" /d "{app_dir}" "{pyw}" "{main_py}"\r\n'
-                          'del "%~f0" >nul 2>&1\r\n')
-                with open(bat, "w", encoding="ascii", errors="ignore", newline="") as f:
-                    f.write(script)
-                DETACHED, NEW_GROUP = 0x00000008, 0x00000200
-                # `cmd /c start … cmd /c bat` reparents the helper away from us.
-                subprocess.Popen(["cmd", "/c", "start", "", "/min", "cmd", "/c", bat],
-                                 creationflags=DETACHED | NEW_GROUP, close_fds=True)
-            else:
-                subprocess.Popen([pyw, main_py], cwd=app_dir, start_new_session=True)
-        except Exception:
-            pass
-        self._run_active = False
-        self._auto_running = False
-        self._restart_close()
+        return updater_ui.restart_app(self)
 
     def _restart_close(self):
-        """Close this process tree (old window + its flet client)."""
-        try:
-            if hasattr(self.page, "window") and self.page.window is not None:
-                try:
-                    self.page.window.prevent_close = False
-                except Exception:
-                    pass
-                self.page.window.destroy()
-        except Exception:
-            pass
-        def _hard():
-            import os, time
-            time.sleep(0.4)
-            if os.name == "nt":
-                try:
-                    import subprocess
-                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(os.getpid())],
-                                   creationflags=0x08000000, check=False)
-                    return
-                except Exception:
-                    pass
-            try:
-                import signal
-                os.kill(os.getpid(), signal.SIGTERM)
-            except Exception:
-                try:
-                    import sys; sys.exit(0)
-                except Exception:
-                    pass
-        try:
-            threading.Thread(target=_hard, daemon=True).start()
-        except Exception:
-            _hard()
+        return updater_ui.restart_close(self)
 
     def _confirm_close(self):
-        def do_close(e=None):
-            self.stop_flag = True  # behave like "stop after current"
-            self._close_dialog()
-            try:
-                self.page.window.prevent_close = False
-                self.page.update()
-            except Exception:
-                pass
-            # window.destroy() is async in Flet 0.90 — schedule it on the loop
-            def _destroy():
-                try:
-                    import os, signal
-                    os.kill(os.getpid(), signal.SIGTERM)
-                except Exception:
-                    pass
-            try:
-                rt = getattr(self.page, "run_task", None)
-                if callable(rt) and hasattr(self.page.window, "destroy"):
-                    rt(self.page.window.destroy)
-                else:
-                    _destroy()
-            except Exception:
-                _destroy()
-        dlg = ft.AlertDialog(
-            modal=True,
-            title=ft.Row([
-                ft.Icon(ft.Icons.WARNING_AMBER_ROUNDED, size=20, color=T.AMBER),
-                ft.Text("Close QA Studio?", size=15, weight=ft.FontWeight.BOLD, color=T.INK),
-            ], spacing=9),
-            content=ft.Container(width=380, content=ft.Text(
-                "If a run is in progress it will stop after the current test case. "
-                "Any unfinished test cases won't be processed. Close anyway?",
-                size=12.5, color=T.INK_2, weight=ft.FontWeight.W_500)),
-            actions=[
-                ghost_btn("Keep working", on_click=lambda e: self._close_dialog()),
-                danger_btn("Stop & close", icon=ft.Icons.STOP, on_click=do_close),
-            ],
-            actions_alignment=ft.MainAxisAlignment.END,
-            shape=ft.RoundedRectangleBorder(radius=T.R_LG))
-        self._show_dialog(dlg)
+        return window_chrome.confirm_close(self)
 
-    # ═══════════════════════════════════════════════════════════════════════════
-    #  SETUP SCREEN
-    # ═══════════════════════════════════════════════════════════════════════════
     def setup_screen(self):
-        # Clear validation-red for any required field that's now filled.
-        _inv = getattr(self, "_invalid", None)
-        if _inv:
-            if self.project: _inv.discard("project")
-            if self.plan_id: _inv.discard("plan")
-            if self.story_ids: _inv.discard("stories")
-        # default provider choice
-        if not hasattr(self, "_provider_choice"):
-            names = list(E.AI_CONFIG.keys())
-            self._provider_choice = names[0] if names else "anthropic"
+        return setup.screen(self)
 
-        # ── Connection card ──
-        self.err_text = ft.Text(getattr(self, "_err_msg", "") or "", size=12, color=T.RED, weight=ft.FontWeight.BOLD)
-
-        if self.connected:
-            conn_body = self._connection_saved()
-        else:
-            conn_body = self._connection_edit()
-
-        connection_card = card(ft.Column([
-            sec_head("1", "Connection",
-                     ft.Text("set once · reused every run", size=11, color=T.INK_3, weight=ft.FontWeight.BOLD)),
-            ft.Container(height=12),
-            conn_body,
-        ], spacing=0))
-
-        # ── Tool selector card ──
-        _lang_word = "Arabic" if self.lang == "ar" else "English"
-        tool_card = card(ft.Column([
-            sec_head("2", "What to generate",
-                     ft.Text("one app · two generators", size=11, color=T.INK_3, weight=ft.FontWeight.BOLD)),
-            ft.Container(height=12),
-            self._tool_segment(),
-            ft.Container(height=14),
-            # Output language toggle
-            ft.Row([
-                ft.Text("Output language", size=12, weight=ft.FontWeight.BOLD, color=T.INK_2),
-                ft.Container(expand=True),
-                self._lang_segment(),
-            ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
-            ft.Container(height=10),
-            ft.Text(
-                f"Adds detailed {_lang_word} steps — precondition · action · expected — to existing test cases."
-                if self.tool == "steps" else
-                f"Reads each user story and writes {_lang_word} test-case titles into the plan, skipping duplicates.",
-                size=12.5, color=T.INK_2, weight=ft.FontWeight.W_500),
-        ], spacing=0))
-
-        # ── Task card (gated) ──
-        task_card = self._task_card() if self.connected else self._task_locked()
-
-        self._left_scroll = ft.Column(
-            [connection_card, tool_card, task_card],
-            spacing=14, scroll=ft.ScrollMode.AUTO, expand=True,
-            key="setup_scroll", on_scroll=self._track_scroll)
-        left = self._left_scroll
-
-        right = self._setup_right()
-
-        body = ft.Row([
-            ft.Container(left, expand=True),
-            ft.Container(right, width=290),
-        ], spacing=22, vertical_alignment=ft.CrossAxisAlignment.STRETCH, expand=True)
-
-        sub = "1 of 2 — configure & run" if self.connected else "1 of 2 — connect first"
-        right_tag = ft.Container(
-            ft.Row([ft.Icon(ft.Icons.SHIELD_OUTLINED, size=13, color=T.INK_2),
-                    ft.Text("Credentials saved on this device", size=11, color=T.INK_2, weight=ft.FontWeight.BOLD)],
-                   spacing=5, tight=True),
-            padding=ft.Padding.symmetric(vertical=10, horizontal=5), bgcolor=T.CARD_2, border_radius=20,
-            border=ft.Border.all(1, T.BORDER))
-        return self.shell("Setup", sub, body, right_tag)
 
     # ---- credential help content ----
     HELP = {
@@ -3450,16 +1917,19 @@ class QAStudio:
         self.render()
 
     # ---- tool segment ----
-    def _tool_segment(self):
+    def _tool_segment(self, compact=False):
         def seg(label, icon, key):
             sel = (self.tool == key)
             c = ft.Container(
-                ft.Row([ft.Icon(icon, size=16, color=(T.VIOLET_INK if sel else T.INK_2)),
-                        ft.Text(label, size=12.5, weight=ft.FontWeight.BOLD,
+                ft.Row([ft.Icon(icon, size=(15 if compact else 16),
+                                color=(T.VIOLET_INK if sel else T.INK_2)),
+                        ft.Text(label, size=(12 if compact else 12.5),
+                                weight=ft.FontWeight.BOLD,
                                 color=(T.VIOLET_INK if sel else T.INK_2))],
                        spacing=7, alignment=ft.MainAxisAlignment.CENTER, tight=True),
-                expand=True, height=40, alignment=ft.Alignment.CENTER,
-                padding=ft.Padding.symmetric(vertical=0, horizontal=9),
+                expand=(not compact), height=(34 if compact else 40),
+                alignment=ft.Alignment.CENTER,
+                padding=ft.Padding.symmetric(vertical=0, horizontal=(15 if compact else 9)),
                 bgcolor=(T.VIOLET_SOFT if sel else None), border_radius=T.R_SM,
                 border=ft.Border.all(1, T.VIOLET if sel else ft.Colors.TRANSPARENT),
                 animate=140,
@@ -3477,13 +1947,23 @@ class QAStudio:
                         pass
                 c.on_hover = _h
             return c
+        _t = "Titles" if compact else "Test Case Titles"
+        _s = "Steps" if compact else "Test Case Steps"
         return ft.Container(
-            ft.Row([seg("Test Case Titles", ft.Icons.DESCRIPTION_OUTLINED, "titles"),
-                    seg("Test Case Steps", ft.Icons.LAYERS_OUTLINED, "steps")], spacing=4),
+            ft.Row([seg(_t, ft.Icons.DESCRIPTION_OUTLINED, "titles"),
+                    seg(_s, ft.Icons.LAYERS_OUTLINED, "steps")],
+                   spacing=4, tight=compact),
             padding=4, bgcolor=T.CARD_2, border_radius=T.R, border=ft.Border.all(1, T.BORDER))
 
     def _set_tool(self, k):
+        if getattr(self, "readonly", False):
+            return
         self.tool = k
+        try:                                  # persist as the default generator
+            self.creds["tool"] = k
+            store.save(self.creds)
+        except Exception:
+            pass
         self.render()
 
     # ---- output-language segment ----
@@ -3610,6 +2090,9 @@ class QAStudio:
 
     def _fetch_models_async(self, name):
         """Fetch the live model catalogue off the UI thread, then re-render."""
+        if getattr(self, "readonly", False) or not self._saved_key(name):
+            return  # read-only viewers / no saved key → keep the static list (no
+                    # network call, so nothing to spin on)
         if getattr(self, "_model_fetching", None) == name:
             return  # a fetch for this provider is already in flight
         self._model_fetching = name
@@ -4819,484 +3302,10 @@ class QAStudio:
     #  CREATE TEST PLAN MODAL
     # ═══════════════════════════════════════════════════════════════════════════
     def _open_create_plan(self):
-        if not self.can("act.create_plan"):
-            return self._toast("You don’t have permission to create a test plan.")
-        if not self.project:
-            self._err("Select a project first."); return
+        return modals.open_create_plan(self)
 
-        name_field = ft.TextField(
-            hint_text="e.g. Sprint 24 — Regression",
-            border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
-            content_padding=ft.Padding.symmetric(vertical=12, horizontal=12),
-            text_size=13, expand=True)
-        iter_dd = ft.Dropdown(
-            hint_text="Loading sprints…", options=[],
-            border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
-            content_padding=ft.Padding.symmetric(vertical=12, horizontal=8),
-            text_size=13, filled=True, bgcolor=T.CARD, expand=True)
-        path_box = ft.Text("—", size=12.5, color=T.VIOLET_INK, weight=ft.FontWeight.BOLD, font_family=T.F_MONO)
-        modal_err = ft.Text("", size=12, color=T.RED, weight=ft.FontWeight.BOLD)
-
-        # Auto-create requirement suites for every sprint story (PAT-only, no AI)
-        auto_suites = ft.Checkbox(value=True, label="", scale=0.9,
-                                  active_color=T.VIOLET, check_color="#FFFFFF")
-
-        # In-modal progress UI (design: 8px rounded track + violet gradient fill)
-        prog_label = ft.Text("", size=12, color=T.INK_2, weight=ft.FontWeight.BOLD)
-        prog_pct = ft.Text("", size=12, color=T.VIOLET_INK, weight=ft.FontWeight.BOLD)
-        prog_spin = ft.ProgressRing(width=14, height=14, stroke_width=2, color=T.VIOLET)
-        prog_bar = ft.ProgressBar(value=0, color=T.VIOLET, bgcolor="#E9E8F0",
-                                  bar_height=8, border_radius=99)
-        prog_box = ft.Container(
-            ft.Column([
-                ft.Row([prog_spin, prog_label, ft.Container(expand=True), prog_pct],
-                       spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                prog_bar,
-            ], spacing=8),
-            padding=ft.Padding.only(top=10), visible=False)
-
-        iters_cache = {"list": []}
-        def load_iters():
-            try:
-                lst = E.fetch_iterations(self.project)
-                iters_cache["list"] = lst
-                iter_dd.options = [ft.DropdownOption(key=it["path"], text=it["path"]) for it in lst]
-                if lst:
-                    iter_dd.value = lst[-1]["path"]
-                    path_box.value = iter_dd.value
-                    iter_dd.hint_text = "Select sprint"
-                else:
-                    iter_dd.hint_text = "No sprints found"
-                modal_err.value = ""
-            except Exception as ex:
-                iter_dd.hint_text = "Failed to load"
-                modal_err.value = f"Could not load sprints: {str(ex)[:100]}"
-            try:
-                iter_dd.update()
-            except Exception:
-                pass
-            try:
-                self.page.update()
-            except Exception:
-                pass
-
-        def on_iter_change(e):
-            path_box.value = iter_dd.value or "—"
-            self.page.update()
-        iter_dd.on_select = on_iter_change
-
-        def _set_prog(pct, label):
-            prog_box.visible = True
-            prog_bar.value = max(0.0, min(1.0, pct))
-            prog_label.value = label
-            prog_pct.value = f"{int(pct*100)}%"
-            # hide the spinner once finished
-            prog_spin.visible = pct < 1.0
-            def _paint():
-                try: self.page.update()
-                except Exception: pass
-            _paint()
-            # background-thread updates don't always repaint until the loop ticks;
-            # force a second update via the page loop (same trick as _safe_render)
-            try:
-                ru = getattr(self.page, "run_thread", None)
-                if callable(ru):
-                    ru(_paint)
-            except Exception:
-                pass
-
-        def do_create(e):
-            nm = (name_field.value or "").strip()
-            pth = (iter_dd.value or "").strip()
-            if not nm:
-                modal_err.value = "Plan name is required."; self.page.update(); return
-            if not pth:
-                modal_err.value = "Select a sprint/iteration."; self.page.update(); return
-            modal_err.value = ""
-            create_btn.visible = False; cancel_btn.visible = False
-            # show the progress bar immediately at 0% (before any slow work begins)
-            _set_prog(0.0, "Starting…")
-
-            def work():
-                try:
-                    if not auto_suites.value:
-                        _set_prog(0.15, "Creating test plan…")
-                        new_id = E.create_test_plan(self.project, nm, pth)
-                        self.plan_id = new_id; self.plan_name = nm
-                        _set_prog(1.0, "Done")
-                        self._load_plans(); self._close_dialog(); self.render()
-                        return
-
-                    def cb(ev, payload):
-                        if ev == "plan":
-                            _set_prog(0.10, "Plan created · finding sprint stories…")
-                        elif ev == "stories":
-                            n = payload["total"]
-                            if n == 0:
-                                _set_prog(1.0, "Plan created · no stories in this sprint")
-                            else:
-                                _set_prog(0.15, f"Found {n} stories · creating suites…")
-                        elif ev == "suite":
-                            i, n = payload["done"], payload["total"]
-                            frac = 0.15 + 0.85 * (i / n) if n else 1.0
-                            _set_prog(frac, f"Creating suite {i} of {n}…")
-                        elif ev == "done":
-                            self.plan_id = payload["plan_id"]; self.plan_name = nm
-                            # NOTE: story IDs field is intentionally left untouched —
-                            # the suites are created in Azure, but the user enters the
-                            # story IDs they actually want to run themselves.
-                            c = payload.get("created", 0); s = payload.get("skipped", 0)
-                            f = payload.get("failed", 0)
-                            _set_prog(1.0, f"Done · {c} created · {s} existed"
-                                      + (f" · {f} failed" if f else ""))
-
-                    E.create_plan_with_sprint_suites(self.project, nm, pth, cb=cb)
-                    import time as _t; _t.sleep(0.4)
-                    self._load_plans(); self._close_dialog(); self.render()
-                except Exception as ex:
-                    create_btn.visible = True; cancel_btn.visible = True
-                    prog_box.visible = False
-                    modal_err.value = f"Create failed: {str(ex)[:140]}"
-                    try: self.page.update()
-                    except Exception: pass
-            self._bg(work)
-
-        cancel_btn = ghost_btn("Cancel", on_click=lambda e: self._close_dialog())
-        create_btn = green_btn("Create plan", icon=ft.Icons.ADD, on_click=do_create,
-                               height=46)
-        btn_row = ft.Row([cancel_btn, create_btn],
-                         alignment=ft.MainAxisAlignment.END, spacing=10,
-                         vertical_alignment=ft.CrossAxisAlignment.CENTER)
-
-        dlg = ft.AlertDialog(
-            modal=True,
-            bgcolor=T.CARD,
-            shape=ft.RoundedRectangleBorder(radius=T.R_LG),
-            title=ft.Row([
-                ft.Container(ft.Icon(ft.Icons.ADD, size=18, color=T.GREEN),
-                             width=34, height=34, bgcolor=T.GREEN_SOFT, border_radius=9,
-                             alignment=ft.Alignment.CENTER),
-                ft.Column([
-                    ft.Text("Create test plan", size=15, weight=ft.FontWeight.BOLD, color=T.INK),
-                    ft.Text("Created under the selected iteration in this project.",
-                            size=11, color=T.INK_2, weight=ft.FontWeight.W_500),
-                ], spacing=1, expand=True),
-            ], spacing=10),
-            content=ft.Container(width=470, content=ft.Column([
-                field_label("Plan name", req=True),
-                ft.Container(name_field, padding=ft.Padding.only(top=4, bottom=14)),
-                field_label("Iteration / Sprint", req=True),
-                ft.Container(iter_dd, padding=ft.Padding.only(top=4, bottom=10)),
-                ft.Text("Will be created at", size=11, color=T.INK_3, weight=ft.FontWeight.BOLD),
-                ft.Container(
-                    path_box,
-                    padding=ft.Padding.symmetric(vertical=11, horizontal=13),
-                    bgcolor=T.VIOLET_SOFT, border_radius=T.R,
-                    border=ft.Border.all(1, "#E0DAFF"), margin=ft.Margin.only(top=5),
-                    width=9999),
-                # Auto-suites option
-                ft.Container(
-                    ft.Row([
-                        auto_suites,
-                        ft.Column([
-                            ft.Text("Add requirement suites for sprint stories",
-                                    size=12.5, color=T.INK, weight=ft.FontWeight.BOLD),
-                            ft.Text("Creates one suite per User Story in the sprint (Azure only — no AI).",
-                                    size=11, color=T.INK_3, weight=ft.FontWeight.W_500),
-                        ], spacing=1, expand=True),
-                    ], spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                    padding=ft.Padding.only(top=12)),
-                prog_box,
-                ft.Container(modal_err, padding=ft.Padding.only(top=8)),
-                ft.Container(btn_row, padding=ft.Padding.only(top=18)),
-            ], spacing=0, tight=True)),
-        )
-        self._show_dialog(dlg)
-        self._bg(load_iters)
-
-    # ── Sprint summary report (read-only, before a run) ────────────────────
     def _open_sprint_summary(self):
-        if not self.can("act.sprint_summary"):
-            return self._toast("You don’t have permission to generate the sprint summary.")
-        if not (self.project and self.plan_id):
-            self._toast("Select a test plan first.")
-            return
-
-        # State → brand color/soft-bg mapping for status chips
-        def _state_kind(state):
-            s = (state or "").lower()
-            if s in ("done", "closed", "completed", "resolved"):
-                return "green"
-            if s in ("active", "in progress", "committed", "doing"):
-                return "violet"
-            if s in ("new", "to do", "proposed", "open"):
-                return "amber"
-            return "grey"
-
-        # animated 'scanning' loading state — motion while the summary is generated
-        _sum_status = ft.Text("Connecting to Azure DevOps…", size=12.5, color=T.INK_2,
-                              weight=ft.FontWeight.W_500)
-        _scan = ft.Column([
-            ft.Container(ft.Stack([
-                ft.ProgressRing(width=76, height=76, stroke_width=3,
-                                color=ft.Colors.with_opacity(0.85, T.VIOLET)),
-                ft.Container(ft.Icon(ft.Icons.SUMMARIZE_OUTLINED, size=26, color=T.VIOLET),
-                             width=54, height=54, bgcolor=T.VIOLET_SOFT, border_radius=16,
-                             alignment=ft.Alignment.CENTER, left=11, top=11),
-            ], width=76, height=76), width=76, height=76, alignment=ft.Alignment.CENTER),
-            ft.Container(height=18),
-            ft.Text("Generating sprint summary", size=16, weight=ft.FontWeight.BOLD,
-                    color=T.INK),
-            ft.Container(height=5),
-            _sum_status,
-        ], horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-           alignment=ft.MainAxisAlignment.CENTER, spacing=0)
-        body_col = ft.Column(
-            [ft.Container(_scan, alignment=ft.Alignment.CENTER, height=380, expand=True)],
-            spacing=12, tight=True, scroll=ft.ScrollMode.AUTO)
-
-        # cycle the status line every ~0.9s until the data arrives
-        self._sum_loading = True
-        def _cycle_status():
-            msgs = ["Connecting to Azure DevOps…", "Fetching sprint results…",
-                    "Counting test cases…", "Summarizing stories…"]
-            ev = threading.Event()
-            i = 0
-            while getattr(self, "_sum_loading", False):
-                ev.wait(0.9)
-                if not getattr(self, "_sum_loading", False):
-                    break
-                i += 1
-                def upd(m=msgs[i % len(msgs)]):
-                    _sum_status.value = m
-                    try: _sum_status.update()
-                    except Exception: pass
-                self.ui_safe(upd)
-        self._bg(_cycle_status)
-
-        # email recipients field (asked each time) + status text
-        self._sum_data = None
-        email_field = ft.TextField(
-            hint_text="recipient@example.com, another@example.com",
-            value=(self.emails or ""),
-            bgcolor=T.CARD, filled=True,
-            border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
-            content_padding=ft.Padding.symmetric(vertical=10, horizontal=12),
-            text_size=12.5, dense=True, expand=True)
-        email_status = ft.Text("", size=11.5, weight=ft.FontWeight.BOLD, visible=False)
-
-        def do_email(e=None):
-            if not self._sum_data:
-                return
-            if not E.GMAIL_APP_PASS:
-                email_status.value = "Set a Gmail App Password in Setup → Connection first."
-                email_status.color = T.AMBER
-                email_status.visible = True
-                try: email_status.update()
-                except Exception: self.render()
-                return
-            to = [x.strip() for x in (email_field.value or "").split(",") if x.strip()]
-            if not to:
-                email_status.value = "Enter at least one recipient."
-                email_status.color = T.RED
-                email_status.visible = True
-                try: email_status.update()
-                except Exception: self.render()
-                return
-            email_status.value = "Sending…"; email_status.color = T.INK_2
-            email_status.visible = True
-            try: email_status.update()
-            except Exception: self.render()
-
-            def work():
-                html = E.build_sprint_summary_email(self._sum_data)
-                plan = self._sum_data.get("plan_name", "")
-                ok, err = E.send_report(to, f"QA Studio — Sprint Summary — {plan}", html)
-                def show():
-                    if ok:
-                        email_status.value = f"Summary emailed to {', '.join(to)}"
-                        email_status.color = T.GREEN
-                    else:
-                        email_status.value = f"Email failed — {err}"
-                        email_status.color = T.RED
-                    email_status.visible = True
-                    try: email_status.update()
-                    except Exception: self.render()
-                self.ui_safe(show)
-            self._bg(work)
-
-        email_btn = green_btn("Email summary", icon=ft.Icons.MAIL_OUTLINED,
-                              on_click=do_email)
-        close_btn = ghost_btn("Close", on_click=lambda e: self._close_dialog())
-
-        email_bar = ft.Column([
-            ft.Container(height=1, bgcolor=T.BORDER_2),
-            ft.Container(height=6),
-            ft.Text("EMAIL THIS SUMMARY", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
-            ft.Container(height=5),
-            ft.Row([email_field, email_btn], spacing=8,
-                   vertical_alignment=ft.CrossAxisAlignment.CENTER),
-            email_status,
-        ], spacing=0, tight=True)
-        email_bar.visible = False  # shown only after data loads
-
-        dlg = ft.AlertDialog(
-            modal=True,
-            title=ft.Row([ft.Container(logo_img(24, ft.Icons.SUMMARIZE_OUTLINED, T.VIOLET_INK),
-                                       width=24, height=24, alignment=ft.Alignment.CENTER),
-                          ft.Text("Sprint Summary", weight=ft.FontWeight.BOLD, size=16)],
-                         spacing=9, tight=True),
-            content=ft.Container(
-                ft.Column([ft.Container(body_col, expand=True), email_bar],
-                          spacing=4, tight=False),
-                width=560, height=540),
-            actions=[close_btn],
-            actions_alignment=ft.MainAxisAlignment.END,
-        )
-        self._show_dialog(dlg)
-
-        def load():
-            try:
-                data = E.sprint_summary(self.project, self.plan_id)
-            except Exception as ex:
-                self._sum_loading = False
-                def show_err():
-                    body_col.controls = [ft.Row([
-                        ft.Icon(ft.Icons.ERROR_OUTLINE, color=T.RED, size=20),
-                        ft.Text(f"Could not load summary: {str(ex)[:160]}",
-                                size=12.5, color=T.RED, weight=ft.FontWeight.W_500, expand=True)],
-                        spacing=8)]
-                    try: body_col.update()
-                    except Exception: self.render()
-                self.ui_safe(show_err)
-                return
-
-            def render_summary():
-                self._sum_data = data
-                self._sum_loading = False
-                total = data["total_stories"]
-                by_state = data["by_state"]
-                total_tc = data["total_test_cases"]
-
-                # Header line
-                header = ft.Column([
-                    ft.Row([ft.Container(
-                        ft.Text("SPRINT SNAPSHOT", size=10, weight=ft.FontWeight.BOLD,
-                                color=T.VIOLET_INK),
-                        bgcolor=T.VIOLET_SOFT, border_radius=20,
-                        padding=ft.Padding.symmetric(vertical=4, horizontal=11))], tight=True),
-                    ft.Container(height=8),
-                    ft.Text(data["plan_name"], size=18, weight=ft.FontWeight.BOLD, color=T.INK),
-                    ft.Text(data["iteration"] or "—", size=11, color=T.INK_3,
-                            weight=ft.FontWeight.BOLD, font_family=T.F_MONO),
-                ], spacing=2, horizontal_alignment=ft.CrossAxisAlignment.START)
-
-                # Stat tiles: total stories + total test cases
-                tiles = ft.Row([
-                    stat_tile("Stories", total, tone="violet"),
-                    stat_tile("Test Cases", total_tc, tone="green"),
-                    stat_tile("Statuses", len(by_state), tone="amber"),
-                ], spacing=10)
-
-                # Status breakdown — give EACH status its own distinct colour so the
-                # cards are visually separable (most states otherwise collapsed to the
-                # same grey). Colours are assigned from a rotating palette, ordered by
-                # count, and reused for the distribution bar so the two line up.
-                _PALETTE = [
-                    (T.VIOLET_INK, "#ECE8FF"),
-                    (T.GREEN,      "#E5F6EC"),
-                    ("#1C80E0",    "#E3F0FC"),
-                    (T.AMBER,      "#FAF1DD"),
-                    ("#0E8A8A",    "#DEF3F3"),
-                    (T.RED,        "#FCEBEC"),
-                    ("#6A33A8",    "#F0E6FB"),
-                    ("#C2860C",    "#FBF0D8"),
-                ]
-                _sorted_states = sorted(by_state.items(), key=lambda x: -x[1])
-                _state_color = {st: _PALETTE[i % len(_PALETTE)]
-                                for i, (st, _c) in enumerate(_sorted_states)}
-                def _status_card(label, count, fg, bg):
-                    return ft.Container(
-                        ft.Column([
-                            ft.Text(str(count), size=22, weight=ft.FontWeight.BOLD, color=fg),
-                            ft.Text(label, size=11, weight=ft.FontWeight.BOLD, color=T.INK_2,
-                                    max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
-                        ], spacing=1, horizontal_alignment=ft.CrossAxisAlignment.CENTER, tight=True),
-                        bgcolor=bg, border_radius=T.R,
-                        border=ft.Border.all(1, ft.Colors.with_opacity(0.30, fg)),
-                        padding=ft.Padding.symmetric(vertical=12, horizontal=14),
-                        width=104, tooltip=f"{label}: {count}")
-                state_cards = []
-                for st, cnt in _sorted_states:
-                    fg, bg = _state_color[st]
-                    state_cards.append(_status_card(st, cnt, fg, bg))
-                status_row = ft.Row(state_cards, wrap=True, spacing=10, run_spacing=10) \
-                    if state_cards else ft.Text("No stories in this sprint.",
-                                                size=12, color=T.INK_3, weight=ft.FontWeight.W_500)
-                dist_bar = ft.Container(
-                    ft.Row([ft.Container(expand=max(1, c),
-                                         bgcolor=_state_color[stt][0],
-                                         tooltip=f"{stt}: {c}")
-                            for stt, c in _sorted_states],
-                           spacing=2),
-                    height=10, border_radius=6,
-                    clip_behavior=ft.ClipBehavior.HARD_EDGE) if by_state else ft.Container()
-
-                # Per-story rows
-                story_rows = []
-                for s in data["stories"]:
-                    rtl = any('\u0600' <= c <= '\u06ff' for c in s["title"])
-                    _wi_url = (f"https://dev.azure.com/{E.AZURE_ORG}/{self.project}"
-                               f"/_workitems/edit/{s['id']}")
-                    story_rows.append(ft.Container(
-                        ft.Row([
-                            ft.Column([
-                                ft.Text(s["title"] or "(no title)", size=12.5,
-                                        weight=ft.FontWeight.BOLD, color=T.INK,
-                                        font_family=(T.F_AR if rtl else None),
-                                        text_align=(ft.TextAlign.RIGHT if rtl else ft.TextAlign.LEFT),
-                                        max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
-                                ft.Text(f"#{s['id']}", size=10.5, color=T.INK_3,
-                                        weight=ft.FontWeight.BOLD, font_family=T.F_MONO),
-                            ], spacing=2, expand=True),
-                            badge(f"{s['test_cases']} TC", "grey"),
-                            badge(s["state"], _state_kind(s["state"])),
-                            ft.Icon(ft.Icons.OPEN_IN_NEW, size=14, color=T.INK_3),
-                        ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                        padding=ft.Padding.symmetric(vertical=10, horizontal=12),
-                        border=ft.Border.only(bottom=ft.BorderSide(1, T.BORDER_2)),
-                        tooltip=f"{s['title']}  ·  open #{s['id']} in Azure DevOps",
-                        on_click=lambda e, u=_wi_url: self._open_url(u),
-                        ink=True))
-                if not story_rows:
-                    story_rows = [ft.Text("No user stories found in this sprint.",
-                                          size=12, color=T.INK_3, weight=ft.FontWeight.W_500)]
-
-                body_col.controls = [
-                    header,
-                    ft.Container(height=4),
-                    tiles,
-                    ft.Container(height=10),
-                    dist_bar,
-                    ft.Container(height=8),
-                    ft.Text("STATUS BREAKDOWN", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
-                    status_row,
-                    ft.Container(height=6),
-                    ft.Text("STORIES", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
-                    ft.Container(ft.Column(story_rows, spacing=0, scroll=ft.ScrollMode.AUTO),
-                                 bgcolor=T.CARD, border=ft.Border.all(1, T.BORDER),
-                                 border_radius=T.R, padding=ft.Padding.symmetric(vertical=2, horizontal=4),
-                                 height=240),
-                ]
-                email_bar.visible = True
-                try:
-                    body_col.update(); email_bar.update()
-                except Exception:
-                    self.render()
-
-            self.ui_safe(render_summary)
-
-        self._bg(load)
+        return modals.open_sprint_summary(self)
 
     def ui_safe(self, fn):
         """Run a UI mutation on the page thread; fall back to direct call."""
@@ -5312,171 +3321,22 @@ class QAStudio:
             pass
 
     def _show_dialog(self, dlg):
-        self._dialog = dlg
-        # Flet 0.85 uses page.show_dialog(); 0.24-0.79 uses page.open(); older sets page.dialog
-        if hasattr(self.page, "show_dialog"):
-            self.page.show_dialog(dlg)
-        elif hasattr(self.page, "open"):
-            self.page.open(dlg)
-        else:
-            self.page.dialog = dlg
-            dlg.open = True
-            self.page.update()
+        return dialogs.show_dialog(self, dlg)
 
     def _close_dialog(self):
-        self._sum_loading = False
-        dlg = getattr(self, "_dialog", None)
-        # Flet 0.85 uses page.pop_dialog(); older uses page.close(dlg)
-        if hasattr(self.page, "pop_dialog"):
-            try:
-                self.page.pop_dialog()
-                return
-            except Exception:
-                pass
-        if dlg is not None and hasattr(self.page, "close"):
-            try:
-                self.page.close(dlg)
-                return
-            except Exception:
-                pass
-        if dlg is not None:
-            dlg.open = False
-            self.page.update()
+        return dialogs.close_dialog(self)
 
     def _confirm(self, title, message, on_yes, yes_label="Remove", danger=True,
                  icon=ft.Icons.HELP_OUTLINE):
-        """Lightweight confirm via a floating snackbar with an action button. Shows
-        INSTANTLY even over a heavy table — a modal AlertDialog has to render over
-        (and re-lay-out) the whole page behind its barrier, which made it lag; the
-        floating snackbar is the same fast path as the toasts. Calls on_yes() only
-        when the user taps the action."""
-        try:
-            sb = ft.SnackBar(
-                content=ft.Row([
-                    ft.Icon(icon, color="#FFFFFF", size=18),
-                    ft.Text(message, color="#FFFFFF", size=13,
-                            weight=ft.FontWeight.W_600, expand=True),
-                ], spacing=10),
-                bgcolor=T.INK, duration=7000,
-                behavior=ft.SnackBarBehavior.FLOATING,
-                shape=ft.RoundedRectangleBorder(radius=12),
-                margin=ft.Margin.all(16),
-                padding=ft.Padding.symmetric(vertical=12, horizontal=16),
-                action=yes_label,
-                action_color=(T.RED if danger else T.GREEN),
-                # Run the action directly on the page thread. (Deferring it through
-                # ui_safe -> page.run_thread executed the heavy delete + re-render
-                # OFF the UI thread, which wedged Flet's event loop — the whole app
-                # stopped responding after a couple of deletes.)
-                on_action=lambda e: on_yes())
-            # Properly dismiss any showing snackbar first (Flet shows one at a time;
-            # just dropping it from the overlay left its state "open" and blocked
-            # the next one), then mount + open this one.
-            for c in list(self.page.overlay):
-                if isinstance(c, ft.SnackBar):
-                    try:
-                        c.open = False
-                    except Exception:
-                        pass
-            self.page.overlay[:] = [c for c in self.page.overlay
-                                    if not isinstance(c, ft.SnackBar)]
-            self.page.overlay.append(sb)
-            sb.open = True
-            self.page.update()
-        except Exception:
-            # If the action snackbar isn't supported, fall back to the modal dialog.
-            _yes_btn = danger_btn if danger else green_btn
-            dlg = ft.AlertDialog(
-                modal=True,
-                title=ft.Row([ft.Icon(icon, size=20, color=(T.RED if danger else T.VIOLET)),
-                              ft.Text(title, size=15, weight=ft.FontWeight.BOLD,
-                                      color=T.INK)], spacing=9),
-                content=ft.Container(width=380, content=ft.Text(
-                    message, size=12.5, color=T.INK_2, weight=ft.FontWeight.W_500)),
-                actions=[
-                    ghost_btn("Cancel", on_click=lambda e: self._close_dialog()),
-                    _yes_btn(yes_label, on_click=lambda e: (self._close_dialog(),
-                                                            on_yes())),
-                ],
-                actions_alignment=ft.MainAxisAlignment.END,
-                shape=ft.RoundedRectangleBorder(radius=T.R_LG))
-            self._show_dialog(dlg)
+        return dialogs.confirm(self, title, message, on_yes, yes_label, danger, icon)
+
 
     # ═══════════════════════════════════════════════════════════════════════════
     #  EXISTING STEPS MODAL
     # ═══════════════════════════════════════════════════════════════════════════
     def _open_existing_steps_modal(self, have, total, on_choice):
-        chosen = {"mode": "evaluate"}
+        return modals.open_existing_steps_modal(self, have, total, on_choice)
 
-        def opt(title, desc, key, icon, recommended=False):
-            sel = (chosen["mode"] == key)
-            head = [ft.Icon(icon, size=15, color=(T.VIOLET_INK if key == "evaluate" else T.INK_2)),
-                    ft.Text(title, size=13, weight=ft.FontWeight.BOLD, color=T.INK)]
-            if recommended:
-                head.append(badge("Recommended", "violet"))
-            box = ft.Container(
-                ft.Row([
-                    ft.Container(width=16, height=16, border_radius=10,
-                                 border=ft.Border.all(2, (T.VIOLET if sel else T.BORDER)),
-                                 bgcolor=(T.VIOLET if sel else None)),
-                    ft.Column([ft.Row(head, spacing=7),
-                               ft.Text(desc, size=11.5, color=T.INK_2, weight=ft.FontWeight.W_500)],
-                              spacing=4, expand=True),
-                ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.START),
-                padding=12, border_radius=T.R,
-                border=ft.Border.all(1, (T.VIOLET if sel else T.BORDER)),
-                bgcolor=(T.VIOLET_SOFT if sel else T.CARD_2),
-                on_click=lambda e, k=key: select(k))
-            return box
-
-        body = ft.Column(spacing=10)
-        def select(k):
-            chosen["mode"] = k
-            rebuild()
-        def rebuild():
-            body.controls = [
-                opt("Skip existing steps",
-                    "Leave them untouched and only fill the empty ones. Fast — uses no AI credits on cases that already have steps.",
-                    "skip", ft.Icons.CHECK),
-                opt("Evaluate with AI",
-                    "Checks each existing test case against the requirements and regenerates only the inadequate ones. Flagged cases appear in the report.",
-                    "evaluate", ft.Icons.AUTO_AWESOME, recommended=True),
-            ]
-            self.page.update()
-        rebuild()
-
-        def cont(e):
-            self._close_dialog()
-            on_choice(chosen["mode"])
-
-        dlg = ft.AlertDialog(
-            modal=True,
-            content=ft.Container(width=496, content=ft.Column([
-                ft.Row([
-                    ft.Container(ft.Icon(ft.Icons.WARNING_AMBER_ROUNDED, size=20, color=T.AMBER),
-                                 width=38, height=38, bgcolor=T.AMBER_SOFT, border_radius=11,
-                                 alignment=ft.Alignment.CENTER),
-                    ft.Column([
-                        ft.Text("Some test cases already have steps", size=15, weight=ft.FontWeight.BOLD, color=T.INK),
-                        ft.Text(f"{have} of {total} test cases in this plan already contain steps. Choose how to handle them.",
-                                size=12, color=T.INK_2, weight=ft.FontWeight.W_500),
-                    ], spacing=1, expand=True),
-                ], spacing=11),
-                ft.Container(height=14),
-                body,
-            ], spacing=0, tight=True)),
-            actions=[
-                ghost_btn("Cancel", on_click=lambda e: self._close_dialog()),
-                primary_btn("Continue", icon=ft.Icons.ARROW_FORWARD, on_click=cont),
-            ],
-            actions_alignment=ft.MainAxisAlignment.END,
-            shape=ft.RoundedRectangleBorder(radius=T.R_LG),
-        )
-        self._show_dialog(dlg)
-
-    # ═══════════════════════════════════════════════════════════════════════════
-    #  RUN — start + live screen
-    # ═══════════════════════════════════════════════════════════════════════════
     def _start_run(self):
         # RBAC: Viewers (or any role without RUN) can't start a run.
         if not self.can(auth.CAP_RUN):
@@ -5867,154 +3727,7 @@ class QAStudio:
         return "   ·   ".join(bits)
 
     def run_screen(self):
-        s = getattr(self, "_stats", {"total": 0, "stories_done": 0, "total_stories": 0,
-                                     "done": 0, "skipped": 0, "errors": 0, "created": 0})
-        p = getattr(self, "_progress", {"pct": 0, "label": "Starting…"})
-        if not hasattr(self, "_story_prog"):
-            self._story_prog = {}
-        # NOTE: do NOT reset _run_finished / _run_started / _emailed_to here.
-        # run_screen() also runs when navigating BACK to Run after a finished run;
-        # resetting them would make the spinner animate and stories show "Running"
-        # again. These flags are initialized only in _launch_run().
-
-        # Idle state: when no run has started this session (e.g. reached via the
-        # command palette) show a friendly empty state — NOT the live "Starting…"
-        # scaffolding or a Stop button.
-        if (not getattr(self, "_run_active", False)
-                and not getattr(self, "_run_started", False)
-                and not getattr(self, "_run_finished", False)
-                and getattr(self, "last_report", None) is None):
-            idle = ft.Container(
-                ft.Column([
-                    ft.Container(ft.Icon(ft.Icons.MONITOR_HEART, size=23, color=T.VIOLET_INK),
-                                 width=50, height=50, bgcolor=T.VIOLET_SOFT,
-                                 border_radius=14, alignment=ft.Alignment.CENTER),
-                    ft.Container(height=12),
-                    ft.Text("No run yet", size=15, weight=ft.FontWeight.BOLD, color=T.INK),
-                    ft.Container(height=4),
-                    ft.Text("Pick your tool, language and stories on Setup, then press "
-                            "Start run — live progress will show here.",
-                            size=12.5, color=T.INK_3, weight=ft.FontWeight.W_500,
-                            text_align=ft.TextAlign.CENTER),
-                    ft.Container(height=16),
-                    primary_btn("Go to Setup", icon=ft.Icons.ARROW_FORWARD,
-                                on_click=lambda e: self.goto("setup")),
-                ], horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                   alignment=ft.MainAxisAlignment.CENTER, spacing=0, tight=True),
-                alignment=ft.Alignment.CENTER, expand=True,
-                padding=ft.Padding.symmetric(vertical=40, horizontal=20))
-            return self.shell("Run", "no run in progress", idle)
-
-        is_steps = (self.tool == "steps")
-        if is_steps:
-            self._stats_row = ft.Row([
-                stat_tile("Test Cases", s["total"]),
-                stat_tile("Created", s.get("created", 0), tone="violet"),
-                stat_tile("Updated", s["done"], tone="green"),
-                stat_tile("Skipped", s["skipped"], tone="amber"),
-                stat_tile("Errors", s["errors"], tone="red"),
-            ], spacing=11)
-        else:
-            self._stats_row = ft.Row([
-                stat_tile("Test Cases", s["total"]),
-                stat_tile("Stories", f"{s['stories_done']}", tone="violet", sub=f"/{s['total_stories']}"),
-                stat_tile("Created", s["done"], tone="green"),
-                stat_tile("Skipped", s["skipped"], tone="amber"),
-                stat_tile("Errors", s["errors"], tone="red"),
-            ], spacing=11)
-
-        _stopping = getattr(self, "_stopping", False)
-        _finished = getattr(self, "_run_finished", False)
-        _done = p["pct"] >= 100 or _finished
-        _idle = _done or _finished  # no spinner when finished/stopped-and-done
-        self._bar = ft.ProgressBar(value=(p["pct"]/100 if (p["pct"] > 0 or _finished) else None),
-                                   color=(T.AMBER if (_stopping and not _finished) else T.VIOLET),
-                                   bgcolor="#EAE8F4", bar_height=7, border_radius=4)
-        if _finished:
-            self._bar.value = 1.0
-        spinner = (ft.Container(width=14, height=14) if (_stopping or _idle)
-                   else ft.ProgressRing(width=14, height=14, stroke_width=2, color=T.VIOLET))
-        _started = getattr(self, "_run_started", False)
-        _reason = (getattr(self, "last_report", None) or {}).get("reason")
-        _was_stopped = _finished and (_reason == "credit"
-                                      or getattr(self, "stop_flag", False))
-        _label = ("Stopped" if _was_stopped
-                  else "Completed" if _finished
-                  else ("Stopping after current test case…" if _stopping
-                        else ("Completed" if _done
-                              else (p["label"] if _started else "Discovering suites & test cases…"))))
-        # Right label: once the run has finished it must NOT fall back to "Starting…"
-        _pct_label = ("Stopped" if _was_stopped
-                      else "Done" if _finished
-                      else f"{p['pct']}%" if (p["pct"] > 0 or _started)
-                      else "Starting…")
-        self._prow = ft.Row([
-            spinner,
-            ft.Text(_label, size=12, color=T.INK_2, weight=ft.FontWeight.BOLD),
-            ft.Container(expand=True),
-            ft.Text(_pct_label, size=12, color=T.VIOLET_INK, weight=ft.FontWeight.BOLD),
-        ], spacing=8)
-
-        # Per-story cards grid
-        self._story_grid = ft.Column(self._build_story_cards(), spacing=12)
-
-        # Recent activity log (compact)
-        log_lines = self._render_log_lines()
-        if not log_lines:
-            log_lines = [ft.Row([
-                ft.ProgressRing(width=14, height=14, stroke_width=2, color=T.VIOLET),
-                ft.Text("Starting run — discovering suites & test cases…",
-                        size=12.5, color=T.INK_3, weight=ft.FontWeight.BOLD),
-            ], spacing=10)]
-        self._log_col = ft.Column(log_lines, spacing=2,
-                                  scroll=ft.ScrollMode.AUTO, expand=True, auto_scroll=True)
-        log_card = card(ft.Column([
-            ft.Row([ft.Text("RECENT ACTIVITY", size=11, weight=ft.FontWeight.BOLD, color=T.INK_3),
-                    ft.Container(expand=True),
-                    ft.Text("select to copy", size=10, color=T.INK_3,
-                            weight=ft.FontWeight.W_500)]),
-            ft.Container(height=8),
-            ft.Container(ft.SelectionArea(content=self._log_col), height=230, bgcolor=T.CARD_2,
-                         border=ft.Border.all(1, T.BORDER), border_radius=T.R, padding=12),
-        ], spacing=0))
-
-        # ── "THIS RUN" live progress card (elapsed · ETA · story x/y) ──
-        self._tr_meta = ft.Text(self._run_meta_line(), size=11.5, color=T.INK_3,
-                                weight=ft.FontWeight.BOLD, font_family=T.F_MONO)
-        prog_card = card(ft.Column([
-            ft.Row([ft.Text("THIS RUN", size=11, weight=ft.FontWeight.BOLD, color=T.INK_3),
-                    ft.Container(expand=True),
-                    self._tr_meta]),
-            ft.Container(height=12),
-            self._prow,
-            ft.Container(height=2),
-            self._bar,
-        ], spacing=6))
-
-        body = ft.Column([
-            self._stats_row,
-            prog_card,
-            self._story_grid,
-            log_card,
-        ], spacing=16, scroll=ft.ScrollMode.AUTO, expand=True)
-
-        self._stop_btn_text = ft.Text(
-            "Stopping…" if _stopping else "Stop after current test case",
-            size=13, color="#FFFFFF", weight=ft.FontWeight.BOLD)
-        stop_btn = ft.FilledButton(
-            content=ft.Row([ft.Icon(ft.Icons.STOP, size=14, color="#FFFFFF"), self._stop_btn_text],
-                           spacing=8, tight=True),
-            height=40, on_click=lambda e: self._stop_run(),
-            disabled=_stopping,
-            style=ft.ButtonStyle(bgcolor=T.RED, color="#FFFFFF", elevation=0,
-                shape=ft.RoundedRectangleBorder(radius=T.R),
-                padding=ft.Padding.symmetric(horizontal=16, vertical=0)))
-        # design red shadow (skip when disabled/stopping)
-        stop = (stop_btn if _stopping
-                else ft.Container(stop_btn, border_radius=T.R,
-                                  shadow=_btn_shadow(T.RED, 0.55)))
-        sub = f"live — story {s['stories_done']} of {s['total_stories']}" if s['total_stories'] else "live"
-        return self.shell("Run", sub, body, stop)
+        return run.screen(self)
 
     def _log_icon(self, ln, tone, color):
         ico = ln.get("ico")
@@ -6158,193 +3871,7 @@ class QAStudio:
         return "1 day ago" if days == 1 else f"{days} days ago"
 
     def report_screen(self):
-        r = self.last_report or {"summary": "No run data", "updated": 0, "skipped": 0, "errors": 0}
-        is_steps = (self.tool == "steps")
-        updated = r.get("updated", r.get("created", 0))
-        created = r.get("created", 0)
-        skipped = r.get("skipped", 0)
-        errors = r.get("errors", 0)
-        stories_done = r.get("stories_done", 0)
-        total_stories = r.get("total_stories", 0)
-        action_items = r.get("action_items", [])
-
-        if is_steps:
-            _sub = (f"Test Case Steps · {created} created · {updated} updated with steps · "
-                    f"{skipped} skipped · {errors} failed across {total_stories} "
-                    f"{'story' if total_stories == 1 else 'stories'}.")
-        else:
-            _sub = (f"Test Case Titles · {updated} created · {skipped} skipped · "
-                    f"{errors} failed across {total_stories} "
-                    f"{'story' if total_stories == 1 else 'stories'}.")
-
-        head_card = ft.Container(
-            ft.Row([
-                ft.Container(ft.Icon(ft.Icons.CHECK, size=26, color="#FFFFFF"),
-                             width=52, height=52, bgcolor=T.GREEN, border_radius=14,
-                             alignment=ft.Alignment.CENTER,
-                             shadow=_btn_shadow(T.GREEN, 0.45)),
-                ft.Column([
-                    ft.Text("Run complete", size=18, weight=ft.FontWeight.BOLD, color=T.INK),
-                    ft.Text(_sub, size=12.5, color=T.INK_2, weight=ft.FontWeight.W_500),
-                ], spacing=3, expand=True),
-            ], spacing=16, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-            padding=18, bgcolor=T.CARD, border=ft.Border.all(1, T.BORDER), border_radius=T.R_LG)
-
-        if is_steps:
-            stats = ft.Row([
-                stat_tile("Created", created, tone="violet"),
-                stat_tile("Updated", updated, tone="green"),
-                stat_tile("Skipped", skipped, tone="amber"),
-                stat_tile("Failed", errors, tone="red"),
-                stat_tile("Stories", stories_done, tone="violet", sub=f"/{total_stories}"),
-            ], spacing=11)
-        else:
-            stats = ft.Row([
-                stat_tile("Created", updated, tone="green"),
-                stat_tile("Skipped", skipped, tone="amber"),
-                stat_tile("Failed", errors, tone="red"),
-                stat_tile("Stories", stories_done, tone="violet", sub=f"/{total_stories}"),
-            ], spacing=11)
-
-        # Per-story breakdown (matches design)
-        per_story = r.get("per_story", [])
-        story_rows = []
-        for sp in per_story:
-            total = sp.get("total", 0); ok = sp.get("ok", 0)
-            skipped = sp.get("skipped", 0); err = sp.get("err", 0)
-            processed = ok + skipped + err
-            pct = int(processed / total * 100) if total else 0
-            ring_c = T.AMBER if err else (T.GREEN if processed >= total and total else T.VIOLET)
-            chips = []
-            if ok: chips.append(badge(f"✓ {ok}", "green"))
-            if skipped: chips.append(badge(f"⏭ {skipped}", "amber"))
-            if err: chips.append(badge(f"✕ {err}", "red"))
-            _sid = sp.get('id', '')
-            _su = (f"https://dev.azure.com/{E.AZURE_ORG}/{self.project}"
-                   f"/_workitems/edit/{_sid}") if _sid else None
-            story_rows.append(ft.Container(
-                ft.Row([
-                    progress_ring(pct, ring_c, size=46, label=pct),
-                    ft.Column([
-                        ft.Text(sp.get("title", ""), size=13, weight=ft.FontWeight.BOLD,
-                                color=T.INK, font_family=T.F_AR, text_align=ft.TextAlign.RIGHT,
-                                max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
-                        ft.Text(f"#{sp.get('id','')}", size=11, color=T.INK_3,
-                                weight=ft.FontWeight.BOLD, font_family=T.F_MONO),
-                    ], spacing=2, expand=True),
-                    ft.Row(chips, spacing=5, tight=True),
-                ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                padding=ft.Padding.symmetric(vertical=12, horizontal=14),
-                border=ft.Border.only(bottom=ft.BorderSide(1, T.BORDER_2)),
-                tooltip=(f"{sp.get('title','')}  ·  open #{_sid}" if sp.get('title') else None),
-                on_click=(lambda e, u=_su: self._open_url(u)) if _su else None,
-                ink=bool(_su)))
-        if not story_rows:
-            story_rows = [ft.Text("No per-story data.", size=12, color=T.INK_3,
-                                  weight=ft.FontWeight.W_500)]
-        breakdown_card = card(ft.Column([
-            ft.Row([ft.Text("Per-story breakdown", size=13, weight=ft.FontWeight.BOLD, color=T.INK),
-                    ft.Container(expand=True),
-                    ft.Text(f"{len(per_story)} stories", size=11, color=T.INK_3,
-                            weight=ft.FontWeight.BOLD)]),
-            ft.Container(height=6),
-            ft.Column(story_rows, spacing=0, scroll=ft.ScrollMode.AUTO, expand=True),
-        ], spacing=0), expand=True)
-
-        # Collapsible run activity log below the breakdown
-        log_lines = self._render_log_lines() if getattr(self, "_log_lines", None) else [
-            ft.Text("No activity recorded.", size=12, color=T.INK_3, weight=ft.FontWeight.W_500)]
-        log_card = card(ft.Column([
-            ft.Row([ft.Text("Run activity log", size=13, weight=ft.FontWeight.BOLD, color=T.INK),
-                    ft.Container(expand=True),
-                    ft.Text(f"{len(getattr(self,'_log_lines',[]))} lines", size=11,
-                            color=T.INK_3, weight=ft.FontWeight.BOLD)]),
-            ft.Container(height=8),
-            ft.Container(
-                ft.SelectionArea(content=ft.Column(log_lines, spacing=2,
-                                                    scroll=ft.ScrollMode.AUTO, expand=True)),
-                height=240, bgcolor=T.CARD_2, border=ft.Border.all(1, T.BORDER),
-                border_radius=T.R, padding=12),
-        ], spacing=0))
-        left = ft.Column([head_card, stats, breakdown_card, log_card], spacing=14,
-                         expand=True, scroll=ft.ScrollMode.AUTO)
-
-        # right: needs review + buttons
-        review_items = []
-        for a in action_items:
-            _tc_id = a.get("id")
-            _tc_url = (f"https://dev.azure.com/{E.AZURE_ORG}/{self.project}"
-                       f"/_workitems/edit/{_tc_id}") if _tc_id else None
-            review_items.append(ft.Container(
-                ft.Column([
-                    ft.Row([badge("Review", "amber", ft.Icons.WARNING_AMBER_ROUNDED),
-                            ft.Text(f"#{a['id']}", size=11, color=T.INK_3, weight=ft.FontWeight.BOLD,
-                                    font_family=T.F_MONO),
-                            ft.Container(expand=True),
-                            ft.Icon(ft.Icons.OPEN_IN_NEW, size=13, color=T.INK_3)], spacing=7),
-                    ft.Text(a.get("title", ""), size=12.5, weight=ft.FontWeight.BOLD, color=T.INK,
-                            font_family=T.F_AR, text_align=ft.TextAlign.RIGHT),
-                    ft.Text(a.get("reason", ""), size=11, color=T.INK_2, weight=ft.FontWeight.W_500),
-                ], spacing=4),
-                padding=ft.Padding.symmetric(vertical=12, horizontal=11), border=ft.Border.all(1, T.BORDER),
-                border_radius=T.R, bgcolor=T.CARD_2, margin=ft.Margin.only(bottom=9),
-                tooltip=(f"Open test case #{_tc_id} in Azure DevOps" if _tc_url else None),
-                on_click=(lambda e, u=_tc_url: self._open_url(u)) if _tc_url else None,
-                ink=bool(_tc_url)))
-        if not review_items:
-            review_items = [ft.Text("Nothing flagged — all good.", size=12, color=T.INK_3,
-                                    weight=ft.FontWeight.W_500)]
-
-        # email confirmation chip (if a report was emailed)
-        email_chip = None
-        emailed_to = getattr(self, "_emailed_to", None)
-        if emailed_to:
-            email_chip = ft.Container(
-                ft.Row([ft.Icon(ft.Icons.MAIL_OUTLINED, size=15, color=T.GREEN),
-                        ft.Text(f"Report emailed to {emailed_to}", size=12,
-                                color=T.GREEN, weight=ft.FontWeight.BOLD, expand=True)],
-                       spacing=8),
-                padding=ft.Padding.symmetric(vertical=11, horizontal=13),
-                bgcolor=T.GREEN_SOFT, border_radius=T.R,
-                border=ft.Border.all(1, "#CFEAD9"), margin=ft.Margin.only(top=10))
-
-        # Header (+ optional subtitle), then scrollable list that expands,
-        # then the email chip pinned at the bottom of the card.
-        review_header = [
-            ft.Row([ft.Text("Needs your review", size=13, weight=ft.FontWeight.BOLD, color=T.INK),
-                    ft.Container(expand=True),
-                    ft.Text(str(len(action_items)), size=12, color=T.INK_3, weight=ft.FontWeight.BOLD)]),
-        ]
-        if action_items:
-            review_header.append(
-                ft.Text("Existing steps were judged inadequate and regenerated.",
-                        size=11.5, color=T.INK_2, weight=ft.FontWeight.W_500))
-        review_body = ft.Column([
-            *review_header,
-            ft.Container(height=10),
-            ft.Container(
-                ft.Column(review_items, spacing=0, scroll=ft.ScrollMode.AUTO, expand=True),
-                expand=True),
-            *([email_chip] if email_chip else []),
-        ], spacing=0, expand=True)
-
-        right = ft.Column([
-            ft.Container(card(review_body, expand=True), expand=True),
-            primary_btn("New run", icon=ft.Icons.ARROW_FORWARD, expand=True,
-                        on_click=lambda e: self._new_run()),
-            ghost_btn("Open plan in Azure", icon=ft.Icons.FOLDER_OUTLINED, expand=True,
-                      on_click=lambda e: self._open_azure(),
-                      disabled=not self.can("act.open_plan"), ignore_ro=True),
-        ], spacing=14, expand=True)
-        body = ft.Row([ft.Container(left, expand=True),
-                       ft.Container(right, width=340)], spacing=22,
-                      vertical_alignment=ft.CrossAxisAlignment.STRETCH, expand=True)
-        tag = ft.Container(
-            ft.Row([ft.Icon(ft.Icons.CHECK, size=13, color=T.GREEN),
-                    ft.Text("Completed", size=11, color=T.GREEN, weight=ft.FontWeight.BOLD)], spacing=5, tight=True),
-            padding=ft.Padding.symmetric(vertical=10, horizontal=5), bgcolor=T.GREEN_SOFT, border_radius=20,
-            border=ft.Border.all(1, "#CFEAD9"))
-        return self.shell("Report", self._relative_time(), body, tag)
+        return report.screen(self)
 
     def _new_run(self):
         self.active = "setup"
@@ -6355,10 +3882,18 @@ class QAStudio:
         self.render()
 
     def _open_url(self, url):
-        """Open a URL reliably. In Flet 0.90 launch_url is async, so we just use
-        the OS browser directly which always works on desktop and web."""
+        """Open a URL in the default browser, brought to the FRONT (over the app).
+        In Flet 0.90 launch_url is async, so we use the OS browser directly."""
+        # Windows: ShellExecute 'open' (os.startfile) foregrounds the browser window
+        # over the app, instead of opening it behind us like webbrowser.open can.
+        try:
+            import os as _os
+            if _os.name == "nt":
+                _os.startfile(url)   # noqa: S606 — trusted, user-initiated links
+                return
+        except Exception:
+            pass
         opened = False
-        # Preferred on desktop: OS browser (synchronous, no coroutine warnings)
         try:
             import webbrowser
             opened = webbrowser.open(url)
@@ -6427,171 +3962,8 @@ class QAStudio:
                 pass
 
     def automation_screen(self):
-        if not (self.connected and self.project and self.plan_id and self.story_ids):
-            return regression.locked_state(
-                self, "Automation",
-                "Generate self-healing Selenium tests from your stories",
-                "Connect your account, then pick a project, test plan, and user "
-                "stories on the Setup screen — automation runs on that same "
-                "selection.")
-        # ── left: config form ──
-        ready = bool(self.story_ids and self.project and self.plan_id)
-        setup_hint = None
-        if not ready:
-            setup_hint = ft.Container(
-                ft.Row([ft.Icon(ft.Icons.INFO_OUTLINE, size=16, color=T.AMBER),
-                        ft.Text("Select a project, test plan, and user stories on the Setup "
-                                "screen first — automation uses the same selection.",
-                                size=12, color=T.AMBER, weight=ft.FontWeight.W_500, expand=True)],
-                       spacing=8),
-                padding=12, bgcolor=T.AMBER_SOFT, border_radius=T.R,
-                border=ft.Border.all(1, "#EAD9A8"), margin=ft.Margin.only(bottom=14))
+        return automation.screen(self)
 
-        site_card = card(ft.Column([
-            sec_head("A", "Target site"),
-            ft.Container(height=10),
-            self._auto_field("Site URL", "auto_site_url",
-                             "https://your-app.example.com/page", req=True),
-            ft.Container(height=12),
-            ft.Text("LOGIN (required to reach the pages)", size=10.5,
-                    weight=ft.FontWeight.BOLD, color=T.INK_3),
-            ft.Container(height=8),
-            self._auto_field("Login page URL", "auto_login_url",
-                             "https://your-app.example.com/login (defaults to site URL)"),
-            ft.Container(height=10),
-            ft.Row([
-                ft.Container(self._auto_field("Username", "auto_login_user", "user@example.com"), expand=1),
-                ft.Container(self._auto_field("Password", "auto_login_pass", "••••••••", password=True), expand=1),
-            ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.START),
-        ], spacing=0))
-
-        git_card = card(ft.Column([
-            sec_head("B", "Git destination (IntelliJ syncs this)"),
-            ft.Container(height=10),
-            self._auto_field("Repository URL", "auto_git_url",
-                             "https://github.com/you/automation-tests.git", req=True),
-            ft.Container(height=10),
-            ft.Row([
-                ft.Container(self._auto_field("Branch", "auto_git_branch", "main"), expand=1),
-                ft.Container(self._auto_field("Access token (PAT)", "auto_git_token",
-                                 "ghp_… or Azure PAT", password=True, req=True,
-                                 info="How to create a Git access token (PAT)",
-                                 on_info=lambda e: self._show_help("git_pat")), expand=1),
-            ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.START),
-            ft.Container(height=4),
-            ft.Text("The token is used only to push and is stored locally like your other "
-                    "credentials. It is scrubbed from logs.",
-                    size=11, color=T.INK_3, weight=ft.FontWeight.W_500),
-        ], spacing=0))
-
-        local_card = card(ft.Column([
-            sec_head("C", "Local copy (optional)"),
-            ft.Container(height=10),
-            self._auto_field("Save project to folder", "auto_local_path",
-                             r"e.g. C:\Users\you\IdeaProjects\automation-tests"),
-            ft.Container(height=4),
-            ft.Text("If set, the generated Maven project is also copied here so you can "
-                    "open it directly in IntelliJ. Leave blank to use a temp folder.",
-                    size=11, color=T.INK_3, weight=ft.FontWeight.W_500),
-        ], spacing=0))
-
-        gen_disabled = self._auto_running or not ready
-        if self._auto_running:
-            # While running, show Stop + Pause/Resume side by side (matching shadow)
-            _stop_btn = ft.FilledButton(
-                content=ft.Row(
-                    [ft.Icon(ft.Icons.STOP_CIRCLE, size=18, color="#FFFFFF"),
-                     ft.Text("Stop", size=14, weight=ft.FontWeight.BOLD,
-                             color="#FFFFFF")],
-                    spacing=8, tight=True,
-                    alignment=ft.MainAxisAlignment.CENTER),
-                height=46, expand=True, on_click=lambda e: self._stop_automation(),
-                style=ft.ButtonStyle(
-                    bgcolor={"": T.RED}, color={"": "#FFFFFF"}, elevation=0,
-                    shape=ft.RoundedRectangleBorder(radius=T.R),
-                    padding=ft.Padding.symmetric(horizontal=14, vertical=0)))
-            _paused = bool(getattr(self, "_auto_paused", False))
-            if _paused:
-                _pr_label, _pr_icon, _pr_col = "Resume", ft.Icons.PLAY_ARROW, T.GREEN
-                _pr_click = lambda e: self._resume_automation()
-            else:
-                _pr_label, _pr_icon, _pr_col = "Pause", ft.Icons.PAUSE_CIRCLE, T.AMBER
-                _pr_click = lambda e: self._pause_automation()
-            _pr_btn = ft.FilledButton(
-                content=ft.Row(
-                    [ft.Icon(_pr_icon, size=18, color="#FFFFFF"),
-                     ft.Text(_pr_label, size=14, weight=ft.FontWeight.BOLD,
-                             color="#FFFFFF")],
-                    spacing=8, tight=True,
-                    alignment=ft.MainAxisAlignment.CENTER),
-                height=46, expand=True, on_click=_pr_click,
-                style=ft.ButtonStyle(
-                    bgcolor={"": _pr_col}, color={"": "#FFFFFF"}, elevation=0,
-                    shape=ft.RoundedRectangleBorder(radius=T.R),
-                    padding=ft.Padding.symmetric(horizontal=14, vertical=0)))
-            _stop_w = ft.Container(_stop_btn, border_radius=T.R,
-                                   shadow=_btn_shadow(T.RED, 0.55), expand=True)
-            _pr_w = ft.Container(_pr_btn, border_radius=T.R,
-                                 shadow=_btn_shadow(_pr_col, 0.55), expand=True)
-            gen_btn = ft.Row([_stop_w, _pr_w], spacing=10)
-        else:
-            gen_btn = primary_btn(
-                "Generate automation scripts",
-                icon=ft.Icons.AUTO_AWESOME, expand=True, disabled=gen_disabled,
-                on_click=lambda e: self._start_automation())
-
-        push_disabled = self._auto_running or not self._auto_built
-        push_btn = green_btn("Push to Git", icon=ft.Icons.CLOUD_UPLOAD_OUTLINED,
-                             expand=True, on_click=lambda e: self._push_automation())
-        # grey it out visually when disabled
-        if push_disabled:
-            push_btn = ft.Row([ft.OutlinedButton(
-                "Push to Git", icon=ft.Icons.CLOUD_UPLOAD_OUTLINED, height=42,
-                disabled=True, expand=True,
-                style=ft.ButtonStyle(color=T.INK_3, side=ft.BorderSide(1, T.BORDER),
-                    shape=ft.RoundedRectangleBorder(radius=T.R)))], spacing=0)
-
-        left = ft.Column([
-            *([setup_hint] if setup_hint else []),
-            site_card,
-            git_card,
-            local_card,
-            ft.Row([gen_btn], spacing=0),
-            ft.Row([push_btn], spacing=0),
-        ], spacing=14, scroll=ft.ScrollMode.AUTO, expand=True)
-
-        # ── right: live counters + clean log ──
-        log_lines = [self._auto_log_line(ln.get("msg", ""), ln.get("tone", "dim"))
-                     for ln in self._auto_log]
-        if not log_lines:
-            log_lines = [empty_state(
-                ft.Icons.TERMINAL, "No activity yet",
-                "Fill in the site and Git details, then Generate — "
-                "each step shows up here live.")]
-        self._auto_log_col = ft.Column(log_lines, spacing=3, scroll=ft.ScrollMode.AUTO,
-                                       expand=True, auto_scroll=True)
-
-        spinner = (ft.ProgressRing(width=15, height=15, stroke_width=2, color=T.VIOLET)
-                   if self._auto_running else ft.Icon(ft.Icons.TERMINAL, size=15, color=T.INK_3))
-        right = ft.Column([
-            card(ft.Column([
-                ft.Row([spinner, ft.Text("ACTIVITY", size=11, weight=ft.FontWeight.BOLD,
-                                         color=T.INK_3)], spacing=8),
-                ft.Container(height=12),
-                self._auto_counts_header(),
-                ft.Container(height=12),
-                ft.Container(ft.SelectionArea(content=self._auto_log_col), expand=True, bgcolor=T.CARD_2,
-                             border=ft.Border.all(1, T.BORDER), border_radius=T.R, padding=12),
-            ], spacing=0, expand=True), expand=True),
-        ], spacing=14, expand=True)
-
-        body = ft.Row([ft.Container(left, expand=True),
-                       ft.Container(right, width=384)], spacing=22,
-                      vertical_alignment=ft.CrossAxisAlignment.STRETCH, expand=True)
-        sub = (f"{len(self.story_ids)} stories selected" if self.story_ids else "no stories selected")
-        return self.shell("Automation", sub, body)
-
-    # ---- activity panel: live counters + clean, RTL-aware log lines ----
     def _auto_count(self):
         """Derive Live / Snapshot / Guess / TODO tallies from the activity log,
         keyed off the exact outcome markers the explorer emits."""
@@ -7076,123 +4448,6 @@ def _launch(view=None):
     return ft.app(target=main, view=view) if view is not None else ft.app(target=main)
 
 
-def _make_kill_on_close_job():
-    """A Win32 Job Object set to KILL_ON_JOB_CLOSE: every process in the job dies
-    when its handle closes. We put the login child in it so WebView2's helper
-    processes (the msedgewebview2.exe tree) can NEVER leak across launches — the
-    leak was what wedged the app from the 3rd launch on. Returns a handle or None."""
-    try:
-        import ctypes
-        from ctypes import wintypes
-        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        k32.CreateJobObjectW.restype = wintypes.HANDLE
-        k32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
-        job = k32.CreateJobObjectW(None, None)
-        if not job:
-            return None
-
-        class _BASIC(ctypes.Structure):
-            _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64),
-                        ("PerJobUserTimeLimit", ctypes.c_int64),
-                        ("LimitFlags", wintypes.DWORD),
-                        ("MinimumWorkingSetSize", ctypes.c_size_t),
-                        ("MaximumWorkingSetSize", ctypes.c_size_t),
-                        ("ActiveProcessLimit", wintypes.DWORD),
-                        ("Affinity", ctypes.c_size_t),
-                        ("PriorityClass", wintypes.DWORD),
-                        ("SchedulingClass", wintypes.DWORD)]
-
-        class _IO(ctypes.Structure):
-            _fields_ = [("ReadOperationCount", ctypes.c_uint64),
-                        ("WriteOperationCount", ctypes.c_uint64),
-                        ("OtherOperationCount", ctypes.c_uint64),
-                        ("ReadTransferCount", ctypes.c_uint64),
-                        ("WriteTransferCount", ctypes.c_uint64),
-                        ("OtherTransferCount", ctypes.c_uint64)]
-
-        class _EXT(ctypes.Structure):
-            _fields_ = [("BasicLimitInformation", _BASIC),
-                        ("IoInfo", _IO),
-                        ("ProcessMemoryLimit", ctypes.c_size_t),
-                        ("JobMemoryLimit", ctypes.c_size_t),
-                        ("PeakProcessMemoryUsed", ctypes.c_size_t),
-                        ("PeakJobMemoryUsed", ctypes.c_size_t)]
-
-        info = _EXT()
-        info.BasicLimitInformation.LimitFlags = 0x2000   # KILL_ON_JOB_CLOSE
-        k32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int,
-                                                wintypes.LPVOID, wintypes.DWORD]
-        if not k32.SetInformationJobObject(job, 9, ctypes.byref(info),
-                                           ctypes.sizeof(info)):
-            k32.CloseHandle(job)
-            return None
-        return job
-    except Exception:
-        return None
-
-
-def _assign_to_job(job, proc):
-    import ctypes
-    from ctypes import wintypes
-    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    k32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
-    k32.AssignProcessToJobObject(job, int(proc._handle))
-
-
-def _close_job(job):
-    if not job:
-        return
-    try:
-        import ctypes
-        ctypes.WinDLL("kernel32").CloseHandle(job)
-    except Exception:
-        pass
-
-
-def _run_web_login_subprocess(width=1120, height=700):
-    """Show the WebView2 login in a SEPARATE process and return its outcome.
-
-    Isolation keeps WebView2's COM/GPU state out of the Flet process. Two details
-    are critical (they were the actual freeze causes):
-      • Popen with stdout/stdin/stderr = DEVNULL, NOT a PIPE. WebView2's helper
-        processes inherit the child's handles and can outlive it; a PIPE keeps its
-        write end open and hangs the parent forever waiting on EOF.
-      • The child runs inside a KILL_ON_JOB_CLOSE Job Object, so every WebView2
-        helper process is killed when we close the job — no leaks across launches.
-    Outcome is read from the child EXIT CODE: 0=dark, 3=light (signed in),
-    1=closed without login, anything else=unavailable.
-    """
-    import os as _os, sys as _sys, subprocess as _sp
-    if getattr(_sys, "frozen", False):
-        cmd = [_sys.executable, "--web-login"]                 # packaged exe
-    else:
-        cmd = [_sys.executable, _os.path.abspath(__file__), "--web-login"]
-    job = _make_kill_on_close_job() if _os.name == "nt" else None
-    try:
-        proc = _sp.Popen(cmd, stdin=_sp.DEVNULL, stdout=_sp.DEVNULL,
-                         stderr=_sp.DEVNULL)
-    except Exception:
-        _close_job(job)
-        return None
-    try:
-        if job is not None:
-            _assign_to_job(job, proc)          # child + its WebView2 tree
-    except Exception:
-        pass
-    try:
-        code = proc.wait()
-    except Exception:
-        code = None
-    finally:
-        _close_job(job)   # closing the job kills any leftover WebView2 processes
-    if code == 0:
-        return "dark"
-    if code == 3:
-        return "light"
-    if code == 1:
-        return "__cancelled__"
-    return None                                                    # unavailable
-
 if __name__ == "__main__":
     import os
     # Force web mode explicitly with:  set WEB_MODE=1
@@ -7207,17 +4462,6 @@ if __name__ == "__main__":
             _launch()
         except Exception as _e:
             print("\n" + "="*64)
-            print("Desktop client could not start:")
-            print(f"  {_e}")
-            print("\nFix (run once, on a network that allows PyPI):")
-            print("  pip install flet-desktop")
-            print("\nThen run again:  python main.py")
-            print("\nOr run in the browser instead:")
-            print("  set WEB_MODE=1   &&   python main.py")
-        # Guarantee the process fully terminates once the Flet window closes, even
-        # if background/daemon-less threads (webview, updater, requests) remain.
-        try:
-            os._exit(0)
-        except Exception:
-            pass
+            print("Desktop launch failed. Details below:")
+            traceback.print_exc()
             print("="*64)
