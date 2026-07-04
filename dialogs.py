@@ -19,6 +19,16 @@ def show_dialog(app, dlg):
             dlg.content = ft.SelectionArea(content=c)
     except Exception:
         pass
+    # Keep action buttons on ONE ROW. Flet's AlertDialog stacks multiple `actions`
+    # vertically (and often reverses them). Wrapping them in a single right-aligned
+    # Row fixes button layout for EVERY modal in one place.
+    try:
+        acts = getattr(dlg, "actions", None)
+        if acts and len(acts) > 1:
+            dlg.actions = [ft.Row(list(acts), alignment=ft.MainAxisAlignment.END,
+                                  spacing=10, tight=True)]
+    except Exception:
+        pass
     # Flet 0.85 uses page.show_dialog(); 0.24-0.79 uses page.open(); older sets page.dialog
     if hasattr(app.page, "show_dialog"):
         app.page.show_dialog(dlg)

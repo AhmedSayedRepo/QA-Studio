@@ -106,4 +106,6 @@ PROVIDER_DISPLAY = {
     "mistral": "Mistral", "deepseek": "DeepSeek", "qwen": "Qwen", "manus": "Manus",
 }
 def disp_name(name):
+    if not name:
+        return "AI provider"
     return PROVIDER_DISPLAY.get(name, name.replace("_", " ").title())

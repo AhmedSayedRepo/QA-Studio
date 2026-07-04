@@ -194,6 +194,9 @@ def classify_ai_error(exc):
         return ("content_filter", f"{prov}: the response was blocked by a safety filter.")
 
     # 2) fall back to HTTP status code
+    if status == 402:   # Payment Required — out of credit/quota (hard stop)
+        return ("credit", f"{prov}: account is out of credit/quota (402). Top up with the "
+                          f"provider, or switch the AI Provider in Setup and Resume.")
     if status == 401:
         return ("auth", f"{prov}: API key rejected (401). Re-check the key in Setup, Save it, then Resume.")
     if status == 403:
@@ -244,9 +247,21 @@ def _ai_cfg():
         raise RuntimeError(f"Unknown AI_PROVIDER '{AI_PROVIDER}'.")
     return cfg
 def _is_credit_error(msg):
-    m = msg.lower()
-    return ("credit balance is too low" in m or "insufficient_quota" in m
-            or ("quota" in m and "exceeded" in m) or ("billing" in m and "hard limit" in m))
+    """True when a provider says the ACCOUNT is out of credit/quota (a hard stop),
+    as opposed to a transient per-minute rate limit (which clears on its own).
+    Kept conservative so plain 'rate limit'/'too many requests' is NOT treated as
+    out-of-credit — those still retry."""
+    m = (msg or "").lower()
+    return (
+        "credit balance is too low" in m or "insufficient_quota" in m
+        or "insufficient credit" in m or "insufficient credits" in m
+        or "insufficient balance" in m or "out of credit" in m
+        or "no credits" in m or "not enough credit" in m
+        or "credit limit" in m or "credits have run out" in m
+        or "credits exhausted" in m or "run out of credits" in m
+        or "payment required" in m or "add credits" in m or "top up" in m
+        or ("quota" in m and any(k in m for k in ("exceeded", "exhaust", "reached", "run out")))
+        or ("billing" in m and "hard limit" in m))
 
 def friendly_ai_error(msg):
     """Turn a raw provider error (often a long JSON 400/401) into one readable
@@ -1280,6 +1295,42 @@ def create_requirement_suite(project, plan_id, story_id, root_suite_id=None, pat
 # ═══════════════════════════════════════════════════════════════════════════════
 #  JSON parsing (robust for Qwen/DeepSeek quirks)
 # ═══════════════════════════════════════════════════════════════════════════════
+def _balanced_json_fragment(s):
+    """From the first '{' or '[', return the balanced JSON fragment, ignoring
+    brackets inside strings, and CLOSING a truncated tail (open string + open
+    brackets) — so a response cut off at max_tokens is still recoverable."""
+    starts = [i for i in (s.find("{"), s.find("[")) if i >= 0]
+    if not starts:
+        return None
+    start = min(starts)
+    pairs = {"}": "{", "]": "["}
+    closer = {"{": "}", "[": "]"}
+    stack, in_str, esc = [], False, False
+    for i in range(start, len(s)):
+        ch = s[i]
+        if esc:
+            esc = False; continue
+        if ch == "\\":
+            esc = True; continue
+        if ch == '"':
+            in_str = not in_str; continue
+        if in_str:
+            continue
+        if ch in "{[":
+            stack.append(ch)
+        elif ch in "}]":
+            if stack and stack[-1] == pairs[ch]:
+                stack.pop()
+                if not stack:
+                    return s[start:i + 1]
+            else:
+                break
+    if stack:   # truncated mid-structure → close what's still open
+        frag = s[start:] + ('"' if in_str else "")
+        return frag + "".join(closer[c] for c in reversed(stack))
+    return None
+
+
 def parse_json_robust(raw):
     if raw is None:
         raise ValueError("AI returned an empty response (None)")
@@ -1288,10 +1339,10 @@ def parse_json_robust(raw):
     raw = re.sub(r"```\s*$", "", raw, flags=re.MULTILINE).strip()
     if not raw:
         raise ValueError("AI returned an empty response")
-    try: return json.loads(raw)
+    # strict=False tolerates literal newlines/tabs inside string values, which LLMs
+    # emit constantly and which json.loads otherwise rejects with a control-char error.
+    try: return json.loads(raw, strict=False)
     except json.JSONDecodeError: pass
-    m = re.search(r"\[.*\]", raw, re.DOTALL)
-    candidate = m.group(0) if m else raw
     def _repair(s):
         s = re.sub(r"'([^'\n]*?)'(\s*[:,\]}])", r'"\1"\2', s)
         s = re.sub(r"([:,\[{]\s*)'([^'\n]*?)'", r'\1"\2"', s)
@@ -1305,13 +1356,21 @@ def parse_json_robust(raw):
             if in_str and ch == "\r": continue
             out.append(ch)
         return "".join(out)
-    try: return json.loads(_repair(candidate))
+    # largest balanced object/array (handles nesting + truncation), raw then repaired
+    frag = _balanced_json_fragment(raw)
+    for variant in ([frag, _repair(frag)] if frag else []):
+        try: return json.loads(variant, strict=False)
+        except Exception: continue
+    # legacy greedy-array fallback
+    m = re.search(r"\[.*\]", raw, re.DOTALL)
+    candidate = m.group(0) if m else raw
+    try: return json.loads(_repair(candidate), strict=False)
     except Exception: pass
     objs = re.findall(r"\{[^{}]+\}", candidate, re.DOTALL)
     out = []
     for o in objs:
         for variant in (o, _repair(o)):
-            try: out.append(json.loads(variant)); break
+            try: out.append(json.loads(variant, strict=False)); break
             except Exception: continue
     if out: return out
     raise ValueError(f"Cannot parse JSON:\n{raw[:300]}")
@@ -3223,15 +3282,15 @@ def build_sprint_summary_email(data):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  SELENIUM AUTOMATION GENERATION (Selenium + Java + TestNG + POM)
+#  SELF-HEALING AUTOMATION GENERATION (Selenium + Java + TestNG)
 # ═══════════════════════════════════════════════════════════════════════════════
-#  Flow:
-#   1. scrape_dom()           — Selenium opens the site (logs in first), harvests
-#                               every interactive element with robust locators.
-#   2. generate_test_class()  — AI writes one TestNG page-object-backed test class
-#                               per story (a @Test per test case) using REAL locators.
-#   3. build_automation_project() — assembles the full Maven project tree.
-#   4. push_to_git()          — commits + pushes the project to a Git repo.
+#  Flow (no live browser at generation time):
+#   1. compile_test_case()          — AI turns noisy steps into atomic INTENTS.
+#   2. validate_and_sequence_suite()— classify + order cases (logged-out → login → app).
+#   3. build_selfhealing_project()  — emit a Maven/TestNG project whose Healer
+#                                     resolves each element at RUNTIME (seed locator,
+#                                     else AI-picked from the live DOM), then caches it.
+#   4. push_to_git()                — commits + pushes the project to a Git repo.
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _safe_class_name(text, fallback="Story"):
@@ -3379,162 +3438,6 @@ const out=[]; const seen=new Set();
 });
 return out.slice(0,80);
 """
-
-
-def _harvest_dom(driver):
-    """Return the list of interactive elements on the current page."""
-    try:
-        return driver.execute_script("return (function(){" + _HARVEST_JS + "})();") or []
-    except Exception:
-        return []
-
-
-def _harvest_errors(driver):
-    """Return visible error/validation/notification message nodes."""
-    try:
-        return driver.execute_script(
-            "return (function(){" + _ERROR_HARVEST_JS + "})();") or []
-    except Exception:
-        return []
-
-
-def _verify_logged_in(driver, login_url, cb):
-    """Best-effort check that login actually succeeded. Returns (ok, reason)."""
-    import time as _t
-    _t.sleep(1.0)
-    cur = (driver.current_url or "").rstrip("/")
-    base_login = (login_url or "").rstrip("/")
-    moved = cur != base_login
-    still_pw = False
-    try:
-        from selenium.webdriver.common.by import By
-        pw = driver.find_elements(By.CSS_SELECTOR, "input[type=password]")
-        still_pw = any(e.is_displayed() for e in pw)
-    except Exception:
-        pass
-    err = False
-    try:
-        body = (driver.find_element("tag name", "body").text or "").lower()
-        for kw in ("invalid", "incorrect", "failed", "غير صحيح", "خطأ",
-                   "wrong password", "try again", "بيانات غير"):
-            if kw in body:
-                err = True; break
-    except Exception:
-        pass
-    if still_pw and not moved:
-        return False, "still on the login form (login likely failed)"
-    if err and not moved:
-        return False, "an error message is shown on the login page"
-    return True, ("logged in — now at " + cur)
-
-
-def scrape_dom(url, login=None, cb=None, headless=True, wait_secs=4):
-    """Open `url` in Selenium Chrome, optionally log in, then harvest interactive
-    elements. Returns a list of dicts:
-        {"tag","type","id","name","text","placeholder","aria","css","xpath"}
-    `login` (optional) = {
-        "url": login page url (defaults to `url`),
-        "user": username, "password": password,
-        "user_locator": css for the username field,
-        "pass_locator": css for the password field,
-        "submit_locator": css for the submit button,
-    }
-    cb(msg, tone) optional logger.
-    """
-    cb = cb or (lambda *a, **k: None)
-    from selenium import webdriver
-    from selenium.webdriver.chrome.options import Options
-    from selenium.webdriver.common.by import By
-    import time as _t
-
-    opts = Options()
-    if headless:
-        opts.add_argument("--headless=new")
-    opts.add_argument("--no-sandbox")
-    opts.add_argument("--disable-dev-shm-usage")
-    opts.add_argument("--window-size=1400,900")
-    opts.add_argument("--disable-gpu")
-
-    cb("Launching Chrome…", "dim")
-    driver = webdriver.Chrome(options=opts)
-    try:
-        # ── optional login ──
-        if login and login.get("user") and login.get("password"):
-            login_url = login.get("url") or url
-            cb(f"Opening login page: {login_url}", "dim")
-            driver.get(login_url)
-            _t.sleep(wait_secs)
-            try:
-                u = driver.find_element(By.CSS_SELECTOR, login.get("user_locator") or "input[type=email],input[type=text],input[name*=user]")
-                u.clear(); u.send_keys(login["user"])
-                p = driver.find_element(By.CSS_SELECTOR, login.get("pass_locator") or "input[type=password]")
-                p.clear(); p.send_keys(login["password"])
-                btn_sel = login.get("submit_locator") or "button[type=submit],input[type=submit],button"
-                driver.find_element(By.CSS_SELECTOR, btn_sel).click()
-                cb("Submitted login — waiting for redirect…", "dim")
-                _t.sleep(wait_secs + 2)
-            except Exception as e:
-                cb(f"Login step issue (continuing): {e}", "warn")
-
-        cb(f"Opening target page: {url}", "dim")
-        driver.get(url)
-        _t.sleep(wait_secs)
-
-        # ── harvest interactive elements ──
-        cb("Reading the live DOM…", "dim")
-        js = r"""
-        function robustCss(el){
-          if(el.id) return '#'+CSS.escape(el.id);
-          if(el.name) return el.tagName.toLowerCase()+'[name="'+el.name+'"]';
-          let path=[], e=el;
-          while(e && e.nodeType===1 && path.length<5){
-            let sel=e.tagName.toLowerCase();
-            if(e.className && typeof e.className==='string'){
-              let c=e.className.trim().split(/\s+/).filter(Boolean).slice(0,2);
-              if(c.length) sel+='.'+c.map(x=>CSS.escape(x)).join('.');
-            }
-            let p=e.parentNode, idx=1, sib=e;
-            while(sib=sib.previousElementSibling){ if(sib.tagName===e.tagName) idx++; }
-            sel+=':nth-of-type('+idx+')';
-            path.unshift(sel);
-            e=e.parentNode;
-            if(e && e.id){ path.unshift('#'+CSS.escape(e.id)); break; }
-          }
-          return path.join(' > ');
-        }
-        function xpathOf(el){
-          if(el.id) return '//*[@id="'+el.id+'"]';
-          let parts=[], e=el;
-          while(e && e.nodeType===1){
-            let idx=1, sib=e;
-            while(sib=sib.previousElementSibling){ if(sib.tagName===e.tagName) idx++; }
-            parts.unshift(e.tagName.toLowerCase()+'['+idx+']');
-            e=e.parentNode;
-          }
-          return '/'+parts.join('/');
-        }
-        const sel='input,button,a,select,textarea,[role=button],[role=link],[role=tab],[contenteditable=true]';
-        const els=[...document.querySelectorAll(sel)];
-        return els.slice(0,200).map(el=>({
-          tag: el.tagName.toLowerCase(),
-          type: el.getAttribute('type')||'',
-          id: el.id||'',
-          name: el.getAttribute('name')||'',
-          text: (el.innerText||el.value||'').trim().slice(0,60),
-          placeholder: el.getAttribute('placeholder')||'',
-          aria: el.getAttribute('aria-label')||'',
-          css: robustCss(el),
-          xpath: xpathOf(el)
-        }));
-        """
-        elements = driver.execute_script(js) or []
-        cb(f"Found {len(elements)} interactive element(s).", "ok")
-        return elements
-    finally:
-        try:
-            driver.quit()
-        except Exception:
-            pass
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -3745,7 +3648,7 @@ def compile_test_case(tc, story=None, log=None, case_type="interaction"):
         '"check":"","expected":"","from_steps":[4,5,6]}'
     )
     try:
-        out = parse_json_robust(ai_complete(prompt, max_tokens=2048, timeout=90,
+        out = parse_json_robust(ai_complete(prompt, max_tokens=4096, timeout=90,
                                             on_retry=lambda m: log(m, "dim"),
                                             want_json=True))
         # JSON mode forces an object on OpenAI-compatible providers, so unwrap the
@@ -3990,6 +3893,53 @@ def _match_step_to_element(action, elements, cb):
     except Exception as e:
         cb(f"  match error: {str(e)[:80]}", "warn")
         return None, "none", ""
+
+
+def _harvest_dom(driver):
+    """Return the list of interactive elements on the current page."""
+    try:
+        return driver.execute_script("return (function(){" + _HARVEST_JS + "})();") or []
+    except Exception:
+        return []
+
+
+def _harvest_errors(driver):
+    """Return visible error/validation/notification message nodes."""
+    try:
+        return driver.execute_script(
+            "return (function(){" + _ERROR_HARVEST_JS + "})();") or []
+    except Exception:
+        return []
+
+
+def _verify_logged_in(driver, login_url, cb):
+    """Best-effort check that login actually succeeded. Returns (ok, reason)."""
+    import time as _t
+    _t.sleep(1.0)
+    cur = (driver.current_url or "").rstrip("/")
+    base_login = (login_url or "").rstrip("/")
+    moved = cur != base_login
+    still_pw = False
+    try:
+        from selenium.webdriver.common.by import By
+        pw = driver.find_elements(By.CSS_SELECTOR, "input[type=password]")
+        still_pw = any(e.is_displayed() for e in pw)
+    except Exception:
+        pass
+    err = False
+    try:
+        body = (driver.find_element("tag name", "body").text or "").lower()
+        for kw in ("invalid", "incorrect", "failed", "غير صحيح", "خطأ",
+                   "wrong password", "try again", "بيانات غير"):
+            if kw in body:
+                err = True; break
+    except Exception:
+        pass
+    if still_pw and not moved:
+        return False, "still on the login form (login likely failed)"
+    if err and not moved:
+        return False, "an error message is shown on the login page"
+    return True, ("logged in — now at " + cur)
 
 
 def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
@@ -4613,179 +4563,6 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
             pass
 
 
-def generate_test_class(story, test_cases, dom_elements, base_package, log=None):
-    """AI generates ONE TestNG page-object-style test class for a story.
-    `story` = {"id","title","criteria"}
-    `test_cases` = [{"title","steps":[{precondition,action,expected}...]}...]
-    `dom_elements` = list from scrape_dom()
-    Returns {"class_name","page_class","test_code","page_code"}.
-    """
-    log = log or (lambda *a, **k: None)
-    cls = _safe_class_name(story.get("title"), f"Story{story.get('id','')}")
-    test_class = f"{cls}Test"
-    page_class = f"{cls}Page"
-
-    # Trim DOM to the most useful fields to keep the prompt tight
-    dom_brief = []
-    for e in dom_elements[:120]:
-        dom_brief.append({k: e.get(k, "") for k in
-                          ("tag", "type", "id", "name", "text", "placeholder", "aria", "css", "xpath")})
-
-    tc_brief = []
-    for tc in test_cases:
-        steps = tc.get("steps") or []
-        tc_brief.append({"title": tc.get("title", ""),
-                         "steps": [{"action": s.get("action", ""),
-                                    "expected": s.get("expected", ""),
-                                    "precondition": s.get("precondition", ""),
-                                    # exact locator captured by the live-walk explorer
-                                    "locator": s.get("locator"),
-                                    "locator_src": s.get("locator_src", ""),
-                                    "assert_locator": s.get("assert_locator")} for s in steps]})
-
-    prompt = f"""
-You are a senior SDET. Generate Selenium + Java + TestNG automation using the Page Object Model.
-
-Return the TWO Java source files using EXACTLY these delimiters and nothing else
-(no markdown, no JSON, no commentary outside the blocks):
-
-===PAGE_OBJECT===
-<full Java source of the Page Object class>
-===TEST_CLASS===
-<full Java source of the TestNG test class>
-===END===
-
-Requirements:
-- Package: {base_package}
-- Page Object class name: {page_class}  (in package {base_package}.pages, extending BasePage)
-- Test class name: {test_class}  (in package {base_package}.tests, extending BaseTest)
-- One @Test method per test case below. Method name = camelCase of the test case title.
-- FOLLOW THE STEPS EXACTLY. Each test case has an ordered list of steps with an
-  "action" and an "expected". For every step:
-    * translate the "action" into the matching Selenium action via a Page Object method
-      (navigate, type into a field, click a button, select, etc.), in the same order;
-    * if the "expected" is non-empty, add a TestNG assertion (Assert.assertTrue/assertEquals
-      with isDisplayed()/getText()/etc.) verifying that outcome right after the action.
-  Do NOT invent steps that aren't listed; do NOT skip listed steps. Steps may be in Arabic —
-  read them and map intent to UI actions. Add a short `// <step n>: <action>` comment above
-  each block so the mapping is traceable.
-- LOCATORS — each step may include a "locator" captured live from the real page
-  (an object like {{"by":"id|name|css|xpath","value":"..."}}) and "locator_src":
-    * If "locator" is present and locator_src=="live", you MUST use that exact
-      locator for the step's element — it was verified on the live page. Build the
-      matching By (By.id/By.name/By.cssSelector/By.xpath).
-    * "assert_locator" (when present) is the verified element for the expected
-      result — use it for the assertion.
-    * If "locator" is present and locator_src=="snapshot", it is a REAL locator
-      captured from a page seen earlier in the walk (not the exact step page).
-      Use it as-is, but add `// TODO verify locator (from snapshot)` above the line.
-    * If "locator" is null, fall back to the REAL DOM list below; pick the most
-      stable (id > name > css > xpath) and add `// TODO verify locator`.
-- Use locators from the REAL DOM list only when a step has no captured locator.
-- The Page Object exposes action methods (e.g. clickAddQuestion(), enterAnswer(String)).
-- Add plain TestNG (no Allure). Include necessary imports. Code must compile.
-- Add a class-level Javadoc with the story id and title.
-
-Story:
-  id: {story.get('id')}
-  title: {story.get('title')}
-  acceptance_criteria: {story.get('criteria','')[:1500]}
-
-Test cases (each becomes a @Test):
-{json.dumps(tc_brief, ensure_ascii=False)[:6000]}
-
-REAL DOM elements (use these locators):
-{json.dumps(dom_brief, ensure_ascii=False)[:8000]}
-"""
-    raw = ai_complete(prompt, max_tokens=8192)
-    page_code, test_code = _split_generated_code(raw)
-    return {
-        "class_name": test_class,
-        "page_class": page_class,
-        "test_code": test_code or "// generation failed — see activity log",
-        "page_code": page_code or "// generation failed — see activity log",
-    }
-
-
-def _split_generated_code(raw):
-    """Extract page-object and test-class Java from the delimited AI output.
-    Falls back to JSON parsing if the model ignored the delimiters."""
-    if not raw:
-        return "", ""
-    txt = raw.strip()
-    # Strip accidental markdown fences
-    if txt.startswith("```"):
-        txt = re.sub(r"^```[a-zA-Z]*\n?", "", txt)
-        txt = re.sub(r"\n?```$", "", txt)
-    if "===PAGE_OBJECT===" in txt and "===TEST_CLASS===" in txt:
-        try:
-            after_po = txt.split("===PAGE_OBJECT===", 1)[1]
-            page_part, rest = after_po.split("===TEST_CLASS===", 1)
-            test_part = rest.split("===END===", 1)[0]
-            return page_part.strip(), test_part.strip()
-        except Exception:
-            pass
-    # Fallback: maybe the model returned JSON after all
-    try:
-        data = parse_json_robust(txt)
-        if isinstance(data, list) and data:
-            data = data[0]
-        if isinstance(data, dict):
-            return data.get("page_code", ""), data.get("test_code", "")
-    except Exception:
-        pass
-    return "", ""
-
-
-# ── Static scaffolding files (base classes, pom.xml, testng.xml) ───────────────
-def _pom_xml(group_id, artifact_id):
-    return f"""<?xml version="1.0" encoding="UTF-8"?>
-<project xmlns="http://maven.apache.org/POM/4.0.0"
-         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
-  <modelVersion>4.0.0</modelVersion>
-  <groupId>{group_id}</groupId>
-  <artifactId>{artifact_id}</artifactId>
-  <version>1.0.0</version>
-  <properties>
-    <maven.compiler.source>17</maven.compiler.source>
-    <maven.compiler.target>17</maven.compiler.target>
-    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-    <selenium.version>4.21.0</selenium.version>
-    <testng.version>7.10.2</testng.version>
-  </properties>
-  <dependencies>
-    <dependency>
-      <groupId>org.seleniumhq.selenium</groupId>
-      <artifactId>selenium-java</artifactId>
-      <version>${{selenium.version}}</version>
-    </dependency>
-    <dependency>
-      <groupId>org.testng</groupId>
-      <artifactId>testng</artifactId>
-      <version>${{testng.version}}</version>
-    </dependency>
-    <dependency>
-      <groupId>io.github.bonigarcia</groupId>
-      <artifactId>webdrivermanager</artifactId>
-      <version>5.9.2</version>
-    </dependency>
-  </dependencies>
-  <build>
-    <plugins>
-      <plugin>
-        <groupId>org.apache.maven.plugins</groupId>
-        <artifactId>maven-surefire-plugin</artifactId>
-        <version>3.2.5</version>
-        <configuration>
-          <suiteXmlFiles><suiteXmlFile>testng.xml</suiteXmlFile></suiteXmlFiles>
-        </configuration>
-      </plugin>
-    </plugins>
-  </build>
-</project>
-"""
-
 def _driver_factory(pkg):
     return f"""package {pkg}.core;
 
@@ -4806,141 +4583,6 @@ public final class DriverFactory {{
     }}
 }}
 """
-
-def _base_test(pkg, base_url):
-    return f"""package {pkg}.tests;
-
-import {pkg}.core.DriverFactory;
-import org.openqa.selenium.WebDriver;
-import org.testng.annotations.AfterMethod;
-import org.testng.annotations.BeforeMethod;
-
-import java.time.Duration;
-
-public abstract class BaseTest {{
-    protected WebDriver driver;
-    protected static final String BASE_URL = "{base_url}";
-
-    @BeforeMethod
-    public void setUp() {{
-        driver = DriverFactory.create();
-        driver.manage().timeouts().implicitlyWait(Duration.ofSeconds(10));
-        driver.get(BASE_URL);
-    }}
-
-    @AfterMethod
-    public void tearDown() {{
-        if (driver != null) driver.quit();
-    }}
-}}
-"""
-
-def _base_page(pkg):
-    return f"""package {pkg}.pages;
-
-import org.openqa.selenium.By;
-import org.openqa.selenium.WebDriver;
-import org.openqa.selenium.WebElement;
-import org.openqa.selenium.support.ui.ExpectedConditions;
-import org.openqa.selenium.support.ui.WebDriverWait;
-
-import java.time.Duration;
-
-public abstract class BasePage {{
-    protected final WebDriver driver;
-    protected final WebDriverWait wait;
-
-    protected BasePage(WebDriver driver) {{
-        this.driver = driver;
-        this.wait = new WebDriverWait(driver, Duration.ofSeconds(15));
-    }}
-
-    protected WebElement visible(By by) {{
-        return wait.until(ExpectedConditions.visibilityOfElementLocated(by));
-    }}
-    protected WebElement clickable(By by) {{
-        return wait.until(ExpectedConditions.elementToBeClickable(by));
-    }}
-    protected void type(By by, String text) {{
-        WebElement el = visible(by); el.clear(); el.sendKeys(text);
-    }}
-    protected void click(By by) {{ clickable(by).click(); }}
-    protected String textOf(By by) {{ return visible(by).getText(); }}
-    protected boolean isPresent(By by) {{
-        try {{ return !driver.findElements(by).isEmpty(); }} catch (Exception e) {{ return false; }}
-    }}
-}}
-"""
-
-def _testng_xml(test_classes, pkg):
-    items = "\n".join(f'      <class name="{pkg}.tests.{c}"/>' for c in test_classes)
-    return f"""<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE suite SYSTEM "https://testng.org/testng-1.0.dtd">
-<suite name="QA Studio Automation Suite" verbose="1">
-  <test name="Sprint Tests">
-    <classes>
-{items}
-    </classes>
-  </test>
-</suite>
-"""
-
-
-def build_automation_project(out_dir, stories_payload, dom_elements, base_url,
-                             group_id="com.qastudio", artifact_id="automation-tests",
-                             cb=None, should_stop=lambda: False):
-    """Generate a full Maven TestNG+POM project under out_dir.
-    `stories_payload` = [{"story": {...}, "test_cases": [...]}, ...]
-    Returns list of relative file paths written.
-    """
-    cb = cb or (lambda *a, **k: None)
-    pkg = group_id
-    pkg_path = pkg.replace(".", "/")
-    src_main = os.path.join(out_dir, "src", "main", "java", pkg_path)
-    src_test = os.path.join(out_dir, "src", "test", "java", pkg_path)
-    os.makedirs(os.path.join(src_main, "core"), exist_ok=True)
-    os.makedirs(os.path.join(src_main, "pages"), exist_ok=True)
-    os.makedirs(os.path.join(src_test, "tests"), exist_ok=True)
-
-    written = []
-    def _w(path, content):
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(content)
-        written.append(os.path.relpath(path, out_dir))
-
-    # scaffolding
-    cb("Writing project scaffolding (pom.xml, base classes)…", "dim")
-    _w(os.path.join(out_dir, "pom.xml"), _pom_xml(group_id, artifact_id))
-    _w(os.path.join(src_main, "core", "DriverFactory.java"), _driver_factory(pkg))
-    _w(os.path.join(src_main, "pages", "BasePage.java"), _base_page(pkg))
-    _w(os.path.join(src_test, "tests", "BaseTest.java"), _base_test(pkg, base_url))
-
-    test_classes = []
-    total = len(stories_payload)
-    for i, item in enumerate(stories_payload, 1):
-        if should_stop():
-            break
-        story = item["story"]; tcs = item["test_cases"]
-        cb(f"[{i}/{total}] Generating tests for story {story.get('id')} — {story.get('title','')}", "story")
-        try:
-            gen = generate_test_class(story, tcs, dom_elements, pkg,
-                                      log=lambda m, t="warn": cb(m, t))
-            _w(os.path.join(src_main, "pages", gen["page_class"] + ".java"), gen["page_code"])
-            _w(os.path.join(src_test, "tests", gen["class_name"] + ".java"), gen["test_code"])
-            test_classes.append(gen["class_name"])
-            cb(f"  ✓ {gen['class_name']} ({len(tcs)} test method"
-               + ("s" if len(tcs) != 1 else "") + ")", "ok")
-        except CreditBalanceError:
-            cb("Out of AI credits — stopping generation.", "err")
-            break
-        except Exception as e:
-            cb(f"  ✗ story {story.get('id')} failed: {e}", "err")
-
-    # testng.xml referencing whatever classes succeeded
-    _w(os.path.join(out_dir, "testng.xml"), _testng_xml(test_classes, pkg))
-    cb(f"Project ready — {len(test_classes)} test class(es).", "ok")
-    return written
-
 
 # ── Incremental generation: survive prior stories, append only new test cases ──
 def _manifest_path(project_dir):
@@ -5001,247 +4643,6 @@ def classify_selection(project_dir, stories_payload):
         else:
             done.append(sid)
     return new, grew, done, new_tcs
-
-def _splice_members(java_src, new_members, new_imports=""):
-    """Append new methods/fields into an existing Java class WITHOUT touching the
-    code already there: merge any missing imports, then insert the new members
-    just before the class's final closing brace."""
-    if not java_src:
-        return java_src
-    src = java_src
-    if new_imports and new_imports.strip():
-        want = [ln.strip() for ln in new_imports.splitlines() if ln.strip().startswith("import ")]
-        have = set(ln.strip() for ln in src.splitlines() if ln.strip().startswith("import "))
-        add = [ln for ln in want if ln not in have]
-        if add:
-            lines = src.splitlines()
-            idx = 0
-            for i, ln in enumerate(lines):
-                s = ln.strip()
-                if s.startswith("import "):
-                    idx = i + 1
-                elif s.startswith("package ") and idx == 0:
-                    idx = i + 1
-            lines[idx:idx] = add
-            src = "\n".join(lines)
-    if new_members and new_members.strip():
-        pos = src.rfind("}")
-        if pos != -1:
-            src = src[:pos] + "\n" + new_members.rstrip() + "\n}\n" + src[pos + 1:].lstrip()
-        else:
-            src = src + "\n" + new_members
-    return src
-
-def generate_additional_methods(story, new_test_cases, dom_elements, base_package,
-                                page_class, test_class, existing_methods=None, log=None):
-    """Ask the AI for ONLY the Java members needed by NEW test cases, so they can
-    be spliced into the already-generated classes without regenerating (and thus
-    re-evaluating) the existing methods."""
-    log = log or (lambda *a, **k: None)
-    existing_methods = existing_methods or []
-    dom_brief = [{k: e.get(k, "") for k in
-                  ("tag", "type", "id", "name", "text", "placeholder", "aria", "css", "xpath")}
-                 for e in (dom_elements or [])[:120]]
-    tc_brief = []
-    for tc in new_test_cases:
-        steps = tc.get("steps") or []
-        tc_brief.append({"title": tc.get("title", ""),
-                         "steps": [{"action": s.get("action", ""),
-                                    "expected": s.get("expected", ""),
-                                    "precondition": s.get("precondition", ""),
-                                    "locator": s.get("locator"),
-                                    "locator_src": s.get("locator_src", ""),
-                                    "assert_locator": s.get("assert_locator")} for s in steps]})
-    prompt = f"""
-You are a senior SDET EXTENDING an existing Selenium + Java + TestNG project (Page Object Model).
-Do NOT regenerate or restate existing code. Output ONLY the new members to append.
-
-Existing classes (already on disk - reference only, never rewrite):
-  Page Object: {base_package}.pages.{page_class}  (extends BasePage)
-  Test class : {base_package}.tests.{test_class}  (extends BaseTest)
-Existing @Test methods you must NOT redefine: {json.dumps(existing_methods, ensure_ascii=False)}
-
-Return EXACTLY these delimited blocks and nothing else (no markdown, no commentary):
-
-===TEST_IMPORTS===
-<extra import lines the new test methods need, or empty>
-===TEST_METHODS===
-<one new @Test method per new test case - method declarations only, NO class wrapper>
-===PAGE_IMPORTS===
-<extra import lines the new page methods need, or empty>
-===PAGE_METHODS===
-<new Page Object methods / By fields the new tests call - NO class wrapper>
-===END===
-
-Rules:
-- One @Test per new test case below; name = camelCase of its title; if it collides
-  with an existing name, suffix a number.
-- Follow each step in order; add a TestNG assertion when "expected" is non-empty.
-- Use a step's "locator" exactly when locator_src=="live". If locator_src=="snapshot",
-  use it but add `// TODO verify locator (from snapshot)`. If null, use the REAL DOM
-  list and add `// TODO verify locator`.
-- Reuse existing Page Object methods where possible; only add page members that are new.
-- Members must compile when pasted into the existing classes.
-
-Story: id={story.get('id')} title={story.get('title')}
-New test cases:
-{json.dumps(tc_brief, ensure_ascii=False)[:6000]}
-REAL DOM elements:
-{json.dumps(dom_brief, ensure_ascii=False)[:6000]}
-"""
-    raw = ai_complete(prompt, max_tokens=6000) or ""
-    def _blk(a, b):
-        try:
-            return raw.split(a, 1)[1].split(b, 1)[0].strip()
-        except Exception:
-            return ""
-    return {
-        "test_imports": _blk("===TEST_IMPORTS===", "===TEST_METHODS==="),
-        "test_methods": _blk("===TEST_METHODS===", "===PAGE_IMPORTS==="),
-        "page_imports": _blk("===PAGE_IMPORTS===", "===PAGE_METHODS==="),
-        "page_methods": _blk("===PAGE_METHODS===", "===END==="),
-    }
-
-def build_or_merge_project(out_dir, stories_payload, dom_elements, base_url,
-                           reeval_ids=None, group_id="com.qastudio",
-                           artifact_id="automation-tests", cb=None,
-                           should_stop=lambda: False):
-    """Incrementally build/extend a Maven project in `out_dir` (the user's local
-    folder, which persists across runs). Stories already in the manifest are KEPT;
-    only brand-new stories, newly-added test cases, or stories whose id is in
-    `reeval_ids` are sent to the AI. Scaffolding is written only when missing, so a
-    working tree is never clobbered. Returns a summary dict."""
-    cb = cb or (lambda *a, **k: None)
-    reeval_ids = set(str(x) for x in (reeval_ids or []))
-    pkg = group_id; pkg_path = pkg.replace(".", "/")
-    src_main = os.path.join(out_dir, "src", "main", "java", pkg_path)
-    src_test = os.path.join(out_dir, "src", "test", "java", pkg_path)
-    os.makedirs(os.path.join(src_main, "core"), exist_ok=True)
-    os.makedirs(os.path.join(src_main, "pages"), exist_ok=True)
-    os.makedirs(os.path.join(src_test, "tests"), exist_ok=True)
-
-    def _w(path, content):
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(content)
-
-    for p, c in (
-        (os.path.join(out_dir, "pom.xml"), _pom_xml(group_id, artifact_id)),
-        (os.path.join(src_main, "core", "DriverFactory.java"), _driver_factory(pkg)),
-        (os.path.join(src_main, "pages", "BasePage.java"), _base_page(pkg)),
-        (os.path.join(src_test, "tests", "BaseTest.java"), _base_test(pkg, base_url)),
-    ):
-        if not os.path.exists(p):
-            _w(p, c)
-
-    m = load_manifest(out_dir)
-    counts = {"new": 0, "extended": 0, "reeval": 0, "kept": 0, "added_methods": 0}
-
-    def _persist_progress():
-        # Save the manifest + testng.xml as they stand so a stop / pause / app-close
-        # keeps every story already written to disk. A later re-run reads the
-        # manifest and resumes (regenerating only what's missing) instead of
-        # starting from scratch.
-        try:
-            _dc = sorted({r.get("test_class") for r in m["stories"].values()
-                          if r.get("test_class")})
-            _w(os.path.join(out_dir, "testng.xml"), _testng_xml(_dc, pkg))
-            save_manifest(out_dir, m)
-        except Exception:
-            pass
-
-    for item in stories_payload:
-        # Persist BEFORE the stop check so a story finished on the previous pass is
-        # never lost to a stop that lands between stories.
-        _persist_progress()
-        if should_stop():
-            break
-        story = item["story"]; tcs = item.get("test_cases", []) or []
-        sid = str(story.get("id"))
-        rec = m["stories"].get(sid)
-
-        # full (re)generation: brand-new story OR an explicit re-evaluation
-        if rec is None or sid in reeval_ids:
-            mode = "reeval" if rec is not None else "new"
-            cb(f"[{mode}] story {sid} - {story.get('title','')}", "story")
-            try:
-                gen = generate_test_class(story, tcs, dom_elements, pkg,
-                                          log=lambda mm, t="warn": cb(mm, t))
-                _w(os.path.join(src_main, "pages", gen["page_class"] + ".java"), gen["page_code"])
-                _w(os.path.join(src_test, "tests", gen["class_name"] + ".java"), gen["test_code"])
-                m["stories"][sid] = {
-                    "page_class": gen["page_class"],
-                    "test_class": gen["class_name"],
-                    "test_cases": {_tc_key(tc): _method_name(tc.get("title", "")) for tc in tcs},
-                }
-                counts["reeval" if mode == "reeval" else "new"] += 1
-                cb(f"  ok {gen['class_name']} ({len(tcs)} test method(s))", "ok")
-            except CreditBalanceError:
-                cb("Out of AI credits - stopping.", "err"); break
-            except Exception as e:
-                cb(f"  x story {sid} failed: {e}", "err")
-            continue
-
-        # existing story: keep methods, append only the NEW test cases
-        have = set(rec.get("test_cases", {}).keys())
-        fresh = [tc for tc in tcs if _tc_key(tc) not in have]
-        if not fresh:
-            counts["kept"] += 1
-            cb(f"[keep] story {sid} - already complete, nothing new.", "dim")
-            continue
-
-        cb(f"[extend] story {sid} - appending {len(fresh)} new test case(s).", "story")
-        test_file = os.path.join(src_test, "tests", rec["test_class"] + ".java")
-        page_file = os.path.join(src_main, "pages", rec["page_class"] + ".java")
-        try:
-            with open(test_file, "r", encoding="utf-8") as f:
-                test_src = f.read()
-            with open(page_file, "r", encoding="utf-8") as f:
-                page_src = f.read()
-        except Exception as e:
-            cb(f"  ! files for {sid} missing ({e}) - regenerating the whole story.", "warn")
-            try:
-                gen = generate_test_class(story, tcs, dom_elements, pkg,
-                                          log=lambda mm, t="warn": cb(mm, t))
-                _w(page_file, gen["page_code"]); _w(test_file, gen["test_code"])
-                m["stories"][sid]["test_cases"] = {_tc_key(tc): _method_name(tc.get("title", "")) for tc in tcs}
-                m["stories"][sid]["page_class"] = gen["page_class"]
-                m["stories"][sid]["test_class"] = gen["class_name"]
-                counts["reeval"] += 1
-            except Exception as e2:
-                cb(f"  x regen failed for {sid}: {e2}", "err")
-            continue
-
-        try:
-            add = generate_additional_methods(
-                story, fresh, dom_elements, pkg, rec["page_class"], rec["test_class"],
-                existing_methods=list(rec.get("test_cases", {}).values()),
-                log=lambda mm, t="warn": cb(mm, t))
-        except CreditBalanceError:
-            cb("Out of AI credits - stopping.", "err"); break
-        except Exception as e:
-            cb(f"  x new-method generation failed for {sid}: {e}", "err"); continue
-
-        if not (add.get("test_methods") or "").strip():
-            cb(f"  ! AI returned no new methods for {sid} - skipped (existing kept).", "warn")
-            continue
-        test_src = _splice_members(test_src, add.get("test_methods", ""), add.get("test_imports", ""))
-        page_src = _splice_members(page_src, add.get("page_methods", ""), add.get("page_imports", ""))
-        _w(test_file, test_src); _w(page_file, page_src)
-        for tc in fresh:
-            m["stories"][sid].setdefault("test_cases", {})[_tc_key(tc)] = _method_name(tc.get("title", ""))
-        counts["extended"] += 1; counts["added_methods"] += len(fresh)
-        cb(f"  ok appended {len(fresh)} method(s) to {rec['test_class']}", "ok")
-
-    # testng.xml across EVERY recorded class so a push carries all stories, not just this run
-    all_classes = sorted({r.get("test_class") for r in m["stories"].values() if r.get("test_class")})
-    _w(os.path.join(out_dir, "testng.xml"), _testng_xml(all_classes, pkg))
-    save_manifest(out_dir, m)
-    counts["classes_total"] = len(all_classes)
-    cb(f"Project updated - {counts['new']} new, {counts['extended']} extended "
-       f"(+{counts['added_methods']} methods), {counts['reeval']} re-evaluated, "
-       f"{counts['kept']} kept. {counts['classes_total']} class(es) total.", "ok")
-    return counts
-
 
 def _validate_remote_url(url):
     """Validate a git remote URL before we hand it to git, so a wrong URL gives a

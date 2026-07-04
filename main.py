@@ -2,7 +2,7 @@
 Run:  pip install flet pillow anthropic openai azure-devops requests
       flet run main.py        (or)   python main.py
 """
-import threading, traceback
+import threading, traceback, time
 import flet as ft
 
 import theme as T
@@ -56,6 +56,12 @@ class QAStudio:
         self.page = page
         self.creds = store.load()
         self._migrate_key_slots()      # legacy per-provider keys → per-model slots
+        # Restore the last-selected AI provider so it persists across app restarts.
+        # Always resolve to a REAL provider (never None) — _connection_edit and
+        # others use _provider_choice directly.
+        _sp = self.creds.get("provider")
+        self._provider_choice = (_sp if _sp in E.AI_CONFIG
+                                 else (E.active_providers()[:1] or ["anthropic"])[0])
         # Apply the saved theme (light default, dark secondary) before any UI builds.
         try:
             T.apply_theme(self.creds.get("theme", "light"))
@@ -199,6 +205,9 @@ class QAStudio:
         # Resume a prior session in the background so a returning user skips the
         # gate without blocking startup on the network.
         self._restore_session_async()
+        # Idle auto-logout: sign out after 30 min with no user activity.
+        self._last_activity = time.time()
+        self._start_idle_watch()
 
     # Providers that offer an ongoing free tier (no card required for real use, or
     # local). Everything NOT listed here is treated as paid. Drives the free/paid
@@ -358,6 +367,15 @@ class QAStudio:
             return True
         return auth.has(getattr(self, "user", None), capability)
 
+    def _is_admin(self):
+        """True for an Admin user (or when auth is unconfigured — local/dev use)."""
+        if not auth.configured():
+            return True
+        try:
+            return auth.is_admin(getattr(self, "user", None))
+        except Exception:
+            return False
+
     def _screen_nav_cap(self, screen):
         """Capability needed to OPEN a screen (None = open to everyone)."""
         return {"setup": "nav.setup", "run": "nav.run", "report": "nav.report",
@@ -418,6 +436,9 @@ class QAStudio:
             store.set_user(uid)
             self.creds = store.load()
             self._migrate_key_slots()  # legacy per-provider keys → per-model slots
+            _sp = self.creds.get("provider")
+            self._provider_choice = (_sp if _sp in E.AI_CONFIG
+                                     else (E.active_providers()[:1] or ["anthropic"])[0])
         except Exception:
             return
         self.connected = False        # re-connect with THIS user's own creds
@@ -435,6 +456,21 @@ class QAStudio:
         self._st_iter_for = None
         self._reg_plan_cache = {}      # per-plan / per-sprint story caches (PERF step 4)
         self._cp_sprint_story_cache = {}
+        # Per-user isolation of the Run/Automation/Report screens: never surface one
+        # user's activity to the next. Abort any in-flight generation from the prior
+        # session, then wipe its transient logs, flags and report.
+        try: E.request_stop()          # stop old run/automation workers promptly
+        except Exception: pass
+        self.stop_flag = True          # (re)set False when the next run starts
+        self._auto_stop = True
+        self._run_active = False
+        self._auto_running = False
+        self._log_lines = []
+        self._auto_log = []
+        self.last_report = None
+        self._idle_warning_active = False   # drop any pending idle countdown
+        self._idle_warn_cancel = True
+        self._last_activity = time.time()
         try:
             if hasattr(self, "_links"):
                 del self._links       # links are per-user too — reload for this user
@@ -483,6 +519,145 @@ class QAStudio:
             ], horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                alignment=ft.MainAxisAlignment.CENTER, spacing=0, tight=True),
             expand=True, alignment=ft.Alignment.CENTER, padding=ft.Padding.all(40))
+
+    IDLE_MINUTES_DEFAULT = 30              # default; admins can change it in Settings
+    IDLE_MINUTES_CHOICES = (0, 5, 15, 30, 60)   # 0 = off (never auto-logout)
+    IDLE_WARN_SECONDS = 60                 # final-minute "renew or logout" countdown
+
+    def _idle_minutes(self):
+        """Configured idle-logout minutes (0 = off). Admin-set, stored in creds."""
+        try:
+            v = int(self.creds.get("idle_minutes", self.IDLE_MINUTES_DEFAULT))
+        except Exception:
+            v = self.IDLE_MINUTES_DEFAULT
+        return v if v in self.IDLE_MINUTES_CHOICES else self.IDLE_MINUTES_DEFAULT
+
+    def _set_idle_minutes(self, minutes):
+        """Persist the idle-logout policy (admin only) and reset the idle clock."""
+        self.creds["idle_minutes"] = int(minutes)
+        try: store.save(self.creds)
+        except Exception: pass
+        self._last_activity = time.time()
+        self._toast("Auto-logout " + ("turned off." if not minutes else f"set to {minutes} min."))
+        self.render()
+
+    def _start_idle_watch(self):
+        """Background watchdog: sign the user out after _idle_minutes() of no activity
+        (0 = off). render() refreshes _last_activity; an active run/automation counts
+        as activity so a long generation is never interrupted."""
+        if getattr(self, "_idle_watch_on", False):
+            return
+        self._idle_watch_on = True
+
+        def _loop():
+            while True:
+                time.sleep(5)
+                try:
+                    if not (auth.configured() and getattr(self, "user", None)):
+                        continue
+                    if getattr(self, "_idle_warning_active", False):
+                        continue                         # countdown dialog owns it now
+                    idle = self._idle_minutes() * 60
+                    if idle <= 0:                        # auto-logout disabled
+                        self._last_activity = time.time()
+                        continue
+                    # Only ACTIVELY-working runs count as busy. A PAUSED automation
+                    # (e.g. auto-paused on low credit) is waiting on the user, so it's
+                    # idle and must not block auto-logout.
+                    _busy = (getattr(self, "_run_active", False)
+                             or (getattr(self, "_auto_running", False)
+                                 and not getattr(self, "_auto_paused", False)))
+                    if _busy:
+                        self._last_activity = time.time()   # busy = not idle
+                        continue
+                    remaining = idle - (time.time() - getattr(self, "_last_activity", time.time()))
+                    if remaining <= min(self.IDLE_WARN_SECONDS, idle):
+                        self._idle_warning_active = True
+                        self.ui_safe(self._show_idle_warning)
+                except Exception:
+                    pass
+        try:
+            threading.Thread(target=_loop, daemon=True).start()
+        except Exception:
+            pass
+
+    def _idle_warn_msg(self, s):
+        s = max(0, int(s))
+        return f"Signing out in {s} second{'' if s == 1 else 's'}…"
+
+    def _show_idle_warning(self):
+        """Final-minute dialog: live countdown with 'Stay signed in' / 'Sign out now'."""
+        self._idle_left = int(min(self.IDLE_WARN_SECONDS, self._idle_minutes() * 60))
+        self._idle_warn_cancel = False
+        self._idle_warn_txt = ft.Text(self._idle_warn_msg(self._idle_left),
+                                      size=15, weight=ft.FontWeight.BOLD, color=T.VIOLET_INK)
+        dlg = ft.AlertDialog(
+            modal=True, bgcolor=T.CARD,
+            shape=ft.RoundedRectangleBorder(radius=T.R_LG),
+            title=ft.Row([
+                ft.Container(ft.Icon(ft.Icons.TIMER_OUTLINED, size=18, color=T.VIOLET_INK),
+                             width=34, height=34, bgcolor=T.VIOLET_SOFT, border_radius=9,
+                             alignment=ft.Alignment.CENTER),
+                ft.Text("Are you still there?", size=15, weight=ft.FontWeight.BOLD,
+                        color=T.INK, expand=True),
+            ], spacing=10),
+            content=ft.Container(width=380, content=ft.Column([
+                ft.Text("You've been inactive. For your security you'll be signed out "
+                        "automatically.", size=12.5, color=T.INK_2, weight=ft.FontWeight.W_500),
+                ft.Container(height=8),
+                self._idle_warn_txt,
+            ], tight=True, spacing=2)),
+            actions=[ft.Row([
+                ghost_btn("Sign out now", on_click=lambda e: self._idle_signout_now()),
+                primary_btn("Stay signed in", on_click=lambda e: self._idle_renew()),
+            ], alignment=ft.MainAxisAlignment.END, spacing=10, tight=True)],
+            actions_alignment=ft.MainAxisAlignment.END)
+        self._show_dialog(dlg)
+
+        def _tick():
+            while getattr(self, "_idle_left", 0) > 0 and not getattr(self, "_idle_warn_cancel", False):
+                time.sleep(1)
+                self._idle_left = getattr(self, "_idle_left", 0) - 1
+                self.ui_safe(self._update_idle_warn)
+            if not getattr(self, "_idle_warn_cancel", False):
+                self.ui_safe(self._idle_sign_out)
+        try:
+            threading.Thread(target=_tick, daemon=True).start()
+        except Exception:
+            pass
+
+    def _update_idle_warn(self):
+        try:
+            t = getattr(self, "_idle_warn_txt", None)
+            if t is not None:
+                t.value = self._idle_warn_msg(getattr(self, "_idle_left", 0))
+                t.update()
+        except Exception:
+            pass
+
+    def _idle_renew(self):
+        """User chose to stay — reset the idle clock and dismiss the countdown."""
+        self._idle_warn_cancel = True
+        self._idle_warning_active = False
+        self._last_activity = time.time()
+        try: self._close_dialog()
+        except Exception: pass
+        self._toast("Session renewed.")
+
+    def _idle_signout_now(self):
+        self._idle_warn_cancel = True
+        self._idle_warning_active = False
+        try: self._close_dialog()
+        except Exception: pass
+        self._sign_out()
+
+    def _idle_sign_out(self):
+        self._idle_warn_cancel = True
+        self._idle_warning_active = False
+        try: self._close_dialog()
+        except Exception: pass
+        self._toast(f"Signed out after {self._idle_minutes()} minutes of inactivity.")
+        self._sign_out()
 
     def _sign_out(self, e=None):
         try:
@@ -611,6 +786,7 @@ class QAStudio:
                         ft.Container(width=12, height=12, bgcolor="#28C840", border_radius=6),
                     ], spacing=8),
                     padding=ft.Padding.only(left=16, top=14, bottom=2)),
+                # Brand (logo + Check updates) is PINNED — it never scrolls.
                 ft.Container(
                     ft.Row([
                         ft.Container(logo_img(38),
@@ -622,18 +798,34 @@ class QAStudio:
                                      alignment=ft.Alignment.CENTER),
                         ft.Column([
                             ft.Text("QA Studio", size=15, weight=ft.FontWeight.BOLD, color=T.RAIL_INK),
-                            ft.Container(
-                                ft.Text(f"v{E.local_version()}  ·  check updates",
-                                        size=10, color=T.RAIL_DIM, weight=ft.FontWeight.BOLD),
-                                on_click=lambda e: self._manual_update_check(),
-                                tooltip="Check for a newer version"),
-                        ], spacing=1),
+                            ft.Row([
+                                ft.Text(f"v{E.local_version()}", size=10, color=T.RAIL_DIM,
+                                        weight=ft.FontWeight.BOLD),
+                                self._check_updates_chip(),
+                            ], spacing=7, tight=True,
+                               vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                        ], spacing=3),
                     ], spacing=11), padding=ft.Padding.symmetric(vertical=16, horizontal=6)),
                 ft.Container(ft.Text("PIPELINE", size=10, weight=ft.FontWeight.BOLD,
                                      color="#615E6E"), padding=ft.Padding.only(left=18, top=14, bottom=6)),
-                ft.Container(ft.Column(nav_items, spacing=2),
-                             padding=ft.Padding.symmetric(vertical=8, horizontal=12)),
-                ft.Container(expand=True),
+                # Only the nav list scrolls; the brand stays pinned above it.
+                ft.Container(self._rail_nav_column(nav_items),
+                             padding=ft.Padding.symmetric(vertical=8, horizontal=12),
+                             expand=True),
+                # Help & guide — searchable briefing for every feature (everyone).
+                ft.Container(
+                    ft.Row([
+                        ft.Icon(ft.Icons.HELP_OUTLINE, size=16, color=T.RAIL_INK),
+                        ft.Text("Help & guide", size=12, weight=ft.FontWeight.BOLD,
+                                color=T.RAIL_INK),
+                        ft.Container(expand=True),
+                    ], spacing=9),
+                    on_click=lambda e: self._open_help_guide(),
+                    tooltip="Searchable guide to every feature",
+                    ink=True, padding=ft.Padding.symmetric(vertical=10, horizontal=12),
+                    margin=ft.Margin.only(left=10, right=10, bottom=4),
+                    border_radius=10, bgcolor=ft.Colors.with_opacity(0.04, "#FFFFFF"),
+                    border=ft.Border.all(1, T.RAIL_LINE)),
                 # Settings entry — shown only to users permitted to open it.
                 (ft.Container(
                     ft.Row([
@@ -1255,6 +1447,7 @@ class QAStudio:
     def render(self):
         import time as _pt
         _r0 = _pt.perf_counter()
+        self._last_activity = _pt.time()   # any re-render counts as user activity
         try:
             # Reset dropdown closer registry so stale closers from the previous
             # render don't linger. Each _checkbox_multiselect re-registers itself.
@@ -2141,6 +2334,11 @@ class QAStudio:
             return
         self._provider_choice = sel
         name = self._provider_choice
+        # Persist the choice so it survives an app restart (not just sign-out/in).
+        try:
+            self.creds["provider"] = sel; store.save(self.creds)
+        except Exception:
+            pass
         # Cancel any in-flight Connect for the old provider: bump the generation
         # token (so its worker's results are ignored) and drop the spinner now.
         self._connect_gen = getattr(self, "_connect_gen", 0) + 1
@@ -3218,18 +3416,9 @@ class QAStudio:
             pass
 
     def _rail_nav_column(self, nav_items):
-        # Scrollable nav list; the same instance is stored each render so
-        # _restore_scroll can reapply the remembered offset (no jump on select).
-        self._rail_scroll = ft.Column(
-            nav_items, spacing=2, expand=True, scroll=ft.ScrollMode.AUTO,
-            key="rail_scroll", on_scroll=self._track_rail_scroll)
-        return self._rail_scroll
-
-    def _track_rail_scroll(self, e):
-        try:
-            self._rail_scroll_offset = e.pixels
-        except Exception:
-            pass
+        # Plain scrollable nav list. Its scroll position is NOT preserved across a
+        # re-render (Flet resets it) — accepted; the brand stays pinned above it.
+        return ft.Column(nav_items, spacing=2, expand=True, scroll=ft.ScrollMode.AUTO)
 
     def _restore_scroll(self):
         # Restore scroll after a full render so opening a dropdown / ticking a
@@ -3241,25 +3430,16 @@ class QAStudio:
         # settles. The closure re-reads _left_scroll each time so it always acts
         # on the freshest reference (in case another render fires mid-flight).
         off = getattr(self, "_scroll_offset", 0) or 0
-        rail_off = getattr(self, "_rail_scroll_offset", 0) or 0
-        if not off and not rail_off:
+        if not off:
             return
 
         def _do():
-            if off:
-                col = getattr(self, "_left_scroll", None)
-                if col is not None:
-                    try:
-                        col.scroll_to(offset=off, duration=0)
-                    except Exception:
-                        pass
-            if rail_off:
-                rc = getattr(self, "_rail_scroll", None)
-                if rc is not None:
-                    try:
-                        rc.scroll_to(offset=rail_off, duration=0)
-                    except Exception:
-                        pass
+            col = getattr(self, "_left_scroll", None)
+            if col is not None:
+                try:
+                    col.scroll_to(offset=off, duration=0)
+                except Exception:
+                    pass
             try:
                 self.page.update()
             except Exception:
@@ -3383,6 +3563,42 @@ class QAStudio:
             fn()
         except Exception:
             pass
+
+    def _open_help_guide(self, initial=None):
+        """Open the searchable feature guide (Help & guide)."""
+        try:
+            import help_guide
+            help_guide.show(self, initial)
+        except Exception as e:
+            self._toast(f"Couldn't open the guide: {str(e)[:80]}")
+
+    def _check_updates_chip(self):
+        """The 'Check updates' pill under the QA Studio logo — accent-tinted and
+        visible, with a hover lift (brighter fill + border + a slight scale)."""
+        chip = ft.Container(
+            ft.Row([
+                ft.Icon(ft.Icons.SYSTEM_UPDATE_ALT, size=12, color=T.RAIL_INK),
+                ft.Text("Check updates", size=10, weight=ft.FontWeight.BOLD, color=T.RAIL_INK),
+            ], spacing=4, tight=True),
+            on_click=lambda e: self._manual_update_check(),
+            tooltip="Check for a newer version",
+            padding=ft.Padding.symmetric(vertical=3, horizontal=8),
+            border_radius=8,
+            bgcolor=ft.Colors.with_opacity(0.10, T.VIOLET),
+            border=ft.Border.all(1, ft.Colors.with_opacity(0.28, T.VIOLET)),
+            ink=True, scale=1.0, animate_scale=140, animate=140)
+
+        def _hover(e, _c=chip):
+            try:
+                on = e.data in (True, "true", "True")
+                _c.bgcolor = ft.Colors.with_opacity(0.22 if on else 0.10, T.VIOLET)
+                _c.border = ft.Border.all(1, ft.Colors.with_opacity(0.5 if on else 0.28, T.VIOLET))
+                _c.scale = 1.04 if on else 1.0
+                _c.update()
+            except Exception:
+                pass
+        chip.on_hover = _hover
+        return chip
 
     def _show_dialog(self, dlg):
         return dialogs.show_dialog(self, dlg)
@@ -3519,6 +3735,7 @@ class QAStudio:
         self._run_start_ts = _t.time()
         self._run_end_ts = None
         self._set_run_active(True)
+        self._start_meta_ticker()      # smooth per-second elapsed/ETA
         self.render()
 
         def cb(ev, payload):
@@ -3763,6 +3980,34 @@ class QAStudio:
             return f"{h}:{m:02d}:{s:02d}"
         return f"{m}:{s:02d}"
 
+    def _tick_run_meta(self):
+        """Refresh only the 'THIS RUN' meta label in place (no full render)."""
+        try:
+            if hasattr(self, "_tr_meta"):
+                self._tr_meta.value = self._run_meta_line()
+                self._tr_meta.update()
+        except Exception:
+            pass
+
+    def _start_meta_ticker(self):
+        """Tick the elapsed/ETA line every second while a run is active, so the
+        clock advances smoothly instead of only jumping on log events."""
+        if getattr(self, "_meta_tick_on", False):
+            return
+        self._meta_tick_on = True
+
+        def _loop():
+            try:
+                while getattr(self, "_run_active", False):
+                    time.sleep(1)
+                    self.ui_safe(self._tick_run_meta)
+            finally:
+                self._meta_tick_on = False
+        try:
+            threading.Thread(target=_loop, daemon=True).start()
+        except Exception:
+            self._meta_tick_on = False
+
     def _run_meta_line(self):
         """One-line 'THIS RUN' meta: elapsed · ETA · story x of y.
         ETA is projected from elapsed time and % complete; it freezes when the
@@ -3771,6 +4016,14 @@ class QAStudio:
         p = getattr(self, "_progress", {}) or {}
         s = getattr(self, "_stats", {}) or {}
         pct = p.get("pct", 0) or 0
+        # Fallback progress for runs that don't stream a live pct (Titles): derive it
+        # from stories completed so multi-story runs still get a counting-down ETA.
+        # (Steps runs already report a per-test-case pct, so this never overrides them.)
+        if pct < 2:
+            ts = s.get("total_stories") or 0
+            sd = s.get("stories_done") or 0
+            if ts > 1 and sd > 0:
+                pct = (sd / ts) * 100.0
         start = getattr(self, "_run_start_ts", None)
         finished = getattr(self, "_run_finished", False)
         ended = not getattr(self, "_run_active", False)
@@ -4426,9 +4679,10 @@ class QAStudio:
                 if self._auto_stop:
                     cb("Stopped.", "warn"); return
                 self._auto_built = True
-                cb("Done — review the activity, then Push to Git. Before `mvn test` in "
-                   "IntelliJ, set ANTHROPIC_API_KEY, APP_USER and APP_PASS so the "
-                   "generated tests can self-heal locators at runtime.", "ok")
+                _hprov = T.disp_name(getattr(self, "_provider_choice", "") or "")
+                cb(f"Done — review the activity, then Push to Git. Before `mvn test` in "
+                   f"IntelliJ, set QA_AI_API_KEY (your {_hprov} key), APP_USER and APP_PASS "
+                   f"so the generated tests can self-heal locators at runtime.", "ok")
             except Exception as ex:
                 cb(f"Automation failed: {str(ex)[:200]}", "err")
             finally:

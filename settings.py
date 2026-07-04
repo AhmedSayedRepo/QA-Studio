@@ -82,6 +82,39 @@ def screen(app):
                  perf_switch),
         ], spacing=0))
 
+        # ── Security (Admins only) — idle auto-logout policy ──
+        security = None
+        if app._is_admin():
+            cur = app._idle_minutes()
+
+            def _idle_seg():
+                def opt(label, mins):
+                    sel = (cur == mins)
+                    return ft.Container(
+                        ft.Text(label, size=12, weight=ft.FontWeight.BOLD,
+                                color=(T.VIOLET_INK if sel else T.INK_2)),
+                        height=34, alignment=ft.Alignment.CENTER,
+                        padding=ft.Padding.symmetric(vertical=0, horizontal=14),
+                        bgcolor=(T.VIOLET_SOFT if sel else None), border_radius=T.R_SM,
+                        border=ft.Border.all(1, T.VIOLET if sel else ft.Colors.TRANSPARENT),
+                        on_click=(None if ro else
+                                  (lambda e, m=mins: (None if cur == m
+                                                      else app._set_idle_minutes(m)))))
+                labels = [("Off", 0), ("5m", 5), ("15m", 15), ("30m", 30), ("60m", 60)]
+                return ft.Container(
+                    ft.Row([opt(l, m) for l, m in labels], spacing=4, tight=True),
+                    padding=4, bgcolor=T.CARD_2, border_radius=T.R,
+                    border=ft.Border.all(1, T.BORDER))
+
+            security = card(ft.Column([
+                ft.Text("SECURITY", size=11, weight=ft.FontWeight.BOLD, color=T.INK_3),
+                ft.Container(height=4),
+                srow("Idle auto-logout",
+                     "Sign inactive users out automatically. A 60-second warning lets "
+                     "them stay signed in. Admins only.",
+                     _idle_seg()),
+            ], spacing=0))
+
         reset = card(ft.Column([
             ft.Text("HELP & RESET", size=11, weight=ft.FontWeight.BOLD, color=T.INK_3),
             ft.Container(height=4),
@@ -97,7 +130,7 @@ def screen(app):
                             on_click=lambda e: app._reset_prefs())),
         ], spacing=0))
 
-        body = ft.Column([appearance, data, reset], spacing=16,
-                         scroll=ft.ScrollMode.AUTO, expand=True)
+        cards = [appearance, data] + ([security] if security else []) + [reset]
+        body = ft.Column(cards, spacing=16, scroll=ft.ScrollMode.AUTO, expand=True)
         return app.shell("Settings", "Preferences for this device", body)
 
