@@ -49,6 +49,7 @@ from datetime import datetime
 import flet as ft
 import theme as T
 import engine as E
+from ui import hover_field
 
 # ── Effort model (HARDCODED — change here if your team's numbers differ) ───────
 AVG_MINUTES_PER_CASE = 8          # manual execution time per existing test case
@@ -168,7 +169,8 @@ def clear_caches(app):
     work-item meta, suites, feature names). Safe to call any time — the caches
     are just a speed-up and are rebuilt from Azure on the next generate."""
     for attr in ("_reg_case_count_cache", "_reg_meta_cache", "_reg_suite_cache",
-                 "_reg_feature_name_cache", "_reg_story_features"):
+                 "_reg_feature_name_cache", "_reg_story_features", "_reg_plan_cache",
+                 "_cp_sprint_story_cache"):
         try:
             setattr(app, attr, {})
         except Exception:
@@ -1618,7 +1620,18 @@ def _reload_plan_stories(app):
     def _work():
         import concurrent.futures as _cf_reload
 
+        # Keyed cache (PERF-plan step 4): re-selecting a plan reuses its stories
+        # instead of re-hitting Azure. Cleared on connect/disconnect, user switch,
+        # and the Settings "Clear caches" button.
+        _pcache = getattr(app, "_reg_plan_cache", None)
+        if _pcache is None:
+            _pcache = app._reg_plan_cache = {}
+
         def _fetch_one_plan(p):
+            pid = p["id"]
+            hit = _pcache.get(pid)
+            if hit is not None:
+                return pid, hit[0], hit[1]
             # Fetch sprint label + stories for each plan concurrently.
             try:
                 pj = E._azure_get(f"https://dev.azure.com/{E.AZURE_ORG}/{app.project}"
@@ -1632,7 +1645,8 @@ def _reload_plan_stories(app):
                 stories = E.fetch_stories_in_plan(app.project, p["id"])
             except Exception:
                 stories = []
-            return p["id"], sprint, stories
+            _pcache[pid] = (sprint, stories)
+            return pid, sprint, stories
 
         agg, seen = [], set()
         with _cf_reload.ThreadPoolExecutor(max_workers=min(8, len(plans))) as ex:
@@ -1718,7 +1732,8 @@ def _sprint_sort_key(it):
 
 def _checkbox_multiselect(options, selected, on_toggle, on_all, *, is_open, on_open,
                           placeholder="Select…", height=240, empty="No options.",
-                          page=None, app=None, invalid=False, sync_key=None):
+                          page=None, app=None, invalid=False, sync_key=None,
+                          disabled=False, searchable=True):
     """Collapsible checkbox multiselect.
 
     When page= is supplied every interaction (open/close AND checkbox tick) is
@@ -1735,6 +1750,15 @@ def _checkbox_multiselect(options, selected, on_toggle, on_all, *, is_open, on_o
     # mutable state owned by this widget instance
     sel = set(selected or [])
     keys = [k for k, _ in options]
+    labels_by_key = {k: (lbl or "") for k, lbl in options}
+    _show_search = bool(searchable) and len(options) > 6
+
+    def _maybe_disable(ctrl):
+        # Grey-out + block interaction when the picker isn't usable yet
+        # (e.g. Setup stories before a test plan is chosen).
+        if disabled:
+            return ft.Container(ctrl, disabled=True, opacity=0.55)
+        return ctrl
 
     def _all_on():
         return bool(keys) and all(k in sel for k in keys)
@@ -1752,6 +1776,7 @@ def _checkbox_multiselect(options, selected, on_toggle, on_all, *, is_open, on_o
 
     # per-row checkbox refs keyed by option key
     row_cbs = {}
+    row_conts = {}   # per-row container refs (for type-to-filter show/hide)
 
     def _refresh_header():
         n = len(sel)
@@ -1824,16 +1849,19 @@ def _checkbox_multiselect(options, selected, on_toggle, on_all, *, is_open, on_o
             return
         _built["done"] = True
         row_cbs.clear()
+        row_conts.clear()
         rows = []
         for k, label in options:
             cb = ft.Checkbox(value=(k in sel),
                              on_change=(lambda e, kk=k: _do_toggle(kk, e.control.value)))
             row_cbs[k] = cb
-            rows.append(ft.Container(
+            cont = ft.Container(
                 ft.Row([cb, ft.Text(label, size=12.5, color=T.INK, expand=True,
                                     no_wrap=False)],
                        spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                padding=ft.Padding.only(left=10, right=10, top=2, bottom=2)))
+                padding=ft.Padding.only(left=10, right=10, top=2, bottom=2))
+            row_conts[k] = cont
+            rows.append(cont)
         if rows:
             body.controls = rows
             body_holder.height = min(height, max(40, len(rows) * 34 + 8))
@@ -1841,6 +1869,31 @@ def _checkbox_multiselect(options, selected, on_toggle, on_all, *, is_open, on_o
             body.controls = [ft.Container(ft.Text(empty, size=12, color=T.INK_3),
                                           padding=14, alignment=ft.Alignment.CENTER)]
             body_holder.height = 64
+        _apply_filter()   # honor any text already typed into the search box
+
+    def _apply_filter(e=None):
+        if not _show_search:
+            return
+        q = (search_tf.value or "").strip().lower()
+        shown = 0
+        for k, cont in row_conts.items():
+            vis = (q in labels_by_key.get(k, "").lower()) if q else True
+            cont.visible = vis
+            shown += 1 if vis else 0
+        no_match.visible = bool(q) and shown == 0
+        try:
+            body.update(); no_match.update()
+        except Exception:
+            pass
+
+    search_tf = ft.TextField(
+        hint_text="Search…", text_size=12.5, dense=True,
+        prefix_icon=ft.Icons.SEARCH,
+        border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R_SM,
+        content_padding=ft.Padding.symmetric(vertical=6, horizontal=8),
+        on_change=_apply_filter)
+    no_match = ft.Container(ft.Text("No matches.", size=12, color=T.INK_3),
+                            padding=10, visible=False)
 
     head = ft.Container(
         ft.Row([select_all_cb,
@@ -1851,7 +1904,10 @@ def _checkbox_multiselect(options, selected, on_toggle, on_all, *, is_open, on_o
         padding=ft.Padding.symmetric(vertical=8, horizontal=10), bgcolor=T.CARD_2,
         border_radius=ft.BorderRadius.only(top_left=T.R, top_right=T.R))
 
-    panel_body = ft.Column([head, body_holder], spacing=0)
+    search_row = ft.Container(hover_field(search_tf),
+                              padding=ft.Padding.only(left=8, right=8, top=6, bottom=2),
+                              visible=_show_search)
+    panel_body = ft.Column([head, search_row, body_holder, no_match], spacing=0)
     panel_wrap = ft.Container(panel_body, padding=ft.Padding.only(top=6),
                               visible=is_open)
 
@@ -1929,16 +1985,33 @@ def _checkbox_multiselect(options, selected, on_toggle, on_all, *, is_open, on_o
             1, T.VIOLET if is_open else (T.RED if invalid else T.BORDER)),
         border_radius=T.R)
 
+    # Hover affordance (matches ui.hover_field): tint the closed trigger's
+    # border violet on hover. No native TextField/Dropdown backs this control
+    # (it's a plain Container), so the tint is applied directly here instead of
+    # via hover_field(); skipped while open (already violet) or disabled.
+    if not disabled:
+        def _field_hover(e):
+            try:
+                if panel_wrap.visible:
+                    return
+                hovering = e.data in (True, "true", "True")
+                field_container.border = ft.Border.all(
+                    1, T.VIOLET if hovering else (T.RED if invalid else T.BORDER))
+                field_container.update()
+            except Exception:
+                pass
+        field_container.on_hover = _field_hover
+
     # legacy path (no page=)
     if page is None:
         if not is_open:
-            return field_container
-        return ft.Column([field_container,
+            return _maybe_disable(field_container)
+        return _maybe_disable(ft.Column([field_container,
                           ft.Container(panel_body, padding=ft.Padding.only(top=6))],
-                         spacing=0)
+                         spacing=0))
 
     # in-place path
-    return ft.Column([field_container, panel_wrap], spacing=0)
+    return _maybe_disable(ft.Column([field_container, panel_wrap], spacing=0))
 
 def _cp_load_stories(app):
     if not (app.connected and app.project):
@@ -1964,11 +2037,22 @@ def _cp_load_stories(app):
         # Fetch every selected sprint's stories CONCURRENTLY. Sequentially this was
         # one blocking call per sprint, so 23 sprints kept "Loading stories…" up
         # (and the Generate button disabled) for the sum of all of them.
+        # Keyed cache (PERF step 4): re-selecting a sprint reuses its stories
+        # instead of re-hitting Azure. Cleared on user switch + "Clear caches".
+        _scache = getattr(app, "_cp_sprint_story_cache", None)
+        if _scache is None:
+            _scache = app._cp_sprint_story_cache = {}
+
         def _one_sprint(path):
+            hit = _scache.get(path)
+            if hit is not None:
+                return hit
             try:
-                return E.fetch_stories_in_iteration(app.project, path) or []
+                res = E.fetch_stories_in_iteration(app.project, path) or []
             except Exception:
-                return []
+                res = []
+            _scache[path] = res
+            return res
 
         agg, seen = [], set()
         with _perf(f"cp.fetch_stories ({len(paths)} sprints)"):
@@ -2353,18 +2437,18 @@ def _create_screen(app):
             border=ft.Border.all(1, "#EAD9A8"), margin=ft.Margin.only(top=10))
 
     def _num(v, on_change):
-        return ft.TextField(value=str(v), on_change=on_change, width=92, text_size=13,
+        return hover_field(ft.TextField(value=str(v), on_change=on_change, width=92, text_size=13,
                             border_color=T.BORDER, focused_border_color=T.VIOLET,
                             border_radius=T.R, keyboard_type=ft.KeyboardType.NUMBER,
-                            content_padding=ft.Padding.symmetric(vertical=12, horizontal=10))
+                            content_padding=ft.Padding.symmetric(vertical=12, horizontal=10)))
 
     card2 = card(ft.Column([
         sec_head("2", "Resources & estimate"),
         ft.Container(height=10),
         ft.Row([
-            ft.Column([field_label("Count", req=True), count_field], spacing=6, tight=True),
+            ft.Column([field_label("Count", req=True), hover_field(count_field)], spacing=6, tight=True),
             ft.Column([field_label("Add a name", req=True),
-                       ft.Row([name_field,
+                       ft.Row([hover_field(name_field),
                                green_btn("Add", icon=ft.Icons.ADD, on_click=_add_name)],
                               spacing=8)], spacing=6, expand=True),
         ], spacing=14, vertical_alignment=ft.CrossAxisAlignment.START),
@@ -2591,7 +2675,7 @@ def _create_screen(app):
                 on_select=_edit_assignee(r["id"]), border_color=T.BORDER,
                 border_radius=T.R, content_padding=ft.Padding.symmetric(vertical=6, horizontal=8))
             assignee_cell = ft.Row(
-                [_avatar(r.get("assignee", ""), 26), assignee_dd],
+                [_avatar(r.get("assignee", ""), 26), hover_field(assignee_dd)],
                 spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER)
             del_btn = ft.IconButton(
                 icon=ft.Icons.DELETE_OUTLINE, icon_size=18, icon_color=T.RED,
@@ -2607,7 +2691,7 @@ def _create_screen(app):
                                  font_family=T.F_MONO),
                         _txt(r["title"] or "—", color=T.INK, expand=True),
                         ft.Container(_pri_pill(r.get("priority", DEFAULT_PRIORITY)), width=44),
-                        ft.Container(hours_f, width=110),
+                        ft.Container(hover_field(hours_f), width=110),
                         ft.Container(assignee_cell, width=180)],
                        spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                 padding=ft.Padding.symmetric(vertical=6, horizontal=12),
@@ -2772,7 +2856,7 @@ def _create_screen(app):
         email_row = ft.Column([
             ft.Text("EMAIL", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
             ft.Container(height=8),
-            ft.Row([email_field,
+            ft.Row([hover_field(email_field),
                     green_btn("Sending…" if app._cp_emailing else "Email plan",
                               icon=ft.Icons.SEND,
                               on_click=(None if app._cp_emailing else _email))],
@@ -2858,8 +2942,7 @@ def _create_screen(app):
         body_children += [ft.Container(height=16), _card(_skel(6))]
     body = ft.Column(body_children, spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
     return app.shell("Sprint Plan",
-                     "Plan & estimate test effort across a sprint’s stories", body,
-                     badge="STEP T")
+                     "Plan & estimate test effort across a sprint’s stories", body)
 
 
 def _flush_toasts(app):
@@ -3610,10 +3693,10 @@ def screen(app):
         sec_head("2", "Resources"),
         ft.Container(height=10),
         ft.Row([
-            ft.Column([field_label("Count", req=True), count_field],
+            ft.Column([field_label("Count", req=True), hover_field(count_field)],
                       spacing=6, tight=True),
             ft.Column([field_label("Add a name", req=True),
-                       ft.Row([name_field,
+                       ft.Row([hover_field(name_field),
                                green_btn("Add", icon=ft.Icons.ADD,
                                          on_click=_add_name)], spacing=8)],
                       spacing=6, expand=True),

@@ -6,7 +6,7 @@ import threading
 import flet as ft
 import theme as T
 import engine as E
-from ui import _ic, badge, field_label, ghost_btn, grad, green_btn, logo_img, primary_btn, stat_tile
+from ui import _ic, badge, field_label, ghost_btn, grad, green_btn, hover_field, logo_img, primary_btn, stat_tile
 
 
 def open_onboarding(app):
@@ -361,9 +361,9 @@ def open_create_plan(app):
         ], spacing=10),
         content=ft.Container(width=470, content=ft.Column([
             field_label("Plan name", req=True),
-            ft.Container(name_field, padding=ft.Padding.only(top=4, bottom=14)),
+            ft.Container(hover_field(name_field), padding=ft.Padding.only(top=4, bottom=14)),
             field_label("Iteration / Sprint", req=True),
-            ft.Container(iter_dd, padding=ft.Padding.only(top=4, bottom=10)),
+            ft.Container(hover_field(iter_dd), padding=ft.Padding.only(top=4, bottom=10)),
             ft.Text("Will be created at", size=11, color=T.INK_3, weight=ft.FontWeight.BOLD),
             ft.Container(
                 path_box,
@@ -511,7 +511,7 @@ def open_sprint_summary(app):
         ft.Container(height=6),
         ft.Text("EMAIL THIS SUMMARY", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
         ft.Container(height=5),
-        ft.Row([email_field, email_btn], spacing=8,
+        ft.Row([hover_field(email_field), email_btn], spacing=8,
                vertical_alignment=ft.CrossAxisAlignment.CENTER),
         email_status,
     ], spacing=0, tight=True)

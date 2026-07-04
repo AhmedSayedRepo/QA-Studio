@@ -6,7 +6,7 @@ app.shell, app._toast, ...) are read straight off it.
 """
 import flet as ft
 import theme as T
-from ui import card, field_label, green_btn
+from ui import card, field_label, green_btn, hover_field
 
 
 def screen(app):
@@ -70,11 +70,11 @@ def screen(app):
             ft.Container(height=16),
             ft.Row([
                 ft.Column([field_label("App name"),
-                           ft.Container(name_field, width=230,
+                           ft.Container(hover_field(name_field), width=230,
                                         padding=ft.Padding.only(top=4))],
                           spacing=0, tight=True),
                 ft.Column([field_label("URL"),
-                           ft.Container(url_field, padding=ft.Padding.only(top=4))],
+                           ft.Container(hover_field(url_field), padding=ft.Padding.only(top=4))],
                           spacing=0, expand=True),
                 green_btn("Add link", icon=ft.Icons.ADD, on_click=_add, height=44),
             ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.END),

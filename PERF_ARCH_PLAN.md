@@ -52,6 +52,13 @@ Each screen exposes stable "holder" controls for the regions that show loaded da
 ### 5. Gating falls out for free
 With loads event-driven, a read-only Viewer (or any not-connected user) simply never triggers a load — no guards needed inside the fetchers, no loops. The screen renders empty + disabled.
 
+## Status (2026-07-03)
+- **Step 1 — DONE.** The 3 build-time auto-loaders (`_cp_load_iterations`, sprint-report `_load_iterations`, regression plans loader) now use **key-based loaded guards** (`_*_for == app.project`) instead of falsy `if X` checks — empty results no longer reload+flash. Audited every loader: the rest already use tri-state `is None`/`is not None` (setup-stories, users) or are event-triggered (`_cp_load_stories`, `_reload_plan_stories`). No falsy-guard loops remain.
+- **Step 4 — DONE.** Keyed story caches: `_reg_plan_cache[pid]` (plans) and `_cp_sprint_story_cache[path]` (sprints) — re-selecting reuses stories instead of re-hitting Azure. Cleared on user switch + "Clear caches".
+- **Steps 2/3/5 — CLOSED as "not doing" (deliberate).** After the step-1 fix, the app was **verified smooth in a live run** (Sprint Plan + Regression: pickers load, selections resolve, zero flashing, screenshots pixel-stable). Step 2 (in-place completions) is the only remaining lever, and it's now **marginal**: the full render on load-completion was only a problem *inside a loop* — it now fires once per load, largely hidden behind the network fetch. Completing it means either editing the **core `shell()`/`render()`** path (highest blast radius, against a currently-working app) or writing new per-screen in-place rebuilds (the existing `_refresh_*` helpers cover the *generated-plan* table, not the story-selection load). Both carry real regression risk for a gain the user won't feel.
+  - **Revisit trigger:** if a *specific* screen feels slow on a *large* project (many stories), do step 2 for THAT screen only — with live testing, and keeping a full-render fallback.
+  - **Bonus already banked:** the key-guard pattern from step 1 is now the template for any future loader, so this class of flashing bug can't reappear from new copy-pasted loaders.
+
 ## Migration (incremental, behavior-preserving)
 1. **Kill the loops now (done as hot-patches):** `connected`-guards on the fetchers. Keep.
 2. **Fix the guards:** replace every falsy `if not X` "loaded?" check with an explicit `status`/`loaded` flag. Removes the empty-result reloop for Members too. *(highest ROI, low risk)*

@@ -55,7 +55,27 @@ AI_CONFIG = {
     # task_mode "chat" (lightest) by default. See engine's `manus` call branch.
     "manus":        {"api_key": "your-manus-key-here", "base_url": "https://api.manus.im",
                      "model": "manus-1.6", "task_mode": "chat", "vision": True},
+    # ── Free-tier providers (OpenAI-compatible — share the openai HTTP adapter) ──
+    # Groq — LPU inference, very fast, no card. Keys: console.groq.com/keys.
+    "groq":         {"api_key": "your-groq-key-here", "base_url": "https://api.groq.com/openai/v1",
+                     "model": "llama-3.3-70b-versatile", "vision": False},
+    # Cerebras — wafer-scale inference, no card, ~1M tokens/day. Keys: cloud.cerebras.ai.
+    "cerebras":     {"api_key": "your-cerebras-key-here", "base_url": "https://api.cerebras.ai/v1",
+                     "model": "llama-3.3-70b", "vision": False},
+    # OpenRouter — one key, many models; the ":free" suffixed ids are free. Keys:
+    # openrouter.ai/keys. base_url is OpenAI-compatible.
+    "openrouter":   {"api_key": "your-openrouter-key-here", "base_url": "https://openrouter.ai/api/v1",
+                     "model": "meta-llama/llama-3.3-70b-instruct:free", "vision": False},
+    # Mistral — generous free "Experiment" tier (requires opting into data-training).
+    # Keys: console.mistral.ai. OpenAI-compatible endpoint.
+    "mistral":      {"api_key": "your-mistral-key-here", "base_url": "https://api.mistral.ai/v1",
+                     "model": "mistral-large-latest", "vision": False},
 }
+
+# OpenAI-compatible providers — all share one HTTP chat/model-list adapter. Add a
+# provider here when its endpoint speaks the OpenAI /chat/completions + /models API.
+OPENAI_COMPAT_PROVIDERS = ("openai", "nvidia", "deepseek", "qwen",
+                           "groq", "cerebras", "openrouter", "mistral")
 
 FEATURE_DESCRIPTION = ""   # optional global feature context for step generation
 
@@ -242,7 +262,9 @@ def T_disp(name):
     """Pretty provider name without importing the UI theme."""
     return {"anthropic": "Anthropic", "openai": "OpenAI", "gemini": "Gemini",
             "azure_openai": "Azure OpenAI", "ollama": "Ollama", "nvidia": "NVIDIA",
-            "deepseek": "DeepSeek", "qwen": "Qwen", "manus": "Manus"}.get(name, str(name).title())
+            "deepseek": "DeepSeek", "qwen": "Qwen", "manus": "Manus",
+            "groq": "Groq", "cerebras": "Cerebras", "openrouter": "OpenRouter",
+            "mistral": "Mistral"}.get(name, str(name).title())
 
 def active_providers():
     """Provider names that have a usable key."""
@@ -386,9 +408,22 @@ def _anthropic_http(cfg, prompt_text, images, max_tokens, timeout):
 
 
 def _anthropic_models_http(key, timeout=15):
+    # Anthropic's /v1/models is cursor-paginated (has_more + last_id). Page through
+    # so every available model is returned, not just the first page.
     headers = {"x-api-key": (key or "").strip(), "anthropic-version": "2023-06-01"}
-    data = _http_get_json("https://api.anthropic.com/v1/models?limit=100", headers, timeout)
-    return [m.get("id") for m in ((data or {}).get("data") or []) if m.get("id")]
+    base = "https://api.anthropic.com/v1/models?limit=1000"
+    ids, after = [], None
+    for _ in range(20):  # safety cap on pages
+        url = base + (f"&after_id={after}" if after else "")
+        data = _http_get_json(url, headers, timeout)
+        page = (data or {}).get("data") or []
+        ids += [m.get("id") for m in page if m.get("id")]
+        if not (data or {}).get("has_more"):
+            break
+        after = (data or {}).get("last_id") or (page[-1].get("id") if page else None)
+        if not after:
+            break
+    return ids
 
 
 def _azure_http(cfg, prompt_text, images, max_tokens, timeout):
@@ -441,13 +476,21 @@ def _gemini_http(cfg, prompt_text, images, max_tokens, timeout, want_json=False)
 
 
 def _gemini_models_http(key, timeout=15):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={(key or '').strip()}"
-    data = _http_get_json(url, {}, timeout)
-    ids = []
-    for m in ((data or {}).get("models") or []):
-        if "generateContent" in (m.get("supportedGenerationMethods") or []):
-            nm = m.get("name", "") or ""
-            ids.append(nm.split("/", 1)[1] if nm.startswith("models/") else nm)
+    # Gemini's ListModels is paginated (default pageSize ~50). Ask for a large
+    # page and follow nextPageToken so the FULL catalogue is returned.
+    key = (key or "").strip()
+    base = "https://generativelanguage.googleapis.com/v1beta/models"
+    ids, token = [], None
+    for _ in range(20):  # safety cap on pages
+        url = f"{base}?key={key}&pageSize=1000" + (f"&pageToken={token}" if token else "")
+        data = _http_get_json(url, {}, timeout)
+        for m in ((data or {}).get("models") or []):
+            if "generateContent" in (m.get("supportedGenerationMethods") or []):
+                nm = m.get("name", "") or ""
+                ids.append(nm.split("/", 1)[1] if nm.startswith("models/") else nm)
+        token = (data or {}).get("nextPageToken")
+        if not token:
+            break
     return ids
 
 
@@ -498,7 +541,7 @@ def _ai_call_once(provider, cfg, prompt_text, images, max_tokens, timeout, want_
     if provider == "anthropic":
         return _anthropic_http(cfg, prompt_text, images, max_tokens, timeout)
 
-    if provider in ("openai", "nvidia", "deepseek", "qwen"):
+    if provider in OPENAI_COMPAT_PROVIDERS:
         return _openai_compat_http(cfg, prompt_text, images, max_tokens, timeout, want_json)
 
     if provider == "azure_openai":
@@ -764,6 +807,15 @@ STATIC_MODELS = {
     "ollama":    ["llama3.1", "llama3.2", "qwen2.5", "mistral", "gemma2"],
     # Manus "models" are agent profiles, not chat models (no live /models list).
     "manus":     ["manus-1.6", "manus-1.6-lite", "manus-1.6-max"],
+    "groq":      ["llama-3.3-70b-versatile", "llama-3.1-8b-instant",
+                  "openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3-32b"],
+    "cerebras":  ["llama-3.3-70b", "llama-3.1-8b", "qwen-3-32b", "gpt-oss-120b"],
+    "openrouter": ["meta-llama/llama-3.3-70b-instruct:free",
+                   "deepseek/deepseek-chat-v3.1:free",
+                   "google/gemini-2.0-flash-exp:free",
+                   "qwen/qwen3-235b-a22b:free"],
+    "mistral":   ["mistral-large-latest", "mistral-small-latest",
+                  "open-mistral-nemo", "pixtral-large-latest"],
 }
 
 def _is_chat_model_id(provider, mid):
@@ -812,7 +864,7 @@ def list_models(provider=None, api_key=None, base_url=None, timeout=15):
             ids = _ok(_anthropic_models_http(key, timeout))
             return (ids or static), ("live" if ids else "static")
 
-        if p in ("openai", "nvidia", "deepseek", "qwen"):
+        if p in OPENAI_COMPAT_PROVIDERS:
             ids = _ok(_openai_compat_models_http(burl, key, timeout))
             ids.sort()
             return (ids or static), ("live" if ids else "static")

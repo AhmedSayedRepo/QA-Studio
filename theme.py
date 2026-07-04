@@ -102,6 +102,8 @@ NAV = [
 PROVIDER_DISPLAY = {
     "openai": "OpenAI", "nvidia": "NVIDIA", "anthropic": "Anthropic",
     "gemini": "Gemini", "azure_openai": "Azure OpenAI", "ollama": "Ollama",
+    "groq": "Groq", "cerebras": "Cerebras", "openrouter": "OpenRouter",
+    "mistral": "Mistral", "deepseek": "DeepSeek", "qwen": "Qwen", "manus": "Manus",
 }
 def disp_name(name):
     return PROVIDER_DISPLAY.get(name, name.replace("_", " ").title())

@@ -44,7 +44,7 @@ from ui import (
     _ic, card, empty_state, grad_text, skeleton_rows, sec_head, field_label,
     grad, _grad_button, _btn_shadow, _shadow_wrap, _wrap_btn, _logo_path,
     _logo_b64, logo_img, primary_btn, _disabled_wrap, green_btn, ghost_btn,
-    danger_btn, searchable_dropdown, progress_ring, stat_tile, badge,
+    danger_btn, searchable_dropdown, hover_field, progress_ring, stat_tile, badge,
 )
 
 
@@ -55,6 +55,7 @@ class QAStudio:
     def __init__(self, page: ft.Page):
         self.page = page
         self.creds = store.load()
+        self._migrate_key_slots()      # legacy per-provider keys → per-model slots
         # Apply the saved theme (light default, dark secondary) before any UI builds.
         try:
             T.apply_theme(self.creds.get("theme", "light"))
@@ -199,24 +200,104 @@ class QAStudio:
         # gate without blocking startup on the network.
         self._restore_session_async()
 
+    # Providers that offer an ongoing free tier (no card required for real use, or
+    # local). Everything NOT listed here is treated as paid. Drives the free/paid
+    # grouping in the provider dropdown — adjust as providers change their pricing.
+    FREE_PROVIDERS = {"gemini", "nvidia", "groq", "cerebras", "openrouter",
+                      "mistral", "ollama"}
+
     # ---- credential helpers ----
     def _provider_options(self):
         names = list(E.AI_CONFIG.keys())
         orig_index = {n: i for i, n in enumerate(names)}   # stable order captured first
         def _is_active(n):
-            return (n in E.active_providers()) or bool(self.creds["keys"].get(n))
-        # active providers first, preserving original order within each group
-        names.sort(key=lambda n: (not _is_active(n), orig_index[n]))
-        opts = []
+            return (n in E.active_providers()) or bool(self.creds["keys"].get(self._cred_slot(n)))
+        def _grp(n):
+            return 0 if n in self.FREE_PROVIDERS else 1    # 0 = free (shown first), 1 = paid
+        def _grp_header(label, accent):
+            """Styled, non-selectable section label: accent dot · UPPERCASE title ·
+            divider rule. Falls back to plain text on Flet builds without Option
+            content (see below)."""
+            return ft.Container(
+                content=ft.Row([
+                    ft.Container(width=7, height=7, border_radius=4, bgcolor=accent),
+                    ft.Text(label.upper(), size=10.5, weight=ft.FontWeight.W_800,
+                            color=accent),
+                    ft.Container(height=1, bgcolor=T.BORDER, expand=True,
+                                 margin=ft.Margin.only(left=4)),
+                ], spacing=7, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                padding=ft.Padding.only(left=4, right=10, top=9, bottom=5))
+        # group by free/paid; within a group, active first, then original order
+        names.sort(key=lambda n: (_grp(n), not _is_active(n), orig_index[n]))
+        opts, cur_grp = [], None
         for name in names:
+            g = _grp(name)
+            if g != cur_grp:                                # insert a group header row
+                cur_grp = g
+                label, accent = (("Free tier", T.GREEN) if g == 0
+                                 else ("Paid", T.AMBER))
+                header = ft.DropdownOption(
+                    key=f"__grp_{g}__",
+                    text=f"──  {label.upper()}  ──")         # fallback if content unsupported
+                try:
+                    header.disabled = True                  # non-selectable where supported
+                except Exception:
+                    pass
+                try:
+                    header.content = _grp_header(label, accent)   # rich header where supported
+                except Exception:
+                    pass
+                opts.append(header)
             active = _is_active(name)
             dot = "●" if active else "○"
             opts.append(ft.DropdownOption(key=name,
                 text=f"{dot}  {T.disp_name(name)}  ({'active' if active else 'inactive'})"))
         return opts
 
+    # Providers that issue a DISTINCT API key per model (build.nvidia.com does).
+    # Only these store their key per model ("<provider>::<model>"); every other
+    # provider uses ONE key for all its models. Add a provider here if it, too,
+    # hands out a separate key per model.
+    PER_MODEL_KEY_PROVIDERS = {"nvidia"}
+
+    def _cred_slot(self, name):
+        """Credential storage slot for a provider. Providers in
+        PER_MODEL_KEY_PROVIDERS store their key per model ("<provider>::<model>"),
+        so switching the model switches the saved key. All other providers use a
+        single key per provider (the bare provider name)."""
+        if name in self.PER_MODEL_KEY_PROVIDERS:
+            m = (self._saved_model(name) or "").strip()
+            return f"{name}::{m}" if m else name
+        return name
+
+    def _migrate_key_slots(self):
+        """One-time upgrade of legacy per-provider keys to per-model slots, but ONLY
+        for PER_MODEL_KEY_PROVIDERS. A legacy key saved under the bare provider name
+        is attached to that provider's current model, then the bare entry dropped —
+        so existing NVIDIA keys keep working. Single-key providers are left alone."""
+        keys = (self.creds or {}).get("keys")
+        if not isinstance(keys, dict):
+            return
+        changed = False
+        for name in list(keys.keys()):
+            if "::" in name or name not in self.PER_MODEL_KEY_PROVIDERS:
+                continue                       # per-model slot, or single-key provider
+            val = (keys.get(name) or "").strip()
+            slot = self._cred_slot(name)
+            if slot == name:
+                continue                       # no model resolved → leave as-is
+            if val and not (keys.get(slot) or "").strip():
+                keys[slot] = val               # carry the key onto the current model
+            keys.pop(name, None)
+            changed = True
+        if changed:
+            try:
+                store.save(self.creds)
+            except Exception:
+                pass
+
     def _saved_key(self, name):
-        s = (self.creds["keys"].get(name) or "").strip()
+        s = (self.creds["keys"].get(self._cred_slot(name)) or "").strip()
         if s: return s
         cfg = E.AI_CONFIG.get(name, {})
         k = (cfg.get("api_key") or "").strip()
@@ -249,7 +330,7 @@ class QAStudio:
     def _provider_active(self, name):
         # A provider is "active" only if it has a saved key in the credential store.
         # "Connected" status is tracked separately via self.connected.
-        return bool((self.creds["keys"].get(name) or "").strip())
+        return bool((self.creds["keys"].get(self._cred_slot(name)) or "").strip())
 
     # ---- external auth (Supabase) ----
     def _restore_session_async(self):
@@ -336,6 +417,7 @@ class QAStudio:
         try:
             store.set_user(uid)
             self.creds = store.load()
+            self._migrate_key_slots()  # legacy per-provider keys → per-model slots
         except Exception:
             return
         self.connected = False        # re-connect with THIS user's own creds
@@ -351,6 +433,8 @@ class QAStudio:
         self._reg_plans_for = None
         self._st_iterations = []
         self._st_iter_for = None
+        self._reg_plan_cache = {}      # per-plan / per-sprint story caches (PERF step 4)
+        self._cp_sprint_story_cache = {}
         try:
             if hasattr(self, "_links"):
                 del self._links       # links are per-user too — reload for this user
@@ -371,6 +455,13 @@ class QAStudio:
             _t = self.creds.get("tool")
             if _t in ("titles", "steps"):
                 self.tool = _t
+        except Exception:
+            pass
+        try:
+            # perf logging is a runtime global — re-apply THIS user's saved value;
+            # keep the generator's output language in sync with their pref too.
+            regression.set_perf(bool(self.creds.get("perf", True)))
+            E.set_output_lang(self.lang)
         except Exception:
             pass
 
@@ -719,6 +810,8 @@ class QAStudio:
         "manus":     ("#5A4FE0", "Mn"),
         "cohere":    ("#39594D", "C"),
         "xai":       ("#111111", "X"),
+        "cerebras":  ("#F15A22", "Cb"),
+        "openrouter": ("#6467F2", "Or"),
     }
 
     # filename aliases: provider id -> logo basename(s) to look for
@@ -880,6 +973,11 @@ class QAStudio:
         HEADER_H = 94
         GAP = 18
         self._install_top_gap(body, HEADER_H + GAP)
+        # Header badge mirrors the LEFT-NAV badge for this screen (S / Ru / Rp / Rg /
+        # SP / SR / A / L / U), so the header pill and the rail always agree.
+        if badge is None:
+            badge = next((n.get("ix") for n in T.NAV
+                          if n.get("id") == getattr(self, "active", None)), None)
         header = self.topbar(title, sub, right, badge)
         header.top = 0
         header.left = 0
@@ -1094,7 +1192,7 @@ class QAStudio:
         dlg = ft.AlertDialog(
             content=ft.Container(width=540, padding=ft.Padding.all(6),
                                  content=ft.Column([
-                                     search,
+                                     hover_field(search),
                                      ft.Container(height=6),
                                      results,
                                  ], spacing=0, tight=True)),
@@ -1678,6 +1776,20 @@ class QAStudio:
                          "https://portal.azure.com/", "Open Azure Portal"),
         "ollama":    ("Ollama runs locally — no API key needed. Just run `ollama serve`.",
                       "https://ollama.com/download", "Get Ollama"),
+        "manus":     ("manus.im → Settings → API (Integrations) → Create API Key. "
+                      "The key is shown once — copy it immediately.",
+                      "https://manus.im/app?show_settings=integrations&app_name=api",
+                      "Open Manus API Settings"),
+        "groq":      ("console.groq.com → API Keys → Create API Key. Free tier, no card.",
+                      "https://console.groq.com/keys", "Open Groq Console"),
+        "cerebras":  ("cloud.cerebras.ai → API Keys → Generate key. Free tier, no card.",
+                      "https://cloud.cerebras.ai/", "Open Cerebras Cloud"),
+        "openrouter": ("openrouter.ai → Keys → Create Key. Use the ':free' models for "
+                       "no-cost access.",
+                       "https://openrouter.ai/keys", "Open OpenRouter Keys"),
+        "mistral":   ("console.mistral.ai → API Keys → Create new key. The free "
+                      "'Experiment' tier requires opting into data-training.",
+                      "https://console.mistral.ai/api-keys", "Open Mistral Console"),
     }
 
     def _show_help(self, key):
@@ -1746,11 +1858,17 @@ class QAStudio:
     # ---- connection: editable (not connected) ----
     def _connection_edit(self):
         name = self._provider_choice
-        self.prov_dd = ft.Dropdown(
+        # Cap the menu height so the (now grouped) provider list scrolls instead of
+        # running off-screen. menu_height is newer Flet — degrade gracefully.
+        _prov_kwargs = dict(
             value=name, options=self._provider_options(), on_select=self._on_provider_change,
             border_color=T.BORDER, focused_border_color=T.VIOLET,
             border_radius=T.R, content_padding=ft.Padding.symmetric(vertical=12, horizontal=8),
             text_size=13, filled=True, bgcolor=T.CARD, expand=True)
+        try:
+            self.prov_dd = ft.Dropdown(menu_height=320, **_prov_kwargs)
+        except TypeError:
+            self.prov_dd = ft.Dropdown(**_prov_kwargs)
 
         # Key field: editable if no saved key, or unlocked by Update button
         active = self._provider_active(name)
@@ -1841,39 +1959,39 @@ class QAStudio:
         return ft.Column([
             field_label("AI Provider", req=True, info="How to make a provider active",
                         on_info=lambda e: self._show_help("provider")),
-            ft.Container(self.prov_dd, padding=ft.Padding.only(top=4, bottom=12)),
+            ft.Container(hover_field(self.prov_dd), padding=ft.Padding.only(top=4, bottom=12)),
             field_label("Model", req=False, hint=self._model_src_hint(),
                         info="Which model this provider should use",
                         on_info=lambda e: self._show_help("model")),
-            ft.Container(self.model_dd, padding=ft.Padding.only(top=4, bottom=12)),
+            ft.Container(hover_field(self.model_dd), padding=ft.Padding.only(top=4, bottom=12)),
             field_label("API Key", req=True, info="How to get your AI provider API key",
                         on_info=lambda e: self._show_help("api_key")),
-            ft.Container(ft.Row([self.api_key_field, self.api_btn], spacing=8),
+            ft.Container(ft.Row([hover_field(self.api_key_field), self.api_btn], spacing=8),
                         padding=ft.Padding.only(top=4, bottom=12)),
             field_label("Azure Organization", req=True,
                         info="How to find your Azure organization name",
                         on_info=lambda e: self._show_help("org")),
-            ft.Container(ft.Row([self.org_field, self.org_btn], spacing=8),
+            ft.Container(ft.Row([hover_field(self.org_field), self.org_btn], spacing=8),
                         padding=ft.Padding.only(top=4, bottom=12)),
             ft.Row([
                 ft.Column([
                     field_label("Azure DevOps PAT", req=True,
                                 info="How to create an Azure DevOps PAT",
                                 on_info=lambda e: self._show_help("pat")),
-                    ft.Container(ft.Row([self.pat_field, self.pat_btn], spacing=8),
+                    ft.Container(ft.Row([hover_field(self.pat_field), self.pat_btn], spacing=8),
                                  padding=ft.Padding.only(top=4)),
                 ], expand=True, spacing=0),
             ]),
             ft.Container(height=12),
             field_label("Email Sender", hint="optional"),
-            ft.Container(ft.Row([self.sender_field, self.sender_btn], spacing=8),
+            ft.Container(ft.Row([hover_field(self.sender_field), self.sender_btn], spacing=8),
                         padding=ft.Padding.only(top=4, bottom=12)),
             ft.Row([
                 ft.Column([
                     field_label("Gmail App Password", hint="optional", req=False,
                                 info="How to create a Gmail App Password",
                                 on_info=lambda e: self._show_help("gmail")),
-                    ft.Container(ft.Row([self.gmail_field, self.gmail_btn], spacing=8),
+                    ft.Container(ft.Row([hover_field(self.gmail_field), self.gmail_btn], spacing=8),
                                  padding=ft.Padding.only(top=4)),
                 ], expand=True, spacing=0),
             ]),
@@ -2010,7 +2128,18 @@ class QAStudio:
     # ---- credential handlers ----
     def _on_provider_change(self, e):
         prev = getattr(self, "_provider_choice", None)
-        self._provider_choice = self.prov_dd.value
+        sel = self.prov_dd.value
+        # Group headers ("__grp_0__"/"__grp_1__") are not real providers — ignore a
+        # stray selection (belt-and-suspenders for Flet builds that let a disabled
+        # option be picked) and restore the previous choice.
+        if not sel or str(sel).startswith("__grp_"):
+            try:
+                self.prov_dd.value = prev
+                self.prov_dd.update()
+            except Exception:
+                pass
+            return
+        self._provider_choice = sel
         name = self._provider_choice
         # Cancel any in-flight Connect for the old provider: bump the generation
         # token (so its worker's results are ignored) and drop the spinner now.
@@ -2044,7 +2173,7 @@ class QAStudio:
         val = (self.api_key_field.value or "").strip()
         if not val:
             self._err("API Key is required."); return
-        self.creds["keys"][name] = val; store.save(self.creds)
+        self.creds["keys"][self._cred_slot(name)] = val; store.save(self.creds)
         # apply to the engine immediately so a PAUSED automation can Resume on the
         # newly chosen provider/key without re-running Connect
         try:
@@ -2152,9 +2281,16 @@ class QAStudio:
         self.creds.setdefault("models", {})[name] = val
         store.save(self.creds)
         try:
-            E.set_credentials(provider=name, model=val)
+            # Keys are stored per model, so the effective key can change with the
+            # model — push the new model's saved key alongside it.
+            E.set_credentials(provider=name, model=val,
+                              api_key=(self._saved_key(name) or None))
         except Exception:
             pass
+        # for per-model-key providers, a model switch swaps the key → refetch catalogue
+        if name in self.PER_MODEL_KEY_PROVIDERS:
+            self._models_for = None
+            self._model_choices = None
         # changing the model while connected invalidates the connection
         if getattr(self, "connected", False):
             self._disconnect(f"Model changed to {val} — reconnect to continue.")
@@ -2479,122 +2615,71 @@ class QAStudio:
             except Exception:
                 pass
 
-        def _add_from_dd(e):
-            v = self._setup_story_dd.value
-            if v and str(v).strip().isdigit():
-                i = int(v)
-                if i not in self.story_ids:
-                    self.story_ids.append(i)
-                    self._err_msg = ""
-                    _build_chips()
-                    self._estimated_tc = None
-                    _clear_story_invalid()
-                    # Patch the dropdown IN PLACE (drop the picked story, clear the
-                    # value) instead of a full render, so the scroll stays put.
-                    try:
-                        _ss2 = self._setup_stories or []
-                        self._setup_story_dd.options = [
-                            ft.DropdownOption(key=str(s["id"]),
-                                              text=f"[{s['id']}] {(s['title'] or '')[:48]}")
-                            for s in _ss2 if s["id"] not in self.story_ids]
-                        self._setup_story_dd.value = None
-                        self._setup_story_dd.update()
-                    except Exception:
-                        pass
-                    try:
-                        self._chip_row.update(); self._chip_wrap.update()
-                    except Exception:
-                        pass
-                    _update_summary_inplace()
-                    self._fetch_estimate()
-            # NOTE: no self.render() here — the in-place updates above keep the
-            # scroll where it was (a full render snapped it back to the top).
-
         _ss = self._setup_stories or []
-        self._setup_story_dd = searchable_dropdown(
-            hint_text=("Search & add a story from this plan" if _ss
-                       else ("Loading stories…" if (self.plan_id and self._setup_stories_loading)
-                             else "Select a test plan to list its stories")),
-            options=[ft.DropdownOption(key=str(s["id"]),
-                                       text=f"[{s['id']}] {(s['title'] or '')[:48]}")
-                     for s in _ss if s["id"] not in self.story_ids],
-            on_select=_add_from_dd, disabled=not _ss,
-            border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
-            content_padding=ft.Padding.symmetric(vertical=12, horizontal=8),
-            text_size=13, filled=True, bgcolor=T.CARD, expand=True)
-
         _build_chips()
 
-        # Checkbox multiselect for the plan's stories (same component as the
-        # Regression/Sprint screens), driven by self.story_ids.
+        # Searchable MULTISELECT of the plan's stories (same component as the
+        # Regression / Sprint screens — type-to-filter + checkboxes). Selecting
+        # syncs self.story_ids; picked stories also show as removable chips below.
         def _toggle_setup_story(key, checked):
             sid = int(key)
             if checked and sid not in self.story_ids:
                 self.story_ids.append(sid)
             elif not checked:
                 self.story_ids = [s for s in self.story_ids if s != sid]
-            self.story_field.value = ""
             self._err_msg = ""
             self._estimated_tc = None
-            # update chips in-place -- no full render so scroll never jumps
-            _build_chips()
+            _build_chips()   # in-place chip refresh — no full render, scroll stays put
             try:
                 self._chip_row.update(); self._chip_wrap.update()
             except Exception:
                 pass
+            _update_summary_inplace()
             self._fetch_estimate()
             _clear_story_invalid()
 
         def _all_setup_stories(checked):
             if checked:
                 have = set(self.story_ids)
-                for s in (self._setup_stories or []):
+                for s in _ss:
                     if s["id"] not in have:
                         self.story_ids.append(s["id"])
             else:
                 self.story_ids = []
             self._err_msg = ""
             self._estimated_tc = None
-            # update chips in-place -- no full render so scroll never jumps
             _build_chips()
             try:
                 self._chip_row.update(); self._chip_wrap.update()
             except Exception:
                 pass
+            _update_summary_inplace()
             self._fetch_estimate()
             _clear_story_invalid()
 
         def _open_setup_stories():
             self._setup_story_open = not self._setup_story_open
-            # flag synced; in-place toggle handled by the component itself
 
-        if self._setup_stories_loading:
-            story_picker = ft.Container(
-                ft.Text("Loading stories…", size=12, color=T.INK_3), padding=10)
-        elif not self.plan_id:
-            story_picker = ft.Container(
-                ft.Text("Select a test plan to list its stories", size=12, color=T.INK_3),
-                padding=10)
-        elif not _ss:
-            story_picker = ft.Container(
-                ft.Text("No stories found in this plan.", size=12, color=T.INK_3), padding=10)
-        else:
-            story_picker = regression._checkbox_multiselect(
-                [(str(s["id"]), f"[{s['id']}] {(s['title'] or '')[:60]}") for s in _ss],
-                [str(s) for s in self.story_ids],
-                _toggle_setup_story, _all_setup_stories,
-                is_open=self._setup_story_open, on_open=_open_setup_stories,
-                placeholder="Select stories", height=260,
-                empty="No stories found in this plan.",
-                page=self.page, app=self, sync_key="setup_stories")
+        # Always displayed; disabled (greyed, unopenable) until a plan is picked
+        # and its stories load. Placeholder reflects the current state.
+        _ph = ("Select stories" if _ss
+               else ("Loading stories…" if (self.plan_id and self._setup_stories_loading)
+                     else ("No stories in this plan" if self.plan_id
+                           else "Select a test plan first")))
+        story_picker = regression._checkbox_multiselect(
+            [(str(s["id"]), f"[{s['id']}] {(s['title'] or '')[:60]}") for s in _ss],
+            [str(s) for s in self.story_ids],
+            _toggle_setup_story, _all_setup_stories,
+            is_open=self._setup_story_open, on_open=_open_setup_stories,
+            placeholder=_ph, height=260, empty="No stories found in this plan.",
+            page=self.page, app=self, sync_key="setup_stories",
+            disabled=not _ss)
 
+        # The manual "paste IDs" input was removed; self.story_field is kept alive
+        # (unrendered) so the legacy add/remove/commit handlers stay valid.
         story_box = ft.Column([
             story_picker,
-            ft.Container(height=10),
-            ft.Text("Or paste IDs manually", size=10.5, weight=ft.FontWeight.BOLD,
-                    color=T.INK_3),
-            ft.Container(height=4),
-            self.story_field, self._chip_wrap], spacing=0, tight=True)
+            self._chip_wrap], spacing=0, tight=True)
 
         self.email_field = ft.TextField(
             value=self.emails, hint_text="qa-leads@wss.com  (optional)",
@@ -2648,11 +2733,11 @@ class QAStudio:
             ft.Container(height=12),
             # Row 1 — Project (full width)
             field_label("Project", req=True),
-            ft.Container(self.project_dd, padding=ft.Padding.only(top=4, bottom=12)),
+            ft.Container(hover_field(self.project_dd), padding=ft.Padding.only(top=4, bottom=12)),
             # Row 2 — Test Plan (50%) · Test Plan ID (50%)
             ft.Row([
                 ft.Column([field_label("Test Plan", req=True),
-                           ft.Container(self.plan_dd, padding=ft.Padding.only(top=4))],
+                           ft.Container(hover_field(self.plan_dd), padding=ft.Padding.only(top=4))],
                           expand=1, spacing=0),
                 ft.Column([field_label("Test Plan ID", hint="auto"),
                            ft.Container(
@@ -2680,7 +2765,7 @@ class QAStudio:
 
         rows += [
             field_label("Report Emails", hint="optional", req=False),
-            ft.Container(self.email_field, padding=ft.Padding.only(top=4)),
+            ft.Container(hover_field(self.email_field), padding=ft.Padding.only(top=4)),
         ]
         return card(ft.Column(rows, spacing=0), expand=False)
 
@@ -2794,20 +2879,14 @@ class QAStudio:
                     pass
 
     def _load_setup_stories_inplace(self):
-        """Load the selected plan's stories (from its requirement suites) and patch
-        the story dropdown IN PLACE — fills the picker the instant a plan is chosen,
-        with no full re-render (so the scroll position is preserved)."""
+        """Load the selected plan's stories (from its requirement suites), then
+        re-render once so the searchable story multiselect fills and enables.
+        Plan-change is a single deliberate event, so one render is fine (the
+        scroll snaps back via _on_plan_change's delayed restore)."""
         if not (self.connected and self.project and self.plan_id):
             return
         self._setup_stories = None
         self._setup_stories_loading = True
-        dd = getattr(self, "_setup_story_dd", None)
-        if dd is not None:
-            try:
-                dd.options = []; dd.value = None; dd.disabled = True
-                dd.hint_text = "Loading stories…"; dd.update()
-            except Exception:
-                pass
         pid = self.plan_id
 
         def work():
@@ -2825,22 +2904,7 @@ class QAStudio:
                 return
             self._setup_stories = ss
             self._setup_stories_loading = False
-
-            def apply():
-                d = getattr(self, "_setup_story_dd", None)
-                if d is None:
-                    self.render(); return
-                try:
-                    d.options = [ft.DropdownOption(key=str(s["id"]),
-                                     text=f"[{s['id']}] {(s['title'] or '')[:48]}")
-                                 for s in ss if s["id"] not in self.story_ids]
-                    d.disabled = not ss
-                    d.hint_text = ("Search & add a story from this plan" if ss
-                                   else "No stories found in this plan")
-                    d.update()
-                except Exception:
-                    self.render()
-            self.ui_safe(apply)
+            self.ui_safe(self.render)
         self._bg(work)
 
     def _fetch_estimate(self):
@@ -3022,7 +3086,7 @@ class QAStudio:
         key = self._field_or_saved("api_key_field", self._saved_key(name))
         if not key:
             self._err("API Key is required for the selected provider."); return
-        self.creds["keys"][name] = key
+        self.creds["keys"][self._cred_slot(name)] = key
         pat = self._field_or_saved("pat_field", self.creds.get("pat", ""))
         if not pat:
             self._err("Azure DevOps PAT is required."); return
@@ -3942,7 +4006,7 @@ class QAStudio:
             text_size=13, expand=True,
             on_change=lambda e, a=attr, et=err: self._auto_field_change(a, e.control, et))
         return ft.Column([field_label(label, req=req, info=info, on_info=on_info),
-                          ft.Container(tf, padding=ft.Padding.only(top=4)),
+                          ft.Container(hover_field(tf), padding=ft.Padding.only(top=4)),
                           ft.Container(err, padding=ft.Padding.only(top=4, left=2))],
                          spacing=0)
 

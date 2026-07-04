@@ -13,6 +13,7 @@ import threading
 import flet as ft
 import theme as T
 import auth_supabase as auth
+from ui import hover_field
 
 _ROLES = ["Viewer", "Member", "Admin"]
 _PAGE = 25   # users per page
@@ -108,7 +109,7 @@ def screen(app):
             ft.Text("This screen is available to administrators.", size=12.5,
                     color=T.INK_3, no_wrap=False),
         ], spacing=2))
-        return app.shell("Users", "Manage who can access QA Studio", body, badge="U")
+        return app.shell("Users", "Manage who can access QA Studio", body)
 
     _load(app)
 
@@ -379,7 +380,7 @@ def screen(app):
                 "individual tabs and actions.", size=12, color=T.INK_3,
                 weight=ft.FontWeight.BOLD, no_wrap=False),
         ft.Container(height=14),
-        search,
+        hover_field(search),
         ft.Container(height=12),
         list_holder,
         pager_holder,

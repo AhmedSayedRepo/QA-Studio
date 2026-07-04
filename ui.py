@@ -361,6 +361,43 @@ def searchable_dropdown(**kwargs):
             return ft.Dropdown(**kwargs)
 
 
+def hover_border_cb(field, base=None):
+    """Return an on_hover handler that tints a field's frame violet on hover.
+    Attach it to the Container that ALREADY wraps the field (no extra nesting,
+    so layout/width is untouched). While focused, Flet draws
+    focused_border_color regardless, so the hover tint only affects the
+    unfocused state — no conflict."""
+    base = base if base is not None else (getattr(field, "border_color", None) or T.BORDER)
+
+    def _h(e, _f=field, _b=base):
+        try:
+            if getattr(_f, "read_only", False) or getattr(_f, "disabled", False):
+                return
+            _f.border_color = T.VIOLET if e.data in (True, "true", "True") else _b
+            _f.update()
+        except Exception:
+            pass
+    return _h
+
+
+def hover_field(field, base=None):
+    """Wrap a field so its frame highlights on hover, for use INSIDE a Row
+    (e.g. field + Update button). The wrapper mirrors the field's `expand` so
+    it fills the row exactly as the bare field did. For a field that sits alone
+    in a Column-level Container, prefer attaching hover_border_cb() to that
+    existing container instead (avoids nesting). Read-only / disabled fields are
+    returned unwrapped (no hover affordance)."""
+    try:
+        if getattr(field, "read_only", False) or getattr(field, "disabled", False):
+            return field
+        return ft.Container(
+            field, on_hover=hover_border_cb(field, base),
+            expand=bool(getattr(field, "expand", False)),
+            border_radius=(getattr(field, "border_radius", None) or T.R))
+    except Exception:
+        return field
+
+
 def progress_ring(pct, color, size=44, label=None):
     """A circular progress ring with a percentage in the center."""
     pct = max(0, min(100, int(pct)))
