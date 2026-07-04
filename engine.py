@@ -29,7 +29,7 @@ AI_CONFIG = {
                      "deployment": "gpt-4o", "api_version": "2024-06-01", "vision": True},
     "ollama":       {"api_key": "", "base_url": "http://localhost:11434", "model": "llama3.1", "vision": False},
     "nvidia":       {"api_key": "nvapi-your-nvidia-key-here", "base_url": "https://integrate.api.nvidia.com/v1",
-                     "model": "qwen/qwen3.5-397b-a17b", "vision": True},
+                     "model": "meta/llama-3.1-70b-instruct", "vision": False},
     # DeepSeek — OpenAI-compatible API (base_url https://api.deepseek.com).
     # New accounts get a one-time free token grant, then cheap pay-as-you-go.
     # "deepseek-chat" is the current alias for V4-Flash (non-thinking). NOTE: the
@@ -585,6 +585,40 @@ def _interruptible_sleep(seconds):
             return
         time.sleep(min(0.25, end - time.time()))
 
+
+class StopRequested(Exception):
+    """Raised to unwind a run promptly when the user clicks Stop mid-generation."""
+    pass
+
+
+def _run_stopaware(fn, should_stop=None, on_slow=None, poll=0.3, slow_every=15):
+    """Run a BLOCKING call fn() in a daemon thread and wait for it, but stay
+    responsive: if should_stop() turns true we raise StopRequested immediately
+    (the abandoned thread — e.g. a requests.post still waiting on a slow provider —
+    finishes on its own timeout and is harmless, since generation has no side
+    effects). on_slow(elapsed_seconds) is called about every `slow_every` seconds
+    so the UI can show a 'still working' heartbeat instead of looking frozen."""
+    should_stop = should_stop or (lambda: False)
+    box = {}
+    def _work():
+        try: box["val"] = fn()
+        except BaseException as e: box["err"] = e   # noqa: BLE001 — re-raised below
+    t = _threading.Thread(target=_work, daemon=True)
+    t.start()
+    start = last_hb = time.time()
+    while t.is_alive():
+        if should_stop() or _STOP_EVENT.is_set():
+            raise StopRequested()
+        now = time.time()
+        if on_slow and (now - last_hb) >= slow_every:
+            try: on_slow(int(now - start))
+            except Exception: pass
+            last_hb = now
+        t.join(timeout=poll)
+    if "err" in box:
+        raise box["err"]
+    return box.get("val")
+
 def _retry_after_seconds(exc):
     """Pull a Retry-After hint (seconds) from a provider exception, if any."""
     # OpenAI/Anthropic SDKs attach .response with headers; also check the message.
@@ -765,6 +799,27 @@ def validate_api_key(timeout=20):
             if cat in ("network", "timeout", "server", "overloaded"):
                 return False, cat
             return False, "error:" + friendly
+    if provider in OPENAI_COMPAT_PROVIDERS:
+        # Validate with a cheap GET /models rather than a chat-completion "ping".
+        # A ping cold-starts the SELECTED model, and large models (e.g. NVIDIA's
+        # 400B MoE) can take longer than `timeout` to return the first token —
+        # so Connect would time out even though the key is perfectly valid.
+        # /models proves the key + endpoint fast and never loads a model.
+        try:
+            _openai_compat_models_http(cfg.get("base_url"),
+                                       (cfg.get("api_key") or "").strip(), timeout)
+            return True, "ok"          # 200 (any model list, even empty) → key works
+        except Exception as e:
+            cat, friendly = classify_ai_error(e)
+            if cat == "auth":
+                return False, "auth"
+            if cat == "rate_limit":
+                return True, "ratelimited"
+            if cat == "credit":
+                return True, "credit"
+            if cat in ("network", "timeout", "server", "overloaded"):
+                return False, cat
+            return False, "error:" + friendly
     try:
         _ai_call_once(provider, cfg, "ping", [], 8, timeout)
         return True, "ok"
@@ -798,8 +853,9 @@ STATIC_MODELS = {
                   "claude-3-7-sonnet-latest", "claude-3-5-sonnet-latest"],
     "openai":    ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "o4-mini"],
     "gemini":    ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-1.5-pro", "gemini-1.5-flash"],
-    "nvidia":    ["meta/llama-3.1-70b-instruct", "meta/llama-3.1-405b-instruct",
-                  "qwen/qwen2.5-72b-instruct", "deepseek-ai/deepseek-r1",
+    "nvidia":    ["meta/llama-3.1-70b-instruct", "meta/llama-3.1-8b-instruct",
+                  "meta/llama-3.1-405b-instruct", "qwen/qwen2.5-72b-instruct",
+                  "qwen/qwen3-235b-a22b", "deepseek-ai/deepseek-r1",
                   "nvidia/llama-3.1-nemotron-70b-instruct"],
     "deepseek":  ["deepseek-chat", "deepseek-reasoner"],
     "qwen":      ["qwen-plus", "qwen-max", "qwen-turbo", "qwen-vl-max", "qwen-vl-plus"],
@@ -819,12 +875,15 @@ STATIC_MODELS = {
 }
 
 def _is_chat_model_id(provider, mid):
-    """Filter out non-chat model ids (embeddings, tts, image, moderation, …)."""
+    """Keep chat/VLM models; hide only clearly non-chat families (embeddings,
+    rerank, tts/audio, moderation/safety, OCR, and image/video GENERATORS). Uses
+    PRECISE markers (e.g. 'diffusion', 'flux') instead of a bare 'image' so that
+    vision/VLM CHAT models — like NVIDIA's qwen/qwen3.5-397b-a17b — are retrieved."""
     s = mid.lower()
-    bad = ("embedding", "embed", "whisper", "tts", "audio", "moderation",
-           "dall-e", "image", "vision-instruct-embed", "rerank", "guard",
-           "search", "similarity", "code-search", "davinci", "babbage", "ada",
-           "realtime", "transcribe")
+    bad = ("embedding", "embed", "whisper", "tts", "audio", "speech",
+           "moderation", "rerank", "guard", "safety", "transcribe", "ocr",
+           "dall-e", "diffusion", "flux", "sdxl", "stable-diffusion",
+           "text-to-image", "image-to-image", "code-search")
     if any(b in s for b in bad):
         return False
     if provider == "openai":
@@ -1623,13 +1682,30 @@ import time
 def _is_arabic_out():
     return OUTPUT_LANG != "en"
 
+def _coerce_step_list(data):
+    """Flatten an AI JSON result into a list of step dicts, tolerating the same
+    object-wrapping that JSON mode forces on OpenAI-compatible providers — e.g.
+    {"steps":[{...}]} or {"الخطوات":[{...}]}, or a single {...} step object."""
+    if isinstance(data, dict):
+        for k in ("steps", "test_steps", "الخطوات", "خطوات", "cases", "items"):
+            if isinstance(data.get(k), list):
+                data = data[k]
+                break
+        else:
+            lists = [v for v in data.values() if isinstance(v, list)]
+            data = lists[0] if lists else [data]   # a lone step object → wrap it
+    if not isinstance(data, list):
+        return []
+    return [it for it in data if isinstance(it, dict)]
+
+
 def generate_steps(tc_title, acceptance_criteria, ui_description="", log=None):
     if _is_arabic_out():
         ui_block = f"\n        وصف واجهة المستخدم (مستخلص من الصور):\n        {ui_description}\n" if ui_description else ""
         text = f"""
         أنت مهندس ضمان جودة (QA) خبير. أنشئ خطوات اختبار تفصيلية لحالة الاختبار التالية.
         اكتب جميع الخطوات باللغة العربية فقط.
-        أعد فقط مصفوفة JSON — بدون أي نص إضافي أو markdown.
+        أعد كائن JSON فقط يحتوي على مفتاح "steps" قيمته مصفوفة من الخطوات — بدون أي نص إضافي أو markdown.
         مهم: لا تستخدم علامات الاقتباس المزدوجة داخل قيم النصوص.
 
         قواعد صارمة لمنع الخطوات المكررة أو الزائدة:
@@ -1648,14 +1724,14 @@ def generate_steps(tc_title, acceptance_criteria, ui_description="", log=None):
         وصف الميزة: {FEATURE_DESCRIPTION}{ui_block}
 
         الصيغة:
-        [{{"precondition":"...","action":"...","expected":"..."}}]
+        {{"steps": [{{"precondition":"...","action":"...","expected":"..."}}]}}
     """
     else:
         ui_block = f"\n        UI description (extracted from screenshots):\n        {ui_description}\n" if ui_description else ""
         text = f"""
         You are an expert QA engineer. Generate detailed test steps for the following test case.
         Write ALL steps in English only.
-        Return ONLY a JSON array — no extra text or markdown.
+        Return ONLY a JSON object with a "steps" key whose value is an array of step objects — no extra text or markdown.
         Important: do not use double quotes inside the string values.
 
         Strict rules to prevent repeated / redundant steps:
@@ -1676,13 +1752,14 @@ def generate_steps(tc_title, acceptance_criteria, ui_description="", log=None):
         Feature description: {FEATURE_DESCRIPTION}{ui_block}
 
         Format:
-        [{{"precondition":"...","action":"...","expected":"..."}}]
+        {{"steps": [{{"precondition":"...","action":"...","expected":"..."}}]}}
     """
     time.sleep(1)
     last_err = None
     for attempt in range(5):
         try:
-            return parse_json_robust(ai_complete(text, max_tokens=4096, want_json=True))
+            return _coerce_step_list(parse_json_robust(
+                ai_complete(text, max_tokens=4096, want_json=True)))
         except CreditBalanceError:
             raise
         except Exception as e:
@@ -1785,7 +1862,45 @@ def update_test_case_with_steps(tc_id, steps_xml, project, story_id=None):
 # ═══════════════════════════════════════════════════════════════════════════════
 #  TITLES GENERATION
 # ═══════════════════════════════════════════════════════════════════════════════
-def generate_titles(story_title, criteria, existing_titles=None, log=None):
+def _coerce_title_list(data):
+    """Normalize an AI JSON result into a flat list of title strings.
+
+    Providers differ: some return a bare array ["t1","t2"], but OpenAI-compatible
+    endpoints in JSON mode (response_format=json_object) are REQUIRED to return an
+    object, so a model wraps the array under some key — e.g. {"titles":[...]} or,
+    worse, {"حالات الاختبار":[...]} (it invents a key). Iterating that dict would
+    yield the KEY as a single bogus 'title'. This coerces every shape:
+    array | {"titles":[...]}/{any:[...]} | [{"title": "..."}] → ["t1","t2",...]."""
+    if data is None:
+        return []
+    if isinstance(data, dict):
+        # prefer a recognizable key, else the first list value in the object
+        for k in ("titles", "test_cases", "testcases", "cases", "items",
+                  "results", "عناوين", "الحالات"):
+            v = data.get(k)
+            if isinstance(v, list):
+                data = v
+                break
+        else:
+            lists = [v for v in data.values() if isinstance(v, list)]
+            data = lists[0] if lists else [v for v in data.values() if isinstance(v, str)]
+    if not isinstance(data, list):
+        return []
+    out = []
+    for item in data:
+        if isinstance(item, dict):
+            t = (item.get("title") or item.get("name") or item.get("عنوان")
+                 or item.get("العنوان") or "")
+        else:
+            t = item
+        t = str(t or "").strip()
+        if t:
+            out.append(t)
+    return out
+
+
+def generate_titles(story_title, criteria, existing_titles=None, log=None,
+                    should_stop=None, on_slow=None):
     if _is_arabic_out():
         ct = criteria or "لا توجد معايير قبول. أنشئ عناوين عامة بناءً على العنوان."
         existing_block = ""
@@ -1794,12 +1909,12 @@ def generate_titles(story_title, criteria, existing_titles=None, log=None):
             existing_block = f"""
             حالات الاختبار التالية موجودة بالفعل لهذه القصة — لا تكررها:
 {listed}
-            أنشئ فقط عناوين لسيناريوهات جديدة. إذا كانت جميعها مغطاة، أعد مصفوفة فارغة [].
+            أنشئ فقط عناوين لسيناريوهات جديدة. إذا كانت جميعها مغطاة، أعد {{"titles": []}}.
         """
         prompt = f"""
         أنت مهندس QA خبير. أنشئ عناوين حالات اختبار لقصة المستخدم التالية.
         اكتب العناوين باللغة العربية فقط. لا تستخدم علامات اقتباس مزدوجة داخل النصوص.
-        أعد فقط مصفوفة JSON.
+        أعد كائن JSON فقط يحتوي على مفتاح "titles" قيمته مصفوفة من العناوين النصية.
 
         قواعد صارمة لمنع التكرار:
         - لا تنشئ عنوانين يختبران نفس السلوك بصياغة مختلفة. كل عنوان يجب أن يغطي
@@ -1817,7 +1932,7 @@ def generate_titles(story_title, criteria, existing_titles=None, log=None):
         العنوان: {story_title}
         معايير القبول: {ct}
         {existing_block}
-        الصيغة: ["عنوان 1","عنوان 2"]
+        الصيغة: {{"titles": ["عنوان 1","عنوان 2"]}}
     """
     else:
         ct = criteria or "No acceptance criteria. Generate general titles based on the title."
@@ -1827,12 +1942,12 @@ def generate_titles(story_title, criteria, existing_titles=None, log=None):
             existing_block = f"""
             The following test cases already exist for this story — do NOT duplicate them:
 {listed}
-            Only generate titles for NEW scenarios. If all are covered, return an empty array [].
+            Only generate titles for NEW scenarios. If all are covered, return {{"titles": []}}.
         """
         prompt = f"""
         You are an expert QA engineer. Generate test case titles for the following user story.
         Write the titles in English only. Do not use double quotes inside the text.
-        Return ONLY a JSON array.
+        Return ONLY a JSON object with a "titles" key whose value is an array of title strings.
 
         Strict rules to prevent duplication:
         - Do not create two titles that test the same behavior with different wording.
@@ -1850,23 +1965,35 @@ def generate_titles(story_title, criteria, existing_titles=None, log=None):
         Title: {story_title}
         Acceptance criteria: {ct}
         {existing_block}
-        Format: ["title 1","title 2"]
+        Format: {{"titles": ["title 1","title 2"]}}
     """
-    time.sleep(1)
+    should_stop = should_stop or (lambda: False)
+    _interruptible_sleep(1)
+    if should_stop() or _STOP_EVENT.is_set():
+        raise StopRequested()
     last_err = None
     for attempt in range(5):
+        if should_stop() or _STOP_EVENT.is_set():
+            raise StopRequested()
         try:
-            return parse_json_robust(ai_complete(prompt, max_tokens=4096, want_json=True))
+            # Run the (possibly slow) provider call stop-aware: Stop unwinds it at
+            # once instead of waiting out the request timeout, and on_slow lets the
+            # UI log a heartbeat while a large model is still generating.
+            return _coerce_title_list(parse_json_robust(_run_stopaware(
+                lambda: ai_complete(prompt, max_tokens=4096, want_json=True),
+                should_stop=should_stop, on_slow=on_slow)))
+        except StopRequested:
+            raise
         except CreditBalanceError:
             raise
         except Exception as e:
             last_err = e; es = str(e).lower()
             if "429" in es or "rate_limit" in es:
-                time.sleep(30*(attempt+1))
+                _interruptible_sleep(30*(attempt+1))
             elif any(k in es for k in ("500","502","503","cuda","out of memory","overloaded")):
-                time.sleep(10*(attempt+1))
+                _interruptible_sleep(10*(attempt+1))
             elif "empty response" in es or "cannot parse json" in es:
-                time.sleep(3)
+                _interruptible_sleep(3)
             else:
                 raise
     raise RuntimeError(f"Failed after 5 attempts: {last_err}")
@@ -2149,7 +2276,17 @@ def run_titles(project, plan_id, story_ids, cb, should_stop=lambda: False):
         if existing_titles:
             cb("log", {"msg": f"Suite already has {len(existing_titles)} test case(s) — only new added", "tone": "warn"})
         try:
-            titles = generate_titles(title, criteria, existing_titles, log=lambda m,t="warn": cb("log",{"msg":m,"tone":t}))
+            titles = generate_titles(
+                title, criteria, existing_titles,
+                log=lambda m, t="warn": cb("log", {"msg": m, "tone": t}),
+                should_stop=should_stop,
+                on_slow=lambda s: cb("log", {
+                    "msg": f"Still generating titles with {T_disp(AI_PROVIDER)} "
+                           f"({current_model() or 'model'}) — {s}s so far. Large models "
+                           f"on free tiers can be slow; click Stop to cancel.",
+                    "tone": "dim", "ico": "⏳"}))
+        except StopRequested:
+            break
         except CreditBalanceError:
             cb("done", {"summary": "Stopped — out of AI credits", "reason": "credit"}); return
         except Exception as e:
@@ -2272,8 +2409,17 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
         cb("log", {"msg": f"Suite {suite_id} is empty — generating test case titles…",
                    "tone": "dim", "ico": "▸"})
         try:
-            titles = generate_titles(s_title, s_criteria, [],
-                                     log=lambda m, t="warn": cb("log", {"msg": m, "tone": t}))
+            titles = generate_titles(
+                s_title, s_criteria, [],
+                log=lambda m, t="warn": cb("log", {"msg": m, "tone": t}),
+                should_stop=should_stop,
+                on_slow=lambda s: cb("log", {
+                    "msg": f"Still generating titles with {T_disp(AI_PROVIDER)} "
+                           f"({current_model() or 'model'}) — {s}s so far. Large models "
+                           f"on free tiers can be slow; click Stop to cancel.",
+                    "tone": "dim", "ico": "⏳"}))
+        except StopRequested:
+            break
         except CreditBalanceError:
             cb("done", {"summary": "Stopped — out of AI credits", "reason": "credit"}); return
         except Exception as e:
@@ -3554,41 +3700,47 @@ def compile_test_case(tc, story=None, log=None, case_type="interaction"):
                         "the user performs, each action ONCE."),
     }.get(case_type, "Emit the real action sequence, each action once.")
     prompt = (
-        "You convert ONE UI test case into an ordered list of atomic INTENTS for a "
-        "Selenium walker. The steps may be in Arabic or English and are often noisy: "
-        "preconditions written as steps, the same action restated across several "
-        "steps, or an action and its expected result merged together.\n\n"
+        "ROLE\n"
+        "You convert ONE UI test case into an ordered list of atomic INTENTS that a "
+        "Selenium walker executes step by step.\n\n"
+        "INPUT\n"
+        "The raw steps may be Arabic or English and are usually noisy: preconditions "
+        "written as steps, the same action restated across several steps, or an action "
+        "merged with its expected result. Read intent, don't transcribe literally.\n\n"
         f"CASE TYPE: {case_type} — {shape}\n\n"
-        "RULES:\n"
-        "- Output ONLY a JSON array, no markdown, no commentary.\n"
-        "- role='precondition' for environmental/state setup with NO UI action "
-        "(internet available, browser open, user is on page X). Do NOT invent a click for these.\n"
-        "- role='action' for ONE real UI operation: verb in "
-        "[navigate,click,type,select,hover,wait]. Collapse repeated/restated steps "
-        "that describe the SAME operation into a SINGLE action. Never emit the same "
-        "action twice in a row.\n"
-        "- role='assertion' for a verification/expected outcome. COLLAPSE assertions "
-        "hard: emit at most ONE assertion per distinct observable outcome, and never "
-        "two assertions in a row that check the same thing. Most cases need 1-2 "
-        "assertions total, NOT one per step. An assertion is NOT an action — never click for it.\n"
-        "- A custom dropdown (PrimeNG/Material, not a native <select>) is TWO actions: "
-        "click the trigger to open it, then click/select the option. For 'select' set "
-        "kind='menuitem' and value=the option's visible text (e.g. English / العربية).\n"
-        "- Total intents should be SMALL — roughly (distinct actions) + 1 or 2 "
-        "assertions. If your output has more assertions than actions, you over-split; redo it.\n"
-        "- 'keywords' = the literal visible text / aria-label / placeholder tokens the "
-        f"element most likely has, in the page language ({lang}); include both the "
-        "Arabic and an English guess when unsure. For ICON-ONLY buttons (no text), "
-        "also add likely icon-class tokens: globe, language, lang, flag, world, "
-        "translate. Keep 1-6 short tokens.\n"
-        "- 'kind' = the element type you expect.\n"
-        "- For empty-field validation steps (leave a field blank), emit a type action "
-        "with value='' so the walker leaves it empty.\n"
-        "- 'from_steps' MUST list the original step number(s) each intent came from.\n\n"
+        "OUTPUT\n"
+        'Return ONLY a JSON object shaped {"intents": [ <intent>, ... ]} — no markdown, '
+        "no commentary. Each <intent> object has exactly these fields:\n"
+        '  "role"      : "precondition" | "action" | "assertion"\n'
+        '  "verb"      : for role=action one of [navigate,click,type,select,hover,wait]; else ""\n'
+        '  "target"    : short human name of the element or goal\n'
+        '  "keywords"  : 1-6 short tokens of the element\'s visible text / aria-label / '
+        f'placeholder in the page language ({lang}); add an English guess when unsure; '
+        "for icon-only buttons add icon tokens (globe,language,lang,flag,world,translate)\n"
+        '  "kind"      : expected element type (button,input,link,menuitem,text,...)\n'
+        '  "value"     : text to type ("" for an empty-field check); for select = the option\'s visible text\n'
+        '  "check"     : optional assertion kind, else ""\n'
+        '  "expected"  : the expected-outcome text, if any, else ""\n'
+        '  "from_steps": array of the original step number(s) this intent came from\n\n'
+        "RULES\n"
+        "1) ROLES\n"
+        "   • precondition = environmental/state setup with NO UI action (internet up, "
+        "browser open, user already on page X). Never invent a click for these.\n"
+        "   • action = exactly ONE real UI operation. Collapse repeated/restated steps "
+        "for the SAME operation into a single action; never emit the same action twice in a row.\n"
+        "   • assertion = a verification of an outcome. Collapse hard: at most ONE per "
+        "distinct observable outcome; most cases need 1-2 assertions TOTAL, not one per "
+        "step. An assertion is never a click.\n"
+        "2) SIZE — total intents ≈ (distinct actions) + 1-2 assertions. If assertions "
+        "outnumber actions you over-split; redo it smaller.\n"
+        "3) CUSTOM DROPDOWN (PrimeNG/Material, not a native <select>) = TWO actions: "
+        "click the trigger to open it, then click the option. For the option set "
+        'kind="menuitem" and value = its visible text (e.g. English / العربية).\n'
+        '4) EMPTY-FIELD validation (leave a field blank) = a type action with value="".\n\n'
         f"TEST CASE TITLE: {tc.get('title','')}\n"
         f"ACCEPTANCE CRITERIA: {((story or {}).get('criteria') or '')[:800]}\n"
         f"RAW STEPS (JSON): {json.dumps(raw, ensure_ascii=False)[:5000]}\n\n"
-        'Example item: {"role":"action","verb":"click","target":"language switcher",'
+        'EXAMPLE intent: {"role":"action","verb":"click","target":"language switcher",'
         '"keywords":["اللغة","language","lang"],"kind":"button","value":"",'
         '"check":"","expected":"","from_steps":[4,5,6]}'
     )
@@ -3596,8 +3748,12 @@ def compile_test_case(tc, story=None, log=None, case_type="interaction"):
         out = parse_json_robust(ai_complete(prompt, max_tokens=2048, timeout=90,
                                             on_retry=lambda m: log(m, "dim"),
                                             want_json=True))
+        # JSON mode forces an object on OpenAI-compatible providers, so unwrap the
+        # intents array from whatever key the model used (it may invent one).
         if isinstance(out, dict):
-            out = out.get("intents") or out.get("items") or [out]
+            out = (out.get("intents") or out.get("items") or out.get("steps")
+                   or next((v for v in out.values() if isinstance(v, list)), None)
+                   or [])
         if not isinstance(out, list) or not out:
             return []
         clean = []
@@ -5848,24 +6004,56 @@ def _sh_pom(group_id, artifact_id):
 """.replace("__GID__", group_id).replace("__AID__", artifact_id))
 
 
-def _sh_config(pkg, base_url, login_url):
+def _healer_ai_meta():
+    """(provider, ai_base_url, model) for the generated runtime self-healer, taken
+    from the SAME AI connection used to generate the tests. Non-secret — baked into
+    Config; the API key is read from the environment at run time."""
+    prov = AI_PROVIDER
+    cfg = AI_CONFIG.get(prov, {})
+    model = current_model() or ""
+    if prov == "anthropic":
+        base = "https://api.anthropic.com"
+    elif prov == "gemini":
+        base = "https://generativelanguage.googleapis.com/v1beta"
+    else:  # openai-compatible (openai/nvidia/groq/cerebras/openrouter/deepseek/qwen/mistral/ollama)
+        base = (cfg.get("base_url") or "https://api.openai.com/v1")
+    return prov, base.rstrip("/"), model
+
+
+def _sh_config(pkg, base_url, login_url, ai_provider="anthropic",
+               ai_base_url="https://api.anthropic.com", ai_model="claude-sonnet-4-6"):
     return ("""package __PKG__.core;
 
-/** Runtime config. Secrets come from environment variables, never hard-coded. */
+/** Runtime config. Secrets come from environment variables, never hard-coded.
+ *  The AI provider/endpoint/model are baked from the QA Studio connection that
+ *  generated these tests; only the API KEY is read from the environment. */
 public final class Config {
     private Config() {}
     public static final String BASE_URL  = env("APP_BASE_URL",  "__BASE__");
     public static final String LOGIN_URL = env("APP_LOGIN_URL", "__LOGIN__");
     public static final String USER      = env("APP_USER",  "");
     public static final String PASS      = env("APP_PASS",  "");
-    public static final String API_KEY   = env("ANTHROPIC_API_KEY", "");
-    public static final String MODEL     = env("ANTHROPIC_MODEL", "claude-sonnet-4-6");
+    // ── AI self-healing (used only when a seed locator fails at run time) ──
+    public static final String AI_PROVIDER = env("QA_AI_PROVIDER", "__PROVIDER__");
+    public static final String AI_BASE_URL = env("QA_AI_BASE_URL", "__AI_BASE__");
+    public static final String MODEL       = env("QA_AI_MODEL",    "__MODEL__");
+    // Key: prefer the neutral QA_AI_API_KEY, else fall back to common provider vars.
+    public static final String API_KEY   = firstEnv("QA_AI_API_KEY", "ANTHROPIC_API_KEY",
+                                                     "OPENAI_API_KEY", "NVIDIA_API_KEY",
+                                                     "GROQ_API_KEY", "GEMINI_API_KEY");
     public static final boolean HEAL      = !API_KEY.isEmpty();
     private static String env(String k, String d) {
         String v = System.getenv(k); return (v == null || v.isEmpty()) ? d : v;
     }
+    private static String firstEnv(String... keys) {
+        for (String k : keys) { String v = System.getenv(k);
+            if (v != null && !v.isEmpty()) return v; }
+        return "";
+    }
 }
-""".replace("__PKG__", pkg).replace("__BASE__", base_url).replace("__LOGIN__", login_url))
+""".replace("__PKG__", pkg).replace("__BASE__", base_url).replace("__LOGIN__", login_url)
+   .replace("__PROVIDER__", ai_provider).replace("__AI_BASE__", ai_base_url)
+   .replace("__MODEL__", ai_model))
 
 
 def _sh_locator_store(pkg):
@@ -5904,7 +6092,7 @@ public final class LocatorStore {
 """.replace("__PKG__", pkg))
 
 
-def _sh_anthropic_client(pkg):
+def _sh_ai_client(pkg):
     return ("""package __PKG__.core;
 
 import com.fasterxml.jackson.databind.JsonNode;
@@ -5917,42 +6105,30 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.Map;
 
-/** Minimal Anthropic Messages API client used ONLY to pick a locator when a seed
- *  fails. Returns {"by","value"} or null. */
-public final class AnthropicClient {
+/** Provider-agnostic AI client used ONLY to pick a locator when a seed fails.
+ *  Speaks Anthropic, Gemini, or any OpenAI-compatible endpoint (OpenAI, NVIDIA,
+ *  Groq, Cerebras, OpenRouter, DeepSeek, Qwen, Mistral, Ollama) — chosen by
+ *  Config.AI_PROVIDER, which is baked from the connection that generated these
+ *  tests. Returns {"by","value"} or null. */
+public final class AiClient {
     private static final ObjectMapper M = new ObjectMapper();
     private static final HttpClient HTTP = HttpClient.newHttpClient();
 
-    /** Ask Claude to choose the best Selenium locator for `intentJson` from the
-     *  harvested `candidatesJson` (a JSON array of elements on the live page). */
     public static Map<String, String> pickLocator(String intentJson, String candidatesJson) {
         if (Config.API_KEY.isEmpty()) return null;
+        String prompt = "You resolve a Selenium locator for a UI test step that failed to "
+            + "find its element. Choose the ONE element that matches the intent and return a "
+            + "STABLE locator. Reply ONLY JSON: {\\"by\\":\\"id|name|cssSelector|xpath\\",\\"value\\":\\"...\\"}. "
+            + "Prefer id (non-generated) > data-testid/[data-svgicon] css > name > aria/text xpath. "
+            + "Never use framework ids like pn_id_*, cdk-, mat-, GUIDs.\\n\\nINTENT: " + intentJson
+            + "\\n\\nCANDIDATES: " + candidatesJson;
         try {
-            String prompt = "You resolve a Selenium locator for a UI test step that failed to "
-                + "find its element. Choose the ONE element that matches the intent and return a "
-                + "STABLE locator. Reply ONLY JSON: {\\"by\\":\\"id|name|cssSelector|xpath\\",\\"value\\":\\"...\\"}. "
-                + "Prefer id (non-generated) > data-testid/[data-svgicon] css > name > aria/text xpath. "
-                + "Never use framework ids like pn_id_*, cdk-, mat-, GUIDs.\\n\\nINTENT: " + intentJson
-                + "\\n\\nCANDIDATES: " + candidatesJson;
-            ObjectNode body = M.createObjectNode();
-            body.put("model", Config.MODEL);
-            body.put("max_tokens", 256);
-            ArrayNode msgs = body.putArray("messages");
-            ObjectNode m = msgs.addObject(); m.put("role", "user"); m.put("content", prompt);
-            HttpRequest req = HttpRequest.newBuilder()
-                .uri(URI.create("https://api.anthropic.com/v1/messages"))
-                .header("x-api-key", Config.API_KEY)
-                .header("anthropic-version", "2023-06-01")
-                .header("content-type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(M.writeValueAsString(body)))
-                .build();
-            HttpResponse<String> resp = HTTP.send(req, HttpResponse.BodyHandlers.ofString());
-            if (resp.statusCode() / 100 != 2) {
-                System.out.println("[heal] API error " + resp.statusCode() + ": " + resp.body());
-                return null;
-            }
-            JsonNode root = M.readTree(resp.body());
-            String text = root.path("content").path(0).path("text").asText("");
+            String p = Config.AI_PROVIDER == null ? "" : Config.AI_PROVIDER.toLowerCase();
+            String text;
+            if (p.equals("anthropic"))      text = callAnthropic(prompt);
+            else if (p.equals("gemini"))    text = callGemini(prompt);
+            else                            text = callOpenAICompatible(prompt);
+            if (text == null || text.isEmpty()) return null;
             int a = text.indexOf('{'), b = text.lastIndexOf('}');
             if (a < 0 || b < a) return null;
             JsonNode loc = M.readTree(text.substring(a, b + 1));
@@ -5963,6 +6139,73 @@ public final class AnthropicClient {
             System.out.println("[heal] pickLocator failed: " + e.getMessage());
             return null;
         }
+    }
+
+    private static String base() {
+        String b = Config.AI_BASE_URL == null ? "" : Config.AI_BASE_URL;
+        while (b.endsWith("/")) b = b.substring(0, b.length() - 1);
+        return b;
+    }
+
+    private static String send(HttpRequest req) throws Exception {
+        HttpResponse<String> resp = HTTP.send(req, HttpResponse.BodyHandlers.ofString());
+        if (resp.statusCode() / 100 != 2) {
+            System.out.println("[heal] API error " + resp.statusCode() + ": " + resp.body());
+            return null;
+        }
+        return resp.body();
+    }
+
+    private static ObjectNode chatBody(String prompt) {
+        ObjectNode body = M.createObjectNode();
+        body.put("model", Config.MODEL);
+        body.put("max_tokens", 256);
+        ArrayNode msgs = body.putArray("messages");
+        ObjectNode msg = msgs.addObject(); msg.put("role", "user"); msg.put("content", prompt);
+        return body;
+    }
+
+    /** OpenAI-compatible /chat/completions (OpenAI, NVIDIA, Groq, Cerebras, …). */
+    private static String callOpenAICompatible(String prompt) throws Exception {
+        HttpRequest req = HttpRequest.newBuilder()
+            .uri(URI.create(base() + "/chat/completions"))
+            .header("Authorization", "Bearer " + Config.API_KEY)
+            .header("content-type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(M.writeValueAsString(chatBody(prompt))))
+            .build();
+        String resp = send(req);
+        if (resp == null) return null;
+        return M.readTree(resp).path("choices").path(0).path("message").path("content").asText("");
+    }
+
+    private static String callAnthropic(String prompt) throws Exception {
+        HttpRequest req = HttpRequest.newBuilder()
+            .uri(URI.create(base() + "/v1/messages"))
+            .header("x-api-key", Config.API_KEY)
+            .header("anthropic-version", "2023-06-01")
+            .header("content-type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(M.writeValueAsString(chatBody(prompt))))
+            .build();
+        String resp = send(req);
+        if (resp == null) return null;
+        return M.readTree(resp).path("content").path(0).path("text").asText("");
+    }
+
+    private static String callGemini(String prompt) throws Exception {
+        ObjectNode body = M.createObjectNode();
+        ArrayNode contents = body.putArray("contents");
+        ArrayNode parts = contents.addObject().putArray("parts");
+        parts.addObject().put("text", prompt);
+        String url = base() + "/models/" + Config.MODEL + ":generateContent?key=" + Config.API_KEY;
+        HttpRequest req = HttpRequest.newBuilder()
+            .uri(URI.create(url))
+            .header("content-type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(M.writeValueAsString(body)))
+            .build();
+        String resp = send(req);
+        if (resp == null) return null;
+        return M.readTree(resp).path("candidates").path(0).path("content")
+                 .path("parts").path(0).path("text").asText("");
     }
 }
 """.replace("__PKG__", pkg))
@@ -6003,9 +6246,9 @@ public final class Healer {
             if (e != null) return e;
         }
         if (Config.HEAL) {
-            System.out.println("[heal] resolving '" + key + "' via Anthropic API");
+            System.out.println("[heal] resolving '" + key + "' via AI (" + Config.AI_PROVIDER + ")");
             String dom = harvest();
-            Map<String, String> picked = AnthropicClient.pickLocator(intentJson, dom);
+            Map<String, String> picked = AiClient.pickLocator(intentJson, dom);
             if (picked != null) {
                 By by = toBy(picked.get("by"), picked.get("value"));
                 WebElement e = tryFind(by);
@@ -6018,7 +6261,7 @@ public final class Healer {
             }
         }
         throw new NoSuchElementException("Could not resolve step '" + key
-            + "'. Seed=" + seed + ". Set ANTHROPIC_API_KEY to enable healing.");
+            + "'. Seed=" + seed + ". Set QA_AI_API_KEY (or your provider's key) to enable AI healing.");
     }
 
     public void act(String key, String verb, By seed, String intentJson, String value) {
@@ -6183,17 +6426,24 @@ def _sh_gitignore():
 def _sh_readme(base_url, login_url):
     return ("""# QA Studio — self-healing automation
 
-Generated by QA Studio. QA Studio did NOT drive a browser; locators are resolved
-at RUNTIME: each step has a seed locator, and when it fails, the framework asks the
-Anthropic API to pick the right element from the live DOM, then caches it in
-`locators-cache.json` (reused on later runs, so the AI is called at most once per step).
+Generated by QA Studio. Each step has a seed locator captured at generation time,
+and when it fails at RUNTIME the framework asks your AI provider to pick the right
+element from the live DOM, then caches it in `locators-cache.json` (reused on later
+runs, so the AI is called at most once per step).
+
+The AI provider, endpoint and model are baked into `Config.java` from the QA Studio
+connection you generated with (e.g. Anthropic, NVIDIA, Groq, OpenAI, Gemini). Only
+the API KEY is read from the environment — healing runs as a SEPARATE process here,
+so it needs its own key (QA Studio isn't running when `mvn test` executes).
 
 ## Run
 1. Set environment variables (never hard-code secrets):
-   - `ANTHROPIC_API_KEY`  (enables healing; without it, only seed locators are used)
+   - `QA_AI_API_KEY`  — key for the baked-in provider (enables healing; without it,
+     only seed locators are used). Provider-specific vars also work as fallbacks:
+     `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `NVIDIA_API_KEY`, `GROQ_API_KEY`, `GEMINI_API_KEY`.
    - `APP_USER`, `APP_PASS`  (login credentials)
    - optional `APP_BASE_URL` (default __BASE__), `APP_LOGIN_URL` (default __LOGIN__),
-     `ANTHROPIC_MODEL` (default claude-sonnet-4-6)
+     and to override the baked AI target: `QA_AI_PROVIDER`, `QA_AI_BASE_URL`, `QA_AI_MODEL`.
 2. `mvn test`
 
 ## Sequence
@@ -6337,14 +6587,16 @@ def build_selfhealing_project(out_dir, sequenced, base_url, login=None,
             f.write(content)
         written.append(os.path.relpath(path, out_dir))
 
-    cb("Writing self-healing framework (Config, Healer, Anthropic client)\u2026", "dim")
+    _ai_prov, _ai_base, _ai_model = _healer_ai_meta()
+    cb(f"Writing self-healing framework (Config, Healer, AI client \u00b7 {_ai_prov})\u2026", "dim")
     _w(os.path.join(out_dir, "pom.xml"), _sh_pom(group_id, artifact_id))
     _w(os.path.join(out_dir, ".gitignore"), _sh_gitignore())
     _w(os.path.join(out_dir, "README.md"), _sh_readme(base_url, login_url))
     _w(os.path.join(src_main, "DriverFactory.java"), _driver_factory(pkg))
-    _w(os.path.join(src_main, "Config.java"), _sh_config(pkg, base_url, login_url))
+    _w(os.path.join(src_main, "Config.java"),
+       _sh_config(pkg, base_url, login_url, _ai_prov, _ai_base, _ai_model))
     _w(os.path.join(src_main, "LocatorStore.java"), _sh_locator_store(pkg))
-    _w(os.path.join(src_main, "AnthropicClient.java"), _sh_anthropic_client(pkg))
+    _w(os.path.join(src_main, "AiClient.java"), _sh_ai_client(pkg))
     _w(os.path.join(src_main, "Healer.java"), _sh_healer(pkg))
     _w(os.path.join(src_test, "BaseTest.java"), _sh_base_test(pkg))
     _w(os.path.join(res_dir, "harvest.js"), _HARVEST_JS)
