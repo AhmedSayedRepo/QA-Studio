@@ -80,15 +80,16 @@ OPENAI_COMPAT_PROVIDERS = ("openai", "nvidia", "deepseek", "qwen",
 FEATURE_DESCRIPTION = ""   # optional global feature context for step generation
 
 # Email
-GMAIL_SENDER   = "wsstestteam2@gmail.com"
+GMAIL_SENDER      = "wsstestteam2@gmail.com"
+GMAIL_SENDER_NAME = "QA Studio"    # display name recipients see: From: "Name" <email>
 GMAIL_APP_PASS = ""
 
 # Runtime credentials (set by the UI)
 AZURE_PAT = ""
 
 def set_credentials(provider=None, api_key=None, pat=None, gmail=None,
-                    org=None, gmail_sender=None, model=None):
-    global AI_PROVIDER, AZURE_PAT, GMAIL_APP_PASS, AZURE_ORG, GMAIL_SENDER
+                    org=None, gmail_sender=None, model=None, gmail_sender_name=None):
+    global AI_PROVIDER, AZURE_PAT, GMAIL_APP_PASS, AZURE_ORG, GMAIL_SENDER, GMAIL_SENDER_NAME
     if provider:
         AI_PROVIDER = provider
     if api_key and AI_PROVIDER in AI_CONFIG:
@@ -105,6 +106,8 @@ def set_credentials(provider=None, api_key=None, pat=None, gmail=None,
         AZURE_ORG = org.strip()
     if gmail_sender:
         GMAIL_SENDER = gmail_sender.strip()
+    if gmail_sender_name is not None:
+        GMAIL_SENDER_NAME = gmail_sender_name.strip()
 
 def current_model(provider=None):
     """Return the configured model id for a provider (or the active one)."""
@@ -2796,9 +2799,12 @@ def send_report(to_addrs, subject, html_body, attachments=None):
     if not GMAIL_APP_PASS or not to_addrs:
         return False, "No Gmail password or recipients configured."
     # multipart/related so the HTML can reference the logo as cid:qastudio-logo
+    from email.utils import formataddr
     msg = MIMEMultipart("related")
     msg["Subject"] = subject
-    msg["From"] = GMAIL_SENDER
+    # Show a friendly display name to the recipient: From: "QA Studio" <addr>.
+    # A blank name falls back to the bare address.
+    msg["From"] = formataddr(((GMAIL_SENDER_NAME or "").strip(), GMAIL_SENDER))
     msg["To"] = ", ".join(to_addrs) if isinstance(to_addrs, list) else to_addrs
     _alt = MIMEMultipart("alternative")
     _alt.attach(MIMEText(html_body, "html"))

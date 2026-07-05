@@ -84,6 +84,7 @@ class QAStudio:
             _saved_sender = (self.creds.get("gmail_sender") or "").strip()
             E.set_credentials(org=_saved_org or None,
                               gmail_sender=_saved_sender or None,
+                              gmail_sender_name=self.creds.get("gmail_sender_name"),
                               gmail=self.creds.get("gmail") or None)
         except Exception:
             pass
@@ -2167,6 +2168,15 @@ class QAStudio:
             content_padding=ft.Padding.symmetric(vertical=12, horizontal=12), text_size=13, expand=True)
         self.sender_btn = green_btn("Save", on_click=self._save_sender) if sender_editable                      else ghost_btn("Update", on_click=self._unlock_sender)
 
+        # Sender DISPLAY NAME — what recipients see instead of the raw address.
+        self.sender_name_field = ft.TextField(
+            value=(self.creds.get("gmail_sender_name") or E.GMAIL_SENDER_NAME),
+            hint_text="Display name recipients see (e.g. QA Studio)",
+            on_change=self._save_sender_name,
+            border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
+            content_padding=ft.Padding.symmetric(vertical=12, horizontal=12),
+            text_size=13, expand=True)
+
         return ft.Column([
             field_label("AI Provider", req=True, info="How to make a provider active",
                         on_info=lambda e: self._show_help("provider")),
@@ -2196,6 +2206,9 @@ class QAStudio:
             ft.Container(height=12),
             field_label("Email Sender", hint="optional"),
             ft.Container(ft.Row([hover_field(self.sender_field), self.sender_btn], spacing=8),
+                        padding=ft.Padding.only(top=4, bottom=12)),
+            field_label("Sender name", hint="shown to recipients instead of the address"),
+            ft.Container(hover_field(self.sender_name_field),
                         padding=ft.Padding.only(top=4, bottom=12)),
             ft.Row([
                 ft.Column([
@@ -2580,6 +2593,20 @@ class QAStudio:
             pass
         self._sender_unlocked = False
         self._toast("Email sender saved."); self.render()
+
+    def _save_sender_name(self, e=None):
+        """Persist the sender DISPLAY NAME (From: 'Name' <address>) as the user
+        types, and apply it immediately for the next email."""
+        val = ((e.control.value if e else self.sender_name_field.value) or "").strip()
+        self.creds["gmail_sender_name"] = val
+        try:
+            store.save(self.creds)
+        except Exception:
+            pass
+        try:
+            E.set_credentials(gmail_sender_name=val)
+        except Exception:
+            pass
 
     def _unlock_sender(self, e=None):
         self._sender_unlocked = True; self.render()
