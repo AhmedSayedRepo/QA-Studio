@@ -517,7 +517,44 @@ def login_gate(app):
     # Expose the backdrop layer so the app's top-level gesture layer can drive
     # the mouse-move parallax (see render() / _login_parallax).
     app._login_bg_layer = bg_layer
-    _stack = ft.Stack([bg_layer, content, footer], expand=True)
+
+    # ── update banner (top, with shadow) — shown when a newer version exists ──
+    _upd = getattr(app, "_update_info", None)
+    # kick a one-time background check so the banner can appear before sign-in
+    if _upd is None and not getattr(app, "_login_update_checked", False):
+        app._login_update_checked = True
+        try:
+            import threading as _th
+            _th.Thread(target=app._run_update_check, daemon=True).start()
+        except Exception:
+            pass
+    _layers = [bg_layer, content, footer]
+    if (_upd or {}).get("update") and not getattr(app, "_update_dismissed", False):
+        _rem = (_upd or {}).get("remote") or "new"
+        def _dismiss(e):
+            app._update_dismissed = True
+            try: app.render()
+            except Exception: pass
+        _banner = ft.Container(
+            ft.Row([
+                ft.Icon(ft.Icons.SYSTEM_UPDATE_ALT, size=18, color="#FFFFFF"),
+                ft.Text("Update available — v%s. Sign in, then use "
+                        "“Check updates” to install." % _rem,
+                        size=13, weight=ft.FontWeight.W_700, color="#FFFFFF", expand=True),
+                ft.Container(ft.Icon(ft.Icons.CLOSE, size=16, color="#FFFFFF"),
+                             on_click=_dismiss, ink=True, border_radius=7, padding=6,
+                             tooltip="Dismiss"),
+            ], spacing=11, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            left=0, right=0, top=0,
+            padding=ft.Padding.symmetric(vertical=12, horizontal=28),
+            gradient=ft.LinearGradient(begin=ft.Alignment.CENTER_LEFT,
+                                       end=ft.Alignment.CENTER_RIGHT,
+                                       colors=["#7C5CFF", "#22D3EE"]),
+            shadow=ft.BoxShadow(blur_radius=22, spread_radius=0,
+                                offset=ft.Offset(0, 8),
+                                color=ft.Colors.with_opacity(0.5, "#000000")))
+        _layers.append(_banner)
+    _stack = ft.Stack(_layers, expand=True)
     # Mouse-move parallax via a GestureDetector wrapping the whole login
     # (on_hover passed as a constructor arg for reliable registration).
     try:

@@ -4682,15 +4682,20 @@ class QAStudio:
                 # serial fetch_test_case_steps per test case — slow on big sets).
                 _all_tcids = [tc["id"] for lst in story_tcs.values() for tc in lst]
                 steps_map = {}
-                def _steps(tcid):
+                title_map = {}
+                def _detail(tcid):
+                    # title + steps in one work-item call (the suite listing carries
+                    # only the id, so the title must be fetched here for the classifier)
                     try:
-                        return tcid, E.fetch_test_case_steps(tcid)
+                        t, st = E.fetch_test_case_detail(tcid)
+                        return tcid, t, st
                     except Exception:
-                        return tcid, []
+                        return tcid, "", []
                 if _all_tcids:
                     with _cf.ThreadPoolExecutor(max_workers=min(16, len(_all_tcids))) as _ex:
-                        for _tcid, _st in _ex.map(_steps, _all_tcids):
+                        for _tcid, _title, _st in _ex.map(_detail, _all_tcids):
                             steps_map[_tcid] = _st
+                            title_map[_tcid] = _title
 
                 # Assemble in the original story order.
                 for s in stories:
@@ -4703,7 +4708,9 @@ class QAStudio:
                     for tc in story_tcs.get(sid, []):
                         steps = steps_map.get(tc["id"], [])
                         total_steps += len(steps)
-                        tcs.append({"id": tc["id"], "title": tc["title"], "steps": steps})
+                        tcs.append({"id": tc["id"],
+                                    "title": (tc.get("title") or title_map.get(tc["id"], "")),
+                                    "steps": steps})
                     total_tc += len(tcs)
                     stories_payload.append({
                         "story": {"id": sid, "title": title, "criteria": criteria},

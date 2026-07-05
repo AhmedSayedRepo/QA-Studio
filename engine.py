@@ -1735,6 +1735,21 @@ def fetch_test_case_steps(tc_id):
         return []
 
 
+def fetch_test_case_detail(tc_id):
+    """Title + parsed steps for one test case in a single work-item call. The suite
+    listing is fetched with witFields=System.Id (fast bulk counting), so it carries
+    NO title — the automation path uses this to get the real case name AND steps,
+    which the classifier needs to place each case on the right page."""
+    try:
+        wi = _wit_client.get_work_item(
+            tc_id, fields=["System.Title", "Microsoft.VSTS.TCM.Steps"])
+        f = wi.fields or {}
+        title = f.get("System.Title", "") or ""
+        return title, parse_steps_xml(f.get("Microsoft.VSTS.TCM.Steps", "") or "")
+    except Exception:
+        return "", []
+
+
 
 import time
 
@@ -3547,9 +3562,14 @@ def _infer_page_context(tc, case_type="interaction"):
     inference is visible in the activity feed."""
     if case_type == "negative_login":
         return "login"
-    blob = _norm(_tc_blob(tc))
-    if any(_norm(k) in blob for k in _LOGIN_PAGE_KWS):
+    # Login keywords in the STEPS are almost always a "log in first" PRECONDITION,
+    # not the thing under test — so infer page context from the TITLE (the case's
+    # real intent). Otherwise every app case with a login precondition would be
+    # dragged onto the login page (→ everything "logged-out", 0 app cases).
+    title = _norm(tc.get("title", ""))
+    if any(_norm(k) in title for k in _LOGIN_PAGE_KWS):
         return "login"
+    blob = _norm(_tc_blob(tc))
     # a language case described as a DROPDOWN / choose-between is the login page;
     # the in-app control is a single toggle with no dropdown.
     lang = any(_norm(k) in blob for k in ("اللغة", "لغة", "language", "locale"))
@@ -5305,12 +5325,13 @@ def validate_and_sequence_suite(stories_payload, log=None, want_ai=True,
             # those fields don't exist (guaranteed failure). Pull it back to a
             # logged-out login bucket.
             if bucket == 3:
-                _blob = _norm(" ".join(
-                    [i.get("target", "") for i in intents]
-                    + [w for i in intents for w in (i.get("keywords") or [])]
-                    + [tc.get("title", "")]))
+                # Only pull an app case back to the login page when its TITLE says it's
+                # about login. A login PRECONDITION in the steps/intents (present in
+                # almost every app case) must NOT drag a real app case onto the login
+                # page — that's what made every case land "logged-out".
+                _blob = _norm(tc.get("title", ""))
                 if any(s in _blob for s in ("password", "username", "كلمة المرور",
-                                            "كلمه المرور", "البريد", "تسجيل الدخول",
+                                            "كلمه المرور", "تسجيل الدخول",
                                             "login button", "login field", "login submit")):
                     bucket = 0
                     pctx = "login"
