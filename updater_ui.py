@@ -20,46 +20,55 @@ def banner(app):
     local = info.get("local", "")
     if app._updating:
         inner = ft.Row([
-            ft.ProgressRing(width=16, height=16, stroke_width=2, color="#FFFFFF"),
-            ft.Text("Updating…", size=12.5, color="#FFFFFF", weight=ft.FontWeight.BOLD),
+            ft.ProgressRing(width=16, height=16, stroke_width=2, color=T.VIOLET_INK),
+            ft.Text("Updating…", size=12.5, color=T.VIOLET_INK, weight=ft.FontWeight.BOLD),
         ], spacing=10)
     else:
         update_btn = ft.Container(
             ft.Row([
-                ft.Icon(ft.Icons.DOWNLOAD, size=16, color=T.VIOLET_INK),
-                ft.Text("Update now", size=13, color=T.VIOLET_INK,
+                ft.Icon(ft.Icons.DOWNLOAD, size=16, color="#FFFFFF"),
+                ft.Text("Update now", size=13, color="#FFFFFF",
                         weight=ft.FontWeight.BOLD),
             ], spacing=8, tight=True),
-            bgcolor="#FFFFFF", border_radius=T.R_SM,
+            bgcolor=T.VIOLET, border_radius=T.R_SM,
             padding=ft.Padding.symmetric(horizontal=18, vertical=11),
             on_click=lambda e: app._do_update(), ink=True,
             tooltip="Download and install the latest version",
+            animate_scale=ft.Animation(110, ft.AnimationCurve.EASE_OUT),
             shadow=ft.BoxShadow(blur_radius=14, spread_radius=-4,
                                 offset=ft.Offset(0, 4),
-                                color=ft.Colors.with_opacity(0.30, "#160F2E")))
+                                color=ft.Colors.with_opacity(0.35, T.VIOLET)))
+
+        def _btn_hover(e, _b=update_btn):
+            on = e.data in (True, "true", "True")
+            _b.bgcolor = T.VIOLET_H if on else T.VIOLET
+            _b.scale = 1.04 if on else 1.0
+            try: _b.update()
+            except Exception: pass
+        update_btn.on_hover = _btn_hover
         inner = ft.Row([
-            ft.Container(ft.Icon(ft.Icons.SYSTEM_UPDATE_ALT, size=17, color="#FFFFFF"),
+            ft.Container(ft.Icon(ft.Icons.SYSTEM_UPDATE_ALT, size=17, color=T.VIOLET_INK),
                          width=32, height=32, border_radius=9,
-                         bgcolor=ft.Colors.with_opacity(0.18, "#FFFFFF"),
+                         bgcolor=ft.Colors.with_opacity(0.16, T.VIOLET),
                          alignment=ft.Alignment.CENTER),
             ft.Column([
-                ft.Text("Update available", size=12.5, color="#FFFFFF",
+                ft.Text("Update available", size=12.5, color=T.VIOLET_INK,
                         weight=ft.FontWeight.BOLD),
                 ft.Text(f"Version {remote} is ready \u2014 you\u2019re on {local}",
                         size=11, weight=ft.FontWeight.W_500,
-                        color=ft.Colors.with_opacity(0.82, "#FFFFFF")),
+                        color=ft.Colors.with_opacity(0.85, T.VIOLET_INK)),
             ], spacing=1, expand=True),
             update_btn,
-            ft.IconButton(ft.Icons.CLOSE, icon_size=16,
-                          icon_color=ft.Colors.with_opacity(0.85, "#FFFFFF"),
+            ft.IconButton(ft.Icons.CLOSE, icon_size=16, icon_color=T.VIOLET_INK,
                           tooltip="Dismiss",
                           on_click=lambda e: app._dismiss_update()),
         ], spacing=13, vertical_alignment=ft.CrossAxisAlignment.CENTER)
-    return ft.Container(inner, bgcolor=T.VIOLET,
+    # Theme-adaptive surface (soft cyan in light, dark teal in dark) with a CRISP
+    # bottom rule — NO blurry drop shadow, which was the soft "uncrisp / empty
+    # reserved" band under the banner.
+    return ft.Container(inner, bgcolor=T.VIOLET_SOFT,
                         padding=ft.Padding.symmetric(horizontal=18, vertical=11),
-                        shadow=ft.BoxShadow(blur_radius=18, spread_radius=-6,
-                                            offset=ft.Offset(0, 6),
-                                            color=ft.Colors.with_opacity(0.30, T.VIOLET)))
+                        border=ft.Border.only(bottom=ft.BorderSide(1.5, T.VIOLET)))
 
 def dismiss_update(app):
     app._update_dismissed = True
