@@ -526,18 +526,18 @@ def login_gate(app):
     # the mouse-move parallax (see render() / _login_parallax).
     app._login_bg_layer = bg_layer
 
-    # Kick a one-time background update check so render()'s top banner can appear
-    # BEFORE sign-in. render() already wraps EVERY view — including this one — with
-    # the update banner, so we must NOT add a second banner here (doing so stacked
-    # two banners and left a strip / "space" under the top one).
-    if getattr(app, "_update_info", None) is None and \
-       not getattr(app, "_login_update_checked", False):
-        app._login_update_checked = True
-        try:
-            import threading as _th
+    # RE-CHECK for updates whenever the login screen renders (throttled to ~12s), so
+    # a version published while the app sits on login pops the banner promptly. A
+    # one-time / stale-guarded check meant a version bumped AFTER the first check
+    # never showed. render() already wraps every view — including this one — with the
+    # banner, so we don't build one here; we just keep the check fresh.
+    try:
+        import time as _tt, threading as _th
+        if _tt.time() - getattr(app, "_login_update_check_ts", 0) > 12:
+            app._login_update_check_ts = _tt.time()
             _th.Thread(target=app._run_update_check, daemon=True).start()
-        except Exception:
-            pass
+    except Exception:
+        pass
 
     _stack = ft.Stack([bg_layer, content, footer], expand=True)
     # Mouse-move parallax via a GestureDetector wrapping the whole login
