@@ -1750,6 +1750,17 @@ def fetch_test_case_detail(tc_id):
         return "", []
 
 
+def fetch_test_case_title(tc_id):
+    """Just the title for one test case. The suite listing is fetched with
+    witFields=System.Id (fast counting) and carries no name, so the Run/Report
+    paths use this to show real case titles instead of 'No Title'."""
+    try:
+        wi = _wit_client.get_work_item(tc_id, fields=["System.Title"])
+        return (wi.fields or {}).get("System.Title", "") or ""
+    except Exception:
+        return ""
+
+
 
 import time
 
@@ -2533,6 +2544,21 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
         except Exception:
             pass
 
+    # Titles: the suite listing carries only the work-item id (witFields=System.Id),
+    # so fetch each case's title CONCURRENTLY → real titles in the log/report instead
+    # of "No Title".
+    _title_map = {}
+    _tc_ids = [i for i in (tc.get("workItem", {}).get("id")
+                           for tc, _, _ in suite_test_cases) if i]
+    if _tc_ids:
+        try:
+            import concurrent.futures as _cf
+            with _cf.ThreadPoolExecutor(max_workers=min(16, len(_tc_ids))) as _ex:
+                for _tid, _t in _ex.map(lambda i: (i, fetch_test_case_title(i)), _tc_ids):
+                    _title_map[_tid] = _t
+        except Exception:
+            pass
+
     total = len(suite_test_cases)
     # Count stories that actually have test cases to process
     _stories_with_tc = set(sid for _, sid, _ in suite_test_cases)
@@ -2563,7 +2589,8 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
         if should_stop(): break
         _tc_start = time.time()
         wi = tc.get("workItem", {})
-        tc_id = wi.get("id"); tc_title = wi.get("name", "No Title")
+        tc_id = wi.get("id")
+        tc_title = wi.get("name") or _title_map.get(tc_id) or "No Title"
         ctx = story_ctx.get(story_id, {})
         criteria = ctx.get("criteria", "")
 
@@ -5267,6 +5294,7 @@ def validate_and_sequence_suite(stories_payload, log=None, want_ai=True,
     out = []
     _total = sum(len(sp.get("test_cases", []) or []) for sp in stories_payload)
     _done = 0
+    _todo_running = 0
     log("Sequencing %d test case(s) — this is the slow part (one AI pass each)…"
         % _total, "info")
     for sp in stories_payload:
@@ -5282,8 +5310,13 @@ def validate_and_sequence_suite(stories_payload, log=None, want_ai=True,
             if gate and not gate():   # manual pause point (returns False on stop)
                 return out
             _done += 1
-            log("Sequencing case %d/%d — %s" % (_done, _total,
-                (tc.get("title", "") or "").strip()[:55] or "(untitled)"), "dim")
+            # Counter (LTR) and the case title on SEPARATE lines — so an Arabic (RTL)
+            # title renders right-aligned on its own line instead of fighting the
+            # left-to-right "Sequencing case k/N" text.
+            log("Sequencing case %d/%d" % (_done, _total), "dim")
+            _ctitle = (tc.get("title", "") or "").strip()
+            if _ctitle:
+                log("  %s" % _ctitle[:90], "dim")
             ctype = _classify_case(tc)
             pctx = _infer_page_context(tc, ctype)
             # bucket + priority
@@ -5356,6 +5389,10 @@ def validate_and_sequence_suite(stories_payload, log=None, want_ai=True,
                     continue
             cases.append({"tc": tc, "title": tc.get("title", ""), "ctype": ctype,
                           "page_context": pctx, "bucket": bucket, "intents": intents})
+            # live TODO tally — grows as each case is sequenced (hidden control line
+            # the UI reads to update the TODO counter without cluttering the log).
+            _todo_running += _count_null_seeds(bucket, intents)
+            log("TODO_LIVE: %d" % _todo_running, "meta")
         # synthesize a successful-login transition if app cases exist but no
         # explicit positive-login case was authored
         if has_app and not has_positive_login:
@@ -5402,6 +5439,30 @@ def _seed_locator_for_intent(intent):
         tag = {"menuitem": "a", "link": "a", "button": "button"}.get(kind, "*")
         return ("xpath", '//%s[normalize-space()="%s"]' % (tag, label), False)
     return ("cssSelector", "TODO_RESOLVE_AT_RUNTIME", False)
+
+
+def _count_null_seeds(bucket, intents):
+    """How many of a case's intents become RUNTIME-resolved locators (no stable
+    seed) — i.e. the TODO tally. Mirrors _emit_intent's filtering so the live count
+    matches what the specs actually emit (precondition = no locator; a null-seed
+    text/message assertion becomes assertText = no locator; bucket-2 action intents
+    are handled by performLogin)."""
+    n = 0
+    for intent in intents:
+        role = intent.get("role")
+        if role == "precondition":
+            continue
+        if bucket == 2 and role == "action":
+            continue
+        _, val, _ = _seed_locator_for_intent(intent)
+        if val != "TODO_RESOLVE_AT_RUNTIME":
+            continue
+        if role == "assertion":
+            kind = (intent.get("kind") or "").lower()
+            if kind in ("text", "message", "menu", "validation", "error") or not kind:
+                continue
+        n += 1
+    return n
 
 
 def _sh_pom(group_id, artifact_id):
@@ -6238,6 +6299,7 @@ def build_selfhealing_project(out_dir, sequenced, base_url, login=None,
 
     test_classes = []
     seed_sink = {}                      # generation-time locators → committed locators.json
+    _todo_total = 0                     # locators marked // TODO (resolved at runtime)
     for entry in sequenced:
         if should_stop():
             break
@@ -6249,6 +6311,7 @@ def build_selfhealing_project(out_dir, sequenced, base_url, login=None,
            f"({len(entry['cases'])} case(s))", "dim")
         java, cls = generate_selfhealing_test_class(story, entry["cases"], pkg,
                                                     seed_sink=seed_sink)
+        _todo_total += java.count(", null,")   # null seed = resolved at runtime (TODO)
         tpath = os.path.join(src_test, "%s.java" % cls)
         prior = m.get("stories", {}).get(sid) or {}
         wrote, chash = _guarded_write_test_class(tpath, java, prior.get("hash"), cb)
@@ -6283,6 +6346,9 @@ def build_selfhealing_project(out_dir, sequenced, base_url, login=None,
     # remove any generated file we no longer own (renamed core class, dropped story).
     _write_seed_locators(out_dir, seed_sink, cb)
     _prune_generated_orphans(out_dir, pkg, m, cb)
+    cb(f"TODO_LIVE: {_todo_total}", "meta")   # reconcile the live counter to the emitted total
+    cb(f"TODO: {_todo_total} locator(s) to resolve at runtime "
+       f"(the rest are seeded).", "warn")
     cb(f"Wrote {len(written)} files, {len(test_classes)} test class(es) this run.", "ok")
     return written
 

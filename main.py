@@ -4373,6 +4373,14 @@ class QAStudio:
         """Live-update the bound value and clear the red invalid state as soon as
         the user types into a previously-empty required field."""
         setattr(self, attr, ctrl.value)
+        # Persist automation inputs IMMEDIATELY (like the PAT/org fields) so a
+        # changed folder/URL survives an app restart or re-login. Previously these
+        # only saved on leave/generate, so a new path could silently revert to the
+        # old one and the next run would write to the wrong folder.
+        try:
+            self._save_git_creds()
+        except Exception:
+            pass
         inv = getattr(self, "_auto_invalid", None)
         if inv and attr in inv and (ctrl.value or "").strip():
             inv.discard(attr)
@@ -4388,19 +4396,10 @@ class QAStudio:
         return automation.screen(self)
 
     def _auto_count(self):
-        """Derive Live / Snapshot / Guess / TODO tallies from the activity log,
-        keyed off the exact outcome markers the explorer emits."""
-        live = snap = guess = 0
-        for ln in self._auto_log:
-            s = (ln.get("msg", "") or "").strip()
-            if s.startswith("SNAPSHOT:"):
-                snap += 1
-            elif s.startswith("GUESS:"):
-                guess += 1
-            elif s.startswith(("typed into", "clicked", "selected on")) or \
-                 (s.startswith("matched ") and "left the page" in s):
-                live += 1
-        return {"live": live, "snapshot": snap, "guess": guess, "todo": snap + guess}
+        """TODO tally = locators the generated tests resolve at RUNTIME (no stable
+        seed found). Updated live during sequencing via hidden `TODO_LIVE: N` control
+        lines, and reconciled to the emitted total when the project is written."""
+        return {"todo": getattr(self, "_auto_todo", 0)}
 
     def _auto_counts_header(self):
         c = self._auto_count()
@@ -4416,33 +4415,60 @@ class QAStudio:
                 bgcolor=soft, border_radius=T.R, expand=True,
                 alignment=ft.Alignment.CENTER)
         return ft.Row([
-            chip("live", "Live", T.GREEN, T.GREEN_SOFT),
-            chip("snapshot", "Snap", T.AMBER, T.AMBER_SOFT),
-            chip("guess", "Guess", T.RED, T.RED_SOFT),
-            chip("todo", "TODO", T.VIOLET, T.VIOLET_SOFT),
+            chip("todo", "TODO — locators resolved at runtime", T.VIOLET, T.VIOLET_SOFT),
         ], spacing=7)
 
     def _auto_log_line(self, msg, tone):
         cmap = {"ok": T.GREEN, "err": T.RED, "warn": T.AMBER, "story": T.VIOLET_INK,
-                "dim": T.INK_3, "info": T.INK_2}
+                "info": T.VIOLET_INK, "dim": T.INK_3}
         color = cmap.get(tone, T.INK_2)
         stripped = (msg or "").lstrip(" ")
         indent = len(msg or "") - len(stripped)
         pad = min(indent, 8) * 3
         is_ar = any("\u0600" <= ch <= "\u06ff" for ch in stripped)
-        weight = ft.FontWeight.BOLD if tone == "story" else ft.FontWeight.W_500
-        dot = ft.Container(width=6, height=6, border_radius=3, bgcolor=color,
-                           margin=ft.Margin.only(top=5))
+        weight = ft.FontWeight.BOLD if tone in ("story", "ok") else ft.FontWeight.W_500
+        # tone symbol, matching the Run activity log (icon + colour, not a plain dot)
+        if tone == "ok":
+            sym = ft.Icon(ft.Icons.CHECK, size=13, color=T.GREEN)
+        elif tone == "err":
+            sym = ft.Icon(ft.Icons.CLOSE, size=13, color=T.RED)
+        elif tone == "warn":
+            sym = ft.Text("\u26a0", size=12, color=T.AMBER, weight=ft.FontWeight.BOLD)
+        elif tone == "story":
+            sym = ft.Text("\u25b8", size=13, color=T.VIOLET_INK, weight=ft.FontWeight.BOLD)
+        elif tone == "info":
+            sym = ft.Icon(ft.Icons.PLAY_ARROW, size=13, color=T.VIOLET_INK)
+        else:  # dim (and unknown): a subtle bullet
+            sym = ft.Container(width=6, height=6, border_radius=3, bgcolor=T.INK_3)
+        sym_wrap = ft.Container(sym, width=16, alignment=ft.Alignment.CENTER,
+                                margin=ft.Margin.only(top=2))
         txt = ft.Text(stripped, size=12, color=color, weight=weight,
                       font_family=(T.F_AR if is_ar else (T.F_MONO if tone in ("dim", "info") else None)),
                       text_align=(ft.TextAlign.RIGHT if is_ar else ft.TextAlign.LEFT),
                       expand=True)
         return ft.Container(
-            ft.Row([dot, ft.Container(width=8), txt], spacing=0,
+            ft.Row([sym_wrap, ft.Container(width=4), txt], spacing=0,
                    vertical_alignment=ft.CrossAxisAlignment.START),
             padding=ft.Padding.only(left=pad, top=1, bottom=1))
 
     def _auto_logmsg(self, msg, tone="dim"):
+        # 'TODO_LIVE: N' is a HIDDEN control line — update the TODO counter in place
+        # (live, as cases are sequenced) without adding a visible log entry.
+        if (msg or "").startswith("TODO_LIVE:"):
+            try:
+                self._auto_todo = int((msg.split(":", 1)[1] or "0").strip().split()[0])
+            except Exception:
+                pass
+            def _upd_todo():
+                ctl = getattr(self, "_auto_count_ctl", None)
+                if ctl and "todo" in ctl:
+                    try:
+                        ctl["todo"].value = str(getattr(self, "_auto_todo", 0))
+                        ctl["todo"].update()
+                    except Exception:
+                        pass
+            self.ui_safe(_upd_todo)
+            return
         # drop consecutive duplicate lines (e.g. repeated "Paused…" notices)
         if self._auto_log and self._auto_log[-1].get("msg") == msg:
             return
@@ -4641,6 +4667,7 @@ class QAStudio:
             pass
         self._auto_built = False
         self._auto_log = []
+        self._auto_todo = 0          # live TODO tally, reset for this run
         self.render()
 
         def cb(msg, tone="dim"):
@@ -4729,6 +4756,10 @@ class QAStudio:
 
                 # 2) decide what needs (re)generating vs what we keep
                 project_dir = self._auto_project_dir()
+                # Show exactly where we're writing — the 'Save project to folder'
+                # value (created if missing). Makes it obvious if it's not the folder
+                # you expected (e.g. an old path left in the field).
+                cb(f"Output folder: {project_dir}", "info")
                 new_ids, grew_ids, done_ids, new_tcs = E.classify_selection(
                     project_dir, stories_payload)
                 reeval = set()
@@ -4747,16 +4778,18 @@ class QAStudio:
                         cb("Cancelled - existing tests untouched.", "warn"); return
                     reeval = decision["reeval"]
 
-                # only stories we will (re)generate need a live walk; for a 'grew'
-                # story walk just its NEW test cases. Kept stories are skipped.
+                # Which stories to (re)generate. The deterministic emitter REWRITES
+                # the whole spec/class from the cases it's given, so a 'grew' story
+                # must pass ALL its cases (old + new) — otherwise only the new ones
+                # survive and the existing cases are dropped. Kept (done) stories are
+                # skipped entirely. Difference between the two choices: 'Keep & add
+                # new' leaves DONE stories untouched; 'Re-evaluate with AI' also
+                # regenerates them.
                 walk_payload = []
                 for sp in stories_payload:
                     sid = str(sp["story"]["id"])
-                    if sid in new_ids or sid in reeval:
+                    if sid in new_ids or sid in reeval or sid in grew_ids:
                         walk_payload.append(sp)
-                    elif sid in grew_ids:
-                        walk_payload.append({"story": sp["story"],
-                                             "test_cases": new_tcs.get(sid, [])})
 
                 # 2) Generate a SELF-HEALING project from the stories — no browser.
                 #    Locators are seeded (stable where known, // TODO otherwise) and
@@ -4795,9 +4828,21 @@ class QAStudio:
                     cb("Stopped.", "warn"); return
                 self._auto_built = True
                 _hprov = T.disp_name(getattr(self, "_provider_choice", "") or "")
-                cb(f"Done — review the activity, then Push to Git. Before `mvn test` in "
-                   f"IntelliJ, set QA_AI_API_KEY (your {_hprov} key), APP_USER and APP_PASS "
-                   f"so the generated tests can self-heal locators at runtime.", "ok")
+                _tgt = getattr(self, "_auto_target", "selenium")
+                if _tgt == "selenium":
+                    cb(f"Done — review the activity, then Push to Git. In IntelliJ set "
+                       f"QA_AI_API_KEY (your {_hprov} key), APP_USER and APP_PASS, then run "
+                       f"`mvn test`. The report lands in target/surefire-reports; self-healing "
+                       f"resolves the TODO locators at runtime.", "ok")
+                else:
+                    _setup = ("npm install && npx playwright install"
+                              if _tgt == "playwright" else "npm install")
+                    _rep = ("npx playwright show-report" if _tgt == "playwright"
+                            else "open cypress/reports/index.html")
+                    cb(f"Done — review the activity, then Push to Git. Run `{_setup}`, put "
+                       f"QA_AI_API_KEY (your {_hprov} key), APP_USER and APP_PASS in .env, then "
+                       f"`npm test`. Self-healing resolves the TODO locators at runtime; open the "
+                       f"report with `{_rep}`.", "ok")
             except Exception as ex:
                 cb(f"Automation failed: {str(ex)[:200]}", "err")
             finally:
@@ -4812,6 +4857,30 @@ class QAStudio:
                 self.ui_safe(self.render)
 
         self._bg(work)
+
+    def _browse_auto_folder(self, e=None):
+        """Native folder picker for the automation project folder — lets the user
+        select an EXISTING generated project to push (a forgotten run) without
+        regenerating, or set where the next run writes."""
+        try:
+            fp = getattr(self, "_auto_folder_picker", None)
+            if fp is None:
+                def _picked(ev):
+                    p = getattr(ev, "path", None)
+                    if p:
+                        self.auto_local_path = p
+                        try:
+                            self._save_git_creds()
+                        except Exception:
+                            pass
+                        self.ui_safe(self.render)
+                fp = ft.FilePicker(on_result=_picked)
+                self._auto_folder_picker = fp
+                self.page.overlay.append(fp)
+                self.page.update()
+            fp.get_directory_path(dialog_title="Select the automation project folder")
+        except Exception:
+            self._toast("Folder picker isn't available here — paste the path instead.")
 
     def _push_automation(self):
         import os as _os

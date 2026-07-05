@@ -3,10 +3,11 @@
 Extracted from main.py (Step-4 modular refactor). screen(app) builds the
 automation panel; regression.locked_state gates access.
 """
+import os
 import flet as ft
 import theme as T
 import regression
-from ui import card, empty_state, sec_head, _btn_shadow, primary_btn, green_btn
+from ui import card, empty_state, sec_head, _btn_shadow, primary_btn, green_btn, ghost_btn
 
 
 def screen(app):
@@ -108,13 +109,17 @@ def screen(app):
         ], spacing=0))
 
         local_card = card(ft.Column([
-            sec_head("D", "Local copy (optional)"),
+            sec_head("D", "Project folder (needed to Push to Git)"),
             ft.Container(height=10),
             app._auto_field("Save project to folder", "auto_local_path",
                              r"e.g. C:\Users\you\IdeaProjects\automation-tests"),
-            ft.Container(height=4),
-            ft.Text("If set, the generated project is also copied here so you can "
-                    "open it directly in your IDE. Leave blank to use a temp folder.",
+            ft.Container(height=8),
+            ft.Row([ghost_btn("Browse…", icon=ft.Icons.FOLDER_OPEN,
+                              on_click=app._browse_auto_folder)], spacing=8),
+            ft.Container(height=6),
+            ft.Text("The generated project is written here so you can open it in your "
+                    "IDE. Pick an EXISTING project folder to Push a forgotten run to Git "
+                    "without regenerating. Leave blank to use a temp folder.",
                     size=11, color=T.INK_3, weight=ft.FontWeight.W_500),
         ], spacing=0))
 
@@ -163,7 +168,13 @@ def screen(app):
                 icon=ft.Icons.AUTO_AWESOME, expand=True, disabled=gen_disabled,
                 on_click=lambda e: app._start_automation())
 
-        push_disabled = app._auto_running or not app._auto_built
+        # Push is enabled ANYTIME a real project folder + Git repo/token are set —
+        # so a forgotten/earlier run can be pushed without regenerating — not only
+        # right after a generation.
+        _proj = (app.auto_local_path or "").strip()
+        _can_push = bool(_proj and os.path.isdir(_proj)
+                         and app.auto_git_url.strip() and app.auto_git_token.strip())
+        push_disabled = app._auto_running or not (_can_push or app._auto_built)
         push_btn = green_btn("Push to Git", icon=ft.Icons.CLOUD_UPLOAD_OUTLINED,
                              expand=True, on_click=lambda e: app._push_automation())
         # grey it out visually when disabled
