@@ -1598,6 +1598,17 @@ def _sprint_num(text):
     return re.sub(r"\s+", " ", m.group(0)).strip() if m else ""
 
 
+def _repaint_unless_open(app, open_attr):
+    """Repaint the screen — but if the named dropdown is OPEN, DEFER the render.
+    A full render rebuilds the open multiselect panel and snaps its list back to
+    the top (the 'scroll up on tick' bug). The picker's close (field-click OR
+    click-away) flushes the pending render via app._flush_deferred_render()."""
+    if getattr(app, open_attr, False):
+        app._deferred_render = True
+    else:
+        app.ui_safe(app.render)
+
+
 def _reload_plan_stories(app):
     """Aggregate the user stories that live in the currently-selected test plans
     (their requirement suites). Runs off the UI thread."""
@@ -1612,10 +1623,10 @@ def _reload_plan_stories(app):
     if not plans:
         app._reg_plan_stories = []
         app._reg_stories_loading = False
-        app.ui_safe(app.render)
+        _repaint_unless_open(app, "_reg_plan_open")
         return
     app._reg_stories_loading = True
-    app.ui_safe(app.render)
+    _repaint_unless_open(app, "_reg_plan_open")
 
     def _work():
         import concurrent.futures as _cf_reload
@@ -1681,7 +1692,7 @@ def _reload_plan_stories(app):
             return
         app._reg_plan_stories = agg
         app._reg_stories_loading = False
-        app.ui_safe(app.render)
+        _repaint_unless_open(app, "_reg_plan_open")
     threading.Thread(target=_work, daemon=True).start()
 
 
@@ -2024,12 +2035,12 @@ def _cp_load_stories(app):
     if not paths:
         app._cp_rows = []
         app._cp_stories_loading = False
-        app.ui_safe(app.render)
+        _repaint_unless_open(app, "_cp_sprint_open")
         return
     app._cp_stories_loading = True
     app._cp_rows = []
     app._cp_table_page = 0
-    app.ui_safe(app.render)
+    _repaint_unless_open(app, "_cp_sprint_open")
 
     def _work():
         import concurrent.futures as _cf
@@ -2102,7 +2113,7 @@ def _cp_load_stories(app):
         # this background completion would force a full (heavy) render of whatever
         # screen they navigated to, which reads as a freeze.
         if getattr(app, "active", None) == "testplan":
-            app.ui_safe(app.render)
+            _repaint_unless_open(app, "_cp_sprint_open")
     threading.Thread(target=_work, daemon=True).start()
 
 
@@ -2248,8 +2259,12 @@ def _create_screen(app):
         _after_sprint_change()
 
     def _open_sprints():
-        app._cp_sprint_open = not app._cp_sprint_open
-        # flag synced; in-place toggle handled by the component itself
+        was = app._cp_sprint_open
+        app._cp_sprint_open = not was
+        # On CLOSE, flush any repaint deferred while the panel was open (loaded
+        # stories/count show now; the panel is closed, so nothing jumps).
+        if was and not app._cp_sprint_open:
+            app._flush_deferred_render()
 
     sprint_picker = (
         ft.Container(_txt("Loading sprints…", color=T.INK_3, size=12), padding=10)
@@ -2816,6 +2831,9 @@ def _create_screen(app):
         _cp_status_cell[0] = _cp_export_status
 
         def _email(e):
+            if getattr(app, "_cp_emailing", False):
+                app._toast("Already sending — please wait…")
+                return
             to = [a.strip() for a in re.split(r"[,\s;]+", (email_field.value or ""))
                   if a.strip()]
             if not to:
@@ -2828,14 +2846,21 @@ def _create_screen(app):
             app._cp_emailing = True
             app._cp_msg = None
             app._toast("Sending the sprint plan…")
+            _b = getattr(app, "_cp_send_btn", None)   # grey the button IN PLACE (no full render)
+            if _b is not None:
+                try: _b.disabled = True; _b.opacity = 0.55; _b.update()
+                except Exception: pass
 
             def work():
                 try:
                     d = plan_payload(app)
-                    try:
-                        attach = [export_docx(app)]
-                    except Exception:
-                        attach = []
+                    # Auto-attach the Excel plan (primary) alongside the Word doc.
+                    attach = []
+                    for _exp in (export_xlsx, export_docx):
+                        try:
+                            attach.append(_exp(app))
+                        except Exception:
+                            pass
                     subj = f"Sprint Plan — {d['plan_name'] or d['project']}"
                     ok, err = E.send_report(to, subj, _plan_html(d), attachments=attach)
                     kind = "ok" if ok else "err"
@@ -2843,8 +2868,13 @@ def _create_screen(app):
                 except Exception as ex:
                     kind, text = "err", f"Email failed: {str(ex)[:160]}"
                 app._cp_emailing = False
-                app.ui_safe(lambda k=kind, t=text: (app._toast(t) if k == "ok"
-                                                    else app._err(t)))
+                def _fin(k=kind, t=text):
+                    _b2 = getattr(app, "_cp_send_btn", None)   # re-enable IN PLACE
+                    if _b2 is not None:
+                        try: _b2.disabled = False; _b2.opacity = 1.0; _b2.update()
+                        except Exception: pass
+                    app._toast(t) if k == "ok" else app._err(t)
+                app.ui_safe(_fin)
             threading.Thread(target=work, daemon=True).start()
 
         email_field = ft.TextField(
@@ -2853,14 +2883,11 @@ def _create_screen(app):
             expand=True, text_size=13, border_color=T.BORDER,
             focused_border_color=T.VIOLET, border_radius=T.R,
             content_padding=ft.Padding.symmetric(vertical=12, horizontal=10))
+        app._cp_send_btn = green_btn("Email plan", icon=ft.Icons.SEND, on_click=_email)
         email_row = ft.Column([
             ft.Text("EMAIL", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
             ft.Container(height=8),
-            ft.Row([hover_field(email_field),
-                    green_btn("Sending…" if app._cp_emailing else "Email plan",
-                              icon=ft.Icons.SEND,
-                              on_click=(None if app._cp_emailing else _email))],
-                   spacing=8),
+            ft.Row([hover_field(email_field), app._cp_send_btn], spacing=8),
         ], spacing=0)
 
         def _assign_testers(e):
@@ -3371,6 +3398,9 @@ def screen(app):
         app._reg_email_to = (email_field.value or "").strip()
 
     def _email(e):
+        if getattr(app, "_reg_emailing", False):
+            app._toast("Already sending — please wait…")
+            return
         if not app._reg_selected_rows:
             app._err("Calculate the plan first.")
             return
@@ -3386,6 +3416,10 @@ def screen(app):
         app._reg_emailing = True
         app._reg_export_msg = None
         app._toast("Sending the regression plan…")
+        _b = getattr(app, "_reg_send_btn", None)   # grey the button IN PLACE (no full render)
+        if _b is not None:
+            try: _b.disabled = True; _b.opacity = 0.55; _b.update()
+            except Exception: pass
 
         def work():
             try:
@@ -3398,10 +3432,13 @@ def screen(app):
                     for p in (app._reg_plans_selected or [])).strip(", ")
                 if trimmed:
                     d["plan_name"] = trimmed
-                try:
-                    attach = [export_docx(app)]
-                except Exception:
-                    attach = []
+                # Auto-attach the Excel plan (primary) alongside the Word doc.
+                attach = []
+                for _exp in (export_xlsx, export_docx):
+                    try:
+                        attach.append(_exp(app))
+                    except Exception:
+                        pass
                 subj = f"Regression Test Plan — {d['plan_name'] or d['project']}"
                 ok, err = E.send_report(to, subj, _plan_html(d), attachments=attach)
                 kind = "ok" if ok else "err"
@@ -3409,7 +3446,13 @@ def screen(app):
             except Exception as ex:
                 kind, text = "err", f"Email failed: {ex}"
             app._reg_emailing = False
-            app.ui_safe(lambda: (app._toast(text) if kind == "ok" else app._err(text)))
+            def _fin():
+                _b2 = getattr(app, "_reg_send_btn", None)   # re-enable IN PLACE
+                if _b2 is not None:
+                    try: _b2.disabled = False; _b2.opacity = 1.0; _b2.update()
+                    except Exception: pass
+                app._toast(text) if kind == "ok" else app._err(text)
+            app.ui_safe(_fin)
         threading.Thread(target=work, daemon=True).start()
 
     # ── validation ──
@@ -3454,9 +3497,12 @@ def screen(app):
         _reload_plan_stories(app)
 
     def _open_plans():
-        app._reg_plan_open = not app._reg_plan_open
+        was = app._reg_plan_open
+        app._reg_plan_open = not was
         app._reg_story_open = False
-        # flag synced; in-place toggle handled by the component itself
+        # On CLOSE, flush any repaint deferred while the panel was open.
+        if was and not app._reg_plan_open:
+            app._flush_deferred_render()
 
     plan_picker = (
         _loading_field("Loading test plans…")
@@ -3996,16 +4042,14 @@ def screen(app):
             expand=True, text_size=13, border_color=T.BORDER,
             focused_border_color=T.VIOLET, border_radius=T.R,
             content_padding=ft.Padding.symmetric(vertical=12, horizontal=10))
+        app._reg_send_btn = green_btn("Send", icon=ft.Icons.SEND, on_click=_email)
         email_row = ft.Column([
             ft.Divider(height=20, color=T.BORDER),
             ft.Text("EMAIL THE PLAN", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
             ft.Container(height=8),
-            ft.Row([email_field,
-                    green_btn("Sending…" if app._reg_emailing else "Send",
-                              icon=ft.Icons.SEND, on_click=_email)],
-                   spacing=10),
-            ft.Text("Attaches the Word plan and an inline summary. Uses the Gmail "
-                    "sender configured on Setup.", size=11, color=T.INK_3,
+            ft.Row([hover_field(email_field), app._reg_send_btn], spacing=10),
+            ft.Text("Attaches the Excel + Word plan and an inline summary. Uses the "
+                    "Gmail sender configured on Setup.", size=11, color=T.INK_3,
                     weight=ft.FontWeight.W_500),
         ], spacing=6)
 

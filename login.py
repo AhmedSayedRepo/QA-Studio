@@ -136,24 +136,37 @@ def login_gate(app):
             except Exception:
                 p = None
         _cover = getattr(getattr(ft, "ImageFit", None), "COVER", None)
+        # HIGH filter quality → the 2752x1536 / 2048x1142 photo is resampled with
+        # good interpolation when it's scaled to fill a high-DPI (Retina/4K) window,
+        # so it stays crisp instead of looking soft/low-res. Guarded: not every Flet
+        # build exposes FilterQuality / accepts the kwarg.
+        _fq = getattr(getattr(ft, "FilterQuality", None), "HIGH", None)
         # Paint the image as a CONTAINER background (DecorationImage) so it
         # cover-fills the whole window reliably. A plain ft.Image won't stretch
         # to fill a Stack on this Flet build (leaves gutters), which is the
         # bug that left gray/dark bands around the photo.
         _base = "#05060F" if dark else T.BG
         if p and hasattr(ft, "DecorationImage"):
-            try:
-                di = (ft.DecorationImage(src=p, fit=_cover) if _cover
-                      else ft.DecorationImage(src=p))
-                return ft.Container(expand=True, image=di, bgcolor=_base)
-            except Exception:
-                pass
+            for _kw in ([dict(src=p, fit=_cover, filter_quality=_fq)] if (_cover and _fq) else []) \
+                       + ([dict(src=p, fit=_cover)] if _cover else []) + [dict(src=p)]:
+                try:
+                    return ft.Container(expand=True, image=ft.DecorationImage(**_kw), bgcolor=_base)
+                except Exception:
+                    continue
         if p:
             try:
                 W = int(app.page.width or 0) or 1440
                 H = int(app.page.height or 0) or 900
-                return (ft.Image(src=p, width=W, height=H, fit=_cover) if _cover
-                        else ft.Image(src=p, width=W, height=H))
+                _ik = dict(src=p, width=W, height=H)
+                if _cover:
+                    _ik["fit"] = _cover
+                if _fq:
+                    _ik["filter_quality"] = _fq
+                try:
+                    return ft.Image(**_ik)
+                except Exception:
+                    _ik.pop("filter_quality", None)
+                    return ft.Image(**_ik)
             except Exception:
                 pass
         return ft.Container(expand=True, bgcolor=_base)

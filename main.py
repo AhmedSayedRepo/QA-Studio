@@ -825,7 +825,9 @@ class QAStudio:
                     ink=True, padding=ft.Padding.symmetric(vertical=10, horizontal=12),
                     margin=ft.Margin.only(left=10, right=10, bottom=4),
                     border_radius=10, bgcolor=ft.Colors.with_opacity(0.04, "#FFFFFF"),
-                    border=ft.Border.all(1, T.RAIL_LINE)),
+                    border=ft.Border.all(1, T.RAIL_LINE),
+                    offset=ft.Offset(0, 0), animate_offset=140,
+                    on_hover=self._rail_btn_hover(ft.Colors.with_opacity(0.04, "#FFFFFF"))),
                 # Settings entry — shown only to users permitted to open it.
                 (ft.Container(
                     ft.Row([
@@ -842,7 +844,10 @@ class QAStudio:
                     border_radius=10,
                     bgcolor=(ft.Colors.with_opacity(0.16, T.VIOLET) if self.active == "settings"
                              else ft.Colors.with_opacity(0.04, "#FFFFFF")),
-                    border=ft.Border.all(1, T.RAIL_LINE))
+                    border=ft.Border.all(1, T.RAIL_LINE),
+                    offset=ft.Offset(0, 0), animate_offset=140,
+                    on_hover=(self._rail_btn_hover(ft.Colors.with_opacity(0.04, "#FFFFFF"))
+                              if self.active != "settings" else None))
                  if self.can("nav.settings") else ft.Container(height=0)),
                 # theme toggle (light default · dark secondary)
                 ft.Container(
@@ -861,7 +866,9 @@ class QAStudio:
                     ink=True, padding=ft.Padding.symmetric(vertical=10, horizontal=12),
                     margin=ft.Margin.only(left=10, right=10, bottom=4),
                     border_radius=10, bgcolor=ft.Colors.with_opacity(0.04, "#FFFFFF"),
-                    border=ft.Border.all(1, T.RAIL_LINE)),
+                    border=ft.Border.all(1, T.RAIL_LINE),
+                    offset=ft.Offset(0, 0), animate_offset=140,
+                    on_hover=self._rail_btn_hover(ft.Colors.with_opacity(0.04, "#FFFFFF"))),
                 ft.Container(
                     ft.Row([
                         ft.Container(
@@ -1154,12 +1161,17 @@ class QAStudio:
             body.disabled = bool(getattr(self, "readonly", False))
         except Exception:
             pass
-        _is_col_scroller = (isinstance(body, ft.Column)
-                            and getattr(body, "scroll", None) is not None)
-        if _is_col_scroller:
+        # Track the body's PRIMARY scrollable column so _restore_scroll can reapply
+        # its offset after a full render — even when the scroller is nested (an open
+        # multiselect panel, or a Row body like Setup). This is what stops the
+        # dropdown list / page from snapping to the top on select.
+        scroller = (body if (isinstance(body, ft.Column)
+                             and getattr(body, "scroll", None) is not None)
+                    else self._find_scroller(body))
+        if scroller is not None:
             try:
-                body.on_scroll = self._track_scroll
-                self._left_scroll = body
+                scroller.on_scroll = self._track_scroll
+                self._left_scroll = scroller
             except Exception:
                 pass
         HEADER_H = 94
@@ -3415,10 +3427,51 @@ class QAStudio:
         except Exception:
             pass
 
+    def _flush_deferred_render(self):
+        """Render if a repaint was deferred while a dropdown was open (so loaded
+        stories/counts appear once the picker closes — without rebuilding the open
+        panel mid-select and snapping its list to the top)."""
+        if getattr(self, "_deferred_render", False):
+            self._deferred_render = False
+            self.ui_safe(self.render)
+            return True
+        return False
+
     def _rail_nav_column(self, nav_items):
-        # Plain scrollable nav list. Its scroll position is NOT preserved across a
-        # re-render (Flet resets it) — accepted; the brand stays pinned above it.
-        return ft.Column(nav_items, spacing=2, expand=True, scroll=ft.ScrollMode.AUTO)
+        # Scrollable nav list; the same instance is stored each render so
+        # _restore_scroll can reapply the remembered offset (no jump on select).
+        self._rail_scroll = ft.Column(
+            nav_items, spacing=2, expand=True, scroll=ft.ScrollMode.AUTO,
+            key="rail_scroll", on_scroll=self._track_rail_scroll)
+        return self._rail_scroll
+
+    def _track_rail_scroll(self, e):
+        try:
+            self._rail_scroll_offset = e.pixels
+        except Exception:
+            pass
+
+    def _find_scroller(self, ctrl, depth=0):
+        """Depth-first search for the FIRST scrollable Column inside a control tree.
+        Lets the shell track the real scroller even when it's nested under a Row /
+        Container, so scroll (incl. an open multiselect panel) survives a re-render."""
+        if ctrl is None or depth > 7:
+            return None
+        try:
+            if isinstance(ctrl, ft.Column) and getattr(ctrl, "scroll", None) is not None:
+                return ctrl
+        except Exception:
+            return None
+        for attr in ("content", "controls"):
+            child = getattr(ctrl, attr, None)
+            if child is None:
+                continue
+            items = child if isinstance(child, (list, tuple)) else [child]
+            for it in items:
+                found = self._find_scroller(it, depth + 1)
+                if found is not None:
+                    return found
+        return None
 
     def _restore_scroll(self):
         # Restore scroll after a full render so opening a dropdown / ticking a
@@ -3430,16 +3483,25 @@ class QAStudio:
         # settles. The closure re-reads _left_scroll each time so it always acts
         # on the freshest reference (in case another render fires mid-flight).
         off = getattr(self, "_scroll_offset", 0) or 0
-        if not off:
+        rail_off = getattr(self, "_rail_scroll_offset", 0) or 0
+        if not off and not rail_off:
             return
 
         def _do():
-            col = getattr(self, "_left_scroll", None)
-            if col is not None:
-                try:
-                    col.scroll_to(offset=off, duration=0)
-                except Exception:
-                    pass
+            if off:
+                col = getattr(self, "_left_scroll", None)
+                if col is not None:
+                    try:
+                        col.scroll_to(offset=off, duration=0)
+                    except Exception:
+                        pass
+            if rail_off:
+                rc = getattr(self, "_rail_scroll", None)
+                if rc is not None:
+                    try:
+                        rc.scroll_to(offset=rail_off, duration=0)
+                    except Exception:
+                        pass
             try:
                 self.page.update()
             except Exception:
@@ -3489,6 +3551,11 @@ class QAStudio:
                 self.page.update()
             except Exception:
                 pass
+        # Panels are closed now → flush any repaint deferred while one was open
+        # (so freshly-loaded sprint/plan stories + counts appear). Safe: with the
+        # panels closed the render can't jump an open list.
+        if changed:
+            self._flush_deferred_render()
 
     def _safe_render(self):
         """Render and force the update onto Flet's event loop."""
@@ -3599,6 +3666,19 @@ class QAStudio:
                 pass
         chip.on_hover = _hover
         return chip
+
+    def _rail_btn_hover(self, rest_bg):
+        """Hover for the pinned rail buttons (Help / Settings / theme) — matches the
+        nav-item hover: a violet tint + a tiny slide-right."""
+        def _h(e, base=rest_bg):
+            try:
+                on = e.data in (True, "true", "True")
+                e.control.bgcolor = ft.Colors.with_opacity(0.14, T.VIOLET) if on else base
+                e.control.offset = ft.Offset(0.02, 0) if on else ft.Offset(0, 0)
+                e.control.update()
+            except Exception:
+                pass
+        return _h
 
     def _show_dialog(self, dlg):
         return dialogs.show_dialog(self, dlg)
