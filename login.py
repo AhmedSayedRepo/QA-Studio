@@ -100,6 +100,14 @@ def login_gate(app):
     # Theme toggle lives in the card header (so it can't overlap the card).
     def _toggle_login_theme(_e=None):
         app._login_theme = "light" if dark else "dark"
+        try:
+            # keep the GLOBAL palette in sync so global-token UI (the update banner)
+            # follows the theme on the login screen too — not just the login's colors
+            T.apply_theme(app._login_theme)
+            app.page.theme_mode = (ft.ThemeMode.DARK if app._login_theme == "dark"
+                                   else ft.ThemeMode.LIGHT)
+        except Exception:
+            pass
         app.ui_safe(app.render)
     theme_btn = ft.Container(
         ft.Icon(ft.Icons.LIGHT_MODE if dark else ft.Icons.DARK_MODE,

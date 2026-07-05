@@ -12,7 +12,9 @@ from ui import ghost_btn, green_btn
 
 
 def banner(app):
-    """A slim banner shown at the top when a newer version is available."""
+    """A floating update CARD that pops OVER the app (rendered top-centre as an
+    overlay). Fully theme-adaptive — CARD / INK / BORDER surfaces swap with
+    light|dark — and shown on the login screen and in-app alike."""
     info = app._update_info or {}
     if not info.get("update") or app._update_dismissed:
         return None
@@ -20,9 +22,9 @@ def banner(app):
     local = info.get("local", "")
     if app._updating:
         inner = ft.Row([
-            ft.ProgressRing(width=16, height=16, stroke_width=2, color=T.VIOLET_INK),
-            ft.Text("Updating…", size=12.5, color=T.VIOLET_INK, weight=ft.FontWeight.BOLD),
-        ], spacing=10)
+            ft.ProgressRing(width=16, height=16, stroke_width=2, color=T.VIOLET),
+            ft.Text("Updating…", size=12.5, color=T.INK, weight=ft.FontWeight.BOLD),
+        ], spacing=10, tight=True)
     else:
         update_btn = ft.Container(
             ft.Row([
@@ -47,28 +49,30 @@ def banner(app):
             except Exception: pass
         update_btn.on_hover = _btn_hover
         inner = ft.Row([
-            ft.Container(ft.Icon(ft.Icons.SYSTEM_UPDATE_ALT, size=17, color=T.VIOLET_INK),
-                         width=32, height=32, border_radius=9,
-                         bgcolor=ft.Colors.with_opacity(0.16, T.VIOLET),
+            ft.Container(ft.Icon(ft.Icons.SYSTEM_UPDATE_ALT, size=18, color=T.VIOLET),
+                         width=36, height=36, border_radius=10,
+                         bgcolor=T.VIOLET_SOFT,
                          alignment=ft.Alignment.CENTER),
             ft.Column([
-                ft.Text("Update available", size=12.5, color=T.VIOLET_INK,
+                ft.Text("Update available", size=12.5, color=T.INK,
                         weight=ft.FontWeight.BOLD),
                 ft.Text(f"Version {remote} is ready \u2014 you\u2019re on {local}",
-                        size=11, weight=ft.FontWeight.W_500,
-                        color=ft.Colors.with_opacity(0.85, T.VIOLET_INK)),
-            ], spacing=1, expand=True),
+                        size=11, weight=ft.FontWeight.W_500, color=T.INK_2),
+            ], spacing=1, tight=True),
+            ft.Container(width=4),
             update_btn,
-            ft.IconButton(ft.Icons.CLOSE, icon_size=16, icon_color=T.VIOLET_INK,
+            ft.IconButton(ft.Icons.CLOSE, icon_size=15, icon_color=T.INK_3,
                           tooltip="Dismiss",
                           on_click=lambda e: app._dismiss_update()),
-        ], spacing=13, vertical_alignment=ft.CrossAxisAlignment.CENTER)
-    # Theme-adaptive surface (soft cyan in light, dark teal in dark) with a CRISP
-    # bottom rule — NO blurry drop shadow, which was the soft "uncrisp / empty
-    # reserved" band under the banner.
-    return ft.Container(inner, bgcolor=T.VIOLET_SOFT,
-                        padding=ft.Padding.symmetric(horizontal=18, vertical=11),
-                        border=ft.Border.only(bottom=ft.BorderSide(1.5, T.VIOLET)))
+        ], spacing=11, tight=True, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+    # Floating card that pops OVER the app: theme surface (white in light, dark navy
+    # in dark), soft border, and an elevation shadow so it reads as an overlay.
+    return ft.Container(
+        inner, bgcolor=T.CARD, border_radius=T.R_LG,
+        border=ft.Border.all(1, T.BORDER),
+        padding=ft.Padding.only(left=13, right=7, top=9, bottom=9),
+        shadow=ft.BoxShadow(blur_radius=34, spread_radius=-8, offset=ft.Offset(0, 14),
+                            color=ft.Colors.with_opacity(0.40, "#05060F")))
 
 def dismiss_update(app):
     app._update_dismissed = True

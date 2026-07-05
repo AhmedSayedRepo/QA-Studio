@@ -1535,8 +1535,13 @@ class QAStudio:
             except Exception:
                 banner = None
             if banner is not None:
-                _root = ft.Column([banner, ft.Container(view, expand=True)],
-                                  spacing=0, expand=True)
+                # Float the update card OVER the app (top-centre) as an overlay, so it
+                # never reserves a strip, leaves no gap, and clears the window controls.
+                _root = ft.Stack([
+                    ft.Container(view, expand=True),
+                    ft.Container(banner, top=14, left=0, right=0,
+                                 alignment=ft.Alignment.TOP_CENTER),
+                ], expand=True)
             else:
                 _root = view
             try:
