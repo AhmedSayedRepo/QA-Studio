@@ -5245,6 +5245,10 @@ def validate_and_sequence_suite(stories_payload, log=None, want_ai=True,
       3  app cases                        (logged IN; e.g. language toggle)"""
     log = log or (lambda *a, **k: None)
     out = []
+    _total = sum(len(sp.get("test_cases", []) or []) for sp in stories_payload)
+    _done = 0
+    log("Sequencing %d test case(s) — this is the slow part (one AI pass each)…"
+        % _total, "info")
     for sp in stories_payload:
         if should_stop():
             return out
@@ -5257,6 +5261,9 @@ def validate_and_sequence_suite(stories_payload, log=None, want_ai=True,
                 return out
             if gate and not gate():   # manual pause point (returns False on stop)
                 return out
+            _done += 1
+            log("Sequencing case %d/%d — %s" % (_done, _total,
+                (tc.get("title", "") or "").strip()[:55] or "(untitled)"), "dim")
             ctype = _classify_case(tc)
             pctx = _infer_page_context(tc, ctype)
             # bucket + priority
@@ -6262,7 +6269,7 @@ def build_selfhealing_project(out_dir, sequenced, base_url, login=None,
 def generate_and_push_selfhealing(out_dir, stories_payload, base_url, login=None,
                                   group_id="com.qastudio", artifact_id="automation-tests",
                                   cb=None, should_stop=lambda: False, want_ai=True,
-                                  on_error=None, gate=None):
+                                  on_error=None, gate=None, target="selenium"):
     """End-to-end no-browser path: validate+sequence → generate self-healing
     project. (Push is done separately via push_to_git, as today.)
     on_error/gate enable pause-on-error and manual pause (see
@@ -6277,6 +6284,17 @@ def generate_and_push_selfhealing(out_dir, stories_payload, base_url, login=None
     # Original test cases per story → recorded in the manifest for resume support.
     _orig_tcs = {str(sp.get("story", {}).get("id")): (sp.get("test_cases", []) or [])
                  for sp in stories_payload}
+    if target and target != "selenium":
+        # JS targets (playwright | cypress) reuse the framework-agnostic IR and the
+        # same manifest/seed/prune/hash-guard behaviour, via a separate emitter.
+        import automation_targets
+        _ai_prov, _ai_base, _ai_model = _healer_ai_meta()
+        cfg = {"base_url": base_url,
+               "login_url": (login or {}).get("url") or base_url,
+               "ai_provider": _ai_prov, "ai_base_url": _ai_base, "ai_model": _ai_model}
+        return automation_targets.build(target, out_dir, sequenced, cfg,
+                                        _seed_locator_for_intent, _HARVEST_JS,
+                                        cb=cb, should_stop=should_stop, orig_tcs=_orig_tcs)
     return build_selfhealing_project(out_dir, sequenced, base_url, login,
                                      group_id, artifact_id, cb, should_stop,
                                      orig_tcs=_orig_tcs)

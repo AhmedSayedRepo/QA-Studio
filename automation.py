@@ -30,26 +30,66 @@ def screen(app):
                 padding=12, bgcolor=T.AMBER_SOFT, border_radius=T.R,
                 border=ft.Border.all(1, "#EAD9A8"), margin=ft.Margin.only(bottom=14))
 
+        def _target_opt(key, label, sub, enabled=True):
+            active = (getattr(app, "_auto_target", "selenium") == key)
+            def _pick(e, k=key):
+                app._auto_target = k
+                app.render()
+            cont = ft.Container(
+                ft.Column([
+                    ft.Text(label, size=13, weight=ft.FontWeight.BOLD,
+                            color=(T.VIOLET if active else T.INK_2)),
+                    ft.Text(sub, size=10.5, color=T.INK_3, weight=ft.FontWeight.W_500),
+                ], spacing=2),
+                padding=ft.Padding.symmetric(horizontal=14, vertical=10),
+                border=ft.Border.all(2 if active else 1, T.VIOLET if active else T.BORDER),
+                border_radius=T.R, expand=1, bgcolor=T.CARD_2,
+                opacity=(1 if enabled else 0.5),
+                tooltip=(None if enabled else "Coming soon"),
+                animate_scale=ft.Animation(110, ft.AnimationCurve.EASE_OUT),
+                on_click=(_pick if enabled else None))
+            if enabled and not active:
+                # hover: tint the frame violet + a subtle lift (no shadow halo)
+                def _hover(e, _c=cont):
+                    on = e.data in (True, "true", "True")
+                    _c.border = ft.Border.all(2 if on else 1,
+                                              T.VIOLET if on else T.BORDER)
+                    _c.scale = 1.02 if on else 1.0
+                    _c.update()
+                cont.on_hover = _hover
+            return cont
+
+        framework_card = card(ft.Column([
+            sec_head("A", "Test framework"),
+            ft.Container(height=10),
+            ft.Row([
+                _target_opt("selenium", "Selenium", "Java · TestNG"),
+                _target_opt("playwright", "Playwright", "JavaScript"),
+                _target_opt("cypress", "Cypress", "JavaScript"),
+            ], spacing=10),
+            ft.Container(height=6),
+            ft.Text("All targets share the same AI-generated steps and self-healing "
+                    "locators — only the emitted project differs.",
+                    size=11, color=T.INK_3, weight=ft.FontWeight.W_500),
+        ], spacing=0))
+
         site_card = card(ft.Column([
-            sec_head("A", "Target site"),
+            sec_head("B", "Target site"),
             ft.Container(height=10),
             app._auto_field("Site URL", "auto_site_url",
                              "https://your-app.example.com/page", req=True),
             ft.Container(height=12),
-            ft.Text("LOGIN (required to reach the pages)", size=10.5,
-                    weight=ft.FontWeight.BOLD, color=T.INK_3),
-            ft.Container(height=8),
             app._auto_field("Login page URL", "auto_login_url",
                              "https://your-app.example.com/login (defaults to site URL)"),
-            ft.Container(height=10),
-            ft.Row([
-                ft.Container(app._auto_field("Username", "auto_login_user", "user@example.com"), expand=1),
-                ft.Container(app._auto_field("Password", "auto_login_pass", "••••••••", password=True), expand=1),
-            ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.START),
+            ft.Container(height=6),
+            ft.Text("Both URLs seed the generated project's config. Login credentials "
+                    "are NOT entered here — the tests read APP_USER / APP_PASS from "
+                    "their .env / config.properties at run time (see the project README).",
+                    size=11, color=T.INK_3, weight=ft.FontWeight.W_500),
         ], spacing=0))
 
         git_card = card(ft.Column([
-            sec_head("B", "Git destination (IntelliJ syncs this)"),
+            sec_head("C", "Git destination (your IDE syncs this)"),
             ft.Container(height=10),
             app._auto_field("Repository URL", "auto_git_url",
                              "https://github.com/you/automation-tests.git", req=True),
@@ -68,13 +108,13 @@ def screen(app):
         ], spacing=0))
 
         local_card = card(ft.Column([
-            sec_head("C", "Local copy (optional)"),
+            sec_head("D", "Local copy (optional)"),
             ft.Container(height=10),
             app._auto_field("Save project to folder", "auto_local_path",
                              r"e.g. C:\Users\you\IdeaProjects\automation-tests"),
             ft.Container(height=4),
-            ft.Text("If set, the generated Maven project is also copied here so you can "
-                    "open it directly in IntelliJ. Leave blank to use a temp folder.",
+            ft.Text("If set, the generated project is also copied here so you can "
+                    "open it directly in your IDE. Leave blank to use a temp folder.",
                     size=11, color=T.INK_3, weight=ft.FontWeight.W_500),
         ], spacing=0))
 
@@ -136,6 +176,7 @@ def screen(app):
 
         left = ft.Column([
             *([setup_hint] if setup_hint else []),
+            framework_card,
             site_card,
             git_card,
             local_card,

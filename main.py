@@ -140,6 +140,7 @@ class QAStudio:
         self.auto_git_token = self.creds.get("git_token", "")
         self.auto_headless = True
         self.auto_local_path = self.creds.get("auto_local_path", "")
+        self._auto_target = self.creds.get("auto_target", "") or "selenium"
         self._auto_log = []
         self._auto_running = False
         self._auto_stop = False
@@ -2408,6 +2409,26 @@ class QAStudio:
         return None
 
     # ---- model selection ----
+    def _model_has_key(self, name, model):
+        """True if this specific model has a saved API key. PER_MODEL_KEY_PROVIDERS
+        store a key per model ('<provider>::<model>'); other providers use one key
+        for all their models."""
+        if name in self.PER_MODEL_KEY_PROVIDERS:
+            return bool((self.creds["keys"].get("%s::%s" % (name, model)) or "").strip())
+        return bool((self.creds["keys"].get(name) or "").strip())
+
+    def _model_option(self, name, m):
+        """A model dropdown option. For per-model-key providers (e.g. NVIDIA) mark it
+        ● active / ○ inactive by whether that model has a key — mirroring the
+        provider list. Single-key providers show the plain model name (one key
+        covers every model, so a per-model mark would be meaningless)."""
+        if name not in self.PER_MODEL_KEY_PROVIDERS:
+            return ft.DropdownOption(key=m, text=m)
+        active = self._model_has_key(name, m)
+        dot = "●" if active else "○"
+        return ft.DropdownOption(key=m,
+            text="%s  %s%s" % (dot, m, "  (active)" if active else ""))
+
     def _model_options(self, name):
         """Build dropdown options for the current provider. Shows the static list
         IMMEDIATELY (no blocking call), then fetches the live catalogue in the
@@ -2425,7 +2446,7 @@ class QAStudio:
             self._models_for = name
             choices = static
             self._fetch_models_async(name)   # upgrade to live in the background
-        return [ft.DropdownOption(key=m, text=m) for m in choices]
+        return [self._model_option(name, m) for m in choices]
 
     def _fetch_models_async(self, name):
         """Fetch the live model catalogue off the UI thread, then re-render."""
@@ -2465,7 +2486,7 @@ class QAStudio:
         dd = getattr(self, "model_dd", None)
         if dd is None:
             return
-        new_opts = [ft.DropdownOption(key=m, text=m) for m in (self._model_choices or [])]
+        new_opts = [self._model_option(name, m) for m in (self._model_choices or [])]
         # nothing changed (live == static) → don't touch the control at all
         try:
             cur = [getattr(o, "key", None) for o in (dd.options or [])]
@@ -4731,11 +4752,11 @@ class QAStudio:
                 #    API when a seed fails. Cases are validated + ordered into a
                 #    logical sequence (logged-out negatives/validation/login-page →
                 #    successful login → app cases) so we never log out to re-test.
-                login = None
-                if self.auto_login_user.strip() and self.auto_login_pass:
-                    login = {"url": self.auto_login_url.strip() or self.auto_site_url.strip(),
-                             "user": self.auto_login_user.strip(),
-                             "password": self.auto_login_pass}
+                # Login URL seeds the generated project's config so its login step
+                # targets the right page. Credentials are NOT collected here — the
+                # generated tests read APP_USER / APP_PASS from their env at run time.
+                _login_url = self.auto_login_url.strip() or self.auto_site_url.strip()
+                login = {"url": _login_url} if _login_url else None
                 # Generate ONLY what the keep/re-evaluate choice said to (walk_payload):
                 # brand-new stories, the new test cases of "grew" stories, and any the
                 # user chose to re-evaluate. "Done" stories are kept untouched. (Was
@@ -4746,12 +4767,14 @@ class QAStudio:
                     E.generate_and_push_selfhealing(
                         project_dir, walk_payload, self.auto_site_url.strip(),
                         login=login, cb=cb, should_stop=lambda: self._auto_stop,
-                        on_error=self._auto_on_ai_error, gate=self._auto_gate)
+                        on_error=self._auto_on_ai_error, gate=self._auto_gate,
+                        target=getattr(self, "_auto_target", "selenium"))
                 else:
                     cb("Nothing new to generate — existing tests are kept as-is.", "ok")
 
                 self._auto_out_dir = project_dir
                 self.creds["auto_local_path"] = (self.auto_local_path or "").strip()
+                self.creds["auto_target"] = getattr(self, "_auto_target", "selenium")
                 try:
                     store.save(self.creds)
                 except Exception:
