@@ -5220,8 +5220,8 @@ def apply_update(cb=None):
 #  The Automation screen compiles each story's cases into intents, orders them
 #  into a logical sequence (logged-out negatives/validation/login-page cases →
 #  successful login → app cases), and GENERATES a Maven/TestNG/Selenium project
-#  whose runtime heals locators by calling the Anthropic API when a seed locator
-#  fails. QA Studio never drives the browser; IntelliJ runs `mvn test` and the
+#  whose runtime heals locators by calling the configured AI provider when a seed
+#  locator fails. QA Studio never drives the browser; IntelliJ runs `mvn test` and the
 #  generated framework self-heals + caches locators.
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -5423,26 +5423,47 @@ def _healer_ai_meta():
 
 def _sh_config(pkg, base_url, login_url, ai_provider="anthropic",
                ai_base_url="https://api.anthropic.com", ai_model="claude-sonnet-4-6"):
+    # NOTE: base_url / login_url are intentionally NOT baked into this committed
+    # source — they live in config.properties (git-ignored). ai_* stay as a baked
+    # FALLBACK so a fresh clone can still heal even without config.properties.
     return ("""package __PKG__.core;
 
-/** Runtime config. Secrets come from environment variables, never hard-coded.
- *  The AI provider/endpoint/model are baked from the QA Studio connection that
- *  generated these tests; only the API KEY is read from the environment. */
+import java.io.FileInputStream;
+import java.util.Properties;
+
+/** Runtime config. Each value resolves in order: environment variable, then
+ *  config.properties (git-ignored, environment-specific), then a safe fallback.
+ *  Environment URLs live only in config.properties, so this committed source is
+ *  environment-agnostic — the same generated project runs against any environment
+ *  with no regeneration. Secrets (USER / PASS / API_KEY) are ENV-ONLY and are never
+ *  read from the file. */
 public final class Config {
     private Config() {}
-    public static final String BASE_URL  = env("APP_BASE_URL",  "__BASE__");
-    public static final String LOGIN_URL = env("APP_LOGIN_URL", "__LOGIN__");
-    public static final String USER      = env("APP_USER",  "");
-    public static final String PASS      = env("APP_PASS",  "");
+    private static final Properties P = new Properties();
+    static {
+        try (FileInputStream in = new FileInputStream("config.properties")) { P.load(in); }
+        catch (Exception ignored) {}
+    }
+    public static final String BASE_URL  = val("APP_BASE_URL",  "app.base.url",  "");
+    public static final String LOGIN_URL = val("APP_LOGIN_URL", "app.login.url", "");
+    public static final String USER      = env("APP_USER",  "");   // secret: env only
+    public static final String PASS      = env("APP_PASS",  "");   // secret: env only
     // ── AI self-healing (used only when a seed locator fails at run time) ──
-    public static final String AI_PROVIDER = env("QA_AI_PROVIDER", "__PROVIDER__");
-    public static final String AI_BASE_URL = env("QA_AI_BASE_URL", "__AI_BASE__");
-    public static final String MODEL       = env("QA_AI_MODEL",    "__MODEL__");
+    public static final String AI_PROVIDER = val("QA_AI_PROVIDER", "ai.provider", "__PROVIDER__");
+    public static final String AI_BASE_URL = val("QA_AI_BASE_URL", "ai.base.url", "__AI_BASE__");
+    public static final String MODEL       = val("QA_AI_MODEL",    "ai.model",    "__MODEL__");
     // Key: prefer the neutral QA_AI_API_KEY, else fall back to common provider vars.
     public static final String API_KEY   = firstEnv("QA_AI_API_KEY", "ANTHROPIC_API_KEY",
                                                      "OPENAI_API_KEY", "NVIDIA_API_KEY",
                                                      "GROQ_API_KEY", "GEMINI_API_KEY");
     public static final boolean HEAL      = !API_KEY.isEmpty();
+    /** env var → config.properties → default. */
+    private static String val(String envKey, String propKey, String d) {
+        String v = System.getenv(envKey);
+        if (v != null && !v.isEmpty()) return v;
+        v = P.getProperty(propKey);
+        return (v == null || v.isEmpty()) ? d : v;
+    }
     private static String env(String k, String d) {
         String v = System.getenv(k); return (v == null || v.isEmpty()) ? d : v;
     }
@@ -5452,9 +5473,39 @@ public final class Config {
         return "";
     }
 }
-""".replace("__PKG__", pkg).replace("__BASE__", base_url).replace("__LOGIN__", login_url)
+""".replace("__PKG__", pkg)
    .replace("__PROVIDER__", ai_provider).replace("__AI_BASE__", ai_base_url)
    .replace("__MODEL__", ai_model))
+
+
+def _sh_config_properties(base_url, login_url, ai_provider, ai_base_url, ai_model):
+    """Real, environment-specific values — written to config.properties (GIT-IGNORED)
+    once, and never clobbered on a re-run so your edits survive."""
+    return (
+        "# QA Studio — environment-specific config (GIT-IGNORED).\n"
+        "# Edit these for your environment. Environment variables of the same name\n"
+        "# (APP_BASE_URL, APP_LOGIN_URL, QA_AI_PROVIDER, QA_AI_BASE_URL, QA_AI_MODEL)\n"
+        "# override anything here at runtime.\n"
+        "app.base.url=%s\n"
+        "app.login.url=%s\n"
+        "ai.provider=%s\n"
+        "ai.base.url=%s\n"
+        "ai.model=%s\n"
+        "# Secrets are ENV-ONLY — never put them here: APP_USER, APP_PASS, QA_AI_API_KEY\n"
+        % (base_url, login_url, ai_provider, ai_base_url, ai_model))
+
+
+def _sh_config_properties_example():
+    """Committed template so teammates know which keys to set. No real URLs/secrets."""
+    return (
+        "# Copy this file to config.properties (git-ignored) and fill in your\n"
+        "# environment. Environment variables of the same name override these.\n"
+        "app.base.url=https://your-app.example.com\n"
+        "app.login.url=https://your-login.example.com/realms/.../protocol/openid-connect/auth\n"
+        "ai.provider=anthropic\n"
+        "ai.base.url=https://api.anthropic.com\n"
+        "ai.model=claude-sonnet-4-6\n"
+        "# Secrets are ENV-ONLY — do NOT put them here: APP_USER, APP_PASS, QA_AI_API_KEY\n")
 
 
 def _sh_locator_store(pkg):
@@ -5463,32 +5514,44 @@ def _sh_locator_store(pkg):
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.openqa.selenium.By;
 import java.io.File;
+import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
 
-/** Persists healed locators to locators-cache.json so each key is resolved by
- *  the AI at most once, then reused on later runs. */
+/** Single source of truth for locators, persisted to locators.json (COMMITTED).
+ *  The generator seeds it with the locators captured at generation time; when a
+ *  step is resolved at RUNTIME by the AI, the verified locator is written back
+ *  here immediately. Because the UI is identical across environments, this file
+ *  is shared — every later run, on any machine or environment, reuses the saved
+ *  locator so the AI is asked at most once per step. */
 public final class LocatorStore {
-    private static final File FILE = new File("locators-cache.json");
+    private static final File FILE = new File("locators.json");
     private static final ObjectMapper M = new ObjectMapper();
-    private final Map<String, Map<String, String>> cache;
+    private final Map<String, Map<String, Object>> cache;
 
     @SuppressWarnings("unchecked")
     public LocatorStore() {
-        Map<String, Map<String, String>> c = new HashMap<>();
+        Map<String, Map<String, Object>> c = new HashMap<>();
         try { if (FILE.exists()) c = M.readValue(FILE, Map.class); } catch (Exception ignored) {}
         this.cache = c;
     }
     public By get(String key) {
-        Map<String, String> e = cache.get(key);
-        if (e == null) return null;
-        return Healer.toBy(e.get("by"), e.get("value"));
+        Map<String, Object> e = cache.get(key);
+        if (e == null || e.get("value") == null) return null;
+        return Healer.toBy(str(e.get("by")), str(e.get("value")));
     }
+    /** Save a resolved locator and flush to disk at once (so a crash mid-suite
+     *  still keeps everything resolved so far). */
     public void put(String key, String by, String value) {
-        Map<String, String> e = new HashMap<>(); e.put("by", by); e.put("value", value);
+        Map<String, Object> e = new HashMap<>();
+        e.put("by", by);
+        e.put("value", value);
+        e.put("resolvedAt", Instant.now().toString());
+        e.put("provider", Config.AI_PROVIDER);
         cache.put(key, e);
         try { M.writerWithDefaultPrettyPrinter().writeValue(FILE, cache); } catch (Exception ignored) {}
     }
+    private static String str(Object o) { return o == null ? null : o.toString(); }
 }
 """.replace("__PKG__", pkg))
 
@@ -5623,8 +5686,9 @@ import java.time.Duration;
 import java.util.Map;
 
 /** Finds elements with runtime self-healing. Order per step key:
- *  1) cached healed locator  2) the generated seed locator
- *  3) ask the Anthropic API to pick one from the live DOM, then cache it. */
+ *  1) locator saved in locators.json  2) the generated seed locator
+ *  3) ask the configured AI provider to pick one from the live DOM, then save it
+ *     back into locators.json so it is reused on every later run. */
 public final class Healer {
     private final WebDriver driver;
     private final WebDriverWait wait;
@@ -5821,31 +5885,48 @@ public abstract class BaseTest {
 
 
 def _sh_gitignore():
-    return "target/\n*.iml\n.idea/\n# healed locators are environment-specific:\nlocators-cache.json\n"
+    # locators.json is COMMITTED on purpose: the UI is identical across
+    # environments, so resolved locators are shared. config.properties is
+    # IGNORED: it holds environment-specific URLs (and never secrets — those are
+    # env-only). config.properties.example is committed as a template.
+    return ("target/\n*.iml\n.idea/\n"
+            "# environment-specific config (URLs stay out of git):\n"
+            "config.properties\n")
 
 
 def _sh_readme(base_url, login_url):
     return ("""# QA Studio — self-healing automation
 
-Generated by QA Studio. Each step has a seed locator captured at generation time,
-and when it fails at RUNTIME the framework asks your AI provider to pick the right
-element from the live DOM, then caches it in `locators-cache.json` (reused on later
-runs, so the AI is called at most once per step).
+Generated by QA Studio. Locators live in `locators.json` (committed): it is seeded
+at generation time, and when a step's locator fails at RUNTIME the framework asks
+your AI provider to pick the right element from the live DOM, then writes the
+verified locator back into `locators.json` — so the AI is asked at most once per
+step, and every later run reuses it.
 
-The AI provider, endpoint and model are baked into `Config.java` from the QA Studio
-connection you generated with (e.g. Anthropic, NVIDIA, Groq, OpenAI, Gemini). Only
-the API KEY is read from the environment — healing runs as a SEPARATE process here,
-so it needs its own key (QA Studio isn't running when `mvn test` executes).
+Because the UI and code are identical across your environments, `locators.json` is
+shared across all of them (it is committed, not git-ignored). What differs between
+environments — the app URLs — lives in `config.properties` (git-ignored), so the same
+committed project + locators runs against any environment with no regeneration. Copy
+`config.properties.example` to `config.properties` and fill it in (or set the matching
+env vars, which override the file).
+
+The AI provider, endpoint and model resolve in order: environment variable →
+`config.properties` → a baked fallback (the QA Studio connection you generated with,
+e.g. Anthropic, NVIDIA, Groq, OpenAI, Gemini). Only the API KEY is read from the
+environment — healing runs as a SEPARATE process here, so it needs its own key
+(QA Studio isn't running when `mvn test` executes).
 
 ## Run
-1. Set environment variables (never hard-code secrets):
-   - `QA_AI_API_KEY`  — key for the baked-in provider (enables healing; without it,
-     only seed locators are used). Provider-specific vars also work as fallbacks:
-     `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `NVIDIA_API_KEY`, `GROQ_API_KEY`, `GEMINI_API_KEY`.
+1. Configure the environment: copy `config.properties.example` → `config.properties`
+   and set `app.base.url`, `app.login.url` (optionally `ai.provider`, `ai.base.url`,
+   `ai.model`). Env vars `APP_BASE_URL`, `APP_LOGIN_URL`, `QA_AI_PROVIDER`,
+   `QA_AI_BASE_URL`, `QA_AI_MODEL` override the file.
+2. Set secrets as environment variables (never put these in any file):
+   - `QA_AI_API_KEY`  — key for the provider (enables healing; without it, only seed
+     locators are used). Provider vars also work as fallbacks: `ANTHROPIC_API_KEY`,
+     `OPENAI_API_KEY`, `NVIDIA_API_KEY`, `GROQ_API_KEY`, `GEMINI_API_KEY`.
    - `APP_USER`, `APP_PASS`  (login credentials)
-   - optional `APP_BASE_URL` (default __BASE__), `APP_LOGIN_URL` (default __LOGIN__),
-     and to override the baked AI target: `QA_AI_PROVIDER`, `QA_AI_BASE_URL`, `QA_AI_MODEL`.
-2. `mvn test`
+3. `mvn test`
 
 ## Sequence
 Tests run by TestNG priority: logged-out cases (invalid login, validation, the
@@ -5854,9 +5935,10 @@ authenticated app cases — all in one browser, no logout-to-retest.
 
 ## Healing log
 Watch stdout for `[heal] resolving '<step>' ...` and `[heal] '<step>' -> by=value`.
-Commit the resulting `locators-cache.json` only if you want to share resolved
-locators across machines (it is git-ignored by default).
-""".replace("__BASE__", base_url).replace("__LOGIN__", login_url))
+Each resolved locator is written back into `locators.json` and should be committed
+so your team (and every environment) reuses it — the AI is then only called for
+steps that are genuinely new or whose element changed.
+""")  # base_url / login_url now live in config.properties, not the README
 
 
 def _java_str(s):
@@ -5872,8 +5954,10 @@ def _java_ident(s, fallback):
     return out[:60]
 
 
-def _emit_intent(lines, key, intent):
-    """Append the Java for one intent to `lines`."""
+def _emit_intent(lines, key, intent, seed_sink=None):
+    """Append the Java for one intent to `lines`. When `seed_sink` is provided,
+    record {key: {by, value}} for every KEYED step that has a known seed locator,
+    so the project's committed locators.json can be pre-seeded at generation."""
     role = intent.get("role")
     target = intent.get("target", "")
     ij = json.dumps({"target": target, "keywords": intent.get("keywords", []),
@@ -5883,6 +5967,10 @@ def _emit_intent(lines, key, intent):
     seed = ("null" if val == "TODO_RESOLVE_AT_RUNTIME"
             else 'Healer.toBy("%s", "%s")' % (by, _java_str(val)))
     todo = "  // TODO verify locator (resolved at runtime)" if val == "TODO_RESOLVE_AT_RUNTIME" else ""
+
+    def _seed(k):
+        if seed_sink is not None and val != "TODO_RESOLVE_AT_RUNTIME":
+            seed_sink[k] = {"by": by, "value": val}
     if role == "precondition":
         lines.append('        // precondition (no UI action): %s' % _java_str(target)[:70])
         return
@@ -5901,16 +5989,19 @@ def _emit_intent(lines, key, intent):
         lines.append('        org.testng.Assert.assertTrue(heal.assertVisible("%s", %s, "%s"),'
                      % (_java_str(key), seed, _java_str(ij)))
         lines.append('            "expected: %s");%s' % (_java_str(target)[:60], todo))
+        _seed(key)
         return
     verb = intent.get("verb") or "click"
     value = _java_str(intent.get("value", ""))
     lines.append('        heal.act("%s", "%s", %s, "%s", "%s");%s'
                  % (_java_str(key), verb, seed, _java_str(ij), value, todo))
+    _seed(key)
 
 
-def generate_selfhealing_test_class(story, cases, pkg):
+def generate_selfhealing_test_class(story, cases, pkg, seed_sink=None):
     """Emit a TestNG class for one story DETERMINISTICALLY from compiled intents
-    (no LLM writing Java). Cases run by priority: logged-out → login → app."""
+    (no LLM writing Java). Cases run by priority: logged-out → login → app.
+    `seed_sink`, if given, collects {key: {by, value}} for known seed locators."""
     sid = str(story.get("id", "0"))
     cls = "Story%sTests" % re.sub(r"[^A-Za-z0-9]", "", sid)
     L = []
@@ -5941,7 +6032,7 @@ def generate_selfhealing_test_class(story, cases, pkg):
         for ii, intent in enumerate(c.get("intents", [])):
             if bucket == 2 and intent.get("role") == "action":
                 continue
-            _emit_intent(L, "%s.%d.%d" % (sid, ci, ii), intent)
+            _emit_intent(L, "%s.%d.%d" % (sid, ci, ii), intent, seed_sink=seed_sink)
         L.append("    }")
     L.append("}")
     return "\n".join(L) + "\n", cls
@@ -5959,6 +6050,102 @@ def _sh_write_testng(out_dir, pkg, m):
                 '<suite name="QA Studio Self-Healing Suite" verbose="1">\n'
                 '  <test name="Sequenced Tests"><classes>\n%s\n  </classes></test>\n'
                 '</suite>\n' % items)
+
+
+def _write_seed_locators(out_dir, seeds, cb=None):
+    """Merge generation-time seed locators into the COMMITTED locators.json
+    without clobbering any entry already resolved/healed at runtime (or hand-
+    edited). New keys are added with source='seed'; existing keys are left as-is."""
+    cb = cb or (lambda *a, **k: None)
+    path = os.path.join(out_dir, "locators.json")
+    data = {}
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f) or {}
+    except Exception:
+        data = {}
+    added = 0
+    for key, seed in (seeds or {}).items():
+        if key not in data:            # never overwrite a healed / edited locator
+            data[key] = {"by": seed["by"], "value": seed["value"], "source": "seed"}
+            added += 1
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception:
+        return 0
+    if added:
+        cb("Seeded %d new locator(s) into locators.json (%d total)." % (added, len(data)), "dim")
+    return added
+
+
+def _prune_generated_orphans(out_dir, pkg, m, cb=None):
+    """Delete generated .java files QA Studio no longer owns — e.g. a renamed
+    framework class (AnthropicClient -> AiClient) or a test class whose story was
+    dropped from the manifest. STRICTLY scoped to the managed com/qastudio core &
+    tests packages; never touches any other package or user-authored code."""
+    cb = cb or (lambda *a, **k: None)
+    pkg_path = pkg.replace(".", "/")
+    core_dir = os.path.join(out_dir, "src", "main", "java", pkg_path, "core")
+    tests_dir = os.path.join(out_dir, "src", "test", "java", pkg_path, "tests")
+    core_owned = {"DriverFactory", "Config", "LocatorStore", "AiClient", "Healer"}
+    tests_owned = {"BaseTest"} | {r.get("test_class")
+                                  for r in (m.get("stories") or {}).values()
+                                  if r.get("test_class")}
+    removed = []
+    for d, owned in ((core_dir, core_owned), (tests_dir, tests_owned)):
+        if not os.path.isdir(d):
+            continue
+        for fn in sorted(os.listdir(d)):
+            if fn.endswith(".java") and fn[:-5] not in owned:
+                try:
+                    os.remove(os.path.join(d, fn))
+                    removed.append(os.path.relpath(os.path.join(d, fn), out_dir))
+                except Exception:
+                    pass
+    if removed:
+        cb("Pruned %d stale file(s): %s" % (len(removed), ", ".join(removed)), "dim")
+    return removed
+
+
+def _sha1_text(s):
+    import hashlib
+    return hashlib.sha1((s or "").encode("utf-8")).hexdigest()
+
+
+def _guarded_write_test_class(path, content, prev_hash, cb=None):
+    """Write a generated test class UNLESS the on-disk file was hand-edited since
+    we last generated it. We know our own last output by the hash recorded in the
+    manifest; if the file on disk no longer matches that hash (and isn't already
+    identical to the fresh generation), a human changed it — so we KEEP their file,
+    drop a `<name>.java.new` sibling carrying the fresh generation for them to diff
+    and merge, and warn. Returns (wrote_bool, hash_to_record).
+    Note: the `.new` sibling ends in `.new`, not `.java`, so orphan-pruning leaves
+    it alone."""
+    cb = cb or (lambda *a, **k: None)
+    new_hash = _sha1_text(content)
+    if prev_hash and os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                cur = f.read()
+        except Exception:
+            cur = None
+        cur_hash = _sha1_text(cur) if cur is not None else None
+        if cur_hash and cur_hash != prev_hash and cur_hash != new_hash:
+            side = path + ".new"
+            try:
+                with open(side, "w", encoding="utf-8") as f:
+                    f.write(content)
+            except Exception:
+                pass
+            cb("Kept your manual edits to %s — fresh generation saved as %s "
+               "(diff & merge by hand)." % (os.path.basename(path),
+                                            os.path.basename(side)), "ok")
+            return False, prev_hash
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content)
+    return True, new_hash
 
 
 def build_selfhealing_project(out_dir, sequenced, base_url, login=None,
@@ -5982,8 +6169,18 @@ def build_selfhealing_project(out_dir, sequenced, base_url, login=None,
     orig_tcs = orig_tcs or {}
     m = load_manifest(out_dir)          # resume: record of already-generated stories
     m.setdefault("stories", {})
+    m["manifest_version"] = 1
 
     def _w(path, content):
+        # write-if-changed: skip files whose content is identical so re-runs don't
+        # churn git blame / diffs / mtimes on the deterministic framework core.
+        try:
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    if f.read() == content:
+                        return
+        except Exception:
+            pass
         with open(path, "w", encoding="utf-8") as f:
             f.write(content)
         written.append(os.path.relpath(path, out_dir))
@@ -6001,8 +6198,18 @@ def build_selfhealing_project(out_dir, sequenced, base_url, login=None,
     _w(os.path.join(src_main, "Healer.java"), _sh_healer(pkg))
     _w(os.path.join(src_test, "BaseTest.java"), _sh_base_test(pkg))
     _w(os.path.join(res_dir, "harvest.js"), _HARVEST_JS)
+    # Environment-specific config: the committed template is always refreshed;
+    # the real (git-ignored) config.properties is written ONCE so a re-run never
+    # clobbers a user's environment edits.
+    _w(os.path.join(out_dir, "config.properties.example"), _sh_config_properties_example())
+    _cfg_props = os.path.join(out_dir, "config.properties")
+    if not os.path.exists(_cfg_props):
+        with open(_cfg_props, "w", encoding="utf-8") as f:
+            f.write(_sh_config_properties(base_url, login_url, _ai_prov, _ai_base, _ai_model))
+        written.append("config.properties")
 
     test_classes = []
+    seed_sink = {}                      # generation-time locators → committed locators.json
     for entry in sequenced:
         if should_stop():
             break
@@ -6012,14 +6219,26 @@ def build_selfhealing_project(out_dir, sequenced, base_url, login=None,
         sid = str(story.get("id"))
         cb(f"  generating tests for story {story.get('id')} "
            f"({len(entry['cases'])} case(s))", "dim")
-        java, cls = generate_selfhealing_test_class(story, entry["cases"], pkg)
-        _w(os.path.join(src_test, "%s.java" % cls), java)
+        java, cls = generate_selfhealing_test_class(story, entry["cases"], pkg,
+                                                    seed_sink=seed_sink)
+        tpath = os.path.join(src_test, "%s.java" % cls)
+        prior = m.get("stories", {}).get(sid) or {}
+        wrote, chash = _guarded_write_test_class(tpath, java, prior.get("hash"), cb)
+        if wrote:
+            written.append(os.path.relpath(tpath, out_dir))
         test_classes.append(cls)
         # Record + persist this story immediately so a stop / pause / app-close keeps
         # it; the keys mirror what classify_selection() computes from the original
-        # test cases, so a re-run recognises it as done and skips it.
+        # test cases, so a re-run recognises it as done and skips it. `hash` records
+        # OUR last generated content so a later run can detect manual edits; the
+        # provenance fields carry over unchanged when we KEEP a hand-edited file.
+        _stamp = time.strftime("%Y-%m-%dT%H:%M:%S")
         m["stories"][sid] = {
             "test_class": cls,
+            "hash": chash,
+            "provider": _ai_prov if wrote else prior.get("provider", _ai_prov),
+            "model": _ai_model if wrote else prior.get("model", _ai_model),
+            "generatedAt": _stamp if wrote else prior.get("generatedAt", _stamp),
             "test_cases": {_tc_key(tc): _method_name(tc.get("title", ""))
                            for tc in orig_tcs.get(sid, [])},
         }
@@ -6032,6 +6251,10 @@ def build_selfhealing_project(out_dir, sequenced, base_url, login=None,
     # Final testng + manifest across EVERY recorded class (this run + prior runs).
     _sh_write_testng(out_dir, pkg, m)
     save_manifest(out_dir, m)
+    # Seed the committed locators.json (merge, never clobber healed entries), then
+    # remove any generated file we no longer own (renamed core class, dropped story).
+    _write_seed_locators(out_dir, seed_sink, cb)
+    _prune_generated_orphans(out_dir, pkg, m, cb)
     cb(f"Wrote {len(written)} files, {len(test_classes)} test class(es) this run.", "ok")
     return written
 
