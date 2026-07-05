@@ -518,7 +518,10 @@ def login_gate(app):
     # the mouse-move parallax (see render() / _login_parallax).
     app._login_bg_layer = bg_layer
 
-    # kick a one-time background update check so the banner can appear before sign-in
+    # Kick a one-time background update check so render()'s top banner can appear
+    # BEFORE sign-in. render() already wraps EVERY view — including this one — with
+    # the update banner, so we must NOT add a second banner here (doing so stacked
+    # two banners and left a strip / "space" under the top one).
     if getattr(app, "_update_info", None) is None and \
        not getattr(app, "_login_update_checked", False):
         app._login_update_checked = True
@@ -532,26 +535,13 @@ def login_gate(app):
     # Mouse-move parallax via a GestureDetector wrapping the whole login
     # (on_hover passed as a constructor arg for reliable registration).
     try:
-        _login = ft.GestureDetector(content=_stack, on_hover=app._login_parallax,
-                                    hover_interval=16, expand=True)
+        return ft.GestureDetector(content=_stack, on_hover=app._login_parallax,
+                                  hover_interval=16, expand=True)
     except Exception:
         try:
-            _login = ft.GestureDetector(content=_stack,
-                                        on_hover=app._login_parallax, expand=True)
+            return ft.GestureDetector(content=_stack,
+                                      on_hover=app._login_parallax, expand=True)
         except Exception:
-            _login = _stack
-
-    # Update banner: the SAME theme-styled banner shown after sign-in (Update-now
-    # button + "vX is ready — you're on vY" + install/restart flow). Reserved as a
-    # TOP ROW so it never overlays the login, and takes NO space when there's no
-    # update (banner() returns None) — so there's no empty reserved strip.
-    try:
-        _upbanner = app._update_banner()
-    except Exception:
-        _upbanner = None
-    if _upbanner is not None:
-        return ft.Column([_upbanner, ft.Container(_login, expand=True)],
-                         spacing=0, expand=True)
-    return _login
+            return _stack
 
 # ---- window shell ----
