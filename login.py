@@ -237,7 +237,18 @@ def login_gate(app):
                     ok, m, user = auth.sign_in(email_tf.value, pwd_tf.value)
                 app._gate_busy = False
                 if user:
-                    # Apply the login's chosen theme to the whole app.
+                    app.user = user; app._auth_msg = None
+                    # Load THIS user's own per-user creds file FIRST, then apply the
+                    # login screen's chosen theme on top of it — order matters. This
+                    # used to run the other way around: apply + save the login theme
+                    # into whatever creds file was active BEFORE switching (the
+                    # shared/pre-sign-in one), then immediately call
+                    # _switch_user_creds(), which loads the signed-in account's OWN
+                    # file and — per its own theme-sync logic — overwrote T.MODE with
+                    # THAT file's saved theme. Net effect: picking dark on the login
+                    # screen got silently discarded the moment sign-in completed,
+                    # replaced by whatever this account last had saved (often light).
+                    app._switch_user_creds()   # load this user's own per-user creds
                     try:
                         T.apply_theme(app._login_theme)
                         app.creds["theme"] = app._login_theme
@@ -247,8 +258,6 @@ def login_gate(app):
                             if app._login_theme == "dark" else ft.ThemeMode.LIGHT)
                     except Exception:
                         pass
-                    app.user = user; app._auth_msg = None
-                    app._switch_user_creds()   # load this user's own per-user creds
                     app.active = "setup"
                     app._land_app = True   # play the entrance on the app view
                     app.ui_safe(app.render); return

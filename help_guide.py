@@ -29,6 +29,12 @@ FEATURES = [
          "output language, Arabic or English. Changing provider, model, project or "
          "plan while connected drops the live connection so you never run against a "
          "stale selection.",
+         "Email sender setup (the address, display name, and Gmail App Password used "
+         "to send reports) is Admin-only and shared: an Admin sets it once here and it "
+         "syncs to every signed-in user's install automatically — non-admins don't see "
+         "these fields at all, and never need their own copy. If sharing fails "
+         "(offline, not signed in, etc.) the Admin's own save still succeeds locally; "
+         "only the sync to others is affected, and a toast says so.",
      ],
      "points": [
          "Provider + model + API key, validated on Connect; keys are stored locally "
@@ -39,6 +45,8 @@ FEATURES = [
          "stories.",
          "Choose Titles vs Steps and Arabic / English — these defaults also live on "
          "the Settings screen.",
+         "Email sender (address / name / Gmail App Password): Admin-only, configured "
+         "once and shared with every user — not a per-device setting.",
      ]},
     {"key": "run", "icon": ft.Icons.PLAY_ARROW, "title": "Run",
      "blurb": "Generates test cases into your Azure test plan — either test-case "
@@ -54,12 +62,16 @@ FEATURES = [
          "what's genuinely missing.",
          "Progress is live — elapsed time, an ETA, and a running log — and you can "
          "Stop at any point; work already written to Azure is kept.",
+         "The RECENT ACTIVITY log has Copy and Clear buttons pinned next to its "
+         "title, same as Automation's Activity log — copy the whole log to your "
+         "clipboard, or clear it, without losing your place elsewhere on screen.",
      ],
      "points": [
          "Titles: writes NEW test-case titles per story, skipping duplicates in the suite.",
          "Steps: writes precondition / action / expected steps into the test cases.",
          "Verifies sufficiency and de-dupes against existing cases before writing.",
          "Live elapsed / ETA / log, with a Stop button that keeps whatever was saved.",
+         "Copy / Clear buttons on the activity log, same as Automation.",
      ]},
     {"key": "report", "icon": ft.Icons.DESCRIPTION_OUTLINED, "title": "Report",
      "blurb": "The results of the last run: how many were created, skipped or "
@@ -156,6 +168,19 @@ FEATURES = [
          "or prod with no regeneration. A manifest lets a stopped or re-run job "
          "resume instead of starting over, and any test file you hand-edit is kept "
          "(a fresh copy is saved beside it) rather than overwritten.",
+         "Push (section D) always resyncs README.md/.gitignore to match the "
+         "project's actual on-disk framework right before committing — including a "
+         "folder you Browse to and push without regenerating — so a stale or "
+         "hand-edited README never ships. The first time a brand-new output folder "
+         "is pushed, QA Studio also creates the GitHub repo for you if it doesn't "
+         "exist yet (GitHub only; your PAT needs repo-creation rights — see the "
+         "PAT info icon next to Access token). A push rejected because the remote "
+         "has newer commits offers a one-click Force-push retry instead of just "
+         "showing raw git output.",
+         "Stop aborts right away — it doesn't wait for the test case currently being "
+         "compiled to finish. The Activity panel (right) shows every step live, in "
+         "the order it actually happened; Copy and Clear (top of the log) are always "
+         "pinned there regardless of how far you've scrolled.",
      ],
      "points": [
          "Choose the target: Selenium (Java/TestNG), Playwright (JS), or Cypress "
@@ -165,8 +190,16 @@ FEATURES = [
          "Environment-agnostic: URLs/creds come from config.properties or .env, so "
          "one project runs against any environment with no regeneration.",
          "Pushes to your Git repo to open in your IDE; resumes on re-run and never "
-         "clobbers hand-edited tests. Pause / Resume / Stop, with auto-pause if the "
-         "AI runs out of credit.",
+         "clobbers hand-edited tests. Stop aborts immediately (mid-case, not just "
+         "between cases); Pause / Resume also available, with auto-pause if the AI "
+         "runs out of credit.",
+         "Push auto-syncs README/.gitignore to the real framework and auto-creates "
+         "the GitHub repo the first time a new output folder is pushed.",
+         "Browse (folder D) opens a native OS folder picker to point at an existing "
+         "generated project — handy for pushing a forgotten run without "
+         "regenerating.",
+         "Copy / Clear log buttons are pinned at the top of the Activity panel, "
+         "always visible above the scrolling log.",
      ]},
     {"key": "links", "icon": ft.Icons.BOOKMARK_BORDER, "title": "Useful Links",
      "blurb": "Save links to the boards and apps you use, and open them in one click.",

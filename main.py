@@ -143,6 +143,14 @@ class QAStudio:
         self.auto_local_path = self.creds.get("auto_local_path", "")
         self._auto_target = self.creds.get("auto_target", "") or "selenium"
         self._auto_log = []
+        # Serializes the Activity-log column catch-up in _auto_logmsg's upd() below.
+        # Each _auto_logmsg call hands its UI update to ui_safe(), which (via Flet's
+        # page.run_thread) starts a NEW thread per call — with NO guarantee those
+        # threads run in the order they were started. Without this lock, two upd()
+        # calls can race (both read the same "have" before either appends), or run
+        # out of order and scramble what's on screen even though self._auto_log
+        # itself stays correctly ordered. See _auto_logmsg for the fix.
+        self._auto_log_ui_lock = threading.Lock()
         self._auto_running = False
         self._auto_stop = False
         self._auto_paused = False
@@ -502,6 +510,53 @@ class QAStudio:
             E.set_output_lang(self.lang)
         except Exception:
             pass
+        # Reset the Azure org engine-global to THIS account's own saved value (or
+        # blank if they have none) — never leave it holding whichever account last
+        # connected during this app session. E.set_credentials(org=...) can't be
+        # used to clear it: it only assigns when `org` is truthy (`if org:
+        # AZURE_ORG = ...`), by design, so a Connect click that leaves the org
+        # field untouched never accidentally blanks a saved value. That's correct
+        # for Connect, but wrong here — switching to an account with no saved org
+        # must actually go blank, not keep showing/using a previous account's
+        # organization (or the module's hardcoded dev-default org).
+        try:
+            E.AZURE_ORG = (self.creds.get("org") or "").strip()
+        except Exception:
+            pass
+        # Re-sync the Automation screen's fields from the NOW-correct per-user
+        # creds — same pattern as theme/lang/tool just above. These are otherwise
+        # only ever seeded ONCE, in __init__, and __init__ runs BEFORE
+        # store.set_user(uid) ever points at this account's own file (that switch
+        # happens here, later — silent session-restore resolves the signed-in user
+        # asynchronously in the background). So __init__ seeded them from the
+        # SHARED DEFAULT file, not this account's. A PAT/URL typed and saved
+        # earlier in a signed-in session DID reach the correct per-user file (by
+        # the time you can type into the screen, this function has already run
+        # once and self.creds/CRED_FILE are already correct) — but on the NEXT
+        # launch, __init__ reads the default file again before this ever runs, so
+        # the field looked empty/reverted until now, even though the save itself
+        # had actually succeeded. Applied unconditionally (like theme/lang above),
+        # since this only runs at sign-in / startup-restore / sign-out — never
+        # while you're actively editing the screen — so there's nothing in
+        # progress here that a stale value could clobber.
+        try:
+            _map = {"auto_site_url": "auto_site_url", "auto_login_url": "auto_login_url",
+                    "auto_login_user": "auto_login_user", "auto_login_pass": "auto_login_pass",
+                    "auto_git_url": "git_url", "auto_git_branch": "git_branch",
+                    "auto_git_token": "git_token", "auto_local_path": "auto_local_path"}
+            for _attr, _key in _map.items():
+                setattr(self, _attr, self.creds.get(_key, "") or "")
+            if not (self.auto_git_branch or "").strip():
+                self.auto_git_branch = "main"
+        except Exception:
+            pass
+        # Pull the shared, Admin-configured email settings (see _push_org_email
+        # / _refresh_org_settings) so THIS user's install sends reports the same
+        # way as everyone else's, not just whatever's in their own local creds.
+        try:
+            self._refresh_org_settings()
+        except Exception:
+            pass
 
     def _no_access_screen(self):
         return ft.Container(
@@ -589,6 +644,13 @@ class QAStudio:
 
     def _show_idle_warning(self):
         """Final-minute dialog: live countdown with 'Stay signed in' / 'Sign out now'."""
+        # Guard against a race where the user's session already ended by the time
+        # this fires (e.g. revoked/expired via a revalidate() re-render) — without
+        # this, the countdown dialog could pop up floating over the (unauthenticated)
+        # login gate, which makes no sense since there's no session left to expire.
+        if not (auth.configured() and getattr(self, "user", None)):
+            self._idle_warning_active = False
+            return
         self._idle_left = int(min(self.IDLE_WARN_SECONDS, self._idle_minutes() * 60))
         self._idle_warn_cancel = False
         self._idle_warn_txt = ft.Text(self._idle_warn_msg(self._idle_left),
@@ -618,6 +680,14 @@ class QAStudio:
 
         def _tick():
             while getattr(self, "_idle_left", 0) > 0 and not getattr(self, "_idle_warn_cancel", False):
+                # If the session ended some other way mid-countdown (revoked,
+                # explicit sign-out, revalidate() finding it gone), just close the
+                # dialog quietly instead of letting it sit on top of the login gate.
+                if not (auth.configured() and getattr(self, "user", None)):
+                    self._idle_warn_cancel = True
+                    self._idle_warning_active = False
+                    self.ui_safe(self._close_dialog)
+                    return
                 time.sleep(1)
                 self._idle_left = getattr(self, "_idle_left", 0) - 1
                 self.ui_safe(self._update_idle_warn)
@@ -668,6 +738,19 @@ class QAStudio:
             pass
         self.user = None
         self._switch_user_creds()       # revert to the shared default cred file
+        # The login screen keeps its OWN theme flag (login.py's app._login_theme —
+        # only ever set by its own toggle or on a successful sign-in), which never
+        # syncs FROM the app's theme on the way back OUT. Left alone, it falls back
+        # to its hardcoded dark default the first time this app instance ever
+        # returns to the login gate, so the screen can visibly flip to dark even
+        # though the app (and the account that just signed out) was in light mode.
+        # T.MODE is already correct at this point — _switch_user_creds() above just
+        # (re)applied the now-active creds file's saved theme — so hand it straight
+        # to the login screen instead of leaving that gap.
+        try:
+            self._login_theme = T.MODE if T.MODE in ("dark", "light") else "dark"
+        except Exception:
+            pass
         self._auth_shown = False        # replay the entrance animation
         self.active = "setup"
         self.render()
@@ -1953,17 +2036,31 @@ class QAStudio:
         "git_pat": {
             "title": "Git access token (PAT) for pushing tests",
             "steps": [
-                "This token lets QA Studio push the generated tests to your repo. Use one "
-                "scoped to just that repository.",
-                "GitHub: Settings → Developer settings → Personal access tokens → "
-                "Fine-grained tokens → Generate. Give it 'Contents: Read and write' on the "
-                "automation-tests repo only. Copy the token (shown once).",
+                "This token lets QA Studio push the generated tests to your repo — and, the "
+                "first time you push a brand-new output folder, CREATE the GitHub repo too "
+                "if it doesn't exist yet. Later pushes to that same folder just push (no "
+                "repo check/creation).",
+                "GitHub, classic token (simplest): Settings → Developer settings → Personal "
+                "access tokens → Tokens (classic) → Generate new token (classic). Scope: "
+                "'repo' (needed for both push AND auto-creating a new repo; 'public_repo' "
+                "is enough if you only ever use public repos). Copy the token (ghp_…, shown "
+                "once).",
+                "GitHub, fine-grained token: same menu → Fine-grained tokens → Generate. Set "
+                "Repository access to 'All repositories' (a not-yet-created repo can't be "
+                "picked individually). Under Repository permissions set 'Contents: Read and "
+                "write' (push) AND 'Administration: Read and write' (create). Contents-only "
+                "still pushes fine to a repo that already exists — Administration is only "
+                "needed for the auto-create case.",
+                "Org-owned repos: if your org restricts personal access tokens, approve the "
+                "token from Org Settings → Personal access tokens after generating it, or "
+                "the push/create calls will be rejected even with the right scopes.",
                 "Azure DevOps Repos: User settings → Personal access tokens → New token → "
-                "scope 'Code (Read & Write)'.",
+                "scope 'Code (Read & Write)'. (Auto-create-repo isn't supported for Azure "
+                "DevOps — create the repo there yourself first.)",
                 "Paste it here. It's stored locally like your other credentials and is "
                 "scrubbed from logs. Keep the repo private.",
             ],
-            "url": "https://github.com/settings/tokens?type=beta",
+            "url": "https://github.com/settings/tokens",
             "url_label": "Open GitHub token settings",
         },
     }
@@ -2144,8 +2241,14 @@ class QAStudio:
             content_padding=ft.Padding.symmetric(vertical=12, horizontal=12), text_size=13, expand=True)
         self.gmail_btn = green_btn("Save", on_click=self._save_gmail) if gmail_editable                     else ghost_btn("Update", on_click=self._unlock_gmail)
 
-        # Azure Organization field (one-time set, preserved, Update to change)
-        org_val = self.creds.get("org", "") or E.AZURE_ORG
+        # Azure Organization field (one-time set, preserved, Update to change).
+        # Deliberately does NOT fall back to E.AZURE_ORG when this account has
+        # none saved — that global can hold whichever account last connected in
+        # this app session (or the module's hardcoded dev-default org), and
+        # falling back to it here used to pre-fill a new/different account's
+        # field with someone else's organization, which then got saved into
+        # THEIR OWN creds file the moment they clicked Save without noticing.
+        org_val = self.creds.get("org", "")
         org_has = bool(self.creds.get("org"))
         org_editable = (not org_has) or self._org_unlocked
         self.org_field = ft.TextField(
@@ -2177,7 +2280,7 @@ class QAStudio:
             content_padding=ft.Padding.symmetric(vertical=12, horizontal=12),
             text_size=13, expand=True)
 
-        return ft.Column([
+        _fields = [
             field_label("AI Provider", req=True, info="How to make a provider active",
                         on_info=lambda e: self._show_help("provider")),
             ft.Container(hover_field(self.prov_dd), padding=ft.Padding.only(top=4, bottom=12)),
@@ -2203,23 +2306,30 @@ class QAStudio:
                                  padding=ft.Padding.only(top=4)),
                 ], expand=True, spacing=0),
             ]),
-            ft.Container(height=12),
-            field_label("Email Sender", hint="optional"),
-            ft.Container(ft.Row([hover_field(self.sender_field), self.sender_btn], spacing=8),
-                        padding=ft.Padding.only(top=4, bottom=12)),
-            field_label("Sender name", hint="shown to recipients instead of the address"),
-            ft.Container(hover_field(self.sender_name_field),
-                        padding=ft.Padding.only(top=4, bottom=12)),
-            ft.Row([
-                ft.Column([
-                    field_label("Gmail App Password", hint="optional", req=False,
-                                info="How to create a Gmail App Password",
-                                on_info=lambda e: self._show_help("gmail")),
-                    ft.Container(ft.Row([hover_field(self.gmail_field), self.gmail_btn], spacing=8),
-                                 padding=ft.Padding.only(top=4)),
-                ], expand=True, spacing=0),
-            ]),
-        ], spacing=0)
+        ]
+        # Email setup (sender address/name + Gmail App Password) is Admin-only —
+        # it's a shared, org-wide credential used to send reports for everyone,
+        # not a per-user setting, so only admins should see or edit it here.
+        if self._is_admin():
+            _fields += [
+                ft.Container(height=12),
+                field_label("Email Sender", hint="optional"),
+                ft.Container(ft.Row([hover_field(self.sender_field), self.sender_btn], spacing=8),
+                            padding=ft.Padding.only(top=4, bottom=12)),
+                field_label("Sender name", hint="shown to recipients instead of the address"),
+                ft.Container(hover_field(self.sender_name_field),
+                            padding=ft.Padding.only(top=4, bottom=12)),
+                ft.Row([
+                    ft.Column([
+                        field_label("Gmail App Password", hint="optional", req=False,
+                                    info="How to create a Gmail App Password",
+                                    on_info=lambda e: self._show_help("gmail")),
+                        ft.Container(ft.Row([hover_field(self.gmail_field), self.gmail_btn], spacing=8),
+                                     padding=ft.Padding.only(top=4)),
+                    ], expand=True, spacing=0),
+                ]),
+            ]
+        return ft.Column(_fields, spacing=0)
 
     # ---- connection: saved (connected) ----
     def _cred_saved_row(self, icon, k, v, badge_ctrl):
@@ -2243,16 +2353,22 @@ class QAStudio:
         div = ft.Container(height=1, bgcolor=T.BORDER_2, margin=ft.Margin.symmetric(vertical=8))
         _model = self._saved_model(name)
         prov_val = f"{T.disp_name(name)}  ·  {_model}" if _model else T.disp_name(name)
-        return ft.Column([
+        _rows = [
             self._cred_saved_row(ft.Icons.AUTO_AWESOME, "AI Provider", prov_val,
                                  badge("Active", "green", ft.Icons.CHECK)),
             div,
             self._cred_saved_row(ft.Icons.KEY_OUTLINED, "Azure DevOps PAT", masked_pat,
                                  badge("Valid", "green", ft.Icons.CHECK)),
-            div,
-            self._cred_saved_row(ft.Icons.MAIL_OUTLINED, "Gmail App Password", masked_gm,
-                                 badge("optional", "grey")),
-        ], spacing=0)
+        ]
+        # Email setup is Admin-only (see _connection_edit) — a non-admin shouldn't
+        # even see whether it's configured here either.
+        if self._is_admin():
+            _rows += [
+                div,
+                self._cred_saved_row(ft.Icons.MAIL_OUTLINED, "Gmail App Password", masked_gm,
+                                     badge("optional", "grey")),
+            ]
+        return ft.Column(_rows, spacing=0)
 
     def _edit_connection(self):
         self.connected = False
@@ -2565,6 +2681,7 @@ class QAStudio:
         self.creds["gmail"] = val; store.save(self.creds)
         self._gmail_unlocked = False
         self._toast("Gmail password saved."); self.render()
+        self._push_org_email()
 
     def _unlock_gmail(self, e=None):
         self._gmail_unlocked = True; self.render()
@@ -2593,6 +2710,7 @@ class QAStudio:
             pass
         self._sender_unlocked = False
         self._toast("Email sender saved."); self.render()
+        self._push_org_email()
 
     def _save_sender_name(self, e=None):
         """Persist the sender DISPLAY NAME (From: 'Name' <address>) as the user
@@ -2607,9 +2725,84 @@ class QAStudio:
             E.set_credentials(gmail_sender_name=val)
         except Exception:
             pass
+        self._push_org_email()
 
     def _unlock_sender(self, e=None):
         self._sender_unlocked = True; self.render()
+
+    def _push_org_email(self):
+        """Best-effort: share the just-saved email config (sender / sender name /
+        Gmail App Password) with EVERY other user by writing it to the shared
+        org-wide settings — this is what makes 'an Admin configures it once' work,
+        instead of each user needing their own local copy. Admin-only server-side
+        (the org-settings Edge Function checks app_metadata.role); we also check
+        locally so this is a silent no-op rather than a wasted network call when
+        auth isn't set up (offline/dev use — these fields still just save locally
+        via store.save above, exactly like before this feature existed).
+
+        Runs in the background and NEVER blocks or fails the local Save the caller
+        already did — if sharing fails (offline, function not reachable, token
+        expired, permission denied server-side despite the local admin check),
+        the user sees a distinct toast explaining THAT part failed, while their
+        own local credentials remain saved and usable regardless."""
+        if not (auth.configured() and self._is_admin()):
+            return
+
+        def work():
+            try:
+                ok, msg = auth.admin_set_org_email(
+                    self.creds.get("gmail_sender", ""),
+                    self.creds.get("gmail_sender_name", ""),
+                    self.creds.get("gmail", ""))
+            except Exception as ex:
+                ok, msg = False, str(ex)
+            if not ok:
+                self.ui_safe(lambda: self._toast(
+                    f"Saved locally, but couldn't share with other users: {msg}"))
+        try:
+            threading.Thread(target=work, daemon=True).start()
+        except Exception:
+            # Thread creation itself failing is extremely unlikely, but this
+            # method must never raise into a Save button's click handler.
+            pass
+
+    def _refresh_org_settings(self):
+        """Background-fetch the shared org-wide email settings (sender / sender
+        name / Gmail App Password, set once by an Admin via _push_org_email
+        above) and apply them via E.set_credentials — so THIS signed-in user's
+        install sends reports with the same config as everyone else, regardless
+        of what (if anything) is in their own local creds file. Called after
+        every sign-in / session-restore / sign-out (see _switch_user_creds).
+
+        Deliberately silent on every failure path (auth not configured, not
+        signed in yet, offline, function/table not set up, malformed response):
+        local creds — already applied earlier in __init__ / _switch_user_creds —
+        remain the fallback in every one of those cases, so a user is never
+        blocked from sending email just because the shared fetch didn't work."""
+        if not auth.configured():
+            return
+
+        def work():
+            try:
+                ok, data = auth.get_org_settings()
+            except Exception:
+                return
+            if not ok or not isinstance(data, dict):
+                return
+            em = data.get("email")
+            if not isinstance(em, dict):
+                return
+            try:
+                E.set_credentials(
+                    gmail=(em.get("app_password") or None),
+                    gmail_sender=(em.get("sender") or None),
+                    gmail_sender_name=(em.get("sender_name") or None))
+            except Exception:
+                pass
+        try:
+            threading.Thread(target=work, daemon=True).start()
+        except Exception:
+            pass
 
     def _snack(self, msg, color, icon):
         """Floating toast used for all errors & confirmations (never inline now)."""
@@ -3356,7 +3549,15 @@ class QAStudio:
         self.creds["pat"] = pat
         gmail = self._field_or_saved("gmail_field", self.creds.get("gmail", ""))
         self.creds["gmail"] = gmail
-        org = self._field_or_saved("org_field", self.creds.get("org", "")) or E.AZURE_ORG
+        # No fallback to E.AZURE_ORG here — that global can be holding whichever
+        # account last connected in this app session (or the module's hardcoded
+        # dev-default org), so falling back to it let Connect silently push a
+        # DIFFERENT account's organization into this one's own saved creds. If
+        # neither the field nor this account's own creds has an org, that's a
+        # real missing-required-field case now, same as the PAT/API key above.
+        org = self._field_or_saved("org_field", self.creds.get("org", ""))
+        if not org:
+            self._err("Azure Organization is required."); return
         self.creds["org"] = org
         sender = self._field_or_saved("sender_field", self.creds.get("gmail_sender", "")) or E.GMAIL_SENDER
         self.creds["gmail_sender"] = sender
@@ -4442,7 +4643,7 @@ class QAStudio:
                 bgcolor=soft, border_radius=T.R, expand=True,
                 alignment=ft.Alignment.CENTER)
         return ft.Row([
-            chip("todo", "TODO — locators resolved at runtime", T.VIOLET, T.VIOLET_SOFT),
+            chip("todo", "Locators self-healed at runtime", T.VIOLET, T.VIOLET_SOFT),
         ], spacing=7)
 
     def _auto_log_line(self, msg, tone):
@@ -4502,33 +4703,226 @@ class QAStudio:
         self._auto_log.append({"msg": msg, "tone": tone})
         def upd():
             try:
-                col = getattr(self, "_auto_log_col", None)
-                if col is not None:
-                    real = len(self._auto_log)
-                    have = len(col.controls)
-                    # render() rebuilds the column from self._auto_log, and this
-                    # incremental append can race it at run-end — appending a line
-                    # render already added (the duplicate "Stopped." etc.). Only
-                    # touch the column when it's actually behind self._auto_log.
-                    if real == 1 and have <= 1:
-                        # replace the empty-state placeholder with the first line
-                        col.controls = [self._auto_log_line(msg, tone)]
-                        col.update()
-                    elif have < real:
-                        col.controls.append(self._auto_log_line(msg, tone))
-                        col.update()
-                    # have >= real → render already has this line; skip (no dup)
-                ctl = getattr(self, "_auto_count_ctl", None)
-                if ctl:
-                    c = self._auto_count()
-                    for k, t in ctl.items():
-                        try:
-                            t.value = str(c.get(k, 0)); t.update()
-                        except Exception:
-                            pass
+                lock = getattr(self, "_auto_log_ui_lock", None)
+                if lock is not None:
+                    lock.acquire()
+                try:
+                    col = getattr(self, "_auto_log_col", None)
+                    if col is not None:
+                        real = len(self._auto_log)
+                        have = len(col.controls)
+                        # render() rebuilds the column from self._auto_log, and this
+                        # incremental append can race it at run-end — appending a line
+                        # render already added (the duplicate "Stopped." etc.). Only
+                        # touch the column when it's actually behind self._auto_log.
+                        if real == 1 and have <= 1:
+                            # replace the empty-state placeholder with the first line
+                            first = self._auto_log[0]
+                            col.controls = [self._auto_log_line(first["msg"], first["tone"])]
+                            col.update()
+                        elif have < real:
+                            # Catch the column up to the FULL current log, in source
+                            # order — NOT just this call's own (msg, tone). ui_safe()
+                            # hands each call's UI update to Flet's page.run_thread,
+                            # which starts a brand-new thread per call with no
+                            # ordering guarantee, so several updates can be in
+                            # flight and finish in any order. Reading fresh from
+                            # self._auto_log[have:real] (rather than the value this
+                            # particular closure captured) means whichever update
+                            # happens to run — first, last, or anywhere between —
+                            # always renders every missing line in the right order,
+                            # so the screen can't end up scrambled relative to the
+                            # (always correctly-ordered) underlying log list.
+                            for entry in self._auto_log[have:real]:
+                                col.controls.append(
+                                    self._auto_log_line(entry["msg"], entry["tone"]))
+                            col.update()
+                        # have >= real → render already has this line; skip (no dup)
+                    ctl = getattr(self, "_auto_count_ctl", None)
+                    if ctl:
+                        c = self._auto_count()
+                        for k, t in ctl.items():
+                            try:
+                                t.value = str(c.get(k, 0)); t.update()
+                            except Exception:
+                                pass
+                finally:
+                    if lock is not None:
+                        lock.release()
             except Exception:
                 pass
         self.ui_safe(upd)
+
+    @staticmethod
+    def _win_clipboard_set(text):
+        """Write `text` straight to the Windows clipboard via ctypes — no window
+        needs to stay alive afterward, and nothing async is involved.
+
+        This replaces an EARLIER fallback that used tkinter's clipboard_clear()/
+        clipboard_append(), which caused a real, reproduced bug: Windows'
+        clipboard normally uses DELAY-RENDER — clipboard_append() doesn't hand
+        the actual text to the OS immediately, it just registers the calling
+        window as able to produce it LATER, when some other app actually pastes.
+        That earlier code destroyed the (hidden) Tk window right after calling
+        it, so by the time the user pasted into Notepad, Windows tried to ask
+        the now-dead window for the data and got no answer — hanging Notepad's
+        paste indefinitely.
+
+        SetClipboardData with a real global-memory handle has no such
+        requirement: the text is committed to the system clipboard
+        synchronously inside this call, and ownership of the memory transfers
+        to Windows itself — so there is nothing left alive (or dead) for a
+        later paste to wait on."""
+        import ctypes
+        import ctypes.wintypes as wintypes
+        GMEM_MOVEABLE = 0x0002
+        CF_UNICODETEXT = 13
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        # Explicit argtypes/restype on every call — an unconfigured ctypes
+        # function defaults to 32-bit int, which truncates real pointers/handles
+        # on 64-bit Windows (the exact class of bug already caught once in this
+        # codebase's DPAPI code in store.py).
+        user32.OpenClipboard.argtypes = [ctypes.c_void_p]
+        user32.OpenClipboard.restype = wintypes.BOOL
+        user32.EmptyClipboard.restype = wintypes.BOOL
+        user32.CloseClipboard.restype = wintypes.BOOL
+        user32.SetClipboardData.argtypes = [wintypes.UINT, ctypes.c_void_p]
+        user32.SetClipboardData.restype = ctypes.c_void_p
+        kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+        kernel32.GlobalAlloc.restype = ctypes.c_void_p
+        kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+        kernel32.GlobalLock.restype = ctypes.c_void_p
+        kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+        kernel32.GlobalUnlock.restype = wintypes.BOOL
+
+        if not user32.OpenClipboard(None):
+            raise OSError("OpenClipboard failed")
+        try:
+            user32.EmptyClipboard()
+            data = (text or "").encode("utf-16-le") + b"\x00\x00"
+            h_mem = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(data))
+            if not h_mem:
+                raise OSError("GlobalAlloc failed")
+            p_mem = kernel32.GlobalLock(h_mem)
+            if not p_mem:
+                raise OSError("GlobalLock failed")
+            try:
+                ctypes.memmove(p_mem, data, len(data))
+            finally:
+                kernel32.GlobalUnlock(h_mem)
+            if not user32.SetClipboardData(CF_UNICODETEXT, h_mem):
+                raise OSError("SetClipboardData failed")
+            # h_mem now belongs to the system on success — must NOT be freed here.
+        finally:
+            user32.CloseClipboard()
+
+    @staticmethod
+    def _clip_fail_reason(ex1, ex2):
+        """Turn the two clipboard-copy exceptions (Flet's page.set_clipboard,
+        then the direct-to-Windows ctypes fallback) into ONE short, plain-English
+        clause a non-technical user can actually understand — instead of a raw
+        exception dump. Falls back to the exception's own text (truncated) only
+        when nothing more specific is recognized."""
+        combined = f"{ex1} {ex2}".lower()
+        if "windll" in combined:
+            return "clipboard access isn't supported on this operating system"
+        if "display" in combined or "no display" in combined:
+            return "no display is available for clipboard access"
+        if "timed out" in combined or "timeout" in combined:
+            return "the app window didn't respond in time"
+        if "access" in combined and ("denied" in combined or "permission" in combined):
+            return "another app has the clipboard locked — close it and try again"
+        detail = (str(ex1) or str(ex2) or "").strip()
+        return detail[:100] if detail else "an unknown error"
+
+    def _copy_log_text(self, lines):
+        """Shared clipboard-copy logic for the Run and Automation activity logs
+        (kept in one place so both stay in sync). Tries Flet's own
+        page.set_clipboard() first, falls back to a direct Windows clipboard
+        write (_win_clipboard_set) if that fails, and only shows a red error
+        toast — with a readable, classified reason, not a raw exception dump —
+        if BOTH paths fail."""
+        lines = [l for l in lines if (l or "").strip()]
+        if not lines:
+            self._toast("Nothing to copy yet.")
+            return
+        text = "\n".join(lines)
+        n = len(lines)
+        try:
+            self.page.set_clipboard(text)
+            self._toast(f"Log copied to clipboard ({n} line{'s' if n != 1 else ''}).")
+            return
+        except Exception as ex1:
+            # Fall back to setting the OS clipboard directly (see
+            # _win_clipboard_set) if Flet's own page.set_clipboard() fails —
+            # page.set_clipboard() goes over Flet's IPC channel to the Flutter
+            # client, and a long log can be several thousand characters; if that
+            # channel has an undocumented payload limit on this build, this
+            # bypasses it entirely. An EARLIER version of this fallback used
+            # tkinter's clipboard_append(), which caused a real reported bug —
+            # Notepad hanging on the next paste — because of how Windows'
+            # delay-render clipboard interacts with a destroyed window; see
+            # _win_clipboard_set's docstring for the full explanation. This
+            # direct ctypes write has no such issue.
+            try:
+                self._win_clipboard_set(text)
+                self._toast(f"Log copied to clipboard ({n} line{'s' if n != 1 else ''}).")
+            except Exception as ex2:
+                # A readable, one-sentence reason instead of a raw exception dump —
+                # and via _err (red), not _toast (always green): a failure toast
+                # rendering as a green success checkmark was its own bug.
+                reason = self._clip_fail_reason(ex1, ex2)
+                self._err(f"Couldn't copy the log — {reason}.")
+
+    def _copy_auto_log(self, e=None):
+        self._copy_log_text([ln.get("msg", "") for ln in getattr(self, "_auto_log", [])])
+
+    def _copy_run_log(self, e=None):
+        self._copy_log_text([ln.get("msg", "") for ln in getattr(self, "_log_lines", [])])
+
+    def _clear_run_log(self, e=None):
+        self._log_lines = []
+        self._rendered_count = 0   # so the next appended line renders, not skipped
+        # Scoped update — see _clear_auto_log below for the full reasoning
+        # (same pattern: swap the log column's own content in place instead of
+        # a full app.render(), which would rebuild the whole Run screen).
+        col = getattr(self, "_log_col", None)
+        if col is not None:
+            try:
+                col.controls = [ft.Row([
+                    ft.Icon(ft.Icons.TERMINAL, size=14, color=T.INK_3),
+                    ft.Text("No activity yet.", size=12.5, color=T.INK_3,
+                           weight=ft.FontWeight.BOLD),
+                ], spacing=10)]
+                col.update()
+                return
+            except Exception:
+                pass
+        self.render()
+
+    def _clear_auto_log(self, e=None):
+        self._auto_log = []
+        # Scoped update — same reasoning as the push-flow fix earlier (see
+        # _push_automation / automation._refresh_auto_state): a full render()
+        # rebuilds the ENTIRE Automation screen, not just the log, which is
+        # unnecessary here and would reset scroll position / any in-progress
+        # edits on the left-hand form for no reason. Just swap the log column's
+        # own content back to the empty-state placeholder in place.
+        col = getattr(self, "_auto_log_col", None)
+        if col is not None:
+            try:
+                col.controls = [empty_state(
+                    ft.Icons.TERMINAL, "No activity yet",
+                    "Fill in the site and Git details, then Generate — "
+                    "each step shows up here live.")]
+                col.update()
+                return
+            except Exception:
+                pass
+        # No live column reference yet (e.g. Clear was somehow reachable before
+        # the Automation screen ever rendered) — fall back to a full render.
+        self.render()
 
     def _save_git_creds(self):
         try:
@@ -4885,29 +5279,69 @@ class QAStudio:
 
         self._bg(work)
 
+    def _set_auto_local_path(self, p):
+        if not p:
+            return
+        self.auto_local_path = p
+        try:
+            self._save_git_creds()
+        except Exception:
+            pass
+        self.ui_safe(self.render)
+
+    @staticmethod
+    def _ask_folder_path(title):
+        """Open a native OS folder-picker (tkinter) and return the chosen path.
+            str   -> the path the user picked
+            None  -> the user cancelled
+            False -> no native dialog available (caller should fall back)
+        Mirrors regression._ask_save_path (the exporters' 'Save As' dialog) byte
+        for byte — same library, same call shape, same tri-state return. Must be
+        called OFF the UI thread: it spins up its own hidden Tk root, and the
+        previous bug was calling the picker synchronously from the Flet on_click
+        handler itself (Flet's own event loop and a blocking native Tk dialog on
+        the SAME thread), which is why it silently failed every time."""
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+        except Exception:
+            return False
+        try:
+            root = tk.Tk()
+            root.withdraw()
+            try:
+                root.attributes("-topmost", True)
+            except Exception:
+                pass
+            path = filedialog.askdirectory(parent=root, title=title)
+            try:
+                root.update(); root.destroy()
+            except Exception:
+                pass
+            return path or None
+        except Exception:
+            return False
+
     def _browse_auto_folder(self, e=None):
         """Native folder picker for the automation project folder — lets the user
         select an EXISTING generated project to push (a forgotten run) without
-        regenerating, or set where the next run writes."""
-        try:
-            fp = getattr(self, "_auto_folder_picker", None)
-            if fp is None:
-                def _picked(ev):
-                    p = getattr(ev, "path", None)
-                    if p:
-                        self.auto_local_path = p
-                        try:
-                            self._save_git_creds()
-                        except Exception:
-                            pass
-                        self.ui_safe(self.render)
-                fp = ft.FilePicker(on_result=_picked)
-                self._auto_folder_picker = fp
-                self.page.overlay.append(fp)
-                self.page.update()
-            fp.get_directory_path(dialog_title="Select the automation project folder")
-        except Exception:
-            self._toast("Folder picker isn't available here — paste the path instead.")
+        regenerating, or set where the next run writes. Same picker + threading
+        pattern as the working Regression/Sprint Plan export 'Save As' dialog:
+        runs on a background thread, and a cancel just closes with no toast
+        (only a genuinely unavailable dialog shows the paste-path message)."""
+        def work():
+            p = self._ask_folder_path("Select the automation project folder")
+            if p:
+                self._set_auto_local_path(p)
+            elif p is False:
+                # No native dialog available at all (e.g. Tcl/Tk missing) — the
+                # one case that still needs a message, since there's no other
+                # way to know a picker was attempted at all.
+                self.ui_safe(lambda: self._toast(
+                    "No folder picker available here — paste the path into "
+                    "“Save project to folder” above."))
+            # p is None => user cancelled: do nothing, same as the exporters.
+        threading.Thread(target=work, daemon=True).start()
 
     def _push_automation(self):
         import os as _os
@@ -4925,27 +5359,55 @@ class QAStudio:
             return
         self._save_git_creds()
         self._auto_running = True
-        self.render()
+        # Scoped refresh (buttons + spinner) instead of a full render() — render()
+        # rebuilds app._auto_log_col from scratch every time, which resets the
+        # Activity log's scroll position. This used to fire at the start AND end
+        # of every push, plus again on a Force-push retry, so the log rail
+        # visibly jumped/scrolled-to-top several times over one push. Falls back
+        # to a full render() only if the scoped refs aren't there yet (shouldn't
+        # happen — Push is only clickable once the screen has rendered once).
+        if not automation._refresh_auto_state(self):
+            self.render()
 
         def cb(msg, tone="dim"):
             self._auto_logmsg(msg, tone)
 
-        def work():
+        def _sync_ui():
+            if not automation._refresh_auto_state(self):
+                self.render()
+
+        def work(force=False):
             try:
                 cb(f"Pushing from {proj}", "dim")
                 ok, msg = E.push_to_git(proj, self.auto_git_url.strip(),
                                         self.auto_git_token.strip(),
                                         branch=(self.auto_git_branch.strip() or "main"),
-                                        cb=cb)
+                                        cb=cb, force=force)
                 if ok:
                     cb("Pushed. Open/refresh the repo in IntelliJ to sync.", "ok")
+                elif msg.startswith("rejected:"):
+                    # Non-fast-forward: don't just dump the raw git hint text —
+                    # log one clear sentence and offer a Force-push retry.
+                    cb(msg[len("rejected:"):].strip(), "err")
+                    def _retry_forced():
+                        self._auto_running = True
+                        self.ui_safe(_sync_ui)
+                        self._bg(lambda: work(force=True))
+                    self.ui_safe(lambda: self._confirm(
+                        "Push rejected",
+                        "The remote has commits this folder doesn't have. Force-push "
+                        "to overwrite the remote with what's in this folder? This "
+                        "can discard remote-only commits.",
+                        on_yes=_retry_forced,
+                        yes_label="Force push", danger=True,
+                        icon=ft.Icons.WARNING_AMBER_ROUNDED))
                 else:
                     cb(f"Push failed - {msg}", "err")
             except Exception as ex:
                 cb(f"Push error: {str(ex)[:200]}", "err")
             finally:
                 self._auto_running = False
-                self.ui_safe(self.render)
+                self.ui_safe(_sync_ui)
 
         self._bg(work)
 

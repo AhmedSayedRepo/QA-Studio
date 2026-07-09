@@ -525,3 +525,77 @@ def admin_revoke_access(user_id):
     Function — no backend change. Returns (ok, msg)."""
     ok, err = _admin_post({"user_id": user_id, "caps": []})
     return (True, "Access revoked.") if ok else (False, err)
+
+
+# ── Shared org-wide settings (via the 'org-settings' Edge Function) ───────────
+# Same pattern as admin-users above: a server-side Edge Function holds the
+# service_role key and enforces Admin-only writes; the desktop app only ever
+# sends the caller's own token. Any signed-in user may READ (so a value an
+# Admin sets is picked up by every install), only an Admin may WRITE. Today
+# this holds one key, "email" (Gmail sender/App Password used to send
+# reports) — the {key, value} shape leaves room for more shared settings later
+# without another backend change.
+def get_org_settings():
+    """Any signed-in user: fetch the shared org-wide settings dict, e.g.
+    {"email": {"sender": ..., "sender_name": ..., "app_password": ...}}.
+    Returns (ok, settings_dict_or_message). EVERY failure mode — auth not
+    configured, not signed in, offline, function not deployed, bad response —
+    returns (False, message) rather than raising. Callers should treat False
+    as 'fall back to local defaults', never as a fatal error: this is a
+    convenience sync, not the only source of truth (each machine's local
+    creds file still works standalone, exactly as before this existed)."""
+    if not configured():
+        return False, "Auth is not configured."
+    tok = access_token()
+    if not tok:
+        return False, "You’re not signed in."
+    try:
+        r = _client().get(_functions_url("org-settings"),
+                          headers={"Authorization": f"Bearer {tok}"}, timeout=_TIMEOUT)
+    except Exception as ex:
+        return False, f"Network error: {ex}"
+    if r.status_code == 404:
+        return False, ("The ‘org-settings’ Edge Function isn’t deployed yet — see "
+                       "ADMIN_USERS_SETUP.md.")
+    if r.status_code != 200:
+        return False, _friendly(r)
+    try:
+        return True, (r.json() or {}).get("settings", {})
+    except Exception as ex:
+        return False, f"Bad response from org-settings: {ex}"
+
+
+def _org_settings_post(payload):
+    if not configured():
+        return False, "Auth is not configured."
+    tok = access_token()
+    if not tok:
+        return False, "You’re not signed in."
+    try:
+        r = _client().post(_functions_url("org-settings"),
+                           headers={"Authorization": f"Bearer {tok}"},
+                           json=payload, timeout=_TIMEOUT)
+    except Exception as ex:
+        return False, f"Network error: {ex}"
+    if r.status_code == 404:
+        return False, ("The ‘org-settings’ Edge Function isn’t deployed yet — see "
+                       "ADMIN_USERS_SETUP.md.")
+    if r.status_code == 403:
+        return False, "Admins only."
+    if r.status_code != 200:
+        return False, _friendly(r)
+    return True, None
+
+
+def admin_set_org_email(sender, sender_name, app_password):
+    """Admin-only: set the shared org-wide email sender config (address,
+    display name, Gmail App Password) that every signed-in user's install
+    picks up — configured once here instead of per-user/per-machine. The
+    server verifies the caller is an Admin (app_metadata.role) before writing;
+    a non-admin token gets a clean 403 back, never a silent partial write.
+    Returns (ok, msg)."""
+    value = {"sender": (sender or "").strip(),
+            "sender_name": (sender_name or "").strip(),
+            "app_password": (app_password or "").strip()}
+    ok, err = _org_settings_post({"key": "email", "value": value})
+    return (True, "Email settings saved for everyone.") if ok else (False, err)

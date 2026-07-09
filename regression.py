@@ -619,35 +619,49 @@ def _plan_html(d):
     """Polished, Outlook-safe HTML summary of the plan for the email body.
 
     Table-based with inline styles so it renders across Outlook / Gmail / Apple
-    Mail. Colours track theme.py. The external-sender warning some inboxes show
-    is injected by the mail server, not here.
+    Mail. Shares the same masthead/hero/metric-strip/section-head/footer design
+    language and palette as engine.py's build_report_email / build_sprint_summary_email
+    (the app's actual cyan/teal accent — see theme.py's VIOLET/VIOLET_INK/VIOLET_SOFT),
+    so all three report emails read as one consistent brand. The external-sender
+    warning some inboxes show is injected by the mail server, not here.
     """
-    # KPI tiles
-    def _kpi(label, val, unit, fg, bg, bd, width="25%"):
-        u = (f"<span style='font-size:12px;color:#9aa4b8;font-weight:600'> {unit}</span>"
-             if unit else "")
-        return (
-            f"<td width='{width}' valign='top' style='padding:0 5px'>"
-            f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0' "
-            f"style='background:{bg};border:1px solid {bd};border-radius:12px'><tr>"
-            f"<td style='padding:13px 14px'>"
-            f"<div style='font-size:10px;letter-spacing:.6px;text-transform:uppercase;"
-            f"color:{fg};font-weight:700'>{label}</div>"
-            f"<div style='font-family:Consolas,monospace;font-size:23px;font-weight:700;"
-            f"color:{fg};margin-top:4px'>{val}{u}</div></td></tr></table></td>")
+    PAPER="#E9E8EE"; CARD="#FFFFFF"; TINT="#FAFAFC"
+    INK="#1B1A22"; INK2="#6B6975"; INK3="#9C9AA6"
+    LINE="#E8E7EE"; LINE2="#F1F0F5"
+    VIOLET="#0E9CC0"; VIOLET_INK="#0B6E86"; VIOLET_SOFT="#D6F4FB"
+    GREEN="#1F8A52"; GREEN_SOFT="#E7F4ED"
+    UI='"Segoe UI",Roboto,Helvetica,Arial,sans-serif'
+    MONO='"SFMono-Regular",Consolas,Menlo,monospace'
+
+    def _sec_head(dot, title, count):
+        return (f"<table role='presentation' cellpadding='0' cellspacing='0'><tr>"
+                f"<td valign='middle' style='padding-right:10px'><span style='display:inline-block;"
+                f"width:9px;height:9px;border-radius:50%;background:{dot}'></span></td>"
+                f"<td valign='middle' style='font-size:14.5px;font-weight:700;color:{INK};"
+                f"letter-spacing:-.2px'>{title}</td>"
+                f"<td valign='middle' style='padding-left:9px'><span style='font-family:{MONO};"
+                f"font-size:11px;font-weight:700;color:{INK2};background:{LINE2};border-radius:20px;"
+                f"padding:3px 9px'>{count}</span></td></tr></table>")
 
     # Sprint Plan estimates from an hours range (no existing test cases), so the
-    # test-case KPI + column are hidden whenever the plan has zero cases.
+    # test-case metric is hidden whenever the plan has zero cases.
     show_cases = (d.get("total_cases") or 0) > 0
-    kw = "25%" if show_cases else "33.33%"
-    kpi_cells = [_kpi("Stories", d["total_stories"], "", "#181A24", "#F6F8FC", "#EBEFF7", kw)]
+    metrics_data = [("Stories", d["total_stories"], INK)]
     if show_cases:
-        kpi_cells.append(_kpi("Test cases", d["total_cases"], "", "#181A24", "#F6F8FC", "#EBEFF7", kw))
-    kpi_cells.append(_kpi("Total effort", d["total_hours"], "h", "#2940C2", "#E7ECFF", "#D6DEFF", kw))
-    kpi_cells.append(_kpi("Per person", d["hours_per_person"], "h", "#1F9D57", "#E5F6EC", "#D2EEDF", kw))
-    kpis = (
-        f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0'><tr>"
-        + "".join(kpi_cells) + "</tr></table>")
+        metrics_data.append(("Test cases", d["total_cases"], INK))
+    metrics_data.append(("Total effort", f"{d['total_hours']}h", VIOLET_INK))
+    metrics_data.append(("Per person", f"{d['hours_per_person']}h", GREEN))
+    mcells = ""
+    for i, (k, v, col) in enumerate(metrics_data):
+        bl = "" if i == 0 else f"border-left:1px solid {LINE2};"
+        mcells += (f"<td width='1' style='{bl}padding:13px 6px 14px;text-align:center;vertical-align:top'>"
+                   f"<div style='font-size:9.5px;font-weight:700;letter-spacing:1px;color:{INK3};"
+                   f"text-transform:uppercase'>{k}</div>"
+                   f"<div style='font-family:{MONO};font-size:22px;font-weight:700;color:{col};"
+                   f"margin-top:6px;line-height:1'>{v}</div></td>")
+    kpis = (f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0' "
+            f"style='border:1px solid {LINE};border-radius:12px;table-layout:fixed'>"
+            f"<tr>{mcells}</tr></table>")
 
     # story rows
     def _story_html_row(r):
@@ -660,25 +674,25 @@ def _plan_html(d):
             f"<div style='width:24px;height:24px;line-height:24px;border-radius:50%;"
             f"background:{acol};color:#fff;text-align:center;font-size:10px;font-weight:700;"
             f"font-family:Segoe UI,Arial,sans-serif'>{init}</div></td>"
-            f"<td style='padding-left:9px;font-size:13px;font-weight:600;color:#39435c;"
+            f"<td style='padding-left:9px;font-size:13px;font-weight:600;color:{INK2};"
             f"white-space:nowrap;vertical-align:middle'>{who or '—'}</td></tr></table>")
         cases_cell = (
-            f"<td style='padding:12px 8px;text-align:right;font-family:Consolas,monospace;"
-            f"font-size:13.5px;color:#46506a'>{r['cases']}</td>") if show_cases else ""
+            f"<td style='padding:12px 8px;text-align:right;font-family:{MONO};"
+            f"font-size:13.5px;color:{INK2}'>{r['cases']}</td>") if show_cases else ""
         return (
-            f"<tr style='border-top:1px solid #f0f3f9'>"
-            f"<td style='padding:12px 14px;font-family:Consolas,monospace;font-size:13px;"
+            f"<tr style='border-top:1px solid {LINE2}'>"
+            f"<td style='padding:12px 14px;font-family:{MONO};font-size:13px;"
             f"font-weight:600;white-space:nowrap'>"
             f"<a href='{_wi_url(d['project'], r['id'])}' "
-            f"style='color:#3A57D6;text-decoration:none'>{r['id']}</a></td>"
-            f"<td style='padding:12px 8px;font-size:13.5px;font-weight:600;color:#1f2940'>"
+            f"style='color:{VIOLET_INK};text-decoration:none'>{r['id']}</a></td>"
+            f"<td style='padding:12px 8px;font-size:13.5px;font-weight:600;color:{INK}'>"
             f"{(r['title'] or '—')}</td>"
             f"<td style='padding:12px 8px;text-align:center'>"
-            f"<span style='font-family:Consolas,monospace;font-size:11px;font-weight:700;"
+            f"<span style='font-family:{MONO};font-size:11px;font-weight:700;"
             f"padding:3px 8px;border-radius:6px;background:{bg};color:{fg}'>{lab}</span></td>"
             + cases_cell +
-            f"<td style='padding:12px 8px;text-align:right;font-family:Consolas,monospace;"
-            f"font-size:13.5px;font-weight:700;color:#1f2940'>{r['hours']}</td>"
+            f"<td style='padding:12px 8px;text-align:right;font-family:{MONO};"
+            f"font-size:13.5px;font-weight:700;color:{INK}'>{r['hours']}</td>"
             f"<td style='padding:12px 14px'>{asg}</td></tr>")
 
     from collections import OrderedDict as _ODh
@@ -691,9 +705,9 @@ def _plan_html(d):
     for (_fid_h, _fname_h), _fstories_h in _feat_grps_h.items():
         _fid_label_h = f"[{_fid_h}]  " if _fid_h else ""
         srows.append(
-            f"<tr style='background:#EEE8FF;border-top:2px solid #C8BAFF'>"
+            f"<tr style='background:{VIOLET_SOFT};border-top:2px solid {VIOLET}'>"
             f"<td colspan='{_html_ncols + 2}' style='padding:7px 14px;font-size:10.5px;"
-            f"font-weight:700;color:#6A4DFF;letter-spacing:.4px;"
+            f"font-weight:700;color:{VIOLET_INK};letter-spacing:.4px;"
             f"text-transform:uppercase'>"
             f"Feature: {_fid_label_h}{_fname_h}</td></tr>")
         for r in _fstories_h:
@@ -705,10 +719,10 @@ def _plan_html(d):
     _cols += [("Hours", "8px", "text-align:right"), ("Assignee", "14px", "")]
     story_tbl = (
         f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0' "
-        f"style='border:1px solid #EBEFF7;border-radius:12px'>"
-        f"<tr style='background:#F6F8FC'>"
+        f"style='border:1px solid {LINE};border-radius:12px'>"
+        f"<tr style='background:{TINT}'>"
         + "".join(f"<td style='padding:10px {p};font-size:10.5px;letter-spacing:.5px;"
-                  f"text-transform:uppercase;color:#98a1b5;font-weight:700;{a}'>{h}</td>"
+                  f"text-transform:uppercase;color:{INK3};font-weight:700;{a}'>{h}</td>"
                   for h, p, a in _cols)
         + "</tr>" + "".join(srows) + "</table>")
 
@@ -728,68 +742,81 @@ def _plan_html(d):
                 f"<div style='width:22px;height:22px;line-height:22px;border-radius:6px;"
                 f"background:{acol};color:#fff;text-align:center;font-size:10px;"
                 f"font-weight:700;font-family:Segoe UI,Arial,sans-serif'>{init}</div></td>"
-                f"<td style='padding-left:9px;font-size:13px;font-weight:700;color:#1f2940;"
+                f"<td style='padding-left:9px;font-size:13px;font-weight:700;color:{INK};"
                 f"vertical-align:middle'>"
                 f"{w['name']}</td></tr></table></td>"
                 f"<td style='padding:7px 14px'>"
                 f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0' "
-                f"style='background:#eef1f7;border-radius:99px'><tr>"
+                f"style='background:{LINE2};border-radius:99px'><tr>"
                 f"<td height='8' style='background:{acol};border-radius:99px;width:{pct}%;"
                 f"font-size:0;line-height:0'>&nbsp;</td>"
                 f"<td style='font-size:0;line-height:0'>&nbsp;</td></tr></table></td>"
                 f"<td width='118' align='right' style='padding:7px 0;white-space:nowrap'>"
-                f"<span style='font-size:11.5px;color:#8a93a8'>{w['stories']} stories</span>"
-                f"<span style='font-family:Consolas,monospace;font-size:14px;font-weight:700;"
-                f"color:#1f2940;padding-left:8px'>{w['hours']} h</span></td></tr>")
+                f"<span style='font-size:11.5px;color:{INK3}'>{w['stories']} stories</span>"
+                f"<span style='font-family:{MONO};font-size:14px;font-weight:700;"
+                f"color:{INK};padding-left:8px'>{w['hours']} h</span></td></tr>")
         wl_block = (
-            f"<tr><td style='padding:22px 32px 4px'>"
+            f"<tr><td style='padding:26px 32px;border-top:1px solid {LINE}'>"
             f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0'><tr>"
-            f"<td style='font-size:11px;letter-spacing:.7px;text-transform:uppercase;"
-            f"color:#8a93a8;font-weight:700'>Resource workload</td>"
-            f"<td align='right'><span style='font-size:11.5px;font-weight:600;color:#1F9D57;"
-            f"background:#E5F6EC;padding:5px 11px;border-radius:999px'>"
+            f"<td>{_sec_head(GREEN, 'Resource workload', len(wl))}</td>"
+            f"<td align='right'><span style='font-size:11.5px;font-weight:700;color:{GREEN};"
+            f"background:{GREEN_SOFT};padding:5px 11px;border-radius:999px'>"
             f"&#8776; {d['hours_per_person']} h / person</span></td></tr></table>"
             f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0' "
-            f"style='margin-top:12px'>" + "".join(wrows) + "</table></td></tr>")
+            f"style='margin-top:14px'>" + "".join(wrows) + "</table></td></tr>")
 
     scope = d["plan_name"] or d["project"]
-    return (
-        f"<div style='background:#e9edf4;padding:28px 12px;"
-        f"font-family:Segoe UI,Arial,sans-serif'>"
-        f"<table role='presentation' align='center' width='680' cellpadding='0' "
-        f"cellspacing='0' style='max-width:680px;width:100%;margin:0 auto;background:#fff;"
-        f"border-radius:16px;overflow:hidden;border:1px solid #e4e9f2'>"
-        # header band
-        f"<tr><td style='padding:26px 32px 22px;background:#3A57D6;"
-        f"background-image:linear-gradient(125deg,#1C80E0 0%,#3A57D6 55%,#6A33A8 100%)'>"
+    kind = d.get("report_title", "Regression Test Plan")
+
+    # masthead — same layout as the run report / sprint summary emails
+    masthead = (
         f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0'><tr>"
-        f"<td style='color:#fff;font-weight:800;font-size:15px;letter-spacing:.2px'>"
-        f"QA&nbsp;Studio</td>"
-        f"<td align='right'><span style='font-family:Consolas,monospace;font-size:11px;"
-        f"color:#d6ddf6;background:rgba(255,255,255,.14);padding:6px 11px;"
-        f"border-radius:8px'>generated {d['generated']}</span></td></tr></table>"
-        f"<div style='margin-top:20px;color:#fff;font-size:25px;font-weight:800;"
-        f"letter-spacing:-.5px'>{d.get('report_title', 'Regression Test Plan')}</div>"
-        f"<div style='margin-top:6px;color:#cdd5f0;font-size:13.5px;font-weight:500'>"
-        f"{scope}</div></td></tr>"
-        # KPI strip
-        f"<tr><td style='padding:22px 27px 6px'>{kpis}</td></tr>"
-        # story table
-        f"<tr><td style='padding:16px 32px 6px'>"
-        f"<div style='font-size:11px;letter-spacing:.7px;text-transform:uppercase;"
-        f"color:#8a93a8;font-weight:700;margin-bottom:12px'>Stories in scope</div>"
-        f"{story_tbl}</td></tr>"
-        + wl_block +
-        # footer
-        f"<tr><td style='padding:22px 32px 26px'>"
-        f"<div style='border-top:1px solid #eef1f7;padding-top:18px;font-size:12px;"
-        f"color:#9aa4b8;line-height:1.6'>Sent automatically from "
-        f"<b style='color:#6b7790'>QA Studio</b>. The full plan is attached as a Word "
-        f"document." + (f"<br>Estimates use {d['avg_minutes_per_case']}&nbsp;min / test "
-        f"case weighted by Azure DevOps priority." if show_cases else
-        f"<br>Effort is estimated per story and balanced across the team.")
-        + f"</div></td></tr>"
-        f"</table></div>")
+        f"<td width='34' valign='middle' style='padding-right:13px'>{E._logo_tag(34)}</td>"
+        f"<td valign='middle'>"
+        f"<div style='font-size:15px;font-weight:700;color:{INK};letter-spacing:-.2px'>QA Studio</div>"
+        f"<div style='font-size:12px;font-weight:700;color:{VIOLET_INK};margin-top:2px'>{kind} &middot; Report</div>"
+        f"</td>"
+        f"<td valign='middle' align='right' style='font-family:{MONO};font-size:11px;"
+        f"color:{INK3};font-weight:700'>{d['generated']}</td></tr></table>")
+
+    # hero — pill + headline + subtitle, same treatment as the other two reports
+    hero = (
+        f"<span style='display:inline-block;background:{VIOLET_SOFT};color:{VIOLET_INK};"
+        f"font-size:11px;font-weight:700;letter-spacing:.4px;padding:5px 12px;"
+        f"border-radius:20px'>PLAN SUMMARY</span>"
+        f"<div style='font-size:23px;font-weight:700;letter-spacing:-.5px;color:{INK};"
+        f"line-height:1.2;margin:14px 0 0'>{kind}</div>"
+        f"<div style='font-size:13px;color:{INK2};font-weight:600;margin-top:8px'>{scope}</div>")
+
+    footer_note = (
+        f"Estimates use {d['avg_minutes_per_case']}&nbsp;min / test case weighted by Azure "
+        f"DevOps priority." if show_cases else
+        "Effort is estimated per story and balanced across the team.")
+    footer = (
+        f"<table role='presentation' cellpadding='0' cellspacing='0'><tr>"
+        f"<td valign='middle' style='padding-right:9px'>{E._logo_tag(20)}</td>"
+        f"<td valign='middle' style='font-size:11.5px;font-weight:600;color:{INK3}'>"
+        f"Generated by QA Studio &middot; Azure DevOps + AI</td></tr></table>"
+        f"<div style='font-family:{MONO};font-size:11px;color:{INK3};margin-top:8px;"
+        f"line-height:1.6'>The full plan is attached as a Word document. {footer_note}</div>")
+
+    return f"""<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'></head>
+<body style='margin:0;padding:0;background:{PAPER};-webkit-text-size-adjust:100%'>
+<center style='width:100%;background:{PAPER}'>
+<table role='presentation' width='100%' cellpadding='0' cellspacing='0' style='background:{PAPER}'><tr>
+<td align='center' style='padding:26px 12px 48px'>
+<table role='presentation' width='680' cellpadding='0' cellspacing='0' style='width:680px;max-width:680px;background:{CARD};border:1px solid #DEDDE6;border-radius:16px;overflow:hidden;font-family:{UI};color:{INK}'>
+  <tr><td style='height:3px;line-height:3px;font-size:0;background:{VIOLET}'>&nbsp;</td></tr>
+  <tr><td style='padding:24px 32px 0'>{masthead}</td></tr>
+  <tr><td style='padding:18px 32px 4px'>{hero}</td></tr>
+  <tr><td style='padding:18px 32px 0'>{kpis}</td></tr>
+  <tr><td style='padding:26px 32px 6px;border-top:1px solid {LINE}'>
+    {_sec_head(VIOLET, 'Stories in scope', len(d.get('stories') or []))}
+    <div style='margin-top:14px'>{story_tbl}</div></td></tr>
+  {wl_block}
+  <tr><td style='padding:20px 32px 26px;border-top:1px solid {LINE};background:{TINT}'>{footer}</td></tr>
+</table>
+</td></tr></table></center></body></html>"""
 
 
 
