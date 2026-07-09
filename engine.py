@@ -1536,6 +1536,57 @@ def fetch_stories_in_plan(project, plan_id, pat=None):
             for sid in ids]
 
 
+_project_members_cache = {}   # project -> [{"name","email"}, ...], process-lifetime cache
+
+
+def fetch_project_members(project, pat=None, force=False):
+    """Display name + email for everyone on this Azure DevOps project's teams —
+    powers the recipient picker on Setup / Sprint Plan / Regression Plan (pick
+    real people instead of typing addresses from memory). Uses the Core API's
+    teams + team-members endpoints, which work with the same PAT already used
+    for everything else in the app (no extra scope needed). Cached per project
+    for the life of the process; pass force=True to bypass the cache.
+    """
+    if not force and project in _project_members_cache:
+        return _project_members_cache[project]
+    pat = pat or AZURE_PAT
+    try:
+        teams = _azure_get(
+            f"https://dev.azure.com/{AZURE_ORG}/_apis/projects/{project}/teams"
+            f"?api-version=7.0", pat).get("value", [])
+    except Exception:
+        teams = []
+
+    import concurrent.futures as _cf
+
+    def _team_members(team):
+        tid = team.get("id")
+        if not tid:
+            return []
+        try:
+            return _azure_get(
+                f"https://dev.azure.com/{AZURE_ORG}/_apis/projects/{project}/teams/"
+                f"{tid}/members?api-version=7.0", pat).get("value", [])
+        except Exception:
+            return []
+
+    out = {}
+    if teams:
+        with _cf.ThreadPoolExecutor(max_workers=min(8, len(teams))) as ex:
+            for members in ex.map(_team_members, teams):
+                for m in members:
+                    ident = m.get("identity", {}) or {}
+                    email = (ident.get("uniqueName") or "").strip()
+                    name = (ident.get("displayName") or "").strip()
+                    # Skip group identities (e.g. "[Project]\Team") which have no
+                    # real "@" address to send mail to.
+                    if email and "@" in email:
+                        out[email.lower()] = {"name": name or email, "email": email}
+    result = sorted(out.values(), key=lambda r: r["name"].lower())
+    _project_members_cache[project] = result
+    return result
+
+
 def discover_suites_for_stories(project, plan_id, story_ids, create_missing=True):
     """Match each story to a suite in the plan; auto-create requirement suites for
     any story without one (unless create_missing=False). Returns {story_id: suite_id}."""
@@ -1762,6 +1813,43 @@ def fetch_test_case_title(tc_id):
         return (wi.fields or {}).get("System.Title", "") or ""
     except Exception:
         return ""
+
+
+def fetch_existing_titles_for_suite(project, plan_id, suite_id):
+    """Reliable {id, title} pairs for every test case already in a suite.
+
+    fetch_test_cases_for_suite() is optimized for fast bulk counting
+    (witFields=System.Id) and — as fetch_test_case_title's own docstring
+    already notes — its workItem.name comes back BLANK because of that. The
+    Run/Report screens already work around this by backfilling via
+    fetch_test_case_title(id) per case; the duplicate-detection paths
+    (dedupe_existing_suite, and the 'does this suite already have cases'
+    checks in run_titles/run_steps) did NOT do this backfill, so they were
+    silently comparing against blank titles — every suite looked empty and
+    every dedup check trivially found 'no duplicates', no matter how many
+    real test cases already existed in it. This is the actual reason
+    duplicates kept accumulating regardless of how good the semantic/AI
+    matching got: the matching never had real titles to work with.
+
+    Backfills concurrently (same pattern as the Run/Report screens) so a
+    large suite doesn't serialize one HTTP call per case."""
+    raw = fetch_test_cases_for_suite(project, plan_id, suite_id)
+    prelim = []
+    for it in raw:
+        wi = (it.get("workItem", {}) or {})
+        tc_id = wi.get("id")
+        if not tc_id:
+            continue
+        prelim.append({"id": int(tc_id), "title": (wi.get("name") or "").strip()})
+    missing = [r for r in prelim if not r["title"]]
+    if missing:
+        import concurrent.futures as _cf
+        with _cf.ThreadPoolExecutor(max_workers=min(16, len(missing))) as _ex:
+            fetched = dict(_ex.map(lambda r: (r["id"], fetch_test_case_title(r["id"])), missing))
+        for r in prelim:
+            if not r["title"]:
+                r["title"] = fetched.get(r["id"], "") or ""
+    return prelim
 
 
 
@@ -2110,44 +2198,98 @@ def _norm_title(t):
     return re.sub(r"\s+", " ", t).strip().lower()
 
 
+def _classify_delete_error(status_code, raw):
+    """Turn an Azure DevOps delete failure (HTTP status + response text, or a
+    raw exception string) into a plain-English reason — WITHOUT throwing away
+    the server's own error text. Previously any status code that wasn't
+    401/403/404/5xx (e.g. 400 Bad Request) fell straight to a bare
+    "HTTP {code}", discarding `raw` entirely — which is exactly why a 400
+    showed no detail at all. Now every path keeps a truncated snippet of
+    what Azure DevOps actually said, appended to the short label."""
+    raw_l = (raw or "").lower()
+    snippet = re.sub(r"\s+", " ", (raw or "")).strip()[:220]
+
+    if status_code == 403 or "permission" in raw_l or "not authorized" in raw_l or "access is denied" in raw_l:
+        base = ("no permission to delete work items in this project — ask an "
+                "Azure DevOps admin to grant 'Delete and restore work items'")
+    elif status_code == 401 or "unauthorized" in raw_l:
+        base = "sign-in rejected — check the PAT in Setup"
+    elif status_code == 404 or "does not exist" in raw_l or "has been deleted" in raw_l:
+        base = "already deleted"
+    elif "vs403" in raw_l or ("state" in raw_l and "transition" in raw_l):
+        base = "blocked by a work item rule in this project"
+    elif status_code and status_code >= 500:
+        base = f"Azure DevOps server error (HTTP {status_code})"
+    elif status_code:
+        base = f"HTTP {status_code}"
+    else:
+        base = "unknown error"
+
+    if snippet and snippet.lower() not in base.lower():
+        return f"{base} — {snippet}"
+    return base or "unknown error"
+
+
 def delete_test_case(project, plan_id, suite_id, tc_id):
-    """Remove a test case from the suite and delete the work item."""
-    # 1) remove from suite (best-effort)
+    """Remove a duplicate test case from the SUITE so it stops showing up in
+    runs/reports. Does NOT hard-delete the underlying work item.
+
+    Two things learned the hard way, in order:
+      1. Test Case work items reject the generic Work Item Tracking delete API
+         (_wit_client.delete_work_item / _apis/wit/workitems/{id}) outright —
+         HTTP 400 "You cannot delete or restore test work items using this
+         API. Use Test Management REST API to delete test artifacts."
+      2. Switching to the Test Management API's own delete_test_case (the
+         "correct" endpoint per that message) still fails for most accounts —
+         hard-deleting a work item needs the elevated 'Delete and restore work
+         items' permission, which is separate from normal suite-editing rights
+         and most PATs don't have it (confirmed live: AccessDeniedException).
+
+    Removing the test case from the suite only needs suite-edit permission
+    (routine, already granted), and it achieves the actual goal: the duplicate
+    no longer appears anywhere the suite is used. The work item itself is left
+    alone rather than hard-deleted. Returns (ok, reason) — reason is "" on
+    success, otherwise a short, readable diagnosis."""
     try:
         _test_client.remove_test_cases_from_suite_url(
             project=project, plan_id=plan_id, suite_id=suite_id, test_case_ids=str(tc_id))
-    except Exception:
+        return True, ""
+    except Exception as e1:
         try:
             url = (f"https://dev.azure.com/{AZURE_ORG}/{project}/_apis/test/Plans/"
                    f"{plan_id}/Suites/{suite_id}/testcases/{tc_id}?api-version=7.0")
-            requests.delete(url, auth=("", AZURE_PAT), timeout=30)
-        except Exception:
-            pass
-    # 2) delete the work item itself
-    try:
-        _wit_client.delete_work_item(id=tc_id, project=project, destroy=False)
-        return True
-    except Exception:
-        try:
-            url = (f"https://dev.azure.com/{AZURE_ORG}/{project}/_apis/wit/"
-                   f"workitems/{tc_id}?api-version=7.0")
             r = requests.delete(url, auth=("", AZURE_PAT), timeout=30)
-            return r.status_code in (200, 204)
-        except Exception:
-            return False
+            if r.status_code in (200, 204):
+                return True, ""
+            return False, _classify_delete_error(r.status_code, r.text)
+        except Exception as e2:
+            # e1 is from the SDK call (usually carries the real Azure DevOps
+            # error text, e.g. a permission message); e2 is just "the REST
+            # fallback also failed" (often a bare network/timeout error) —
+            # prefer e1's message when there is one.
+            return False, _classify_delete_error(None, str(e1) or str(e2))
 
 
-def dedupe_existing_suite(project, plan_id, suite_id, cb=None, do_delete=True):
+def dedupe_existing_suite(project, plan_id, suite_id, cb=None, do_delete=True, should_stop=None):
     """Find duplicate test cases ALREADY in a suite and remove the less complete
     one of each duplicate group, keeping the most accurate (most steps, then
-    oldest id). Duplicates are matched by semantic key (meaning), so
-    'لا يقبل أقل من 2 حرف' and 'لا يقبل أقل من حرفين' are treated as the same.
+    oldest id). Duplicates are matched two ways: first the cheap semantic-key
+    check ('لا يقبل أقل من 2 حرف' vs 'لا يقبل أقل من حرفين' — shared words/
+    hand-mapped synonyms), then an AI mop-up pass over whatever's still
+    unclustered, to catch true synonyms/paraphrase the static check can't
+    ('requests submitted for the branch' vs 'actions taken for the branch').
 
-    Returns {"removed": [ {id,title,kept_id} ], "groups": n}.
+    Returns {"removed": [ {id,title,kept_id} ], "kept": [...], "groups": n}.
     """
     cb = cb or (lambda *a, **k: None)
+    should_stop = should_stop or (lambda: False)
     try:
-        cases = fetch_test_cases_for_suite(project, plan_id, suite_id)
+        # fetch_existing_titles_for_suite (not the raw fetch_test_cases_for_suite)
+        # -- the raw suite listing's workItem.name always comes back blank (see
+        # its own docstring), which used to make every duplicate check here
+        # compare against empty titles and silently find nothing to do, no
+        # matter how many real test cases were already in the suite.
+        cases = fetch_existing_titles_for_suite(project, plan_id, suite_id)
     except Exception as e:
         cb("log", {"msg": f"Could not read suite for dedup: {str(e)[:80]}", "tone": "warn"})
         return {"removed": [], "groups": 0}
@@ -2157,9 +2299,8 @@ def dedupe_existing_suite(project, plan_id, suite_id, cb=None, do_delete=True):
     import concurrent.futures as _cf
 
     def _rec(c):
-        wi = c.get("workItem", {})
-        tc_id = wi.get("id")
-        title = wi.get("name", "")
+        tc_id = c.get("id")
+        title = c.get("title", "")
         if not tc_id:
             return None
         try:
@@ -2188,9 +2329,61 @@ def dedupe_existing_suite(project, plan_id, suite_id, cb=None, do_delete=True):
         if not placed:
             groups[r["key"]] = [r]
 
+    # AI mop-up: the semantic-key grouping above only catches duplicates that
+    # share literal words or a hand-mapped synonym. Ask the AI to look at
+    # whatever's still standing alone (unclustered) and catch the rest — same
+    # reasoning as _dedupe_titles_ai, applied to cases already sitting in the
+    # suite. Best-effort and cheap: skipped entirely if Stop was clicked or
+    # there's nothing ambiguous left to check.
+    if not should_stop():
+        singles = [(gk, members[0]) for gk, members in groups.items() if len(members) == 1]
+        if len(singles) >= 2:
+            items = [{"id": r["id"], "title": r["title"]} for _gk, r in singles]
+            ai_groups = _ai_duplicate_clusters(items, should_stop=should_stop)
+            if ai_groups:
+                # Union-find over `singles` indices: the AI can legitimately
+                # return overlapping/chained groups for a tight cluster of
+                # near-identical titles (e.g. [A,B] and [B,C] instead of one
+                # [A,B,C]) — merging pair-by-pair either crashes on a key
+                # that's already been merged away, or silently leaves the
+                # cluster split in two. Union-find collapses any chain into
+                # one connected cluster regardless of how the AI grouped it,
+                # and each surviving key is only ever touched once.
+                parent = list(range(len(singles)))
+                def _find(i):
+                    while parent[i] != i:
+                        parent[i] = parent[parent[i]]
+                        i = parent[i]
+                    return i
+                def _union(a, b):
+                    ra, rb = _find(a), _find(b)
+                    if ra != rb:
+                        parent[rb] = ra
+                for idxs in ai_groups:
+                    valid = [i for i in idxs if 0 <= i < len(singles)]
+                    for i in valid[1:]:
+                        _union(valid[0], i)
+                clusters = {}
+                for i in range(len(singles)):
+                    clusters.setdefault(_find(i), []).append(i)
+                for idx_list in clusters.values():
+                    if len(idx_list) < 2:
+                        continue
+                    gks = [singles[i][0] for i in idx_list]
+                    target_gk = gks[0]
+                    for gk in gks[1:]:
+                        if gk in groups and gk != target_gk:
+                            groups[target_gk].extend(groups.pop(gk))
+
     removed = []       # successfully deleted duplicates
     kept_dupes = []    # duplicates we could NOT delete (left in the suite)
     dup_groups = 0
+    # If the very first delete fails because of missing permissions, every
+    # other delete this run will fail for the exact same reason — retrying 18
+    # more times just wastes API calls and floods the log with the same line.
+    # Stop attempting deletes (but keep detecting/reporting groups) once that
+    # happens, and say so once instead of repeating it per case.
+    perm_blocked_reason = None
     for gk, members in groups.items():
         if len(members) < 2:
             continue
@@ -2198,45 +2391,161 @@ def dedupe_existing_suite(project, plan_id, suite_id, cb=None, do_delete=True):
         # keeper = most steps (more complete/accurate), tie-break = smallest id (oldest)
         members.sort(key=lambda m: (-m["steps"], m["id"]))
         keeper = members[0]
-        cb("log", {"msg": f"Duplicate group ({len(members)}) — keeping #{keeper['id']} "
-                          f"({keeper['steps']} steps)", "tone": "info", "ar": True,
+        n_dupes = len(members) - 1
+        cb("log", {"msg": f"{len(members)} test cases test the same thing — "
+                          f"keeping #{keeper['id']} ({keeper['steps']} step"
+                          + ("s" if keeper['steps'] != 1 else "") + ", the most complete)",
+                   "tone": "info", "ico": "≡", "ar": True,
                    "id": keeper["id"], "detail": keeper["title"]})
         for victim in members[1:]:
-            if not do_delete:
+            if not do_delete or perm_blocked_reason:
+                reason_note = f" — {perm_blocked_reason}" if perm_blocked_reason else ""
                 cb("log", {"msg": f"{victim['title']}", "tone": "warn", "ar": True,
                            "id": victim["id"],
-                           "detail": f"duplicate (not deleted) · {victim['steps']} steps · dup of #{keeper['id']}"})
+                           "detail": f"kept (not removed{reason_note}) · duplicate of #{keeper['id']}"})
                 kept_dupes.append({"id": victim["id"], "title": victim["title"], "kept_id": keeper["id"]})
                 continue
-            ok = delete_test_case(project, plan_id, suite_id, victim["id"])
+            ok, reason = delete_test_case(project, plan_id, suite_id, victim["id"])
             if ok:
-                # log the OLD (removed) test — its id + title — and the id we kept
-                cb("log", {"msg": f"{victim['title']}", "tone": "skip", "ar": True,
-                           "id": victim["id"],
-                           "detail": f"removed old #{victim['id']} · {victim['steps']} steps · kept #{keeper['id']}"})
+                # log the OLD (removed) test — its id + title — and the id we kept.
+                # tone "warn" (amber) + an explicit trash icon — a removal is a
+                # DIFFERENT kind of outcome than a newly created/updated test case,
+                # so it must not read as the same green ✓ "success" those use.
+                cb("log", {"msg": f"{victim['title']}", "tone": "warn", "ar": True,
+                           "ico": "🗑", "id": victim["id"],
+                           "detail": f"removed #{victim['id']} (duplicate) · kept #{keeper['id']} instead"})
                 removed.append({"id": victim["id"], "title": victim["title"], "kept_id": keeper["id"]})
             else:
                 # delete failed → the duplicate is STILL there; never count it as removed
                 cb("log", {"msg": f"{victim['title']}", "tone": "err", "ar": True,
                            "id": victim["id"],
-                           "detail": f"delete FAILED — kept as duplicate · dup of #{keeper['id']}"})
+                           "detail": f"could not remove — {reason} · duplicate of #{keeper['id']}"})
                 kept_dupes.append({"id": victim["id"], "title": victim["title"], "kept_id": keeper["id"]})
+                if "permission" in reason.lower():
+                    perm_blocked_reason = reason
     if dup_groups:
+        n_dupe_cases = sum(len(m) - 1 for m in groups.values() if len(m) >= 2)
         if removed:
-            tail = (f"; {len(kept_dupes)} could not be deleted (kept)" if kept_dupes else "")
-            cb("log", {"msg": f"Removed {len(removed)} duplicate test case"
+            tail = (f"; {len(kept_dupes)} couldn't be removed" if kept_dupes else "")
+            cb("log", {"msg": f"Cleaned up {len(removed)} duplicate test case"
                               + ("s" if len(removed) != 1 else "")
-                              + f" across {dup_groups} group" + ("s" if dup_groups != 1 else "")
+                              + f" ({dup_groups} set" + ("s" if dup_groups != 1 else "")
+                              + " of test cases that covered the same thing)"
                               + tail,
                        "tone": "warn" if kept_dupes else "ok"})
         else:
-            cb("log", {"msg": f"Found {dup_groups} duplicate group"
-                              + ("s" if dup_groups != 1 else "")
-                              + f", but none could be deleted ({len(kept_dupes)} kept).",
+            extra = f" ({perm_blocked_reason})" if perm_blocked_reason else ""
+            cb("log", {"msg": f"Found {n_dupe_cases} duplicate test case"
+                              + ("s" if n_dupe_cases != 1 else "")
+                              + f" across {dup_groups} set" + ("s" if dup_groups != 1 else "")
+                              + f", but couldn't remove any{extra}.",
                        "tone": "err"})
     else:
         cb("log", {"msg": "No duplicate test cases found in the suite.", "tone": "dim"})
     return {"removed": removed, "kept": kept_dupes, "groups": dup_groups}
+
+
+def dedupe_case_list(cases, log=None, should_stop=None):
+    """Skip-only duplicate detection for a list of in-memory test cases,
+    used by the automation flow to avoid generating a script twice for the
+    same scenario. Unlike dedupe_existing_suite this makes NO Azure DevOps
+    calls and deletes nothing — duplicates are simply left out of the
+    returned list. Same two-layer matching: cheap semantic-key grouping
+    first, then an AI mop-up pass over whatever's still unclustered, to
+    catch true synonyms/paraphrase the static check can't.
+
+    `cases` — list of {"id": int, "title": str, "steps": [...]}.
+    Returns the deduplicated list (most-complete case kept per duplicate
+    group; non-duplicate cases pass through untouched).
+    """
+    log = log or (lambda *a, **k: None)
+    should_stop = should_stop or (lambda: False)
+    if not cases:
+        return cases
+    _dedupe_start = time.time()
+
+    recs = []
+    for c in cases:
+        title = c.get("title", "") or ""
+        recs.append({"id": c.get("id"), "title": title,
+                     "steps": len(c.get("steps") or []),
+                     "key": _semantic_key(title), "norm": _norm_title(title),
+                     "_orig": c})
+
+    groups = {}
+    order = []  # first-seen order of group keys, so kept cases stay grouped
+    for r in recs:
+        placed = False
+        for gk in list(groups.keys()):
+            if r["norm"] and any(r["norm"] == x["norm"] for x in groups[gk]):
+                groups[gk].append(r); placed = True; break
+            if _is_near_duplicate(r["key"], {gk}):
+                groups[gk].append(r); placed = True; break
+        if not placed:
+            groups[r["key"]] = [r]
+            order.append(r["key"])
+
+    if not should_stop():
+        singles = [(gk, members[0]) for gk, members in groups.items() if len(members) == 1]
+        if len(singles) >= 2:
+            items = [{"id": r["id"], "title": r["title"]} for _gk, r in singles]
+            ai_groups = _ai_duplicate_clusters(items, should_stop=should_stop)
+            if ai_groups:
+                # Union-find — see dedupe_existing_suite for why: the AI can
+                # return overlapping/chained groups for a tight cluster of
+                # near-identical titles, and pairwise merging either crashes
+                # or leaves the cluster split in two.
+                parent = list(range(len(singles)))
+                def _find(i):
+                    while parent[i] != i:
+                        parent[i] = parent[parent[i]]
+                        i = parent[i]
+                    return i
+                def _union(a, b):
+                    ra, rb = _find(a), _find(b)
+                    if ra != rb:
+                        parent[rb] = ra
+                for idxs in ai_groups:
+                    valid = [i for i in idxs if 0 <= i < len(singles)]
+                    for i in valid[1:]:
+                        _union(valid[0], i)
+                clusters = {}
+                for i in range(len(singles)):
+                    clusters.setdefault(_find(i), []).append(i)
+                for idx_list in clusters.values():
+                    if len(idx_list) < 2:
+                        continue
+                    gks = [singles[i][0] for i in idx_list]
+                    target_gk = gks[0]
+                    for gk in gks[1:]:
+                        if gk in groups and gk != target_gk:
+                            groups[target_gk].extend(groups.pop(gk))
+
+    kept = []
+    n_skipped = 0
+    dup_groups = 0
+    for gk in order:
+        members = groups.get(gk)
+        if not members:
+            continue
+        if len(members) < 2:
+            kept.append(members[0]["_orig"])
+            continue
+        dup_groups += 1
+        members.sort(key=lambda m: (-m["steps"], m["id"]))
+        keeper = members[0]
+        kept.append(keeper["_orig"])
+        for victim in members[1:]:
+            n_skipped += 1
+            log(f"  skipping duplicate: {victim['title'][:70]} "
+                f"(same as #{keeper['id']})", "dim")
+    if dup_groups:
+        log(f"Skipped {n_skipped} duplicate test case" + ("s" if n_skipped != 1 else "")
+            + f" before sequencing ({dup_groups} set" + ("s" if dup_groups != 1 else "")
+            + " of test cases that covered the same thing) — generating "
+            + "automation for the most complete case in each set only. "
+            + f"⏱ {_fmt_mmss(time.time() - _dedupe_start)}", "warn")
+    return kept
 
 
 # Arabic filler/stop words that don't change a test's meaning — removed before
@@ -2310,6 +2619,154 @@ def _is_near_duplicate(key, seen_keys, threshold=0.8):
     return False
 
 
+def _ai_duplicate_clusters(items, should_stop=None):
+    """items: [{"id":..,"title":..}, ...] — test cases the cheap semantic-key
+    check found NO overlap for (each still alone in its own group). Asks the
+    AI which of these titles describe the exact same scenario as another one
+    in the list, despite different wording/synonyms it can't be expected to
+    know ahead of time via a hand-maintained table.
+
+    Returns a list of groups, each a list of INDICES into `items` (index 0 =
+    first item, etc.) that should be treated as one duplicate cluster.
+    Best-effort: returns [] on any failure, timeout, or Stop."""
+    if len(items) < 2:
+        return []
+    should_stop = should_stop or (lambda: False)
+    try:
+        if should_stop() or _STOP_EVENT.is_set():
+            return []
+        ar = _is_arabic_out()
+        shown = items[:150]
+        listed = "\n".join(f"{i+1}. {it['title']}" for i, it in enumerate(shown))
+        if ar:
+            prompt = f"""
+            أنت مراجع ضمان جودة صارم. لديك قائمة عناوين حالات اختبار مرقمة، بعضها قد
+            يكون مكرراً بنفس المعنى رغم اختلاف الصياغة أو استخدام مرادفات مختلفة تماماً:
+            {listed}
+
+            اجمع الأرقام التي تختبر نفس السيناريو تماماً في مجموعات.
+            أعد فقط كائن JSON: {{"groups": [[أرقام المجموعة المكررة], ...]}}
+            أدرج فقط المجموعات التي تحوي أكثر من رقم واحد. إن لم يوجد أي تكرار أعد
+            {{"groups": []}}.
+            """
+        else:
+            prompt = f"""
+            You are a strict QA reviewer. Here is a numbered list of test case
+            titles already in a suite — some may test the exact same scenario
+            despite completely different wording or synonyms:
+            {listed}
+
+            Group together numbers that test the exact same scenario.
+            Return ONLY a JSON object: {{"groups": [[duplicate group numbers], ...]}}
+            Only include groups with more than one number. If there are no
+            duplicates, return {{"groups": []}}.
+            """
+        raw = _run_stopaware(lambda: ai_complete(prompt, max_tokens=1024, want_json=True),
+                             should_stop=should_stop)
+        data = parse_json_robust(raw)
+        raw_groups = data.get("groups") if isinstance(data, dict) else None
+        if not raw_groups:
+            return []
+        out = []
+        for g in (raw_groups or []):
+            idxs = set()
+            for n in (g or []):
+                try:
+                    idxs.add(int(n) - 1)
+                except Exception:
+                    continue
+            idxs = sorted(i for i in idxs if 0 <= i < len(shown))
+            if len(idxs) >= 2:
+                out.append(idxs)
+        return out
+    except Exception:
+        return []
+
+
+def _dedupe_titles_ai(candidate_titles, existing_titles, story_title, log=None, should_stop=None):
+    """Second-pass duplicate check, run AFTER the cheap word-overlap filter
+    (_is_near_duplicate). That filter only catches duplicates that share enough
+    literal words/hand-mapped synonyms (_AR_SYN) — it has no way to know that,
+    say, "requests submitted for the branch" and "actions taken for the branch"
+    assert the same thing, since those are different roots, not spelling
+    variants. A hand-curated synonym table can never cover every domain a
+    story might be about, so instead this asks the AI provider itself — which
+    already understands synonyms/paraphrase in any domain and language — to
+    flag any remaining candidate that duplicates the MEANING of an existing
+    test case or an earlier candidate. Deliberately runs only on whatever
+    survives the free filter first, keeping the prompt (and cost) small.
+
+    Best-effort: any failure (timeout, bad JSON, provider error) just returns
+    candidate_titles unchanged — this is a quality refinement, never a reason
+    to block generation."""
+    if not candidate_titles:
+        return candidate_titles
+    should_stop = should_stop or (lambda: False)
+    try:
+        if should_stop() or _STOP_EVENT.is_set():
+            raise StopRequested()
+        ar = _is_arabic_out()
+        ex_list = (existing_titles or [])[:150]
+        ex_block = "\n".join(f"{i+1}. {t}" for i, t in enumerate(ex_list)) or ("لا يوجد" if ar else "(none)")
+        cand_block = "\n".join(f"{i+1}. {t}" for i, t in enumerate(candidate_titles))
+        if ar:
+            prompt = f"""
+            أنت مراجع ضمان جودة صارم. عنوان قصة المستخدم: {story_title}
+
+            حالات اختبار "موجودة بالفعل" لهذه القصة:
+            {ex_block}
+
+            حالات اختبار "جديدة مقترحة" (مرقمة):
+            {cand_block}
+
+            راجع القائمة الجديدة وحدد أي رقم يكرر — بنفس المعنى حتى لو اختلفت الكلمات
+            أو استخدمت مرادفات مختلفة تماماً — إما حالة موجودة بالفعل، أو حالة أخرى
+            سابقة لها رقم أصغر في نفس القائمة الجديدة.
+            أعد فقط كائن JSON بالصيغة: {{"duplicate_numbers": [الأرقام المكررة الواجب حذفها]}}.
+            إن لم يوجد أي تكرار أعد {{"duplicate_numbers": []}}.
+            """
+        else:
+            prompt = f"""
+            You are a strict QA reviewer. User story: {story_title}
+
+            Test cases that "already exist" for this story:
+            {ex_block}
+
+            "Newly proposed" test cases (numbered):
+            {cand_block}
+
+            Review the newly-proposed list and identify any number that duplicates —
+            same meaning, even with completely different wording or synonyms — either
+            an already-existing case, or an earlier-numbered case in the same
+            newly-proposed list.
+            Return ONLY a JSON object: {{"duplicate_numbers": [numbers to remove]}}.
+            If there are no duplicates, return {{"duplicate_numbers": []}}.
+            """
+        raw = _run_stopaware(lambda: ai_complete(prompt, max_tokens=1024, want_json=True),
+                             should_stop=should_stop)
+        data = parse_json_robust(raw)
+        nums = data.get("duplicate_numbers") if isinstance(data, dict) else None
+        if not nums:
+            return candidate_titles
+        drop = set()
+        for n in nums:
+            try:
+                drop.add(int(n) - 1)
+            except Exception:
+                pass
+        if not drop:
+            return candidate_titles
+        kept = [t for i, t in enumerate(candidate_titles) if i not in drop]
+        if log and len(kept) != len(candidate_titles):
+            log(f"AI review caught {len(candidate_titles) - len(kept)} additional "
+                f"duplicate title(s) the quick filter missed", "dim")
+        return kept
+    except StopRequested:
+        raise
+    except Exception:
+        return candidate_titles
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  ORCHESTRATORS — driven by the UI via a callback
 #  cb(event_type, payload) where event_type in:
@@ -2350,14 +2807,17 @@ def run_titles(project, plan_id, story_ids, cb, should_stop=lambda: False):
         # Remove pre-existing duplicate test cases in this suite first, keeping the
         # most complete one of each group (catches dupes from prior runs / manual entry).
         try:
-            dedupe_existing_suite(project, plan_id, suite_id, cb=cb, do_delete=True)
+            dedupe_existing_suite(project, plan_id, suite_id, cb=cb, do_delete=True,
+                                  should_stop=should_stop)
         except Exception as de:
             cb("log", {"msg": f"Dedup skipped: {str(de)[:80]}", "tone": "warn"})
-        # existing titles
+        # existing titles (fetch_existing_titles_for_suite backfills real titles —
+        # the raw suite listing's workItem.name is always blank, which used to
+        # make this look empty even when the suite was already full)
         existing_titles = []
         try:
-            for it in fetch_test_cases_for_suite(project, plan_id, suite_id):
-                nm = (it.get("workItem", {}) or {}).get("name", "").strip()
+            for it in fetch_existing_titles_for_suite(project, plan_id, suite_id):
+                nm = (it.get("title") or "").strip()
                 if nm: existing_titles.append(nm)
         except Exception:
             pass
@@ -2397,6 +2857,19 @@ def run_titles(project, plan_id, story_ids, cb, should_stop=lambda: False):
             ps["skipped"] += dropped_dupes
             cb("log", {"msg": f"Skipped {dropped_dupes} duplicate/near-duplicate title"
                               + ("s" if dropped_dupes > 1 else ""), "tone": "dim", "ico": "⏭"})
+        # Second pass: the word-overlap filter above only catches duplicates that
+        # share literal words/hand-mapped synonyms. Ask the AI to catch the rest
+        # (true synonyms/paraphrases it understands but the static filter can't).
+        _before_ai = len(unique)
+        try:
+            unique = _dedupe_titles_ai(
+                unique, existing_titles, title,
+                log=lambda m, t="dim": cb("log", {"msg": m, "tone": t}),
+                should_stop=should_stop)
+        except StopRequested:
+            break
+        if len(unique) != _before_ai:
+            ps["skipped"] += (_before_ai - len(unique))
         for tc_title in unique:
             if should_stop(): break
             ps["total"] += 1
@@ -2437,6 +2910,12 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
     """existing_mode: 'skip' or 'evaluate'. dedupe_existing: remove pre-existing
     duplicate test cases in each suite before processing."""
     wit, test = connect_azure_sdk(project)
+    # Timer starts HERE, before suite discovery/removal/seeding — those used to
+    # run before _run_start was set further down, so the pre-existing-duplicate
+    # removal pass (which can take a while, especially with its AI mop-up) was
+    # invisible in the run's reported "Time" stat even though it's real elapsed
+    # time the user waited through.
+    _run_start = time.time()
     cb("log", {"msg": "Discovering suites for stories…", "tone": "dim"})
     story_suite_map = discover_suites_for_stories(project, plan_id, set(story_ids))
     stories = fetch_stories(story_ids)
@@ -2452,8 +2931,13 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
         suite_id = story_suite_map.get(sid)
         title = story_ctx.get(sid, {}).get("title", "")
         if suite_id:
+            # "ar" must reflect whether the TITLE is actually Arabic, not just
+            # "a title exists" — bool(title) forced every story line (English
+            # titles included, e.g. "Change Language"/"Profile"/"Date") into
+            # right-aligned RTL in the log and the run email report.
+            _title_is_ar = any('؀' <= c <= 'ۿ' for c in title)
             cb("log", {"msg": f"Story {sid} → suite {suite_id} · {title}",
-                       "tone": "story", "ico": "▸", "ar": bool(title)})
+                       "tone": "story", "ico": "▸", "ar": _title_is_ar})
         else:
             cb("log", {"msg": f"Story {sid} — no suite found/created, skipped",
                        "tone": "warn", "ico": "⚠"})
@@ -2466,7 +2950,8 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
             if should_stop(): break
             if suite_id:
                 try:
-                    dedupe_existing_suite(project, plan_id, suite_id, cb=cb, do_delete=True)
+                    dedupe_existing_suite(project, plan_id, suite_id, cb=cb, do_delete=True,
+                                          should_stop=should_stop)
                 except Exception as de:
                     cb("log", {"msg": f"Dedup skipped for suite {suite_id}: {str(de)[:80]}",
                                "tone": "warn"})
@@ -2480,15 +2965,17 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
         if should_stop(): break
         if not suite_id:
             continue
-        # current test cases in this suite
-        existing_titles = []
+        # Current test cases in this suite — presence only (no titles needed
+        # for this decision), so the fast raw listing is fine here. The bug
+        # this replaces: this used to filter on workItem.name, which is
+        # always blank on the raw listing (see fetch_existing_titles_for_suite's
+        # docstring) — so every ALREADY-POPULATED suite looked empty and got
+        # seeded with a fresh batch of titles on top of what was already there.
         try:
-            for it in fetch_test_cases_for_suite(project, plan_id, suite_id):
-                nm = (it.get("workItem", {}) or {}).get("name", "").strip()
-                if nm: existing_titles.append(nm)
+            has_existing = bool(fetch_test_cases_for_suite(project, plan_id, suite_id))
         except Exception:
-            pass
-        if existing_titles:
+            has_existing = False
+        if has_existing:
             continue  # suite already populated → handled by Skip/Evaluate later
 
         ctx = story_ctx.get(sid, {})
@@ -2524,6 +3011,18 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
         if dropped:
             cb("log", {"msg": f"Skipped {dropped} duplicate/near-duplicate title"
                               + ("s" if dropped > 1 else ""), "tone": "dim", "ico": "⏭"})
+        # Second pass: catch synonym/paraphrase duplicates the word-overlap
+        # filter above can't see (same reasoning as the titles-tool path).
+        _before_ai2 = len(unique)
+        try:
+            unique = _dedupe_titles_ai(
+                unique, [], s_title,
+                log=lambda m, t="dim": cb("log", {"msg": m, "tone": t}),
+                should_stop=should_stop)
+        except StopRequested:
+            break
+        if len(unique) != _before_ai2:
+            dropped += (_before_ai2 - len(unique))
         for tc_title in unique:
             if should_stop(): break
             try:
@@ -2572,7 +3071,8 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
     from collections import Counter as _C
     ok_by_story = _C(); skip_by_story = _C(); err_by_story = _C()
     time_by_story = {}        # {sid: cumulative seconds}
-    _run_start = time.time()
+    # _run_start now set at the top of the function (see comment there) so the
+    # dedupe-existing/seeding passes above count toward the total elapsed time.
     from collections import Counter
     remaining = Counter(sid for _, sid, _ in suite_test_cases)
     story_total = Counter(sid for _, sid, _ in suite_test_cases)
@@ -2826,7 +3326,8 @@ def send_report(to_addrs, subject, html_body, attachments=None):
             with open(_lp, "rb") as _f:
                 _img = MIMEImage(_f.read())
             _img.add_header("Content-ID", f"<{LOGO_CID}>")
-            _img.add_header("Content-Disposition", "inline", filename="qa-logo.png")
+            _img.add_header("Content-Disposition", "inline",
+                            filename=os.path.basename(_lp))
             msg.attach(_img)
     except Exception:
         pass
@@ -2883,18 +3384,23 @@ def _fmt_mmss(s):
 LOGO_CID = "qastudio-logo"
 
 def _logo_path():
-    """Path to the inline email logo (transparent Q mark), next to this file."""
+    """Path to the inline email logo (transparent Q mark), next to this file.
+    Prefers qa-logo-email.png — a plain, no-glow crop of the mark made
+    specifically for email (the login/sidebar app.png and qa-logo.png now
+    carry a soft blurred glow baked into the image, which suits an in-app
+    dark surface but isn't what we want floating on a plain email background),
+    falling back to the glow versions if that file isn't present."""
     try:
         here = os.path.dirname(os.path.abspath(__file__))
     except Exception:
         return ""
-    for name in ("qa-logo.png", "app.png"):
+    for name in ("qa-logo-email.png", "qa-logo.png", "app.png"):
         p = os.path.join(here, name)
         if os.path.exists(p):
             return p
     return ""
 
-def _logo_tag(size=34):
+def _logo_tag(size=42):
     """<img> referencing the CID-embedded logo; degrades to alt text if blocked."""
     return (f"<img src='cid:{LOGO_CID}' width='{size}' height='{size}' alt='QA Studio' "
             f"style='display:block;border:0;outline:none;text-decoration:none' />")
@@ -2976,7 +3482,7 @@ def build_report_email(tool, summary, stats, action_items=None, skipped_items=No
     kind = "Test Case Steps" if is_steps else "Test Case Titles"
     masthead = (
         f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0'><tr>"
-        f"<td width='34' valign='middle' style='padding-right:13px'>{_logo_tag(34)}</td>"
+        f"<td width='40' valign='middle' style='padding-right:13px'>{_logo_tag(40)}</td>"
         f"<td valign='middle'>"
         f"<div style='font-size:15px;font-weight:700;color:{INK};letter-spacing:-.2px'>QA Studio</div>"
         f"<div style='font-size:12px;font-weight:700;color:{VIOLET_INK};margin-top:2px'>{kind} &middot; Run report</div>"
@@ -3185,7 +3691,202 @@ def build_report_email(tool, summary, stats, action_items=None, skipped_items=No
                      f"<div style='margin-top:14px'>{log_box}</div></td></tr>")
 
     footer = (f"<table role='presentation' cellpadding='0' cellspacing='0'><tr>"
-              f"<td valign='middle' style='padding-right:9px'>{_logo_tag(20)}</td>"
+              f"<td valign='middle' style='padding-right:9px'>{_logo_tag(24)}</td>"
+              f"<td valign='middle' style='font-size:11.5px;font-weight:600;color:{INK3}'>"
+              f"Generated by QA Studio &middot; Azure DevOps + AI</td></tr></table>"
+              + (f"<div style='font-family:{MONO};font-size:11px;color:{INK3};margin-top:8px;line-height:1.6'>"
+                 f"Org: {_html.escape(str(org))} &middot; Project: {_html.escape(str(project))}</div>" if (org and project) else ""))
+
+    return f"""<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'></head>
+<body style='margin:0;padding:0;background:{PAPER};-webkit-text-size-adjust:100%'>
+<center style='width:100%;background:{PAPER}'>
+<table role='presentation' width='100%' cellpadding='0' cellspacing='0' style='background:{PAPER}'><tr>
+<td align='center' style='padding:26px 12px 48px'>
+<table role='presentation' width='640' cellpadding='0' cellspacing='0' style='width:640px;max-width:640px;background:{CARD};border:1px solid #DEDDE6;border-radius:16px;overflow:hidden;font-family:{UI};color:{INK}'>
+  <tr><td style='height:3px;line-height:3px;font-size:0;background:{accent}'>&nbsp;</td></tr>
+  <tr><td style='padding:24px 32px 0'>{masthead}</td></tr>
+  <tr><td style='padding:18px 32px 4px'>{hero}</td></tr>
+  <tr><td style='padding:18px 32px 0'>{metrics}</td></tr>
+  {cta_row}
+  {sections}
+  <tr><td style='padding:20px 32px 26px;border-top:1px solid {LINE};background:{TINT}'>{footer}</td></tr>
+</table>
+</td></tr></table></center></body></html>"""
+
+def build_automation_report_email(target, summary, stats, project_dir=None, git_url=None,
+                                  git_branch=None, log_lines=None, org=None, project=None,
+                                  failed=False, stopped=False):
+    """Restrained, email-safe HTML summary of an Automation-screen run — same
+    masthead/hero/metric-strip/log/footer chrome as build_report_email, so all
+    three report emails (run report, sprint summary, automation) read as one
+    consistent brand rather than three different designs."""
+    import datetime as _dt
+
+    PAPER="#E9E8EE"; CARD="#FFFFFF"; TINT="#FAFAFC"
+    INK="#1B1A22"; INK2="#6B6975"; INK3="#9C9AA6"
+    LINE="#E8E7EE"; LINE2="#F1F0F5"
+    VIOLET="#0E9CC0"; VIOLET_INK="#0B6E86"; VIOLET_SOFT="#D6F4FB"
+    GREEN="#1F8A52"; GREEN_SOFT="#E7F4ED"
+    RED="#D6414A"; RED_SOFT="#FBEAEC"
+    AMBER="#AB780C"; AMBER_SOFT="#F7EFD8"
+    UI='"Segoe UI",Roboto,Helvetica,Arial,sans-serif'
+    MONO='"SFMono-Regular",Consolas,Menlo,monospace'
+    AR='"Segoe UI","Tahoma",Arial,sans-serif'
+
+    def _is_ar(s):
+        return any('؀' <= c <= 'ۿ' for c in str(s))
+
+    stats = stats or {}
+    tgt_label = {"selenium": "Selenium (Java · TestNG)", "playwright": "Playwright",
+                 "cypress": "Cypress"}.get(str(target).lower(), str(target or "").title())
+
+    if failed:
+        pill_fg, pill_bg, pill_txt = RED, RED_SOFT, "Failed"; accent = RED
+    elif stopped:
+        pill_fg, pill_bg, pill_txt = AMBER, AMBER_SOFT, "Stopped early"; accent = AMBER
+    else:
+        pill_fg, pill_bg, pill_txt = GREEN, GREEN_SOFT, "Completed"; accent = VIOLET
+    check_ic = "&#10003;" if pill_fg != AMBER else "&#9632;"
+    status_pill = (f"<span style='display:inline-block;background:{pill_bg};color:{pill_fg};"
+                   f"font-size:11px;font-weight:700;letter-spacing:.4px;padding:5px 12px;"
+                   f"border-radius:20px'>{check_ic}&nbsp; {pill_txt.upper()}</span>")
+
+    # Same numeric-headline convention as build_report_email ("<b>N test cases</b>
+    # updated") rather than restating the target framework — the framework is
+    # already in the masthead/metric strip, so the headline stays a result count.
+    try:
+        _n = int(stats.get("Stories", 0) or 0)
+    except Exception:
+        _n = 0
+    if _n:
+        headline = f"<b style='color:{VIOLET_INK}'>{_n} stor" + ("y" if _n == 1 else "ies") + "</b> automated"
+    else:
+        headline = "No stories automated"
+    hero = (f"{status_pill}"
+            f"<div style='font-size:25px;font-weight:700;letter-spacing:-.5px;color:{INK};"
+            f"line-height:1.15;margin:14px 0 0'>{headline}</div>"
+            f"<div style='font-size:13px;color:{INK2};font-weight:600;margin-top:8px'>"
+            f"{_html.escape(str(summary or ''))}</div>")
+
+    today = _dt.date.today().strftime("%d %b %Y")
+    masthead = (
+        f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0'><tr>"
+        f"<td width='40' valign='middle' style='padding-right:13px'>{_logo_tag(40)}</td>"
+        f"<td valign='middle'>"
+        f"<div style='font-size:15px;font-weight:700;color:{INK};letter-spacing:-.2px'>QA Studio</div>"
+        f"<div style='font-size:12px;font-weight:700;color:{VIOLET_INK};margin-top:2px'>"
+        f"{tgt_label} &middot; Automation report</div></td>"
+        f"<td valign='middle' align='right' style='font-family:{MONO};font-size:11px;"
+        f"color:{INK3};font-weight:700'>{today}</td>"
+        f"</tr></table>")
+
+    def _mcolor(k, v):
+        try: iv = int(str(v).split('/')[0].strip())
+        except Exception: iv = 0
+        if k in ("Stories", "Test cases") and iv > 0: return GREEN
+        if k in ("Self-healed", "Skipped") and iv > 0: return AMBER
+        if k == "Time": return INK
+        return INK3
+    mcells = ""
+    items = list(stats.items())
+    for i, (k, v) in enumerate(items):
+        col = _mcolor(k, v)
+        bl = "" if i == 0 else f"border-left:1px solid {LINE2};"
+        vsize = "18px" if k == "Time" else "24px"
+        mcells += (f"<td width='1' style='{bl}padding:13px 6px 14px;text-align:center;vertical-align:top'>"
+                   f"<div style='font-size:9.5px;font-weight:700;letter-spacing:1px;color:{INK3};"
+                   f"text-transform:uppercase'>{_html.escape(str(k))}</div>"
+                   f"<div style='font-family:{MONO};font-size:{vsize};font-weight:700;color:{col};"
+                   f"margin-top:6px;line-height:1'>{_html.escape(str(v))}</div></td>")
+    metrics = (f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0' "
+               f"style='border:1px solid {LINE};border-radius:12px;table-layout:fixed'>"
+               f"<tr>{mcells}</tr></table>")
+
+    cta_row = ""
+    if git_url:
+        safe_url = _html.escape(str(git_url), quote=True)
+        cta_row = (f"<tr><td style='padding:20px 32px 0'>"
+                   f"<a href='{safe_url}' style='display:inline-block;background:{VIOLET};color:#fff;"
+                   f"text-decoration:none;font-size:13px;font-weight:700;padding:12px 22px;"
+                   f"border-radius:11px'>Open Git repository &rarr;</a></td></tr>")
+
+    def _sec_head(dot, title, count):
+        return (f"<table role='presentation' cellpadding='0' cellspacing='0'><tr>"
+                f"<td valign='middle' style='padding-right:10px'>"
+                f"<span style='display:inline-block;width:9px;height:9px;border-radius:50%;"
+                f"background:{dot}'></span></td>"
+                f"<td valign='middle' style='font-size:14.5px;font-weight:700;color:{INK};"
+                f"letter-spacing:-.2px'>{title}</td>"
+                f"<td valign='middle' style='padding-left:9px'><span style='font-family:{MONO};"
+                f"font-size:11px;font-weight:700;color:{INK2};background:{LINE2};border-radius:20px;"
+                f"padding:3px 9px'>{count}</span></td>"
+                f"</tr></table>")
+
+    sections = ""
+
+    # destination (project folder + git branch/target) — quick facts, no card noise
+    facts = []
+    if project_dir:
+        facts.append(("Output folder", str(project_dir)))
+    if git_url:
+        facts.append(("Repository", str(git_url) + (f" @ {git_branch}" if git_branch else "")))
+    if facts:
+        rows = "".join(
+            f"<tr><td style='padding:9px 0;border-top:1px solid {LINE2};font-size:11.5px;"
+            f"font-weight:700;color:{INK3};width:130px;vertical-align:top'>{_html.escape(k)}</td>"
+            f"<td style='padding:9px 0;border-top:1px solid {LINE2};font-family:{MONO};"
+            f"font-size:12px;font-weight:600;color:{INK};word-break:break-all'>{_html.escape(v)}</td></tr>"
+            for k, v in facts)
+        sections += (f"<tr><td style='padding:26px 32px;border-top:1px solid {LINE}'>"
+                     f"{_sec_head(VIOLET, 'Destination', len(facts))}"
+                     f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0' "
+                     f"style='margin-top:6px'>{rows}</table></td></tr>")
+
+    # activity log (msg/tone only — the Automation log has no id/detail/ico fields)
+    if log_lines:
+        tone_color = {"ok": GREEN, "err": RED, "warn": AMBER, "story": VIOLET,
+                      "dim": INK3, "info": VIOLET_INK}
+        default_ico = {"ok": "&#10003;", "err": "&#10005;", "warn": "&#9888;",
+                       "story": "&#9656;", "dim": "&middot;", "info": "&bull;"}
+        rows = ""
+        shown = log_lines[:150]
+        for ln in shown:
+            tone = ln.get("tone", "dim")
+            col = tone_color.get(tone, INK)
+            raw_ico = ln.get("ico")
+            ico = _html.escape(str(raw_ico)) if raw_ico else default_ico.get(tone, "&middot;")
+            raw_msg = ln.get("msg", "")
+            msg = _html.escape(str(raw_msg))
+            # Arabic story/test-case titles must render RTL + right-aligned, same
+            # as the Run report's log — otherwise they render left-to-right and
+            # left-aligned like English lines, which reads wrong for Arabic text.
+            is_ar = _is_ar(raw_msg)
+            tdir = "rtl" if is_ar else "ltr"; talign = "right" if is_ar else "left"
+            fam = AR if is_ar else UI
+            bg = "#F4F3F8" if tone in ("info", "story") and not is_ar else CARD
+            rows += (f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0' "
+                     f"style='border-top:1px solid {LINE2};background:{bg}'><tr>"
+                     f"<td width='18' valign='top' style='padding:8px 0 8px 0;color:{col};"
+                     f"font-family:{MONO};font-size:13px;font-weight:700;text-align:center'>{ico}</td>"
+                     f"<td valign='top' style='padding:8px 0 8px 9px;direction:{tdir};text-align:{talign}'>"
+                     f"<div style='font-family:{fam};font-size:12.5px;font-weight:600;color:{INK};"
+                     f"line-height:1.5'>{msg}</div></td></tr></table>")
+        more = (f"<div style='padding:11px 15px;border-top:1px solid {LINE};background:#F4F3F8;"
+                f"text-align:center;font-size:11.5px;font-weight:600;color:{INK2}'>"
+                f"&hellip; and {len(log_lines)-150} more lines &middot; open the full trace in "
+                f"QA Studio</div>") if len(log_lines) > 150 else ""
+        toolbar = (f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0' "
+                   f"style='background:#F4F3F8;border-bottom:1px solid {LINE}'><tr>"
+                   f"<td style='padding:9px 15px;font-family:{MONO};font-size:10.5px;font-weight:700;"
+                   f"color:{INK2}'>{len(log_lines)} lines &middot; full trace</td></tr></table>")
+        log_box = (f"<div style='border:1px solid {LINE};border-radius:12px;overflow:hidden;"
+                   f"background:{TINT}'>{toolbar}{rows}{more}</div>")
+        sections += (f"<tr><td style='padding:26px 32px;border-top:1px solid {LINE}'>"
+                     f"{_sec_head(INK, 'Automation activity log', str(len(log_lines)) + ' lines')}"
+                     f"<div style='margin-top:14px'>{log_box}</div></td></tr>")
+
+    footer = (f"<table role='presentation' cellpadding='0' cellspacing='0'><tr>"
+              f"<td valign='middle' style='padding-right:9px'>{_logo_tag(24)}</td>"
               f"<td valign='middle' style='font-size:11.5px;font-weight:600;color:{INK3}'>"
               f"Generated by QA Studio &middot; Azure DevOps + AI</td></tr></table>"
               + (f"<div style='font-family:{MONO};font-size:11px;color:{INK3};margin-top:8px;line-height:1.6'>"
@@ -3247,7 +3948,7 @@ def build_sprint_summary_email(data):
     today = _dt.date.today().strftime("%d %b %Y")
     masthead = (
         f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0'><tr>"
-        f"<td width='34' valign='middle' style='padding-right:13px'>{_logo_tag(34)}</td>"
+        f"<td width='40' valign='middle' style='padding-right:13px'>{_logo_tag(40)}</td>"
         f"<td valign='middle'>"
         f"<div style='font-size:15px;font-weight:700;color:{INK};letter-spacing:-.2px'>QA Studio</div>"
         f"<div style='font-size:12px;font-weight:700;color:{VIOLET_INK};margin-top:2px'>Sprint Summary &middot; Report</div>"
@@ -3315,7 +4016,7 @@ def build_sprint_summary_email(data):
                    f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0' style='margin-top:6px'>{rows}</table></td></tr>") if stories else ""
 
     footer = (f"<table role='presentation' cellpadding='0' cellspacing='0'><tr>"
-              f"<td valign='middle' style='padding-right:9px'>{_logo_tag(20)}</td>"
+              f"<td valign='middle' style='padding-right:9px'>{_logo_tag(24)}</td>"
               f"<td valign='middle' style='font-size:11.5px;font-weight:600;color:{INK3}'>Generated by QA Studio &middot; Azure DevOps + AI</td></tr></table>"
               + (f"<div style='font-family:{MONO};font-size:11px;color:{INK3};margin-top:8px'>Org: {_html.escape(str(_org))} &middot; Project: {_html.escape(str(_proj))}</div>" if _proj else ""))
 
@@ -4863,7 +5564,9 @@ def sync_project_readme(out_dir, cb=None):
 
 def push_to_git(repo_dir, remote_url, token, branch="main", message="Add QA Studio automation tests", cb=None, force=False):
     """Init/commit/push the generated project to a Git remote using the git CLI.
-    `token` is embedded into the HTTPS URL for auth (GitHub/Azure DevOps style).
+    `token` is passed to the push subprocess via a one-shot GIT_CONFIG_* env
+    override (http.extraheader) — see the SECURITY comment below. It is never
+    embedded into the remote URL and never written to .git/config.
     Returns (ok, message).
     """
     cb = cb or (lambda *a, **k: None)
@@ -4897,13 +5600,25 @@ def push_to_git(repo_dir, remote_url, token, branch="main", message="Add QA Stud
     except Exception:
         return False, "Git is not installed or not on PATH."
 
-    # build authenticated URL (https://<token>@host/path.git)
-    auth_url = remote_url
-    try:
-        if remote_url.startswith("https://") and token:
-            auth_url = remote_url.replace("https://", f"https://{token}@", 1)
-    except Exception:
-        pass
+    # SECURITY: auth is supplied per-invocation via git's native
+    # GIT_CONFIG_COUNT/KEY/VALUE env-var mechanism on the push command itself
+    # (see _push_env below) — the token is never embedded in the remote URL,
+    # never written to .git/config, and never appears in the subprocess's
+    # argv. Previously this built `https://<token>@host/...`, ran `git remote
+    # add` with it (so the PAT sat in .git/config in plaintext), and relied on
+    # a post-push `git remote set-url` to scrub it — a cleanup step that would
+    # never run if the process crashed or was killed mid-push, leaving the
+    # token on disk indefinitely. An interim fix passed it as a `-c
+    # http.extraheader=...` argument instead, which fixed the disk-persistence
+    # problem but still left the (base64-encoded, so trivially reversible)
+    # token visible in the process's command line to any other process on the
+    # same machine for the life of the call (e.g. /proc/<pid>/cmdline on
+    # Linux, or Task Manager's "Command line" column on Windows). Env vars
+    # aren't surfaced in either of those views, so this closes that too.
+    def _auth_header(tok):
+        import base64
+        return "AUTHORIZATION: basic " + base64.b64encode(
+            f"x-access-token:{tok}".encode()).decode()
 
     # Create the remote repo, but ONLY if this folder has never been pushed
     # before (no 'git_pushed' marker in its manifest) — an already-pushed folder
@@ -4947,27 +5662,26 @@ def push_to_git(repo_dir, remote_url, token, branch="main", message="Add QA Stud
     if c.returncode != 0 and "nothing to commit" not in (c.stdout + c.stderr).lower():
         cb(c.stdout + c.stderr, "warn")
 
-    # set remote
+    # set remote — always the plain, token-less URL; see _auth_header above
     run(["git", "remote", "remove", "origin"])
-    run(["git", "remote", "add", "origin", auth_url])
+    run(["git", "remote", "add", "origin", remote_url])
 
     cb(f"Pushing to {branch}…", "dim")
     _push = ["git", "push", "-u", "origin", branch]
     if force:
         _push.append("--force")
-    p = run(_push)
+    _push_env = None
+    if remote_url.startswith("https://") and token:
+        _push_env = {**os.environ,
+                    "GIT_CONFIG_COUNT": "1",
+                    "GIT_CONFIG_KEY_0": "http.extraheader",
+                    "GIT_CONFIG_VALUE_0": _auth_header(token)}
+    p = run(_push, env=_push_env)
     out = (p.stdout + p.stderr)
-    # scrub token from any echoed output
+    # scrub token from any echoed output (defense in depth — the header is
+    # base64, not the raw token, but keep this in case git ever echoes argv)
     if token:
         out = out.replace(token, "***")
-    # SECURITY: `git remote add` wrote the authenticated URL (with the PAT) into
-    # .git/config. Reset origin to the token-less URL so the secret is not left in
-    # plaintext on disk after the push.
-    try:
-        if auth_url != remote_url:
-            run(["git", "remote", "set-url", "origin", remote_url])
-    except Exception:
-        pass
     if p.returncode == 0:
         cb("Push complete.", "ok")
         try:
@@ -5219,12 +5933,19 @@ def _sha256_file(path):
 
 def _verify_download(path, name, sums, headers, cb):
     """Verify a downloaded artifact against the release's published SHA-256.
-    Enforced when a checksum file exists; if none is published the download
-    proceeds but is flagged as unverified (so existing releases keep working)."""
+    SECURITY: fails CLOSED — a release that doesn't publish a checksum file is
+    rejected rather than installed with a warning. This is the self-update
+    path: it downloads and re-launches an executable that replaces the running
+    app, so silently proceeding without any integrity check would let anyone
+    who can write to the GitHub release (compromised token, supply-chain
+    compromise) achieve code execution on every auto-updating install just by
+    omitting the checksum file. If you start attaching a built .exe to
+    releases again, publish a SHA256SUMS (or *.sha256) file alongside it —
+    see _latest_release() above for the accepted file names."""
     if not sums:
-        cb("Note: this update is not checksum-verified (no SHA256SUMS published "
-           "in the release).", "warn")
-        return True, ""
+        return False, ("This release doesn't publish a checksum file, so the "
+                       "update can't be verified. Update aborted for your "
+                       "safety — see the release page.")
     try:
         sr = requests.get(sums[1], timeout=30, headers=headers)
         sr.raise_for_status()
@@ -5277,8 +5998,10 @@ def _apply_update_exe(cb):
     except Exception as e:
         return (False, f"Download failed: {str(e)[:160]}")
     # SECURITY: verify the downloaded binary against the release SHA-256 before we
-    # ever swap/execute it. Aborts on mismatch; warns (but proceeds) if the release
-    # publishes no checksum, so existing releases keep updating.
+    # ever swap/execute it. Fails CLOSED — aborts the update on a checksum
+    # mismatch AND when the release publishes no checksum at all (see
+    # _verify_download's docstring for why: this replaces an executable that
+    # gets re-launched, so an unverified download is a code-execution risk).
     ok_v, vmsg = _verify_download(new, _name, sums, headers, cb)
     if not ok_v:
         try: os.remove(new)
@@ -5471,6 +6194,13 @@ def validate_and_sequence_suite(stories_payload, log=None, want_ai=True,
         if should_stop():
             return out
         story = sp.get("story", {})
+        # Announce the story BEFORE sequencing its cases — with multiple
+        # stories queued up, "Sequencing case k/N" alone doesn't say which
+        # story k belongs to; this makes the run trackable story-by-story,
+        # same "story" tone/symbol as the Run log's per-story lines.
+        _n_cases = len(sp.get("test_cases", []) or [])
+        log(f"Story {story.get('id', '')} · {story.get('title', '')} "
+            f"({_n_cases} test case" + ("s" if _n_cases != 1 else "") + ")", "story")
         cases = []
         has_app = False
         has_positive_login = False
@@ -5489,6 +6219,8 @@ def validate_and_sequence_suite(stories_payload, log=None, want_ai=True,
             # title — otherwise the entry renders blank with no way to tell which
             # case it was (previously silently skipped when _ctitle was empty).
             log("  %s" % (_ctitle[:90] if _ctitle else "(untitled test case)"), "dim")
+            _case_start = time.time()   # ⏱ per-case sequencing time, same convention
+                                        # as the Run log's create/update timing
             ctype = _classify_case(tc)
             pctx = _infer_page_context(tc, ctype)
             # bucket + priority
@@ -5538,6 +6270,7 @@ def validate_and_sequence_suite(stories_payload, log=None, want_ai=True,
                         return out   # user chose Stop (should_stop is now True)
             if not intents:
                 intents = _intents_from_raw_steps(tc)
+            log("  ⏱ %s" % _fmt_mmss(time.time() - _case_start), "dim")
             # A case that drives username/password fields belongs on the LOGIN page,
             # not the app page — otherwise it runs logged-in against BASE_URL where
             # those fields don't exist (guaranteed failure). Pull it back to a

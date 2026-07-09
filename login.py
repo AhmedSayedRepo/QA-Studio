@@ -368,8 +368,8 @@ def login_gate(app):
         return c
 
     rows = [
-        ft.Row([ft.Container(logo_img(28), width=40, height=40, border_radius=12,
-                             bgcolor="#FFFFFF", alignment=ft.Alignment.CENTER),
+        ft.Row([ft.Container(logo_img(48), width=48, height=48, border_radius=12,
+                             bgcolor=None, alignment=ft.Alignment.CENTER),
                 ft.Text("QA Studio", size=17, weight=ft.FontWeight.W_700,
                         color=HEAD, font_family=DISP),
                 ft.Container(expand=True),
@@ -447,8 +447,8 @@ def login_gate(app):
             spacing=15, vertical_alignment=ft.CrossAxisAlignment.START)
 
     value_prop = ft.Column([
-        ft.Row([ft.Container(logo_img(34), width=48, height=48, border_radius=14,
-                             bgcolor="#FFFFFF", alignment=ft.Alignment.CENTER),
+        ft.Row([ft.Container(logo_img(60), width=60, height=60, border_radius=14,
+                             bgcolor=None, alignment=ft.Alignment.CENTER),
                 ft.Text("QA Studio", size=22, weight=ft.FontWeight.W_700,
                         color=LEFT_HEAD, font_family=DISP)],
                spacing=13, vertical_alignment=ft.CrossAxisAlignment.CENTER),

@@ -138,7 +138,7 @@ def screen(app):
                                  app._clear_run_log, danger=True)],
                    vertical_alignment=ft.CrossAxisAlignment.CENTER),
             ft.Container(height=8),
-            ft.Container(ft.SelectionArea(content=app._log_col), height=230, bgcolor=T.CARD_2,
+            ft.Container(ft.SelectionArea(content=app._log_col), height=380, bgcolor=T.CARD_2,
                          border=ft.Border.all(1, T.BORDER), border_radius=T.R, padding=12),
         ], spacing=0))
 

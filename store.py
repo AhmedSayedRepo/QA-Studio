@@ -2,14 +2,20 @@
 
 At rest, the credential blob is encrypted with **Windows DPAPI** (per-user,
 machine-bound) when available, so API keys / Azure PAT / Gmail app password are
-NOT recoverable by simply reading the file. On non-Windows or if DPAPI is
-unavailable it falls back to base64 obfuscation (the previous behavior). Legacy
-base64 files are read transparently and upgraded to DPAPI on the next save.
+NOT recoverable by simply reading the file. On non-Windows, or if DPAPI is
+unavailable, it falls back to **Fernet symmetric encryption** (AES-128-CBC +
+HMAC, via the `cryptography` package already used elsewhere in this app) keyed
+by a random, locally-generated key file with restrictive permissions — a real
+encryption fallback, not the plain base64 "obfuscation" this used previously
+(base64 is trivially reversible by anyone who can read the file; it provided
+no confidentiality at all). Base64 is now only used as a last-resort fallback
+if `cryptography` itself is unavailable, and legacy base64 files are still
+read transparently and upgraded on the next save.
 
-All DPAPI access is lazy and fully guarded, so importing this module never fails
-on a non-Windows host and any crypto error degrades gracefully to base64.
+All DPAPI/Fernet access is lazy and fully guarded, so importing this module
+never fails on a non-Windows host and any crypto error degrades gracefully.
 """
-import os, json, base64, ctypes
+import os, json, base64, ctypes, stat
 import ctypes.wintypes as wintypes
 
 CRED_DIR  = os.path.join(os.path.expanduser("~"), ".qa_tool")
@@ -77,18 +83,76 @@ def _dpapi(name, data):
             pass
 
 
+_FERNET_MAGIC = b"FERN1\n"    # marks a Fernet-encrypted file (non-Windows fallback)
+_KEY_FILE = os.path.join(CRED_DIR, ".store_key")
+
+
+def _fernet_key():
+    """Load (or create) a random local key for the Fernet fallback. Stored
+    separately from the ciphertext file, with owner-only permissions where the
+    platform supports it, so reading the credentials file alone isn't enough
+    to decrypt it — an attacker needs both files.
+
+    SECURITY: the loaded key is validated (not just checked for non-empty)
+    before being trusted. A key file that exists but is corrupt/truncated/
+    tampered-with would otherwise make `Fernet(key)` raise inside _encrypt(),
+    which previously fell through silently to the base64 "fallback" — writing
+    every credential from that point on in effectively plaintext, with no
+    warning. Validating here means a bad key file is treated as ABSENT (we
+    regenerate a fresh one) rather than as a reason to quietly disable
+    encryption."""
+    from cryptography.fernet import Fernet
+    os.makedirs(CRED_DIR, exist_ok=True)
+    try:
+        with open(_KEY_FILE, "rb") as f:
+            key = f.read().strip()
+        if key:
+            Fernet(key)   # raises if not a valid Fernet key — don't trust it silently
+            return key
+    except Exception:
+        pass
+    key = Fernet.generate_key()
+    fd = os.open(_KEY_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, key)
+    finally:
+        os.close(fd)
+    try:
+        os.chmod(_KEY_FILE, stat.S_IRUSR | stat.S_IWUSR)   # 0600, best-effort
+    except Exception:
+        pass
+    return key
+
+
+def _fernet_ok():
+    try:
+        import cryptography.fernet  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
 def _encrypt(plain):
     if _dpapi_ok():
         try:
             return _DPAPI_MAGIC + _dpapi("CryptProtectData", plain)
         except Exception:
             pass
-    return base64.b64encode(plain)            # fallback / non-Windows
+    if _fernet_ok():
+        try:
+            from cryptography.fernet import Fernet
+            return _FERNET_MAGIC + Fernet(_fernet_key()).encrypt(plain)
+        except Exception:
+            pass
+    return base64.b64encode(plain)            # last-resort fallback only
 
 
 def _decrypt(raw):
     if raw.startswith(_DPAPI_MAGIC):
         return _dpapi("CryptUnprotectData", raw[len(_DPAPI_MAGIC):])
+    if raw.startswith(_FERNET_MAGIC):
+        from cryptography.fernet import Fernet
+        return Fernet(_fernet_key()).decrypt(raw[len(_FERNET_MAGIC):])
     return base64.b64decode(raw)              # legacy base64 file
 
 

@@ -113,21 +113,27 @@ def _refresh_auto_state(app):
 
 
 def screen(app):
-        if not app.readonly and not (app.connected and app.project and app.plan_id and app.story_ids):
+        if not app.readonly and not (app.connected and app.project):
             return regression.locked_state(
                 app, "Automation",
                 "Generate self-healing Selenium tests from your stories",
-                "Connect your account, then pick a project, test plan, and user "
-                "stories on the Setup screen — automation runs on that same "
-                "selection.")
+                "Connect your Azure DevOps account on the Setup screen. You can "
+                "pick the test plan and stories right here once connected.")
+        regression._auto_init(app)
         # ── left: config form ──
-        ready = bool(app.story_ids and app.project and app.plan_id)
+        ready = bool(app._auto_plans_selected and app._auto_selected)
+
+        def _auto_refresh_gen_btn():
+            app._auto_buttons_ready = bool(app._auto_plans_selected and app._auto_selected)
+            _refresh_auto_state(app)
+        app._auto_refresh_gen_btn = _auto_refresh_gen_btn
+
         setup_hint = None
         if not ready:
             setup_hint = ft.Container(
                 ft.Row([ft.Icon(ft.Icons.INFO_OUTLINE, size=16, color=T.AMBER),
-                        ft.Text("Select a project, test plan, and user stories on the Setup "
-                                "screen first — automation uses the same selection.",
+                        ft.Text("Pick a test plan and at least one story below to "
+                                "enable automation.",
                                 size=12, color=T.AMBER, weight=ft.FontWeight.W_500, expand=True)],
                        spacing=8),
                 padding=12, bgcolor=T.AMBER_SOFT, border_radius=T.R,
@@ -162,8 +168,10 @@ def screen(app):
                 cont.on_hover = _hover
             return cont
 
+        source_card = regression.automation_source_card(app)
+
         framework_card = card(ft.Column([
-            sec_head("A", "Test framework"),
+            sec_head("B", "Test framework"),
             ft.Container(height=10),
             ft.Row([
                 _target_opt("selenium", "Selenium", "Java · TestNG"),
@@ -177,7 +185,7 @@ def screen(app):
         ], spacing=0))
 
         site_card = card(ft.Column([
-            sec_head("B", "Target site"),
+            sec_head("C", "Target site"),
             ft.Container(height=10),
             app._auto_field("Site URL", "auto_site_url",
                              "https://your-app.example.com/page", req=True),
@@ -192,7 +200,7 @@ def screen(app):
         ], spacing=0))
 
         git_card = card(ft.Column([
-            sec_head("C", "Git destination (your IDE syncs this)"),
+            sec_head("D", "Git destination (your IDE syncs this)"),
             ft.Container(height=10),
             app._auto_field("Repository URL", "auto_git_url",
                              "https://github.com/you/automation-tests.git", req=True),
@@ -211,7 +219,7 @@ def screen(app):
         ], spacing=0))
 
         local_card = card(ft.Column([
-            sec_head("D", "Project folder (needed to Push to Git)"),
+            sec_head("E", "Project folder (needed to Push to Git)"),
             ft.Container(height=10),
             app._auto_field("Save project to folder", "auto_local_path",
                              r"e.g. C:\Users\you\IdeaProjects\automation-tests"),
@@ -225,6 +233,18 @@ def screen(app):
                     size=11, color=T.INK_3, weight=ft.FontWeight.W_500),
         ], spacing=0))
 
+        email_picker = regression.email_recipient_picker(
+            app, "_auto_email_to", is_open_key="_auto_email_open", sync_key="auto_emails")
+        email_card = card(ft.Column([
+            sec_head("F", "Report email (optional)"),
+            ft.Container(height=10),
+            email_picker,
+            ft.Container(height=6),
+            ft.Text("A run summary is emailed to these recipients when a generation "
+                    "finishes, if a Gmail App Password is set on Setup → Connection.",
+                    size=11, color=T.INK_3, weight=ft.FontWeight.W_500),
+        ], spacing=0))
+
         # Buttons live in their own Container so a running/paused/finished state
         # change can refresh JUST this (see _refresh_auto_state) instead of a
         # full app.render() — see _build_action_buttons' docstring for why.
@@ -232,11 +252,13 @@ def screen(app):
         app._auto_buttons_ctr = ft.Container(_build_action_buttons(app, ready))
 
         left = ft.Column([
+            source_card,
             *([setup_hint] if setup_hint else []),
             framework_card,
             site_card,
             git_card,
             local_card,
+            email_card,
             app._auto_buttons_ctr,
         ], spacing=14, scroll=ft.ScrollMode.AUTO, expand=True)
 
@@ -304,7 +326,8 @@ def screen(app):
         body = ft.Row([ft.Container(left, expand=True),
                        ft.Container(right, width=384)], spacing=22,
                       vertical_alignment=ft.CrossAxisAlignment.STRETCH, expand=True)
-        sub = (f"{len(app.story_ids)} stories selected" if app.story_ids else "no stories selected")
+        sub = (f"{len(app._auto_selected)} stories selected" if app._auto_selected
+               else "no stories selected")
         return app.shell("Automation", sub, body)
 
     # ---- activity panel: live counters + clean, RTL-aware log lines ----

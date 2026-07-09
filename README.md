@@ -68,6 +68,7 @@ powershell -c "irm https://github.com/AhmedSayedRepo/QA-Studio/releases/latest/d
 - **Polished exports** — clean Word/Excel/PDF/JSON documents and an Outlook-safe HTML email report.
 - **Useful Links** — keep your boards &amp; apps one click away, saved on your device.
 - **Local-first** — credentials and links stay on your machine; nothing is uploaded anywhere but your own Azure DevOps and AI provider.
+- **Role-based access** — shared, org-wide settings (like the report-sending email account) are only ever readable by roles that actually use them, enforced server-side, not just hidden in the UI. Self-updates are checksum-verified and refuse to install if that check can't be done.
 
 ---
 

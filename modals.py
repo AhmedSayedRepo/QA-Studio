@@ -2,11 +2,13 @@
 existing-steps). Extracted from main.py (Step-11). Each takes the QAStudio app;
 the app keeps thin delegator methods so the call-sites keep working.
 """
+import re
 import threading
 import flet as ft
 import theme as T
 import engine as E
 from ui import _ic, badge, field_label, ghost_btn, grad, green_btn, hover_field, logo_img, primary_btn, stat_tile
+from regression import email_recipient_picker, _id_link
 
 
 def open_onboarding(app):
@@ -451,15 +453,16 @@ def open_sprint_summary(app):
             app.ui_safe(upd)
     app._bg(_cycle_status)
 
-    # email recipients field (asked each time) + status text
+    # email recipients (asked each time) + status text — uses the same
+    # searchable multiselect picker as the Sprint Plan / Regression Plan email
+    # sections (with the send button beside it, not stacked below), instead
+    # of a bare comma-separated TextField, so all three "email this" surfaces
+    # look and behave the same way. Seeded from the Report screen's own email
+    # list once when the dialog opens, then kept independent (this picker
+    # writes to its own state key, not app.emails, so picking recipients here
+    # doesn't silently change what the Report screen has queued).
     app._sum_data = None
-    email_field = ft.TextField(
-        hint_text="recipient@example.com, another@example.com",
-        value=(app.emails or ""),
-        bgcolor=T.CARD, filled=True,
-        border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
-        content_padding=ft.Padding.symmetric(vertical=10, horizontal=12),
-        text_size=12.5, dense=True, expand=True)
+    app._sum_email_to = app.emails or ""
     email_status = ft.Text("", size=11.5, weight=ft.FontWeight.BOLD, visible=False)
 
     def do_email(e=None):
@@ -472,7 +475,7 @@ def open_sprint_summary(app):
             try: email_status.update()
             except Exception: app.render()
             return
-        to = [x.strip() for x in (email_field.value or "").split(",") if x.strip()]
+        to = [x.strip() for x in re.split(r"[,\s;]+", (app._sum_email_to or "")) if x.strip()]
         if not to:
             email_status.value = "Enter at least one recipient."
             email_status.color = T.RED
@@ -506,13 +509,16 @@ def open_sprint_summary(app):
                           on_click=do_email)
     close_btn = ghost_btn("Close", on_click=lambda e: app._close_dialog())
 
+    email_picker = email_recipient_picker(
+        app, "_sum_email_to", is_open_key="_sum_email_open",
+        sync_key="sum_emails", trailing=email_btn)
+
     email_bar = ft.Column([
         ft.Container(height=1, bgcolor=T.BORDER_2),
         ft.Container(height=6),
         ft.Text("EMAIL THIS SUMMARY", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
         ft.Container(height=5),
-        ft.Row([hover_field(email_field), email_btn], spacing=8,
-               vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        email_picker,
         email_status,
     ], spacing=0, tight=True)
     email_bar.visible = False  # shown only after data loads
@@ -548,12 +554,40 @@ def open_sprint_summary(app):
             app.ui_safe(show_err)
             return
 
+        # Inline delete, mirroring Sprint Plan's own _delete_story exactly:
+        # confirm first, then remove from the LOCAL list and recalculate —
+        # this never touches Azure DevOps, only trims what this summary
+        # (and, if sent, its email) shows.
+        def _delete_story(sid):
+            def _do():
+                data["stories"] = [s for s in data["stories"] if s["id"] != sid]
+                render_summary()
+                try:
+                    app._toast(f"Removed story {sid} from the summary.")
+                except Exception:
+                    pass
+            def _d(e):
+                if getattr(app, "readonly", False):
+                    return app._toast("Read-only — your role can't modify the summary.")
+                app._confirm(
+                    "Remove story?",
+                    f"Remove story {sid} from this summary and recalculate the "
+                    "totals? This doesn't change anything in Azure DevOps.",
+                    _do, yes_label="Remove")
+            return _d
+
         def render_summary():
             app._sum_data = data
             app._sum_loading = False
-            total = data["total_stories"]
-            by_state = data["by_state"]
-            total_tc = data["total_test_cases"]
+            # Recomputed from data["stories"] every render (not read from the
+            # fetch-time totals) so an inline delete's recalculation actually
+            # shows up — mirrors Sprint Plan's _delete_story, which also
+            # recalculates its totals from the live row list.
+            total = len(data["stories"])
+            total_tc = sum(s.get("test_cases", 0) for s in data["stories"])
+            by_state = {}
+            for s in data["stories"]:
+                by_state[s["state"]] = by_state.get(s["state"], 0) + 1
 
             # Header line
             header = ft.Column([
@@ -579,52 +613,71 @@ def open_sprint_summary(app):
             # cards are visually separable (most states otherwise collapsed to the
             # same grey). Colours are assigned from a rotating palette, ordered by
             # count, and reused for the distribution bar so the two line up.
-            _PALETTE = [
-                (T.VIOLET_INK, "#ECE8FF"),
-                (T.GREEN,      "#E5F6EC"),
-                ("#1C80E0",    "#E3F0FC"),
-                (T.AMBER,      "#FAF1DD"),
-                ("#0E8A8A",    "#DEF3F3"),
-                (T.RED,        "#FCEBEC"),
-                ("#6A33A8",    "#F0E6FB"),
-                ("#C2860C",    "#FBF0D8"),
+            #
+            # SECURITY/THEME NOTE: this used to be a list of (fg, bg) pairs with
+            # bg as a flat pastel hex tuned for the LIGHT theme only (e.g.
+            # "#ECE8FF"), so in dark mode the cards rendered as bright white-ish
+            # boxes clashing with the surrounding dark surface. bg is now derived
+            # from fg via with_opacity() — a translucent tint over whatever
+            # surface is actually behind it — so it reads correctly in both
+            # themes automatically, the same way this function's own card border
+            # already computed its color (with_opacity(0.30, fg), one line
+            # below), instead of adding a second hardcoded light/dark table.
+            _PALETTE_FG = [
+                T.VIOLET_INK, T.GREEN, "#1C80E0", T.AMBER,
+                "#0E8A8A", T.RED, "#6A33A8", "#C2860C",
             ]
             _sorted_states = sorted(by_state.items(), key=lambda x: -x[1])
-            _state_color = {st: _PALETTE[i % len(_PALETTE)]
+            _state_color = {st: _PALETTE_FG[i % len(_PALETTE_FG)]
                             for i, (st, _c) in enumerate(_sorted_states)}
-            def _status_card(label, count, fg, bg):
+            def _status_card(label, count, fg):
                 return ft.Container(
                     ft.Column([
                         ft.Text(str(count), size=22, weight=ft.FontWeight.BOLD, color=fg),
                         ft.Text(label, size=11, weight=ft.FontWeight.BOLD, color=T.INK_2,
                                 max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
                     ], spacing=1, horizontal_alignment=ft.CrossAxisAlignment.CENTER, tight=True),
-                    bgcolor=bg, border_radius=T.R,
+                    bgcolor=ft.Colors.with_opacity(0.14, fg), border_radius=T.R,
                     border=ft.Border.all(1, ft.Colors.with_opacity(0.30, fg)),
                     padding=ft.Padding.symmetric(vertical=12, horizontal=14),
                     width=104, tooltip=f"{label}: {count}")
             state_cards = []
             for st, cnt in _sorted_states:
-                fg, bg = _state_color[st]
-                state_cards.append(_status_card(st, cnt, fg, bg))
+                state_cards.append(_status_card(st, cnt, _state_color[st]))
             status_row = ft.Row(state_cards, wrap=True, spacing=10, run_spacing=10) \
                 if state_cards else ft.Text("No stories in this sprint.",
                                             size=12, color=T.INK_3, weight=ft.FontWeight.W_500)
             dist_bar = ft.Container(
                 ft.Row([ft.Container(expand=max(1, c),
-                                     bgcolor=_state_color[stt][0],
+                                     bgcolor=_state_color[stt],
                                      tooltip=f"{stt}: {c}")
                         for stt, c in _sorted_states],
                        spacing=2),
                 height=10, border_radius=6,
                 clip_behavior=ft.ClipBehavior.HARD_EDGE) if by_state else ft.Container()
 
-            # Per-story rows
+            # Per-story rows — only the "#id" is a clickable link to Azure
+            # DevOps, using the SAME helper Sprint Plan uses (identical
+            # styling + properly-escaped URL) instead of a hand-built one;
+            # the rest of the row is inert. Rows are zebra-striped and carry
+            # an inline delete button, both copied from Sprint Plan's table
+            # so the two screens match.
             story_rows = []
-            for s in data["stories"]:
+            for i, s in enumerate(data["stories"]):
                 rtl = any('\u0600' <= c <= '\u06ff' for c in s["title"])
-                _wi_url = (f"https://dev.azure.com/{E.AZURE_ORG}/{app.project}"
-                           f"/_workitems/edit/{s['id']}")
+                id_link = ft.Row([
+                    _id_link(app, s["id"], color=T.VIOLET_INK,
+                             weight=ft.FontWeight.BOLD, size=10.5,
+                             font_family=T.F_MONO),
+                    ft.Icon(ft.Icons.OPEN_IN_NEW, size=11, color=T.VIOLET_INK),
+                ], spacing=3, tight=True, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+                del_btn = ft.IconButton(
+                    icon=ft.Icons.DELETE_OUTLINE, icon_size=18, icon_color=T.RED,
+                    tooltip="Remove from this summary",
+                    on_click=_delete_story(s["id"]),
+                    width=34, height=34,
+                    style=ft.ButtonStyle(padding=ft.Padding.all(0),
+                                         shape=ft.RoundedRectangleBorder(radius=8)))
                 story_rows.append(ft.Container(
                     ft.Row([
                         ft.Column([
@@ -633,18 +686,15 @@ def open_sprint_summary(app):
                                     font_family=(T.F_AR if rtl else None),
                                     text_align=(ft.TextAlign.RIGHT if rtl else ft.TextAlign.LEFT),
                                     max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
-                            ft.Text(f"#{s['id']}", size=10.5, color=T.INK_3,
-                                    weight=ft.FontWeight.BOLD, font_family=T.F_MONO),
+                            id_link,
                         ], spacing=2, expand=True),
                         badge(f"{s['test_cases']} TC", "grey"),
                         badge(s["state"], _state_kind(s["state"])),
-                        ft.Icon(ft.Icons.OPEN_IN_NEW, size=14, color=T.INK_3),
+                        del_btn,
                     ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                    padding=ft.Padding.symmetric(vertical=10, horizontal=12),
-                    border=ft.Border.only(bottom=ft.BorderSide(1, T.BORDER_2)),
-                    tooltip=f"{s['title']}  ·  open #{s['id']} in Azure DevOps",
-                    on_click=lambda e, u=_wi_url: app._open_url(u),
-                    ink=True))
+                    padding=ft.Padding.symmetric(vertical=6, horizontal=12),
+                    bgcolor=(T.CARD if i % 2 == 0 else T.CARD_2),
+                    border=ft.Border.only(bottom=ft.BorderSide(1, T.BORDER_2))))
             if not story_rows:
                 story_rows = [ft.Text("No user stories found in this sprint.",
                                       size=12, color=T.INK_3, weight=ft.FontWeight.W_500)]

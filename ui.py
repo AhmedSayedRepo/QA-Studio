@@ -403,7 +403,7 @@ def progress_ring(pct, color, size=44, label=None):
     pct = max(0, min(100, int(pct)))
     ring = ft.ProgressRing(value=pct/100, width=size, height=size, stroke_width=4,
                            color=color, bgcolor="#ECEAF2")
-    center = ft.Text(str(label if label is not None else pct), size=12,
+    center = ft.Text(f"{label if label is not None else pct}%", size=12,
                      weight=ft.FontWeight.BOLD, color=color)
     return ft.Stack([ring, ft.Container(center, width=size, height=size,
                                         alignment=ft.Alignment.CENTER)],

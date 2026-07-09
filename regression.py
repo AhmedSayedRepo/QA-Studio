@@ -1619,6 +1619,21 @@ def _init(app):
             setattr(app, k, v)
 
 
+def _auto_init(app):
+    """State for the Automation screen's own 'Source & stories' section — kept
+    separate from _reg_/_cp_ state (own plans/stories selection, independent of
+    Setup's project-wide plan_id/story_ids) so unlocking Automation no longer
+    depends on anything having been picked on Setup."""
+    for k, v in (("_auto_plans_selected", []), ("_auto_plan_stories", []),
+                 ("_auto_stories_loading", False), ("_auto_selected", []),
+                 ("_auto_plan_open", False), ("_auto_story_open", False),
+                 ("_auto_plans_loading", False), ("_auto_stories_gen", 0),
+                 ("_auto_plan_invalid", False), ("_auto_story_invalid", False),
+                 ("_auto_email_to", ""), ("_auto_email_open", False)):
+        if not hasattr(app, k):
+            setattr(app, k, v)
+
+
 def _sprint_num(text):
     """Pull a clean 'Sprint N' out of an iteration path or plan name; '' if none."""
     m = re.search(r"[Ss]print\s*\d+", text or "")
@@ -1721,6 +1736,319 @@ def _reload_plan_stories(app):
         app._reg_stories_loading = False
         _repaint_unless_open(app, "_reg_plan_open")
     threading.Thread(target=_work, daemon=True).start()
+
+
+def _reload_auto_plan_stories(app):
+    """Twin of _reload_plan_stories for the Automation screen's own plan/story
+    selection. Deliberately skips _resolve_reg_features — Automation doesn't
+    group by Feature, so that extra Azure round-trip would be pure overhead
+    here. Shares app._reg_plan_cache (keyed by plan id) so picking the same
+    plan on both screens doesn't re-fetch it twice."""
+    if not (app.connected and app.project):
+        return
+    plans = list(app._auto_plans_selected or [])
+    app._auto_stories_gen = getattr(app, "_auto_stories_gen", 0) + 1
+    _gen = app._auto_stories_gen
+    if not plans:
+        app._auto_plan_stories = []
+        app._auto_stories_loading = False
+        _repaint_unless_open(app, "_auto_plan_open")
+        return
+    app._auto_stories_loading = True
+    _repaint_unless_open(app, "_auto_plan_open")
+
+    def _work():
+        import concurrent.futures as _cf_reload
+
+        _pcache = getattr(app, "_reg_plan_cache", None)
+        if _pcache is None:
+            _pcache = app._reg_plan_cache = {}
+
+        def _fetch_one_plan(p):
+            pid = p["id"]
+            hit = _pcache.get(pid)
+            if hit is not None:
+                return pid, hit[0], hit[1]
+            try:
+                pj = E._azure_get(f"https://dev.azure.com/{E.AZURE_ORG}/{app.project}"
+                                  f"/_apis/testplan/plans/{p['id']}?api-version=7.0")
+                itr = pj.get("iteration") or ""
+                sprint = _sprint_num(itr) or _sprint_num(p.get("name", "")) \
+                    or itr.split("\\")[-1]
+            except Exception:
+                sprint = p.get("sprint", "")
+            try:
+                stories = E.fetch_stories_in_plan(app.project, p["id"])
+            except Exception:
+                stories = []
+            _pcache[pid] = (sprint, stories)
+            return pid, sprint, stories
+
+        agg, seen = [], set()
+        with _cf_reload.ThreadPoolExecutor(max_workers=min(8, len(plans))) as ex:
+            plan_results = list(ex.map(_fetch_one_plan, plans))
+
+        plan_sprint = {pid: sprint for pid, sprint, _ in plan_results}
+        for p in plans:
+            p["sprint"] = plan_sprint.get(p["id"], p.get("sprint", ""))
+
+        for pid, sprint, stories in plan_results:
+            for s in stories:
+                key = s["id"]
+                if key in seen:
+                    continue
+                seen.add(key)
+                agg.append({"id": s["id"], "title": s.get("title", ""),
+                            "sprint": sprint or _sprint_num(s.get("sprint", "")),
+                            "plan_id": pid})
+        agg.sort(key=lambda s: (s.get("sprint", "") or "~", s["id"]))
+        if _gen != getattr(app, "_auto_stories_gen", _gen):
+            return
+        app._auto_plan_stories = agg
+        app._auto_stories_loading = False
+        _repaint_unless_open(app, "_auto_plan_open")
+    threading.Thread(target=_work, daemon=True).start()
+
+
+def automation_source_card(app):
+    """'Source & stories' card for the Automation screen — its own multi-plan +
+    story checkbox-multiselect, independent of Setup's plan_id/story_ids, so
+    Automation can be unlocked by connection+project alone. Mirrors Regression
+    Plan's Card 1 (regression.screen) but writes to _auto_-prefixed state."""
+    _auto_init(app)
+    # automation_source_card can be the FIRST thing that touches the shared
+    # _reg_plans_loading/_plans-loading state (e.g. the user opens Automation
+    # before ever visiting Regression Plan this session) — _init(app) is what
+    # normally seeds those attrs, but it only runs from regression.screen().
+    # Without this, _reg_plans_loading doesn't exist yet and the lazy-load
+    # check below raises AttributeError. _init is idempotent (hasattr-guarded)
+    # so calling it here is safe even after regression.screen() already has.
+    _init(app)
+    from main import card, sec_head, field_label
+
+    # lazy-load the project's test plans, same trigger as Regression Plan's
+    if (app.connected and not app._reg_plans_loading
+            and getattr(app, "_reg_plans_for", None) != app.project):
+        app._reg_plans_loading = True
+        app._reg_plans_for = app.project
+
+        def _lp():
+            try:
+                app._load_plans()
+            except Exception:
+                pass
+            app._reg_plans_loading = False
+            app.ui_safe(app.render)
+        threading.Thread(target=_lp, daemon=True).start()
+
+    def _toggle_plan(key, checked):
+        pid = int(key)
+        ids = [p["id"] for p in app._auto_plans_selected]
+        if checked and pid not in ids:
+            name = next((p["name"] for p in (app._plans or []) if p["id"] == pid), str(pid))
+            app._auto_plans_selected.append({"id": pid, "name": name})
+        elif not checked:
+            app._auto_plans_selected = [p for p in app._auto_plans_selected if p["id"] != pid]
+            app._auto_selected = [s for s in app._auto_selected if s.get("plan_id") != pid]
+        if app._auto_plans_selected:
+            app._auto_plan_invalid = False
+        _reload_auto_plan_stories(app)
+
+    def _all_plans(checked):
+        app._auto_plans_selected = ([{"id": p["id"], "name": p["name"]}
+                                    for p in (app._plans or [])] if checked else [])
+        if not checked:
+            app._auto_selected = []
+        if app._auto_plans_selected:
+            app._auto_plan_invalid = False
+        _reload_auto_plan_stories(app)
+
+    def _open_plans():
+        was = app._auto_plan_open
+        app._auto_plan_open = not was
+        app._auto_story_open = False
+        if was and not app._auto_plan_open:
+            app._flush_deferred_render()
+
+    plan_picker = (
+        _loading_field("Loading test plans…")
+        if app._reg_plans_loading else
+        _checkbox_multiselect(
+            [(str(p["id"]), f"[{p['id']}] {p['name']}") for p in (app._plans or [])],
+            [str(p["id"]) for p in app._auto_plans_selected],
+            _toggle_plan, _all_plans, is_open=app._auto_plan_open, on_open=_open_plans,
+            placeholder="Select test plan(s)", height=200,
+            empty="No test plans found for this project.",
+            page=app.page, app=app, sync_key="auto_plans",
+            invalid=getattr(app, "_auto_plan_invalid", False)))
+
+    def _toggle_story(key, checked):
+        sid = int(key)
+        ids = [s["id"] for s in app._auto_selected]
+        if checked and sid not in ids:
+            src = next((s for s in app._auto_plan_stories if s["id"] == sid), None)
+            if src:
+                app._auto_selected.append({"id": sid, "title": src.get("title", ""),
+                                           "plan_id": src.get("plan_id")})
+        elif not checked:
+            app._auto_selected = [s for s in app._auto_selected if s["id"] != sid]
+        if app._auto_selected:
+            app._auto_story_invalid = False
+        _fn = getattr(app, "_auto_refresh_story_ext", None)
+        if callable(_fn):
+            _fn()
+
+    def _all_stories(checked):
+        if checked:
+            have = {s["id"] for s in app._auto_selected}
+            for s in app._auto_plan_stories:
+                if s["id"] not in have:
+                    app._auto_selected.append({"id": s["id"], "title": s.get("title", ""),
+                                               "plan_id": s.get("plan_id")})
+        else:
+            app._auto_selected = []
+        if app._auto_selected:
+            app._auto_story_invalid = False
+        _fn = getattr(app, "_auto_refresh_story_ext", None)
+        if callable(_fn):
+            _fn()
+
+    def _open_stories():
+        app._auto_story_open = not app._auto_story_open
+        app._auto_plan_open = False
+
+    _have_plans = bool(app._auto_plans_selected)
+
+    def _disabled_field(text):
+        return ft.Container(
+            ft.Row([ft.Text(text, size=13, color=T.INK_3, expand=True),
+                    ft.Icon(ft.Icons.KEYBOARD_ARROW_DOWN, size=20, color=T.INK_3)],
+                   vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=ft.Padding.symmetric(vertical=12, horizontal=12),
+            bgcolor=T.CARD, border=ft.Border.all(1, T.BORDER), border_radius=T.R)
+
+    if app._auto_stories_loading:
+        story_picker = _loading_field("Loading stories…")
+    elif not _have_plans:
+        story_picker = _disabled_field("Select a test plan first")
+    else:
+        story_picker = _checkbox_multiselect(
+            [(str(s["id"]),
+              (f"[{s['sprint']}] " if s.get("sprint") else "")
+              + f"[{s['id']}] {(s['title'] or '')[:60]}")
+             for s in app._auto_plan_stories],
+            [str(s["id"]) for s in app._auto_selected],
+            _toggle_story, _all_stories, is_open=app._auto_story_open, on_open=_open_stories,
+            placeholder="Select stories", height=260,
+            empty="No stories in the selected plan(s).",
+            page=app.page, app=app, sync_key="auto_stories",
+            invalid=getattr(app, "_auto_story_invalid", False))
+
+    def _chip(label, on_close):
+        return ft.Container(
+            ft.Row([ft.Text(label, size=12, weight=ft.FontWeight.BOLD,
+                            color=T.VIOLET_INK, font_family=T.F_MONO),
+                    ft.GestureDetector(
+                        content=ft.Icon(ft.Icons.CLOSE, size=12, color=T.VIOLET_INK),
+                        on_tap=on_close, mouse_cursor=ft.MouseCursor.CLICK)],
+                   spacing=5, tight=True),
+            padding=ft.Padding.only(left=10, right=7, top=5, bottom=5),
+            bgcolor=T.VIOLET_SOFT, border_radius=T.R_SM,
+            border=ft.Border.all(1, "#D9D2FF"),
+            on_hover=_chip_hover, animate_scale=120)
+
+    def _plan_chip_label(p):
+        return (_sprint_num(p.get("sprint") or "") or _sprint_num(p.get("name") or "")
+                or (p.get("sprint") or "").strip() or f"[{p['id']}]")
+
+    def _remove_plan(pid):
+        app._auto_plans_selected = [p for p in app._auto_plans_selected if p["id"] != pid]
+        app._auto_selected = [s for s in app._auto_selected if s.get("plan_id") != pid]
+        if app._auto_plans_selected:
+            app._auto_plan_invalid = False
+        _sync = (getattr(app, "_dd_syncers", {}) or {}).get("auto_plans")
+        if _sync:
+            try:
+                _sync([str(p["id"]) for p in app._auto_plans_selected])
+            except Exception:
+                pass
+        _reload_auto_plan_stories(app)
+        app.render()
+
+    _plan_chip_list = [_chip(_plan_chip_label(p), (lambda e, x=p["id"]: _remove_plan(x)))
+                       for p in app._auto_plans_selected]
+    if len(_plan_chip_list) > 1:
+        _plan_chip_list.append(_clear_chip(lambda e: (_all_plans(False), app.render())))
+    plan_chips = ft.Row(_plan_chip_list, wrap=True, spacing=6, run_spacing=6)
+
+    _STORY_CHIP_CAP = 40
+
+    def _remove_story(sid):
+        app._auto_selected = [s for s in app._auto_selected if s["id"] != sid]
+        _sync = (getattr(app, "_dd_syncers", {}) or {}).get("auto_stories")
+        if _sync:
+            try:
+                _sync([str(s["id"]) for s in app._auto_selected])
+                _refresh_story_externals()
+            except Exception:
+                app.render()
+        else:
+            app.render()
+
+    def _clear_stories(e=None):
+        app._auto_selected = []
+        app.render()
+
+    def _story_chip_controls():
+        sel = app._auto_selected
+        ctrls = [_chip(str(s["id"]), (lambda e, x=s["id"]: _remove_story(x)))
+                 for s in sel[:_STORY_CHIP_CAP]]
+        if len(sel) > _STORY_CHIP_CAP:
+            ctrls.append(ft.Container(
+                ft.Text(f"+{len(sel) - _STORY_CHIP_CAP} more", size=12,
+                        weight=ft.FontWeight.BOLD, color=T.INK_3),
+                padding=ft.Padding.only(left=10, right=10, top=5, bottom=5),
+                bgcolor=T.CARD_2, border_radius=T.R_SM))
+        if len(sel) > 1:
+            ctrls.append(_clear_chip(_clear_stories))
+        return ctrls
+
+    story_chips = ft.Row(_story_chip_controls(), wrap=True, spacing=6, run_spacing=6)
+    story_chips_wrap = ft.Container(story_chips, padding=ft.Padding.only(top=10),
+                                    visible=bool(app._auto_selected))
+    story_count_text = ft.Text(f"{len(app._auto_selected)} stories selected", size=11,
+                               color=T.INK_3, weight=ft.FontWeight.BOLD)
+
+    def _refresh_story_externals():
+        try:
+            story_chips.controls = _story_chip_controls()
+            story_chips_wrap.visible = bool(app._auto_selected)
+            story_count_text.value = f"{len(app._auto_selected)} stories selected"
+            story_chips.update(); story_chips_wrap.update(); story_count_text.update()
+        except Exception:
+            try:
+                app.render()
+            except Exception:
+                pass
+        _refresh = getattr(app, "_auto_refresh_gen_btn", None)
+        if callable(_refresh):
+            _refresh()
+    app._auto_refresh_story_ext = _refresh_story_externals
+
+    return card(ft.Column([
+        sec_head("A", "Source & stories"),
+        ft.Container(height=10),
+        ft.Column([field_label("Test plans", req=True), plan_picker], spacing=6),
+        ft.Container(plan_chips, padding=ft.Padding.only(top=10),
+                     visible=bool(app._auto_plans_selected)),
+        ft.Text(f"{len(app._auto_plans_selected)} plan(s) selected", size=11,
+                color=T.INK_3, weight=ft.FontWeight.BOLD,
+                visible=bool(app._auto_plans_selected)),
+        ft.Container(height=14),
+        ft.Column([field_label("Stories", req=True), story_picker], spacing=6),
+        story_chips_wrap,
+        story_count_text,
+    ], spacing=0))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2051,6 +2379,357 @@ def _checkbox_multiselect(options, selected, on_toggle, on_all, *, is_open, on_o
     # in-place path
     return _maybe_disable(ft.Column([field_container, panel_wrap], spacing=0))
 
+
+def email_recipient_picker(app, state_key, *, is_open_key, sync_key, height=260,
+                           trailing=None):
+    """Searchable multiselect for email recipients — same search + multiselect
+    pattern as the stories/plans/sprints pickers above (_checkbox_multiselect),
+    sourced from the Azure DevOps project's team members, PLUS a small field to
+    type any custom email (e.g. a shared distro list) that isn't in the
+    directory. Selected recipients render as removable chips, each showing the
+    person's name with a tooltip of the actual email address.
+
+    state_key   — attr name on `app` holding the CSV string of selected emails
+                  (e.g. "emails", "_cp_email_to", "_reg_email_to"). Kept as the
+                  single source of truth so the existing send logic (which
+                  re.split()s that CSV string) needs no changes.
+    is_open_key — attr name on `app` holding this picker's open/closed bool.
+    sync_key    — unique key for app._dd_syncers / app._dd_closers (must not
+                  collide with any other picker's sync_key on the same screen).
+    trailing    — optional control (typically the "Send"/"Email" button) placed
+                  BESIDE the picker's trigger field instead of the caller
+                  stacking it on its own line below. The trigger collapses to a
+                  single field-height row when closed, so this pairs cleanly
+                  the same way a TextField + button sit side by side elsewhere
+                  (e.g. the Sprint Summary dialog's email row); the custom-email
+                  field and recipient chips still render on their own lines
+                  underneath, and the dropdown panel still opens below the
+                  trigger without disturbing the button's position.
+    """
+    def _get_list():
+        raw = getattr(app, state_key, "") or ""
+        return [x.strip() for x in re.split(r"[,\s;]+", raw) if x.strip()]
+
+    def _set_list(lst):
+        setattr(app, state_key, ", ".join(lst))
+
+    # Member directory — loaded once per project, cached on the app instance so
+    # every picker on every screen shares one fetch instead of one each.
+    if (getattr(app, "_members_cache", None) is None
+            and not getattr(app, "_members_loading", False) and app.project):
+        app._members_loading = True
+
+        def _load_members():
+            try:
+                mem = E.fetch_project_members(app.project)
+            except Exception:
+                mem = []
+            app._members_cache = mem
+            app._members_loading = False
+            app.ui_safe(app.render)
+        threading.Thread(target=_load_members, daemon=True).start()
+
+    members = getattr(app, "_members_cache", None) or []
+    member_emails = {m["email"].lower() for m in members}
+    by_email = {m["email"].lower(): m["name"] for m in members}
+    options = [(m["email"], m["name"]) for m in members]
+
+    sel_list = _get_list()
+    sel_member_keys = [em for em in sel_list if em.lower() in member_emails]
+
+    chip_row = ft.Row([], wrap=True, spacing=6, run_spacing=6)
+    chip_wrap = ft.Container(chip_row, padding=ft.Padding.only(top=8),
+                             visible=bool(sel_list))
+
+    def _remove(email):
+        cur = [x for x in _get_list() if x.lower() != email.lower()]
+        _set_list(cur)
+        _rebuild_chips()
+
+    def _clear_all(e=None):
+        _set_list([])
+        _rebuild_chips()
+
+    def _rebuild_chips():
+        cur = _get_list()
+        chips = []
+        for em in cur:
+            label = by_email.get(em.lower(), em)
+            chips.append(ft.Container(
+                ft.Row([
+                    ft.Text(label, size=12, weight=ft.FontWeight.BOLD,
+                            color=T.VIOLET_INK, max_lines=1,
+                            overflow=ft.TextOverflow.ELLIPSIS),
+                    ft.GestureDetector(
+                        content=ft.Icon(ft.Icons.CLOSE, size=12, color=T.VIOLET_INK),
+                        on_tap=lambda e, x=em: _remove(x),
+                        mouse_cursor=ft.MouseCursor.CLICK),
+                ], spacing=5, tight=True),
+                padding=ft.Padding.only(left=10, right=7, top=5, bottom=5),
+                bgcolor=T.VIOLET_SOFT, border_radius=T.R_SM,
+                border=ft.Border.all(1, "#D9D2FF"), tooltip=em,
+                on_hover=_chip_hover, animate_scale=120))
+        if len(cur) > 1:
+            chips.append(_clear_chip(_clear_all))
+        chip_row.controls = chips
+        chip_wrap.visible = bool(cur)
+        # Keep the member checklist in sync when a member chip is removed
+        # (unticks its checkbox) without touching custom (non-member) emails.
+        _sync = (getattr(app, "_dd_syncers", {}) or {}).get(sync_key)
+        if _sync:
+            try:
+                _sync([em for em in cur if em.lower() in member_emails])
+            except Exception:
+                pass
+        try:
+            chip_row.update(); chip_wrap.update()
+        except Exception:
+            pass
+
+    def _toggle_member(email, checked):
+        cur = _get_list()
+        if checked:
+            if not any(x.lower() == email.lower() for x in cur):
+                cur.append(email)
+        else:
+            cur = [x for x in cur if x.lower() != email.lower()]
+        _set_list(cur)
+        _rebuild_chips()
+
+    def _all_members(checked):
+        cur = _get_list()
+        if checked:
+            for m in members:
+                if not any(x.lower() == m["email"].lower() for x in cur):
+                    cur.append(m["email"])
+        else:
+            cur = [x for x in cur if x.lower() not in member_emails]
+        _set_list(cur)
+        _rebuild_chips()
+
+    def _open_picker():
+        setattr(app, is_open_key, not getattr(app, is_open_key, False))
+
+    _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+    def _add_custom(e=None):
+        raw = (custom_tf.value or "").strip().strip(",;")
+        if not raw:
+            return
+        if not _EMAIL_RE.match(raw):
+            try:
+                app._err(f"\"{raw[:40]}\" doesn't look like a valid email.")
+            except Exception:
+                pass
+            return
+        cur = _get_list()
+        if not any(x.lower() == raw.lower() for x in cur):
+            cur.append(raw)
+            _set_list(cur)
+        custom_tf.value = ""
+        _rebuild_chips()
+        try:
+            custom_tf.update()
+        except Exception:
+            pass
+
+    loading = getattr(app, "_members_loading", False)
+    picker = _checkbox_multiselect(
+        options, sel_member_keys, _toggle_member, _all_members,
+        is_open=getattr(app, is_open_key, False), on_open=_open_picker,
+        placeholder=("Loading project members…" if loading
+                     else "Select recipients…"),
+        height=height, empty="No members found in this project.",
+        page=app.page, app=app, sync_key=sync_key, disabled=loading)
+
+    custom_tf = ft.TextField(
+        hint_text="Or type any email and press Enter (e.g. a distro list)",
+        text_size=12.5, dense=True, border_color=T.BORDER,
+        focused_border_color=T.VIOLET, border_radius=T.R_SM,
+        content_padding=ft.Padding.symmetric(vertical=8, horizontal=10),
+        on_submit=_add_custom)
+
+    _rebuild_chips()   # populate initial chip state
+    top = (ft.Row([ft.Container(picker, expand=True), trailing], spacing=8,
+                  vertical_alignment=ft.CrossAxisAlignment.START)
+           if trailing is not None else picker)
+    return ft.Column([
+        top,
+        ft.Container(hover_field(custom_tf), padding=ft.Padding.only(top=8)),
+        chip_wrap,
+    ], spacing=0, tight=True)
+
+
+def resource_name_picker(app, list_key, *, is_open_key, sync_key, height=220,
+                         invalid=False, on_change=None):
+    """Searchable multiselect for tester/resource names — same pattern as
+    email_recipient_picker (and sourced from the SAME Azure DevOps project
+    member directory), so 'Assign to Tester' gets a person's EXACT display
+    name picked from the list instead of a free-typed guess that might not
+    match the 'Assigned To Tester' field's allowed values. Each chip's
+    tooltip shows the matched member's email for confidence. Still allows
+    typing a custom name (Enter / paste comma-separated) for testers not in
+    the directory / not tied to an Azure AD identity.
+
+    list_key   — attr on `app` holding the plain list[str] of resource names
+                 (e.g. "_cp_res_names"). Kept as the single source of truth
+                 so existing calculate/assign logic needs no changes.
+    on_change  — optional callable invoked after every mutation (add/remove/
+                 toggle/select-all/clear), for the caller's own side effects
+                 (e.g. resetting a "calculated" flag, enabling a button).
+    """
+    def _get_list():
+        return list(getattr(app, list_key, None) or [])
+
+    def _set_list(lst):
+        setattr(app, list_key, lst)
+
+    if (getattr(app, "_members_cache", None) is None
+            and not getattr(app, "_members_loading", False) and app.project):
+        app._members_loading = True
+
+        def _load_members():
+            try:
+                mem = E.fetch_project_members(app.project)
+            except Exception:
+                mem = []
+            app._members_cache = mem
+            app._members_loading = False
+            app.ui_safe(app.render)
+        threading.Thread(target=_load_members, daemon=True).start()
+
+    members = getattr(app, "_members_cache", None) or []
+    member_names = {m["name"] for m in members}
+    by_name = {m["name"]: m["email"] for m in members}
+    options = [(m["name"], m["name"]) for m in members]
+
+    sel_list = _get_list()
+    sel_member_keys = [n for n in sel_list if n in member_names]
+
+    chip_row = ft.Row([], wrap=True, spacing=8, run_spacing=8)
+    chip_wrap = ft.Container(chip_row, padding=ft.Padding.only(top=10),
+                             visible=bool(sel_list))
+    count_text = ft.Text(f"{len(sel_list)} resource(s)", size=11, color=T.INK_3,
+                         weight=ft.FontWeight.BOLD, visible=bool(sel_list))
+
+    def _rebuild_chips():
+        cur = _get_list()
+        chips = []
+        for nm in cur:
+            init, col = _av(nm)
+            email = by_name.get(nm)
+            chips.append(ft.Container(
+                ft.Row([
+                    ft.Container(ft.Text(init, size=10, weight=ft.FontWeight.BOLD,
+                                         color="#FFFFFF"),
+                                 width=20, height=20, bgcolor=col, border_radius=20,
+                                 alignment=ft.Alignment.CENTER),
+                    ft.Text(nm, size=12.5, weight=ft.FontWeight.BOLD, color=T.INK),
+                    ft.GestureDetector(
+                        content=ft.Icon(ft.Icons.CLOSE, size=12, color=T.INK_3),
+                        on_tap=(lambda e, x=nm: _remove(x)),
+                        mouse_cursor=ft.MouseCursor.CLICK)],
+                       spacing=7, tight=True),
+                padding=ft.Padding.only(left=5, right=9, top=4, bottom=4),
+                bgcolor=T.CARD_2, border_radius=999, border=ft.Border.all(1, T.BORDER_2),
+                tooltip=(email or "not in the Azure DevOps member list — typed manually"),
+                on_hover=_chip_hover, animate_scale=120))
+        if len(cur) > 1:
+            chips.append(_clear_chip(_clear_all))
+        chip_row.controls = chips
+        chip_wrap.visible = bool(cur)
+        count_text.value = f"{len(cur)} resource(s)"
+        count_text.visible = bool(cur)
+        _sync = (getattr(app, "_dd_syncers", {}) or {}).get(sync_key)
+        if _sync:
+            try:
+                _sync([n for n in cur if n in member_names])
+            except Exception:
+                pass
+        try:
+            chip_row.update(); chip_wrap.update(); count_text.update()
+        except Exception:
+            pass
+
+    def _mutate(cur):
+        _set_list(cur)
+        _rebuild_chips()
+        if on_change:
+            try:
+                on_change()
+            except Exception:
+                pass
+
+    def _remove(nm):
+        _mutate([x for x in _get_list() if x != nm])
+
+    def _clear_all(e=None):
+        _mutate([])
+
+    def _toggle_member(name, checked):
+        cur = _get_list()
+        if checked:
+            if name not in cur:
+                cur.append(name)
+        else:
+            cur = [x for x in cur if x != name]
+        _mutate(cur)
+
+    def _all_members(checked):
+        cur = _get_list()
+        if checked:
+            for m in members:
+                if m["name"] not in cur:
+                    cur.append(m["name"])
+        else:
+            cur = [x for x in cur if x not in member_names]
+        _mutate(cur)
+
+    def _open_picker():
+        setattr(app, is_open_key, not getattr(app, is_open_key, False))
+
+    def _add_custom(e=None):
+        raw = (custom_tf.value or "")
+        if not raw.strip():
+            return
+        cur = _get_list()
+        for piece in re.split(r"[,\n]+", raw):
+            nm = piece.strip()
+            if nm and nm not in cur:
+                cur.append(nm)
+        custom_tf.value = ""
+        _mutate(cur)
+        try:
+            custom_tf.update()
+        except Exception:
+            pass
+
+    loading = getattr(app, "_members_loading", False)
+    picker = _checkbox_multiselect(
+        options, sel_member_keys, _toggle_member, _all_members,
+        is_open=getattr(app, is_open_key, False), on_open=_open_picker,
+        placeholder=("Loading project members…" if loading
+                     else "Select tester(s)…"),
+        height=height, empty="No members found in this project.",
+        page=app.page, app=app, sync_key=sync_key, disabled=loading,
+        invalid=invalid)
+
+    custom_tf = ft.TextField(
+        hint_text="Or type a tester's name, press Enter (or paste comma-separated)",
+        text_size=12.5, dense=True, border_color=T.BORDER,
+        focused_border_color=T.VIOLET, border_radius=T.R_SM,
+        content_padding=ft.Padding.symmetric(vertical=8, horizontal=10),
+        on_submit=_add_custom, on_blur=_add_custom)
+
+    _rebuild_chips()   # populate initial chip state
+    return ft.Column([
+        picker,
+        ft.Container(hover_field(custom_tf), padding=ft.Padding.only(top=8)),
+        chip_wrap,
+        count_text,
+    ], spacing=0, tight=True)
+
+
 def _cp_load_stories(app):
     if not (app.connected and app.project):
         return                      # no connection → don't load/re-render (viewers)
@@ -2351,17 +3030,18 @@ def _create_screen(app):
         picked,
     ], spacing=0))
 
-    # ── Card 2: resources (count + names + chips), like the Regression screen ──
-    # mutable cell so _refresh_chips_inplace can enable calc_btn after it's built
+    # ── Card 2: resources (count + tester picker) ──
+    # mutable cell so _res_changed can enable calc_btn after it's built
     _cp_calc_btn_cell = [None]
 
-    def _refresh_chips_inplace():
-        name_chips.controls = [_res_chip(n) for n in app._cp_res_names]
-        has = bool(app._cp_res_names)
-        name_chips_wrap.visible = has
-        res_count_text.visible = has
-        res_count_text.value = f"{len(app._cp_res_names)} resource(s)"
-        # enable/disable calc_btn in-place based on current state
+    def _res_changed():
+        # Called by resource_name_picker after every mutation: any resource
+        # list change invalidates a prior calculation and re-enables/disables
+        # the Calculate button in place.
+        app._cp_calculated = False
+        app._cp_msg = None
+        if app._cp_res_names and getattr(app, "_cp_res_invalid", False):
+            app._cp_res_invalid = False
         cb = _cp_calc_btn_cell[0]
         if cb is not None:
             should_enable = bool(app._cp_rows and app._cp_res_names) \
@@ -2372,32 +3052,6 @@ def _create_screen(app):
                 cb.update()
             except Exception:
                 pass
-        try:
-            name_chips_wrap.update()
-            res_count_text.update()
-            name_field.update()
-        except Exception:
-            pass
-
-    def _add_name(e):
-        for piece in re.split(r"[,\n]+", name_field.value or ""):
-            nm = piece.strip()
-            if nm and nm not in app._cp_res_names:
-                app._cp_res_names.append(nm)
-        name_field.value = ""
-        app._cp_calculated = False
-        app._cp_msg = None
-        if app._cp_res_names and getattr(app, "_cp_res_invalid", False):
-            app._cp_res_invalid = False
-            name_field.border_color = T.BORDER
-            try: name_field.update()
-            except Exception: pass
-        _refresh_chips_inplace()
-
-    def _remove_name(nm):
-        app._cp_res_names = [n for n in app._cp_res_names if n != nm]
-        app._cp_calculated = False
-        _refresh_chips_inplace()
 
     def _on_count(e):
         v = (count_field.value or "").strip()
@@ -2434,37 +3088,9 @@ def _create_screen(app):
                       else T.BORDER), focused_border_color=T.VIOLET,
         border_radius=T.R,
         content_padding=ft.Padding.symmetric(vertical=12, horizontal=10))
-    name_field = ft.TextField(
-        hint_text="Type a tester's name, press Enter (or paste comma-separated)",
-        on_submit=_add_name, on_blur=_add_name, expand=True, text_size=13,
-        border_color=(T.RED if getattr(app, "_cp_res_invalid", False) else T.BORDER),
-        focused_border_color=T.VIOLET, border_radius=T.R,
-        content_padding=ft.Padding.symmetric(vertical=12, horizontal=10))
-
-    def _res_chip(nm):
-        init, col = _av(nm)
-        return ft.Container(
-            ft.Row([
-                ft.Container(ft.Text(init, size=10, weight=ft.FontWeight.BOLD,
-                                     color="#FFFFFF"),
-                             width=20, height=20, bgcolor=col, border_radius=20,
-                             alignment=ft.Alignment.CENTER),
-                ft.Text(nm, size=12.5, weight=ft.FontWeight.BOLD, color=T.INK),
-                ft.GestureDetector(
-                    content=ft.Icon(ft.Icons.CLOSE, size=12, color=T.INK_3),
-                    on_tap=(lambda e, x=nm: _remove_name(x)),
-                    mouse_cursor=ft.MouseCursor.CLICK)],
-               spacing=7, tight=True),
-            padding=ft.Padding.only(left=5, right=9, top=4, bottom=4),
-            bgcolor=T.CARD_2, border_radius=999, border=ft.Border.all(1, T.BORDER_2),
-            on_hover=_chip_hover, animate_scale=120)
-
-    name_chips = ft.Row([_res_chip(n) for n in app._cp_res_names],
-                        wrap=True, spacing=8, run_spacing=8)
-    name_chips_wrap = ft.Container(name_chips, padding=ft.Padding.only(top=10),
-                                   visible=bool(app._cp_res_names))
-    res_count_text = ft.Text(f"{len(app._cp_res_names)} resource(s)", size=11, color=T.INK_3,
-                             weight=ft.FontWeight.BOLD, visible=bool(app._cp_res_names))
+    resource_picker = resource_name_picker(
+        app, "_cp_res_names", is_open_key="_cp_res_open", sync_key="cp_resources",
+        invalid=getattr(app, "_cp_res_invalid", False), on_change=_res_changed)
 
     warn = ft.Container()
     if mismatch:
@@ -2489,13 +3115,8 @@ def _create_screen(app):
         ft.Container(height=10),
         ft.Row([
             ft.Column([field_label("Count", req=True), hover_field(count_field)], spacing=6, tight=True),
-            ft.Column([field_label("Add a name", req=True),
-                       ft.Row([hover_field(name_field),
-                               green_btn("Add", icon=ft.Icons.ADD, on_click=_add_name)],
-                              spacing=8)], spacing=6, expand=True),
+            ft.Column([field_label("Resources", req=True), resource_picker], spacing=6, expand=True),
         ], spacing=14, vertical_alignment=ft.CrossAxisAlignment.START),
-        name_chips_wrap,
-        res_count_text,
         warn,
         ft.Container(height=14),
         ft.Row([
@@ -2598,7 +3219,7 @@ def _create_screen(app):
                            icon=ft.Icons.CALCULATE,
                            on_click=(None if app._cp_busy else _calculate),
                            disabled=app._cp_busy or not (app._cp_rows and app._cp_res_names))
-    _cp_calc_btn_cell[0] = calc_btn   # wire so _refresh_chips_inplace can enable it
+    _cp_calc_btn_cell[0] = calc_btn   # wire so _res_changed can enable it in place
 
     # ── results / plan (after Assign & Estimate) ──
     results = None
@@ -2861,7 +3482,7 @@ def _create_screen(app):
             if getattr(app, "_cp_emailing", False):
                 app._toast("Already sending — please wait…")
                 return
-            to = [a.strip() for a in re.split(r"[,\s;]+", (email_field.value or ""))
+            to = [a.strip() for a in re.split(r"[,\s;]+", (app._cp_email_to or ""))
                   if a.strip()]
             if not to:
                 app._err("Enter at least one recipient email.")
@@ -2904,17 +3525,14 @@ def _create_screen(app):
                 app.ui_safe(_fin)
             threading.Thread(target=work, daemon=True).start()
 
-        email_field = ft.TextField(
-            value=app._cp_email_to, hint_text="name@company.com, another@company.com",
-            on_change=lambda e: setattr(app, "_cp_email_to", e.control.value or ""),
-            expand=True, text_size=13, border_color=T.BORDER,
-            focused_border_color=T.VIOLET, border_radius=T.R,
-            content_padding=ft.Padding.symmetric(vertical=12, horizontal=10))
         app._cp_send_btn = green_btn("Email plan", icon=ft.Icons.SEND, on_click=_email)
+        email_picker = email_recipient_picker(
+            app, "_cp_email_to", is_open_key="_cp_email_open", sync_key="cp_emails",
+            trailing=app._cp_send_btn)
         email_row = ft.Column([
             ft.Text("EMAIL", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
             ft.Container(height=8),
-            ft.Row([hover_field(email_field), app._cp_send_btn], spacing=8),
+            email_picker,
         ], spacing=0)
 
         def _assign_testers(e):
@@ -3421,9 +4039,6 @@ def screen(app):
             threading.Thread(target=work, daemon=True).start()
         return _do
 
-    def _on_email_to(e):
-        app._reg_email_to = (email_field.value or "").strip()
-
     def _email(e):
         if getattr(app, "_reg_emailing", False):
             app._toast("Already sending — please wait…")
@@ -3431,7 +4046,7 @@ def screen(app):
         if not app._reg_selected_rows:
             app._err("Calculate the plan first.")
             return
-        to = [a.strip() for a in re.split(r"[,\s;]+", (email_field.value or ""))
+        to = [a.strip() for a in re.split(r"[,\s;]+", (app._reg_email_to or ""))
               if a.strip()]
         if not to:
             app._err("Enter at least one recipient email.")
@@ -4063,18 +4678,15 @@ def screen(app):
             visible=bool(app._reg_export_msg))
         _status_cell[0] = status   # wire mutable ref for in-place updates
 
-        email_field = ft.TextField(
-            value=app._reg_email_to or "", on_change=_on_email_to,
-            hint_text="recipient@company.com (comma-separate for several)",
-            expand=True, text_size=13, border_color=T.BORDER,
-            focused_border_color=T.VIOLET, border_radius=T.R,
-            content_padding=ft.Padding.symmetric(vertical=12, horizontal=10))
         app._reg_send_btn = green_btn("Send", icon=ft.Icons.SEND, on_click=_email)
+        email_picker = email_recipient_picker(
+            app, "_reg_email_to", is_open_key="_reg_email_open", sync_key="reg_emails",
+            trailing=app._reg_send_btn)
         email_row = ft.Column([
             ft.Divider(height=20, color=T.BORDER),
             ft.Text("EMAIL THE PLAN", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
             ft.Container(height=8),
-            ft.Row([hover_field(email_field), app._reg_send_btn], spacing=10),
+            email_picker,
             ft.Text("Attaches the Excel + Word plan and an inline summary. Uses the "
                     "Gmail sender configured on Setup.", size=11, color=T.INK_3,
                     weight=ft.FontWeight.W_500),

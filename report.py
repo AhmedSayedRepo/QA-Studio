@@ -106,11 +106,35 @@ def screen(app):
         # Collapsible run activity log below the breakdown
         log_lines = app._render_log_lines() if getattr(app, "_log_lines", None) else [
             ft.Text("No activity recorded.", size=12, color=T.INK_3, weight=ft.FontWeight.W_500)]
+
+        def _log_tool_btn(icon, tip, cb, danger=False):
+            # Same small rounded icon-button "chip" as the Run/Automation
+            # screens' Activity log toolbar — kept visually identical. Reuses
+            # app._copy_run_log / app._clear_run_log since the Report screen
+            # shows the same app._log_lines the Run screen just produced.
+            return ft.Container(
+                ft.IconButton(
+                    icon, icon_size=15,
+                    icon_color=(T.RED if danger else T.INK_3),
+                    tooltip=tip, on_click=cb, width=26, height=26,
+                    style=ft.ButtonStyle(padding=0,
+                                         shape=ft.RoundedRectangleBorder(radius=7))),
+                bgcolor=(T.RED_SOFT if danger else T.CARD),
+                border=ft.Border.all(1, (T.RED_SOFT if danger else T.BORDER)),
+                border_radius=8)
+
         log_card = card(ft.Column([
             ft.Row([ft.Text("Run activity log", size=13, weight=ft.FontWeight.BOLD, color=T.INK),
                     ft.Container(expand=True),
                     ft.Text(f"{len(getattr(app,'_log_lines',[]))} lines", size=11,
-                            color=T.INK_3, weight=ft.FontWeight.BOLD)]),
+                            color=T.INK_3, weight=ft.FontWeight.BOLD),
+                    ft.Container(width=10),
+                    _log_tool_btn(ft.Icons.COPY_ALL_OUTLINED, "Copy entire log",
+                                 app._copy_run_log),
+                    ft.Container(width=6),
+                    _log_tool_btn(ft.Icons.DELETE_OUTLINE, "Clear log",
+                                 app._clear_run_log, danger=True)],
+                   vertical_alignment=ft.CrossAxisAlignment.CENTER),
             ft.Container(height=8),
             ft.Container(
                 ft.SelectionArea(content=ft.Column(log_lines, spacing=2,

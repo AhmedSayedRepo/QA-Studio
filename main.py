@@ -874,12 +874,12 @@ class QAStudio:
                 # Brand (logo + Check updates) is PINNED — it never scrolls.
                 ft.Container(
                     ft.Row([
-                        ft.Container(logo_img(38),
-                                     width=38, height=38,
+                        ft.Container(logo_img(48),
+                                     width=48, height=48,
                                      bgcolor=(None if _logo_b64() else T.VIOLET),
                                      gradient=(None if _logo_b64() else grad(T.GRAD_LOGO)),
-                                     border_radius=11,
-                                     shadow=_btn_shadow(T.STORY, 0.5),
+                                     border_radius=12,
+                                     shadow=(None if _logo_b64() else _btn_shadow(T.STORY, 0.5)),
                                      alignment=ft.Alignment.CENTER),
                         ft.Column([
                             ft.Text("QA Studio", size=15, weight=ft.FontWeight.BOLD, color=T.RAIL_INK),
@@ -890,7 +890,8 @@ class QAStudio:
                             ], spacing=7, tight=True,
                                vertical_alignment=ft.CrossAxisAlignment.CENTER),
                         ], spacing=3),
-                    ], spacing=11), padding=ft.Padding.symmetric(vertical=16, horizontal=6)),
+                    ], spacing=11, vertical_alignment=ft.CrossAxisAlignment.START),
+                    padding=ft.Padding.symmetric(vertical=16, horizontal=6)),
                 ft.Container(ft.Text("PIPELINE", size=10, weight=ft.FontWeight.BOLD,
                                      color="#615E6E"), padding=ft.Padding.only(left=18, top=14, bottom=6)),
                 # Only the nav list scrolls; the brand stays pinned above it.
@@ -2778,8 +2779,21 @@ class QAStudio:
         signed in yet, offline, function/table not set up, malformed response):
         local creds — already applied earlier in __init__ / _switch_user_creds —
         remain the fallback in every one of those cases, so a user is never
-        blocked from sending email just because the shared fetch didn't work."""
+        blocked from sending email just because the shared fetch didn't work.
+
+        SECURITY: gated on the 'act.export' capability (the same capability
+        that gates the Report screen's send/export actions, the only feature
+        that actually uses this credential). Without this check, EVERY
+        signed-in user — including a self-registered Viewer with zero
+        capabilities — would have the org's shared Gmail App Password fetched
+        into their own local process on every sign-in, which is a real secret
+        exposure for a desktop app the user fully controls (readable via a
+        debugger or process-memory dump), not just a UI-level restriction.
+        Users without act.export never had a legitimate reason to hold this
+        credential in memory, so we simply never fetch it for them."""
         if not auth.configured():
+            return
+        if not auth.can(getattr(self, "user", None), "act.export"):
             return
 
         def work():
@@ -3137,11 +3151,8 @@ class QAStudio:
             story_picker,
             self._chip_wrap], spacing=0, tight=True)
 
-        self.email_field = ft.TextField(
-            value=self.emails, hint_text="qa-leads@wss.com  (optional)",
-            border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
-            content_padding=ft.Padding.symmetric(vertical=12, horizontal=12), text_size=13, expand=True,
-            on_change=lambda e: setattr(self, "emails", self.email_field.value))
+        self.email_picker = regression.email_recipient_picker(
+            self, "emails", is_open_key="_email_open", sync_key="setup_emails")
 
         # Sprint summary button — green (like Create) when a plan is selected,
         # grey/disabled when no plan is chosen yet.
@@ -3221,7 +3232,7 @@ class QAStudio:
 
         rows += [
             field_label("Report Emails", hint="optional", req=False),
-            ft.Container(hover_field(self.email_field), padding=ft.Padding.only(top=4)),
+            ft.Container(self.email_picker, padding=ft.Padding.only(top=4)),
         ]
         return card(ft.Column(rows, spacing=0), expand=False)
 
@@ -4626,25 +4637,43 @@ class QAStudio:
     def _auto_count(self):
         """TODO tally = locators the generated tests resolve at RUNTIME (no stable
         seed found). Updated live during sequencing via hidden `TODO_LIVE: N` control
-        lines, and reconciled to the emitted total when the project is written."""
-        return {"todo": getattr(self, "_auto_todo", 0)}
+        lines, and reconciled to the emitted total when the project is written.
+        'skipped' = duplicate test cases left out before sequencing, updated live
+        via hidden `SKIPPED_LIVE: N` control lines the same way."""
+        return {"todo": getattr(self, "_auto_todo", 0),
+                "skipped": getattr(self, "_auto_skipped", 0)}
 
     def _auto_counts_header(self):
+        # Stacked layout (dot+count on top, label wrapped beneath) instead of a
+        # single unbounded Row — the old version crammed a colored dot, a long
+        # label ("Locators self-healed at runtime"), and the count value onto
+        # ONE line inside a ~185px-wide pill. A Row's children don't wrap, so
+        # once that line ran out of room the text just got clipped mid-word by
+        # the pill's own rounded corners instead of wrapping or shrinking.
+        # Putting the label in its own Text below the count — inside a Column,
+        # where width IS constrained by the container — lets it wrap onto up to
+        # two lines, with an ellipsis as a last-resort safety net so nothing is
+        # ever cut off raw.
         c = self._auto_count()
         self._auto_count_ctl = {}
         def chip(key, label, color, soft):
-            val = ft.Text(str(c[key]), size=14, weight=ft.FontWeight.BOLD, color=color)
+            val = ft.Text(str(c[key]), size=17, weight=ft.FontWeight.BOLD, color=color)
             self._auto_count_ctl[key] = val
             return ft.Container(
-                ft.Row([ft.Container(width=7, height=7, border_radius=4, bgcolor=color),
-                        ft.Text(label, size=10, weight=ft.FontWeight.W_600, color=T.INK_2),
-                        val], spacing=5, alignment=ft.MainAxisAlignment.CENTER),
-                padding=ft.Padding.symmetric(vertical=8, horizontal=6),
+                ft.Column([
+                    ft.Row([ft.Container(width=7, height=7, border_radius=4, bgcolor=color),
+                            val], spacing=6, alignment=ft.MainAxisAlignment.CENTER),
+                    ft.Text(label, size=10, weight=ft.FontWeight.W_600, color=T.INK_2,
+                            text_align=ft.TextAlign.CENTER, max_lines=2,
+                            overflow=ft.TextOverflow.ELLIPSIS),
+                ], spacing=4, tight=True, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                padding=ft.Padding.symmetric(vertical=10, horizontal=8),
                 bgcolor=soft, border_radius=T.R, expand=True,
                 alignment=ft.Alignment.CENTER)
         return ft.Row([
             chip("todo", "Locators self-healed at runtime", T.VIOLET, T.VIOLET_SOFT),
-        ], spacing=7)
+            chip("skipped", "Duplicate cases skipped", T.AMBER, T.AMBER_SOFT),
+        ], spacing=7, vertical_alignment=ft.CrossAxisAlignment.STRETCH)
 
     def _auto_log_line(self, msg, tone):
         cmap = {"ok": T.GREEN, "err": T.RED, "warn": T.AMBER, "story": T.VIOLET_INK,
@@ -4653,7 +4682,12 @@ class QAStudio:
         stripped = (msg or "").lstrip(" ")
         indent = len(msg or "") - len(stripped)
         pad = min(indent, 8) * 3
-        is_ar = any("\u0600" <= ch <= "\u06ff" for ch in stripped)
+        # RTL only when the line STARTS in Arabic (a raw story/test-case title).
+        # Checking for ANY Arabic character anywhere used to flip lines like
+        # "skipping duplicate: <Arabic title> (same as #103921)" \u2014 English
+        # scaffolding with an embedded Arabic title \u2014 into full right-aligned
+        # RTL too, which garbled the English prefix/suffix around the title.
+        is_ar = bool(stripped) and ("\u0600" <= stripped[0] <= "\u06ff")
         weight = ft.FontWeight.BOLD if tone in ("story", "ok") else ft.FontWeight.W_500
         # tone symbol, matching the Run activity log (icon + colour, not a plain dot)
         if tone == "ok":
@@ -4696,6 +4730,23 @@ class QAStudio:
                     except Exception:
                         pass
             self.ui_safe(_upd_todo)
+            return
+        # 'SKIPPED_LIVE: N' — same hidden-control-line pattern as TODO_LIVE
+        # above, for the running duplicate-skip tally.
+        if (msg or "").startswith("SKIPPED_LIVE:"):
+            try:
+                self._auto_skipped = int((msg.split(":", 1)[1] or "0").strip().split()[0])
+            except Exception:
+                pass
+            def _upd_skipped():
+                ctl = getattr(self, "_auto_count_ctl", None)
+                if ctl and "skipped" in ctl:
+                    try:
+                        ctl["skipped"].value = str(getattr(self, "_auto_skipped", 0))
+                        ctl["skipped"].update()
+                    except Exception:
+                        pass
+            self.ui_safe(_upd_skipped)
             return
         # drop consecutive duplicate lines (e.g. repeated "Paused…" notices)
         if self._auto_log and self._auto_log[-1].get("msg") == msg:
@@ -5050,8 +5101,9 @@ class QAStudio:
                 or getattr(self, "_cp_stories_loading", False)):
             self._toast("A plan is generating — let it finish before starting automation.")
             return
-        if not (self.story_ids and self.project and self.plan_id):
-            self._toast("Select a project, test plan, and stories on Setup first.")
+        if not (self._auto_selected and self.project):
+            self._toast("Pick a test plan and at least one story in Source & "
+                        "stories first.")
             return
         # Field-level validation: red borders + inline helpers on the required
         # fields, while keeping the toast (per the rest of the app's pattern).
@@ -5089,19 +5141,102 @@ class QAStudio:
         self._auto_built = False
         self._auto_log = []
         self._auto_todo = 0          # live TODO tally, reset for this run
+        self._auto_skipped = 0       # live duplicate-skip tally, reset for this run
+        self._auto_run_start = time.time()
         self.render()
 
         def cb(msg, tone="dim"):
             self._auto_logmsg(msg, tone)
 
         def work():
+            # Pre-declared so the report email (sent on both the success path
+            # and the except/failure path below) always has something to read,
+            # even if an exception hits before these are computed for real.
+            stories_payload = []
+            total_tc = 0
+            total_steps = 0
+            walk_payload = []
+
+            def _send_auto_report(failed=False, stopped=False):
+                to_raw = (getattr(self, "_auto_email_to", "") or "").strip()
+                if not to_raw:
+                    return
+                if not E.GMAIL_APP_PASS:
+                    cb("No report sent — Gmail App Password not set in Setup → "
+                       "Connection.", "warn")
+                    return
+                import re as _re
+                to = [a.strip() for a in _re.split(r"[,\s;]+", to_raw) if a.strip()]
+                if not to:
+                    return
+                _tgt = getattr(self, "_auto_target", "selenium")
+                _secs = time.time() - getattr(self, "_auto_run_start", time.time())
+                stats = {
+                    "Stories": len(stories_payload),
+                    "Test cases": total_tc,
+                    "Skipped": getattr(self, "_auto_skipped", 0),
+                    "Self-healed": getattr(self, "_auto_todo", 0),
+                    "Time": E._fmt_secs(_secs),
+                }
+                if failed:
+                    summary = "Automation failed"
+                elif stopped:
+                    summary = "Stopped early"
+                elif walk_payload:
+                    _n = len(walk_payload)
+                    summary = f"{_n} stor{'y' if _n == 1 else 'ies'} generated"
+                else:
+                    summary = "Nothing new — existing tests kept as-is"
+                email_log = [{"msg": ln.get("msg", ""), "tone": ln.get("tone", "dim")}
+                            for ln in getattr(self, "_auto_log", []) if ln.get("msg")]
+                try:
+                    html = E.build_automation_report_email(
+                        _tgt, summary, stats,
+                        project_dir=getattr(self, "_auto_out_dir", None) or self._auto_project_dir(),
+                        git_url=(self.auto_git_url or "").strip() or None,
+                        git_branch=(self.auto_git_branch or "").strip() or None,
+                        log_lines=email_log, org=E.AZURE_ORG, project=self.project,
+                        failed=failed, stopped=stopped)
+                    ok, err = E.send_report(to, "QA Studio — Automation report", html)
+                except Exception as _ex:
+                    ok, err = False, str(_ex)[:150]
+                if ok:
+                    cb(f"Report emailed to {to_raw}", "ok")
+                else:
+                    cb(f"Report not emailed — {err}", "warn")
+
             try:
                 # 1) connect to Azure + fetch stories with their test cases/steps
                 cb("Connecting to Azure DevOps...", "dim")
                 E.connect_azure_sdk(self.project)
-                smap = E.discover_suites_for_stories(self.project, self.plan_id,
-                                                     set(self.story_ids), create_missing=False)
-                stories = E.fetch_stories(self.story_ids)
+                # Automation's stories come from its own multi-plan "Source &
+                # stories" picker (app._auto_selected), each tagged with the
+                # plan_id it was picked from — unlike the old single self.plan_id
+                # flow, suites must be discovered PER PLAN and the maps merged.
+                _auto_sel = list(self._auto_selected)
+                _story_ids = [s["id"] for s in _auto_sel]
+                _story_plan = {s["id"]: s.get("plan_id") for s in _auto_sel}
+                _by_plan = {}
+                for s in _auto_sel:
+                    _by_plan.setdefault(s.get("plan_id"), set()).add(s["id"])
+                smap = {}
+                for _pid, _sids in _by_plan.items():
+                    if not _pid:
+                        continue
+                    try:
+                        smap.update(E.discover_suites_for_stories(
+                            self.project, _pid, _sids, create_missing=False))
+                    except Exception as _ex:
+                        cb(f"Couldn't read suites for plan {_pid}: {str(_ex)[:120]}", "warn")
+                stories = E.fetch_stories(_story_ids)
+                # Fetching every story's suite test cases + every case's steps
+                # (Phases A/B below) makes NO cb() calls while it runs — on a
+                # large selection that can take a while with nothing on screen
+                # to show for it. This line is the only thing standing between
+                # "Connecting..." and the first real progress line, so the
+                # screen doesn't look stuck.
+                cb(f"Fetching test cases and steps for {len(stories)} "
+                   f"stor{'y' if len(stories) == 1 else 'ies'}...", "dim")
 
                 import concurrent.futures as _cf
                 stories_payload = []
@@ -5115,7 +5250,7 @@ class QAStudio:
                     if suite_id:
                         try:
                             for tc in E.fetch_test_cases_for_suite(
-                                    self.project, self.plan_id, suite_id):
+                                    self.project, _story_plan.get(s.id), suite_id):
                                 wi = tc.get("workItem", {})
                                 tcid = wi.get("id")
                                 if tcid:
@@ -5150,13 +5285,28 @@ class QAStudio:
                             steps_map[_tcid] = _st
                             title_map[_tcid] = _title
 
+                # Announce the dedup pass BEFORE the assembly loop below, since
+                # that loop is where dedupe_case_list actually runs (per story)
+                # — without this, the first thing the user sees after the long
+                # silent fetch above is a "skipping duplicate" line with no
+                # lead-in explaining what's happening.
+                cb("Checking for duplicate test cases...", "dim")
+
                 # Assemble in the original story order.
+                total_skipped = 0
                 for s in stories:
                     if self._auto_stop:
                         cb("Stopped before scraping.", "warn"); return
                     sid = s.id
                     title = s.fields.get("System.Title", "")
                     criteria = s.fields.get("Microsoft.VSTS.Common.AcceptanceCriteria", "")
+                    # Announce which story is being checked/prepped BEFORE its
+                    # dedup pass runs — with multiple stories selected this is
+                    # the only way to tell which one is currently in progress,
+                    # same "▸ Story N → suite M · Title" format as the Run log.
+                    _suite_id = smap.get(sid)
+                    cb(f"Story {sid}" + (f" → suite {_suite_id}" if _suite_id else "")
+                       + f" · {title}", "story")
                     tcs = []
                     for tc in story_tcs.get(sid, []):
                         steps = steps_map.get(tc["id"], [])
@@ -5164,6 +5314,18 @@ class QAStudio:
                         tcs.append({"id": tc["id"],
                                     "title": (tc.get("title") or title_map.get(tc["id"], "")),
                                     "steps": steps})
+                    # Duplicate test cases already sitting in the suite (same
+                    # scenario, different wording) would otherwise each get
+                    # sequenced and get their own generated script. Skip-only —
+                    # nothing is deleted from Azure DevOps here, the most
+                    # complete case of each duplicate set is just the only one
+                    # carried forward into automation.
+                    if len(tcs) > 1:
+                        _before = len(tcs)
+                        tcs = E.dedupe_case_list(tcs, log=cb,
+                                                 should_stop=lambda: self._auto_stop)
+                        total_skipped += _before - len(tcs)
+                        cb(f"SKIPPED_LIVE: {total_skipped}", "dim")
                     total_tc += len(tcs)
                     stories_payload.append({
                         "story": {"id": sid, "title": title, "criteria": criteria},
@@ -5264,8 +5426,10 @@ class QAStudio:
                        f"QA_AI_API_KEY (your {_hprov} key), APP_USER and APP_PASS in .env, then "
                        f"`npm test`. Self-healing resolves the TODO locators at runtime; open the "
                        f"report with `{_rep}`.", "ok")
+                _send_auto_report(stopped=bool(self._auto_stop))
             except Exception as ex:
                 cb(f"Automation failed: {str(ex)[:200]}", "err")
+                _send_auto_report(failed=True)
             finally:
                 self._auto_running = False
                 self._auto_stop = False

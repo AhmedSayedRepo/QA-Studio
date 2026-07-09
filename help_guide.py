@@ -60,6 +60,14 @@ FEATURES = [
          "detailed precondition / action / expected steps into the story's test "
          "cases. It verifies and de-duplicates as it goes, so re-running only adds "
          "what's genuinely missing.",
+         "Duplicate detection runs in two passes, in both modes: a quick check first, "
+         "then an AI review that catches duplicates worded completely differently "
+         "(e.g. \"requests submitted for the branch\" vs \"actions taken for the "
+         "branch\" — same test, different words) that the quick check alone would "
+         "miss. This also cleans up duplicates already sitting in the suite from "
+         "earlier runs or manual entry — not just new ones — keeping whichever copy "
+         "has the most complete steps and removing the rest, with the kept/removed "
+         "test case IDs logged.",
          "Progress is live — elapsed time, an ETA, and a running log — and you can "
          "Stop at any point; work already written to Azure is kept.",
          "The RECENT ACTIVITY log has Copy and Clear buttons pinned next to its "
@@ -69,7 +77,7 @@ FEATURES = [
      "points": [
          "Titles: writes NEW test-case titles per story, skipping duplicates in the suite.",
          "Steps: writes precondition / action / expected steps into the test cases.",
-         "Verifies sufficiency and de-dupes against existing cases before writing.",
+         "Two-pass de-dup (quick check + AI review) also cleans up duplicates already in the suite.",
          "Live elapsed / ETA / log, with a Stop button that keeps whatever was saved.",
          "Copy / Clear buttons on the activity log, same as Automation.",
      ]},
@@ -147,11 +155,28 @@ FEATURES = [
      "blurb": "Turns your Azure test cases into a ready-to-run, self-healing UI "
               "test project — Selenium, Playwright, or Cypress — and pushes it to Git.",
      "details": [
+         "Automation has its own Source & stories section (A) — pick one or more "
+         "test plans and stories right here. It's independent of Setup's own "
+         "selection, so the screen unlocks as soon as you're connected to a "
+         "project; Generate stays disabled until at least one plan and one story "
+         "are picked.",
          "Automation converts the test cases from your selection into a complete, "
          "runnable automation project with minimal human involvement. It compiles "
          "each test case's steps into a framework-neutral intent model, sequences "
          "the cases sensibly (logged-out validations → the successful login → the "
          "authenticated app cases, all in one browser), and emits a full project.",
+         "Before sequencing, duplicate test cases within a story (same scenario, "
+         "different wording) are skipped — only the most complete case of each "
+         "duplicate set is carried forward — so you don't get two generated tests "
+         "for the same thing. Nothing is deleted from Azure DevOps; it's a local, "
+         "skip-only check. The Activity log names the story currently being "
+         "checked/sequenced and how long each step took, so a multi-story run "
+         "stays trackable end to end.",
+         "An optional report email (section F) sends a run summary — stories, "
+         "test cases, duplicates skipped, self-healed locators, elapsed time, and "
+         "the full activity log — to whoever you pick, once a generation finishes "
+         "or fails, using the same Azure member picker as the other report-email "
+         "fields.",
          "Pick your Test framework at the top: Selenium (Java + TestNG), Playwright "
          "(JavaScript), or Cypress (JavaScript). All three share the same "
          "AI-generated steps and the same self-healing locators — only the emitted "
@@ -183,6 +208,13 @@ FEATURES = [
          "pinned there regardless of how far you've scrolled.",
      ],
      "points": [
+         "Own Source & stories picker (section A) — unlocks with just a "
+         "connection + project; Generate needs a plan and a story picked here.",
+         "Duplicate test cases are skipped before sequencing (skip-only, nothing "
+         "deleted from Azure); the log names the current story and timing for "
+         "each step so multi-story runs stay trackable.",
+         "Optional report email (section F) — stories, test cases, skipped "
+         "duplicates, self-healed locators, and elapsed time, sent on completion.",
          "Choose the target: Selenium (Java/TestNG), Playwright (JS), or Cypress "
          "(JS) — same steps + self-healing, different emitted project.",
          "Runtime self-healing: a broken locator is re-found by the AI on the live "

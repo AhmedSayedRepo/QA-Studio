@@ -13,10 +13,21 @@ def show_dialog(app, dlg):
     app._dialog = dlg
     # Make the dialog BODY text selectable/copyable (the action buttons live in
     # dlg.actions, so they stay outside the selection region — buttons excluded).
+    # Also wrap it in the same click-away GestureDetector used for the main
+    # screen body (see shell()'s SelectionArea(GestureDetector(...))): any
+    # AlertDialog renders on a separate overlay layer, outside that wrapper,
+    # so a picker opened INSIDE a dialog (e.g. Sprint Summary's email
+    # recipient picker) never saw empty-space taps and never got the chance
+    # to close itself — only the main screen's inline pickers did. Nesting
+    # the same "child GestureDetector wins over the SelectionArea ancestor
+    # for empty space, while checkboxes/buttons keep their own taps" trick
+    # here fixes click-away-to-close for every dialog in one place instead of
+    # each modal needing its own copy of this wiring.
     try:
         c = getattr(dlg, "content", None)
         if c is not None and not isinstance(c, ft.SelectionArea):
-            dlg.content = ft.SelectionArea(content=c)
+            dlg.content = ft.SelectionArea(
+                content=ft.GestureDetector(content=c, on_tap=app._close_dropdowns))
     except Exception:
         pass
     # Keep action buttons on ONE ROW. Flet's AlertDialog stacks multiple `actions`
