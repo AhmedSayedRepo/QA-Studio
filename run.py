@@ -138,7 +138,22 @@ def screen(app):
                                  app._clear_run_log, danger=True)],
                    vertical_alignment=ft.CrossAxisAlignment.CENTER),
             ft.Container(height=8),
-            ft.Container(ft.SelectionArea(content=app._log_col), height=380, bgcolor=T.CARD_2,
+            # NOT wrapped in its own ft.SelectionArea: shell() (main.py) already
+            # wraps the ENTIRE screen body in one outer SelectionArea, so this
+            # text is already selectable — a SECOND, nested SelectionArea here
+            # is redundant and was the reported cause of Ctrl+C not copying
+            # from this panel specifically (two overlapping SelectionArea
+            # widgets fight over which one "owns" the current selection for
+            # keyboard-shortcut purposes, even though drag-to-select still
+            # visually worked). Same root cause already fixed once for
+            # automation.py's log panel — see its comment for the full
+            # Flutter-bug writeup (flutter/flutter#183079); this panel's own
+            # fixed height=380 meant it never hit that bug's CRASH symptom,
+            # which is why the redundant SelectionArea was left in place here
+            # until now, but it still broke Ctrl+C on its own. The "Copy
+            # entire log" toolbar button above is an unaffected fallback
+            # either way.
+            ft.Container(app._log_col, height=380, bgcolor=T.CARD_2,
                          border=ft.Border.all(1, T.BORDER), border_radius=T.R, padding=12),
         ], spacing=0))
 

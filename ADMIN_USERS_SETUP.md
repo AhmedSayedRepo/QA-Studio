@@ -149,3 +149,63 @@ In QA Studio's Settings screen, an Admin sets the shared sender address, name,
 and Gmail App Password once; every other signed-in user with export permission
 (Admin or Member) picks it up automatically on their next sign-in. Viewers
 never receive it, from either the app or the server.
+
+# 6. The `ai-usage` function (whole-org AI usage report)
+
+Every AI call QA Studio makes is logged with its EXACT token usage (read
+straight from the provider's own response, never estimated) to a local
+per-user file on that machine, and — when Supabase sign-in is configured —
+also mirrored to this table so an **Admin** can pull a report across every
+signed-in user, not just their own machine. Cost is deliberately **not**
+computed server-side: the desktop app applies its own price table
+(`engine.PRICING`) to the exact token counts, so a price change never needs a
+redeploy.
+
+**Security model:** unlike `org-settings` (capability-gated: Admin or Member
+can read it), reading usage across ALL users is a **hard Admin-only** check in
+the function itself — this data is materially more sensitive (it's every
+user's activity, not a shared setting), so it doesn't get the same
+capability-toggle treatment. Writing (logging your own call) is open to any
+signed-in user, but the function derives `user_id`/`user_email` from the
+caller's own verified token — never from the request body — so nobody can log
+a call under someone else's identity.
+
+## 6.1 Create the table (SQL editor, once)
+
+```sql
+create table if not exists public.ai_usage_events (
+  id            bigint generated always as identity primary key,
+  user_id       uuid not null references auth.users(id) on delete cascade,
+  user_email    text not null,
+  created_at    timestamptz not null default now(),
+  provider      text not null,
+  model         text not null,
+  input_tokens  integer not null default 0,
+  output_tokens integer not null default 0,
+  tag           text
+);
+create index if not exists ai_usage_events_created_at_idx on public.ai_usage_events (created_at);
+create index if not exists ai_usage_events_user_idx on public.ai_usage_events (user_id, created_at);
+-- No RLS policies, same reasoning as org_settings: only the Edge Function
+-- (service_role) touches this table. Client code never talks to it directly.
+alter table public.ai_usage_events enable row level security;
+```
+
+## 6.2 Deploy the function
+
+- **Dashboard:** Edge Functions → Deploy a new function → Via Editor → name it
+  exactly **`ai-usage`** → paste the contents of
+  `supabase/functions/ai-usage/index.ts` → turn off "Verify JWT" (same
+  reasoning as `admin-users`/`org-settings` above — the function verifies the
+  caller's JWT itself) → Deploy.
+- **CLI:** `supabase functions deploy ai-usage --no-verify-jwt`
+
+## 6.3 Use it
+
+Every signed-in user's AI calls are logged automatically in the background —
+nothing to configure per user. An Admin opens the **AI Usage** tab (visible
+only to Admins), picks a date range, and generates a report grouped by
+date/user/provider/model with an estimated cost, exportable as JSON/Excel/
+Word/PDF or emailed directly from the app. Non-admins never see this tab, and
+even a non-admin calling the endpoint directly gets a 403 — the check is
+server-side, not just a hidden button.

@@ -316,7 +316,29 @@ def screen(app):
                 ft.Container(
                     ft.Column([
                         log_toolbar,
-                        ft.Container(ft.SelectionArea(content=app._auto_log_col), expand=True),
+                        # NOT wrapped in its own ft.SelectionArea: shell() already
+                        # wraps the ENTIRE screen body in one outer SelectionArea
+                        # (main.py, around the body/GestureDetector), so this text
+                        # is already selectable — a SECOND, nested SelectionArea
+                        # here was both redundant AND the actual root cause of the
+                        # "Activity log doesn't work" report. Flutter's SelectionArea
+                        # auto-scrolls its wrapped Scrollable during a selection drag
+                        # via _ScrollableSelectionContainerDelegate, which needs a
+                        # concretely-bounded scroll extent; app._auto_log_col here has
+                        # no fixed height of its own — its size only ever resolves
+                        # through a chain of nested expand=True Containers/Columns,
+                        # never a concrete pixel bound like run.py's log panel (which
+                        # wraps the same SelectionArea+scroll_col pattern inside a
+                        # FIXED height=380 Container instead of expand=True). Nesting
+                        # a second SelectionArea around an expand-only Scrollable hits
+                        # Flutter's own known bug class here (an unresolved/undefined
+                        # scroll offset breaks the inner Scrollable's gestures/paint —
+                        # see upstream flutter/flutter#183079, "guard auto-scroll
+                        # against Offset.infinite in _ScrollableSelectionContainerDelegate").
+                        # Dropping the inner SelectionArea removes the broken codepath
+                        # entirely while keeping the column's own expand+scroll=AUTO
+                        # (needed for live auto-scroll during a run) intact.
+                        ft.Container(app._auto_log_col, expand=True),
                     ], spacing=0, expand=True),
                     expand=True, bgcolor=T.CARD_2,
                     border=ft.Border.all(1, T.BORDER), border_radius=T.R, padding=12),

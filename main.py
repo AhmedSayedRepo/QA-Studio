@@ -12,6 +12,7 @@ import regression
 import sprint_titles
 import auth_supabase as auth
 import users_screen
+import ai_usage_screen
 import useful_links
 import settings
 import run
@@ -23,6 +24,7 @@ import updater_ui
 import window_chrome
 import login
 import modals
+import idle_watch
 
 # ── Flet version-compatibility shim ───────────────────────────────────────────
 # Flet renamed ft.icons→ft.Icons and ft.colors→ft.Colors around 0.25+. Support both.
@@ -194,6 +196,12 @@ class QAStudio:
         if not any(n.get("id") == "users" for n in T.NAV):
             T.NAV.append({"id": "users", "label": "Users",
                           "icon": "GROUP", "ix": "U"})
+
+        # AI Usage tab (admin-only; rail() hides it for non-admins — same
+        # mechanism as Users above, via _screen_nav_cap + can()).
+        if not any(n.get("id") == "ai_usage" for n in T.NAV):
+            T.NAV.append({"id": "ai_usage", "label": "AI Usage",
+                          "icon": "QUERY_STATS", "ix": "AI"})
 
         # External-auth (Supabase): None until restored / signed in. When auth is
         # not configured, this stays None and the app is un-gated (runs as before).
@@ -392,7 +400,7 @@ class QAStudio:
                 "regression": "nav.regression", "testplan": "nav.sprint_plan",
                 "titles": "nav.sprint_report", "automation": "nav.automation",
                 "links": "nav.links", "settings": "nav.settings",
-                "users": "nav.users"}.get(screen)
+                "users": "nav.users", "ai_usage": "nav.ai_usage"}.get(screen)
 
     def _screen_action_cap(self, screen):
         """Capability needed to ACT on a screen (None = the screen has no actions).
@@ -400,7 +408,8 @@ class QAStudio:
         return {"setup": "act.connect", "run": "act.run", "report": "act.export",
                 "regression": "act.regression", "testplan": "act.sprint",
                 "titles": "act.sprint_report", "automation": "act.automation",
-                "settings": "act.settings", "users": "act.manage_users"}.get(screen)
+                "settings": "act.settings", "users": "act.manage_users",
+                "ai_usage": "act.view_usage"}.get(screen)
 
     def _first_allowed_screen(self):
         for n in T.NAV:
@@ -444,6 +453,7 @@ class QAStudio:
             uid = None
         try:
             store.set_user(uid)
+            E.set_current_user(uid)   # per-user local AI-usage ledger, same split
             self.creds = store.load()
             self._migrate_key_slots()  # legacy per-provider keys → per-model slots
             _sp = self.creds.get("provider")
@@ -510,17 +520,22 @@ class QAStudio:
             E.set_output_lang(self.lang)
         except Exception:
             pass
-        # Reset the Azure org engine-global to THIS account's own saved value (or
-        # blank if they have none) — never leave it holding whichever account last
-        # connected during this app session. E.set_credentials(org=...) can't be
-        # used to clear it: it only assigns when `org` is truthy (`if org:
-        # AZURE_ORG = ...`), by design, so a Connect click that leaves the org
-        # field untouched never accidentally blanks a saved value. That's correct
-        # for Connect, but wrong here — switching to an account with no saved org
-        # must actually go blank, not keep showing/using a previous account's
-        # organization (or the module's hardcoded dev-default org).
+        # Reset the per-account engine globals (org + PAT) to THIS account's own
+        # saved values (or blank if it has none) — never leave them holding
+        # whichever account last connected during this app session.
+        # E.set_credentials(org=...) can't be used for this: it only assigns
+        # when the value is truthy (`if org: AZURE_ORG = ...`), by design, so a
+        # Connect click that leaves the org field untouched never accidentally
+        # blanks a saved value. That's correct for Connect, but wrong here —
+        # switching to an account with no saved org/PAT must actually go blank.
+        # E.reset_session_credentials() is the dedicated function for exactly
+        # this case (see its docstring in engine.py for the full history —
+        # this used to be a direct `E.AZURE_ORG = ...` poke here only, which is
+        # how the org half of this got fixed but PAT was never covered by the
+        # same reset).
         try:
-            E.AZURE_ORG = (self.creds.get("org") or "").strip()
+            E.reset_session_credentials(org=self.creds.get("org"),
+                                        pat=self.creds.get("pat"))
         except Exception:
             pass
         # Re-sync the Automation screen's fields from the NOW-correct per-user
@@ -582,154 +597,13 @@ class QAStudio:
     IDLE_WARN_SECONDS = 60                 # final-minute "renew or logout" countdown
 
     def _idle_minutes(self):
-        """Configured idle-logout minutes (0 = off). Admin-set, stored in creds."""
-        try:
-            v = int(self.creds.get("idle_minutes", self.IDLE_MINUTES_DEFAULT))
-        except Exception:
-            v = self.IDLE_MINUTES_DEFAULT
-        return v if v in self.IDLE_MINUTES_CHOICES else self.IDLE_MINUTES_DEFAULT
+        return idle_watch.idle_minutes(self)
 
     def _set_idle_minutes(self, minutes):
-        """Persist the idle-logout policy (admin only) and reset the idle clock."""
-        self.creds["idle_minutes"] = int(minutes)
-        try: store.save(self.creds)
-        except Exception: pass
-        self._last_activity = time.time()
-        self._toast("Auto-logout " + ("turned off." if not minutes else f"set to {minutes} min."))
-        self.render()
+        return idle_watch.set_idle_minutes(self, minutes)
 
     def _start_idle_watch(self):
-        """Background watchdog: sign the user out after _idle_minutes() of no activity
-        (0 = off). render() refreshes _last_activity; an active run/automation counts
-        as activity so a long generation is never interrupted."""
-        if getattr(self, "_idle_watch_on", False):
-            return
-        self._idle_watch_on = True
-
-        def _loop():
-            while True:
-                time.sleep(5)
-                try:
-                    if not (auth.configured() and getattr(self, "user", None)):
-                        continue
-                    if getattr(self, "_idle_warning_active", False):
-                        continue                         # countdown dialog owns it now
-                    idle = self._idle_minutes() * 60
-                    if idle <= 0:                        # auto-logout disabled
-                        self._last_activity = time.time()
-                        continue
-                    # Only ACTIVELY-working runs count as busy. A PAUSED automation
-                    # (e.g. auto-paused on low credit) is waiting on the user, so it's
-                    # idle and must not block auto-logout.
-                    _busy = (getattr(self, "_run_active", False)
-                             or (getattr(self, "_auto_running", False)
-                                 and not getattr(self, "_auto_paused", False)))
-                    if _busy:
-                        self._last_activity = time.time()   # busy = not idle
-                        continue
-                    remaining = idle - (time.time() - getattr(self, "_last_activity", time.time()))
-                    if remaining <= min(self.IDLE_WARN_SECONDS, idle):
-                        self._idle_warning_active = True
-                        self.ui_safe(self._show_idle_warning)
-                except Exception:
-                    pass
-        try:
-            threading.Thread(target=_loop, daemon=True).start()
-        except Exception:
-            pass
-
-    def _idle_warn_msg(self, s):
-        s = max(0, int(s))
-        return f"Signing out in {s} second{'' if s == 1 else 's'}…"
-
-    def _show_idle_warning(self):
-        """Final-minute dialog: live countdown with 'Stay signed in' / 'Sign out now'."""
-        # Guard against a race where the user's session already ended by the time
-        # this fires (e.g. revoked/expired via a revalidate() re-render) — without
-        # this, the countdown dialog could pop up floating over the (unauthenticated)
-        # login gate, which makes no sense since there's no session left to expire.
-        if not (auth.configured() and getattr(self, "user", None)):
-            self._idle_warning_active = False
-            return
-        self._idle_left = int(min(self.IDLE_WARN_SECONDS, self._idle_minutes() * 60))
-        self._idle_warn_cancel = False
-        self._idle_warn_txt = ft.Text(self._idle_warn_msg(self._idle_left),
-                                      size=15, weight=ft.FontWeight.BOLD, color=T.VIOLET_INK)
-        dlg = ft.AlertDialog(
-            modal=True, bgcolor=T.CARD,
-            shape=ft.RoundedRectangleBorder(radius=T.R_LG),
-            title=ft.Row([
-                ft.Container(ft.Icon(ft.Icons.TIMER_OUTLINED, size=18, color=T.VIOLET_INK),
-                             width=34, height=34, bgcolor=T.VIOLET_SOFT, border_radius=9,
-                             alignment=ft.Alignment.CENTER),
-                ft.Text("Are you still there?", size=15, weight=ft.FontWeight.BOLD,
-                        color=T.INK, expand=True),
-            ], spacing=10),
-            content=ft.Container(width=380, content=ft.Column([
-                ft.Text("You've been inactive. For your security you'll be signed out "
-                        "automatically.", size=12.5, color=T.INK_2, weight=ft.FontWeight.W_500),
-                ft.Container(height=8),
-                self._idle_warn_txt,
-            ], tight=True, spacing=2)),
-            actions=[ft.Row([
-                ghost_btn("Sign out now", on_click=lambda e: self._idle_signout_now()),
-                primary_btn("Stay signed in", on_click=lambda e: self._idle_renew()),
-            ], alignment=ft.MainAxisAlignment.END, spacing=10, tight=True)],
-            actions_alignment=ft.MainAxisAlignment.END)
-        self._show_dialog(dlg)
-
-        def _tick():
-            while getattr(self, "_idle_left", 0) > 0 and not getattr(self, "_idle_warn_cancel", False):
-                # If the session ended some other way mid-countdown (revoked,
-                # explicit sign-out, revalidate() finding it gone), just close the
-                # dialog quietly instead of letting it sit on top of the login gate.
-                if not (auth.configured() and getattr(self, "user", None)):
-                    self._idle_warn_cancel = True
-                    self._idle_warning_active = False
-                    self.ui_safe(self._close_dialog)
-                    return
-                time.sleep(1)
-                self._idle_left = getattr(self, "_idle_left", 0) - 1
-                self.ui_safe(self._update_idle_warn)
-            if not getattr(self, "_idle_warn_cancel", False):
-                self.ui_safe(self._idle_sign_out)
-        try:
-            threading.Thread(target=_tick, daemon=True).start()
-        except Exception:
-            pass
-
-    def _update_idle_warn(self):
-        try:
-            t = getattr(self, "_idle_warn_txt", None)
-            if t is not None:
-                t.value = self._idle_warn_msg(getattr(self, "_idle_left", 0))
-                t.update()
-        except Exception:
-            pass
-
-    def _idle_renew(self):
-        """User chose to stay — reset the idle clock and dismiss the countdown."""
-        self._idle_warn_cancel = True
-        self._idle_warning_active = False
-        self._last_activity = time.time()
-        try: self._close_dialog()
-        except Exception: pass
-        self._toast("Session renewed.")
-
-    def _idle_signout_now(self):
-        self._idle_warn_cancel = True
-        self._idle_warning_active = False
-        try: self._close_dialog()
-        except Exception: pass
-        self._sign_out()
-
-    def _idle_sign_out(self):
-        self._idle_warn_cancel = True
-        self._idle_warning_active = False
-        try: self._close_dialog()
-        except Exception: pass
-        self._toast(f"Signed out after {self._idle_minutes()} minutes of inactivity.")
-        self._sign_out()
+        return idle_watch.start_idle_watch(self)
 
     def _sign_out(self, e=None):
         try:
@@ -818,6 +692,7 @@ class QAStudio:
                          or (n["id"] == "titles")
                          or (n["id"] == "links")
                          or (n["id"] == "users")
+                         or (n["id"] == "ai_usage")
                          or (n["id"] == "run" and (getattr(self, "_run_active", False)
                                                    or st == "active"
                                                    or self.last_report is not None)))
@@ -1537,6 +1412,17 @@ class QAStudio:
                 self._save_git_creds()
             except Exception:
                 pass
+        # AI Usage previously only fetched once per app launch (screen() only
+        # calls _load() when _usage_report is still None) — so re-opening the
+        # nav item after usage had already been generated once just showed
+        # the same stale numbers until the whole app was restarted. Clearing
+        # the cached report on every fresh entry into this screen (not on
+        # e.g. re-renders caused by the screen's own filters) makes it
+        # refetch with the screen's still-current date range each time it's
+        # opened from elsewhere, same as a user hitting Generate themselves.
+        if screen == "ai_usage" and self.active != "ai_usage":
+            self._usage_report = None
+            self._usage_msg = None
         self.active = screen
         self.render()
         # Opportunistically check for a newer version when the user navigates.
@@ -1595,6 +1481,8 @@ class QAStudio:
                 view = sprint_titles.screen(self)
             elif self.active == "users":
                 view = users_screen.screen(self)
+            elif self.active == "ai_usage":
+                view = ai_usage_screen.screen(self)
             elif self.active == "links":
                 view = self.useful_links_screen()
             elif self.active == "settings":
@@ -1646,20 +1534,54 @@ class QAStudio:
             # Never leave the user on a blank "Working…" screen — show the error.
             import traceback
             tb = traceback.format_exc()
+            # Always keep the full trace on disk (never shown/sent anywhere but
+            # the local diagnostics file) — previously the ONLY record of this
+            # was whatever text happened to still be on screen. Showing the raw
+            # traceback in the UI by default is also unfiltered internal detail
+            # (file paths, code shape); it's now tucked behind a details toggle
+            # instead of being on screen unconditionally.
             try:
-                self.page.controls.clear()
-                self.page.add(ft.Container(
-                    ft.Column([
-                        ft.Text("QA Studio hit an error while drawing this screen.",
-                                size=15, weight=ft.FontWeight.BOLD, color="#E0474D"),
-                        ft.Text(str(ex), size=12, color="#1B1A22"),
-                        ft.Container(
+                import diag_log
+                diag_log.log(f"render[{getattr(self, 'active', '?')}]", ex)
+            except Exception:
+                pass
+            try:
+                self._render_err_expanded = getattr(self, "_render_err_expanded", False)
+
+                def _draw_err_screen():
+                    # Redraws just this error card in place — deliberately does
+                    # NOT call self.render(), since a full re-render could
+                    # succeed this time (nothing about the underlying state
+                    # changed) and silently swap back to the normal screen
+                    # instead of toggling the details the user just asked for.
+                    details_row = [
+                        ft.TextButton(
+                            "Hide technical details" if self._render_err_expanded
+                            else "Show technical details",
+                            on_click=lambda e: (_flip(), _draw_err_screen())),
+                    ]
+                    if self._render_err_expanded:
+                        details_row.append(ft.Container(
                             ft.Text(tb, size=10, selectable=True,
                                     font_family="monospace", color=T.INK_2),
-                            bgcolor=T.CARD_2, padding=12, border_radius=8),
-                    ], spacing=10, scroll=ft.ScrollMode.AUTO),
-                    padding=24, expand=True, bgcolor=T.CARD))
-                self.page.update()
+                            bgcolor=T.CARD_2, padding=12, border_radius=8))
+                    self.page.controls.clear()
+                    self.page.add(ft.Container(
+                        ft.Column([
+                            ft.Text("QA Studio hit an error while drawing this screen.",
+                                    size=15, weight=ft.FontWeight.BOLD, color="#E0474D"),
+                            ft.Text(str(ex), size=12, color="#1B1A22"),
+                            ft.Text("Full details were saved to the local diagnostics log.",
+                                    size=11, color=T.INK_2),
+                            *details_row,
+                        ], spacing=10, scroll=ft.ScrollMode.AUTO),
+                        padding=24, expand=True, bgcolor=T.CARD))
+                    self.page.update()
+
+                def _flip():
+                    self._render_err_expanded = not self._render_err_expanded
+
+                _draw_err_screen()
             except Exception:
                 pass
 
@@ -3482,6 +3404,15 @@ class QAStudio:
                     padding=ft.Padding.symmetric(vertical=0, horizontal=8),
                     border=ft.Border.only(bottom=ft.BorderSide(1, T.BORDER_2)) if i < len(rows)-1 else None))
             ready = bool(self.project and self.plan_id and self.story_ids)
+            # A run (or Automation) already in progress → block starting a second
+            # one from here. self._run_active is the same flag the window-close
+            # confirm dialog already trusts (_set_run_active), so this stays in
+            # sync with the real run lifecycle for free instead of needing its
+            # own separate tracking. Two concurrent runs would fight over the
+            # same activity log/stats state and Azure calls, so this isn't just
+            # a UX nicety — starting a second run while one is live isn't safe.
+            _run_busy = bool(getattr(self, "_run_active", False)
+                             or getattr(self, "_auto_running", False))
             return card(ft.Column([
                 ft.Text("THIS RUN", size=11, weight=ft.FontWeight.BOLD, color=T.VIOLET_INK),
                 ft.Container(height=13),
@@ -3491,8 +3422,7 @@ class QAStudio:
                     ft.Row([self._est_num, self._est_sub],
                            spacing=8, vertical_alignment=ft.CrossAxisAlignment.END),
                     padding=ft.Padding.only(bottom=14)),
-                primary_btn("Start run", icon=ft.Icons.PLAY_ARROW, expand=True,
-                            on_click=lambda e: self._start_run()),
+                self._run_start_btn(_run_busy),
             ], spacing=0, expand=True), expand=True)
         else:
             return card(ft.Column([
@@ -3962,7 +3892,32 @@ class QAStudio:
     def _open_existing_steps_modal(self, have, total, on_choice):
         return modals.open_existing_steps_modal(self, have, total, on_choice)
 
+    def _run_start_btn(self, run_busy):
+        """The Setup screen's "Start run" CTA, swapped to a disabled "Run in
+        progress…" state while self._run_active/_auto_running is true — see
+        the call site's comment for why this matters (two concurrent runs
+        would fight over the same activity-log/stats state and Azure calls)."""
+        btn = primary_btn(
+            "Run in progress…" if run_busy else "Start run",
+            icon=ft.Icons.HOURGLASS_TOP if run_busy else ft.Icons.PLAY_ARROW,
+            expand=True, disabled=run_busy,
+            on_click=lambda e: self._start_run())
+        try:
+            btn.tooltip = ("A run is already in progress — wait for it to "
+                          "finish or stop it first." if run_busy else None)
+        except Exception:
+            pass
+        return btn
+
     def _start_run(self):
+        # Belt-and-suspenders: the button above is already disabled while a
+        # run is active, but _start_run can in principle still be invoked
+        # directly (e.g. a stray double-click event queued before the button
+        # re-rendered disabled) — refuse here too rather than trusting the
+        # UI alone to prevent a second run from starting.
+        if bool(getattr(self, "_run_active", False) or getattr(self, "_auto_running", False)):
+            self._err("A run is already in progress. Wait for it to finish or stop it first.")
+            return
         # RBAC: Viewers (or any role without RUN) can't start a run.
         if not self.can(auth.CAP_RUN):
             self._err("Your role doesn’t allow starting a run. Ask an admin for access.")
@@ -4071,6 +4026,7 @@ class QAStudio:
         self._progress = {"pct": 0, "label": "Starting…"}
         self._log_lines = []
         self._rendered_count = 0
+        self._run_log_ui_lock = threading.Lock()
         self._current_wip = None
         self._story_prog = {}
         self._emailed_to = None
@@ -4097,12 +4053,32 @@ class QAStudio:
                                         "msg": f"Story {payload['id']} · {payload['title']}",
                                         "ar": True})
             elif ev == "log":
-                # If this result replaces a "generating…" spinner line, remove that line
+                # If this result replaces a "generating…" spinner line, remove that
+                # line — and any lingering "Still generating/describing…" heartbeat
+                # line for the same id (hb_id reuses wip_id/tc_id on purpose), so a
+                # slow call's last ticking line doesn't outlive the call itself.
                 rw = payload.get("replace_wip")
                 if rw is not None:
-                    self._log_lines = [l for l in self._log_lines if l.get("wip_id") != rw]
+                    self._log_lines = [l for l in self._log_lines
+                                       if l.get("wip_id") != rw and l.get("hb_id") != rw]
                     # force a full re-render of the log since we removed a line
                     self._rendered_count = -1
+                hb = payload.get("hb_id")
+                if hb is not None:
+                    # Heartbeat ping for a call still in flight: update the ONE
+                    # existing line for this hb_id in place (new elapsed-seconds
+                    # text) instead of appending a fresh line every ~15s — that
+                    # used to leave a wall of near-identical "Still generating…"
+                    # lines behind a single slow call.
+                    for l in self._log_lines:
+                        if l.get("hb_id") == hb:
+                            l.clear(); l.update(payload)
+                            self._rendered_count = -1   # in-place edit → full re-render
+                            break
+                    else:
+                        self._log_lines.append(payload)
+                    self._refresh_run()
+                    return
                 self._log_lines.append(payload)
                 if payload.get("detail"):
                     self._log_lines.append({"tone": "dim", "indent": True, "msg": payload["detail"]})
@@ -4489,15 +4465,34 @@ class QAStudio:
                     except Exception:
                         pass
                 if hasattr(self, "_log_col"):
-                    rendered = getattr(self, "_rendered_count", 0)
-                    all_lines = getattr(self, "_log_lines", [])
-                    if rendered < 0 or (rendered == 0 and all_lines):
-                        # full rebuild (placeholder swap or a wip line was removed)
-                        self._log_col.controls = self._render_log_lines()
-                    elif len(all_lines) > rendered:
-                        new_ctrls = [self._render_one_log(ln) for ln in all_lines[rendered:]]
-                        self._log_col.controls.extend(new_ctrls)
-                    self._rendered_count = len(all_lines)
+                    # Locked: _apply() is invoked BOTH synchronously (inline,
+                    # from whatever thread called _refresh_run) AND again via
+                    # page.run_thread() just below ("to defeat the focus-repaint
+                    # bug") — two invocations of this exact block, on two
+                    # different threads, reading/writing the SAME
+                    # _rendered_count/_log_col.controls with no coordination.
+                    # With run_steps now able to fire cb() from a couple of
+                    # worker threads in quick succession (bounded concurrency —
+                    # see engine.py's run_steps), these overlapping applies
+                    # started actually colliding: both read the same stale
+                    # `rendered`, both append the same slice of new lines
+                    # (visible duplicates), or one clobbers _rendered_count
+                    # past what the other actually rendered (skipped lines,
+                    # out-of-order appends). Wrapping the read-diff-render-
+                    # write sequence in a lock makes it atomic across however
+                    # many concurrent _apply() calls are in flight — same fix
+                    # shape as automation.py's _auto_log_ui_lock for the
+                    # identical class of bug there.
+                    with self._run_log_ui_lock:
+                        rendered = getattr(self, "_rendered_count", 0)
+                        all_lines = getattr(self, "_log_lines", [])
+                        if rendered < 0 or (rendered == 0 and all_lines):
+                            # full rebuild (placeholder swap or a wip line was removed)
+                            self._log_col.controls = self._render_log_lines()
+                        elif len(all_lines) > rendered:
+                            new_ctrls = [self._render_one_log(ln) for ln in all_lines[rendered:]]
+                            self._log_col.controls.extend(new_ctrls)
+                        self._rendered_count = len(all_lines)
                 self.page.update()
             except Exception:
                 pass

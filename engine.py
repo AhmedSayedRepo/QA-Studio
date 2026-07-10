@@ -77,6 +77,225 @@ AI_CONFIG = {
 OPENAI_COMPAT_PROVIDERS = ("openai", "nvidia", "deepseek", "qwen",
                            "groq", "cerebras", "openrouter", "mistral")
 
+# ── AI usage / cost tracking ─────────────────────────────────────────────────
+# USD per 1,000,000 tokens, {"in": ..., "out": ...}. This table is NOT
+# authoritative — a provider's own invoice always wins — it only exists to put
+# an approximate price next to the AI Usage report's EXACT token counts (those
+# come straight from each provider's own response; see _norm_usage and the
+# per-provider adapters above/below). Only models we're actually confident
+# about are listed; everything else is left unpriced on purpose rather than
+# guessed, so the report can honestly say "cost unknown" for a call instead of
+# quietly showing a wrong number. Update this table when a provider changes
+# published pricing (last reviewed 2026-07).
+PRICING = {
+    "anthropic": {
+        "claude-opus-4-8":            {"in": 15.0,  "out": 75.0},
+        "claude-sonnet-5":            {"in": 3.0,   "out": 15.0},
+        "claude-sonnet-4-6":          {"in": 3.0,   "out": 15.0},
+        "claude-haiku-4-5-20251001":  {"in": 0.8,   "out": 4.0},
+    },
+    "openai": {
+        "gpt-4o":       {"in": 2.5,  "out": 10.0},
+        "gpt-4o-mini":  {"in": 0.15, "out": 0.6},
+    },
+    "azure_openai": {
+        "gpt-4o":       {"in": 2.5,  "out": 10.0},
+        "gpt-4o-mini":  {"in": 0.15, "out": 0.6},
+    },
+    "gemini": {
+        "gemini-1.5-pro":   {"in": 1.25,  "out": 5.0},
+        "gemini-1.5-flash": {"in": 0.075, "out": 0.3},
+    },
+    "ollama": {},   # local — always free, handled as a special case in price_for()
+}
+
+
+def price_for(provider, model):
+    """$/1M-token rate for one provider+model, or None if we don't have a
+    confident published price for it (never guessed from a similar model)."""
+    if provider == "ollama":
+        return {"in": 0.0, "out": 0.0}
+    return (PRICING.get(provider) or {}).get(model)
+
+
+def _call_cost(provider, model, input_tokens, output_tokens):
+    """Approximate USD cost for one call from EXACT token counts, or None if
+    price_for() has no rate for this model — never a guessed/estimated price."""
+    p = price_for(provider, model)
+    if not p:
+        return None
+    try:
+        return round((input_tokens or 0) / 1_000_000 * p["in"]
+                     + (output_tokens or 0) / 1_000_000 * p["out"], 6)
+    except Exception:
+        return None
+
+
+# Human-readable label for each `usage_tag` a call site can pass to
+# ai_complete() — this is what turns an opaque tag like "generate_steps"
+# into "Run · Steps" in the AI Usage report's Module column. Rows logged
+# before this tagging existed (or any tag not listed here) fall back to
+# "Other" — see _usage_module_label().
+_USAGE_TAG_LABELS = {
+    "ui_description":          "Run · UI description",
+    "generate_steps":          "Run · Steps",
+    "generate_titles":         "Run · Titles",
+    "evaluate_existing_steps": "Run · Evaluate existing",
+    "dedupe_ai_clusters":      "Dedup · AI clustering",
+    "dedupe_titles_ai":        "Dedup · New-title check",
+    "automation_compile":      "Automation · Compile",
+    "automation_tiebreak":     "Automation · Tie-break",
+    "automation_match_element": "Automation · Element match",
+}
+
+
+def _usage_module_label(tag):
+    if not tag:
+        return "Other"
+    return _USAGE_TAG_LABELS.get(tag, tag)
+
+
+# Local, per-signed-in-user usage ledger — mirrors store.py's set_user()/
+# CRED_FILE pattern (and main.py's _links_path()) so accounts sharing a device
+# don't mix usage history, and the ledger works fully offline even when
+# Supabase auth isn't configured/signed in. This is the source of truth for
+# "my own usage"; the 'ai-usage' Edge Function upload (best-effort, see
+# record_ai_usage below) is what lets an Admin see EVERYONE's usage.
+import threading as _usage_threading   # local alias — the shared `_threading`
+                                        # import lower in this file hasn't run
+                                        # yet at this point in module load
+_CURRENT_USAGE_USER = None
+_USAGE_LOCK = _usage_threading.Lock()
+_USAGE_MAX_LOCAL_RECORDS = 5000   # prune cap so the local ledger never grows unbounded
+
+
+def set_current_user(user_id):
+    """Point the local AI-usage ledger at this signed-in user's own file. Call
+    with None on sign-out (reverts to the shared/local default file)."""
+    global _CURRENT_USAGE_USER
+    _CURRENT_USAGE_USER = user_id
+
+
+def _usage_log_path():
+    d = os.path.join(os.path.expanduser("~"), ".qa_tool")
+    try:
+        os.makedirs(d, exist_ok=True)
+    except Exception:
+        pass
+    if _CURRENT_USAGE_USER:
+        safe = re.sub(r"[^A-Za-z0-9._-]", "_", str(_CURRENT_USAGE_USER))[:80]
+        return os.path.join(d, f"ai_usage_{safe}.json")
+    return os.path.join(d, "ai_usage.json")
+
+
+def _load_usage_records():
+    p = _usage_log_path()
+    if not os.path.exists(p):
+        return []
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _save_usage_records(records):
+    p = _usage_log_path()
+    try:
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(records[-_USAGE_MAX_LOCAL_RECORDS:], f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def _record_ai_usage_sync(provider, model, usage, tag=None):
+    """The actual usage-recording work (local ledger write + best-effort
+    Supabase mirror) — runs on the single background worker thread started by
+    record_ai_usage() below, never on the caller's own thread."""
+    from datetime import datetime, timezone
+    usage = usage or {}
+    it, ot = usage.get("input_tokens"), usage.get("output_tokens")
+    cost = _call_cost(provider, model, it, ot) if usage.get("exact") else None
+    rec = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+           "provider": provider, "model": model,
+           "input_tokens": it, "output_tokens": ot,
+           "exact": bool(usage.get("exact")), "cost_usd": cost, "tag": tag}
+    try:
+        with _USAGE_LOCK:
+            recs = _load_usage_records()
+            recs.append(rec)
+            _save_usage_records(recs)
+    except Exception:
+        pass
+    try:
+        import auth_supabase as _auth
+        _auth.log_ai_usage(provider, model, it or 0, ot or 0, tag)
+    except Exception:
+        pass
+
+
+# ── background usage-logging worker ─────────────────────────────────────────
+# Previously record_ai_usage() spawned a brand-new threading.Thread on EVERY
+# AI call purely to log usage — fine for one call, wasteful for a long run
+# with hundreds/thousands of calls (a lot of short-lived OS threads for a
+# small, mostly-I/O task). Replaced with a single persistent daemon worker
+# fed by a bounded queue: record_ai_usage() itself only enqueues (fast,
+# never blocks, same fire-and-forget contract as before) and the one worker
+# thread does the actual file/network work serially in the background.
+_USAGE_QUEUE = None
+_USAGE_WORKER_STARTED = False
+_USAGE_WORKER_LOCK = _usage_threading.Lock()
+
+
+def _usage_worker_loop():
+    while True:
+        item = _USAGE_QUEUE.get()
+        try:
+            provider, model, usage, tag = item
+            _record_ai_usage_sync(provider, model, usage, tag)
+        except Exception:
+            pass
+
+
+def _ensure_usage_worker():
+    global _USAGE_QUEUE, _USAGE_WORKER_STARTED
+    if _USAGE_WORKER_STARTED:
+        return
+    with _USAGE_WORKER_LOCK:
+        if _USAGE_WORKER_STARTED:
+            return
+        import queue as _queue
+        _USAGE_QUEUE = _queue.Queue(maxsize=2000)
+        _usage_threading.Thread(target=_usage_worker_loop, daemon=True).start()
+        _USAGE_WORKER_STARTED = True
+
+
+def record_ai_usage(provider, model, usage, tag=None):
+    """Record ONE call's usage — EXACT token counts as reported by the
+    provider itself (never estimated), plus an approximate cost from PRICING
+    if we have a rate for that model. Always written to the local per-user
+    ledger (works fully offline), and best-effort mirrored to the shared
+    'ai-usage' log (see auth_supabase.log_ai_usage) so an Admin can later pull
+    a whole-org report. This function must NEVER raise and NEVER block its
+    caller on network trouble — a logging failure must never break (or even
+    visibly slow down) the AI call it's recording.
+
+    Implementation note: this only ENQUEUES onto the shared background worker
+    (see _ensure_usage_worker above) — it does not do the actual write itself,
+    so it returns essentially immediately regardless of how many calls are
+    in flight."""
+    try:
+        _ensure_usage_worker()
+        _USAGE_QUEUE.put_nowait((provider, model, usage, tag))
+    except Exception:
+        # Queue full (extremely long run outpacing the writer) or any other
+        # failure — drop the record rather than block or raise. Same
+        # best-effort guarantee record_ai_usage has always made; a dropped
+        # usage-log entry must never affect the AI call it was recording.
+        pass
+
+
 FEATURE_DESCRIPTION = ""   # optional global feature context for step generation
 
 # Email
@@ -108,6 +327,32 @@ def set_credentials(provider=None, api_key=None, pat=None, gmail=None,
         GMAIL_SENDER = gmail_sender.strip()
     if gmail_sender_name is not None:
         GMAIL_SENDER_NAME = gmail_sender_name.strip()
+
+
+def reset_session_credentials(org="", pat=""):
+    """Explicitly reset the per-account engine globals (AZURE_ORG, AZURE_PAT)
+    to a specific account's own saved values (or blank) — called on every
+    account switch (main.py's _switch_user_creds).
+
+    Why this exists separately from set_credentials() above: set_credentials
+    only ever ASSIGNS a field when the caller passes a truthy value (`if org:
+    AZURE_ORG = ...`), by design — a Setup screen field left blank on Save
+    should never blank out a value that was already there. That's the right
+    behavior for "the user is editing a field", but it's the WRONG behavior
+    for "a different account just signed in and this global must reflect
+    THEIR value even if that value is empty" — using set_credentials for that
+    case silently leaves the PREVIOUS account's org/PAT in place for an
+    account that has none saved, which is exactly the class of cross-account
+    leak documented in DEV_ROADMAP.md ("Setup — Azure Organization is now
+    genuinely isolated per account"). Kept in one function (rather than each
+    caller poking `E.AZURE_ORG = ...` directly, which is how that bug
+    originally happened — some call sites did it, some didn't) so any FUTURE
+    per-account global follows the same explicit-reset rule from one obvious
+    place instead of needing to be independently rediscovered."""
+    global AZURE_ORG, AZURE_PAT
+    AZURE_ORG = (org or "").strip()
+    AZURE_PAT = pat or ""
+
 
 def current_model(provider=None):
     """Return the configured model id for a provider (or the active one)."""
@@ -143,6 +388,24 @@ def _status_of(exc):
     m = re.search(r"\b(4\d\d|5\d\d)\b", str(exc))
     return int(m.group(1)) if m else None
 
+def _classified_error(cat, friendly):
+    """RuntimeError carrying its already-known category as `.ai_category`.
+
+    ai_complete() classifies the real provider exception once (typed SDK name,
+    HTTP status, low-level message substrings like "connectionerror" /
+    "getaddrinfo") and raises a plain RuntimeError with just the human-
+    friendly text. If a caller further up the stack (e.g. run_steps' per-case
+    except block) calls classify_ai_error() AGAIN on that RuntimeError, it has
+    only the friendly text to work with — which doesn't contain any of those
+    low-level substrings — so re-classifying it from scratch silently
+    degraded every bubbled-up error to "unknown" regardless of its real
+    category. Stamping `.ai_category` here lets classify_ai_error() short-
+    circuit straight back to the original, correct category instead."""
+    err = RuntimeError(friendly)
+    err.ai_category = cat
+    return err
+
+
 def classify_ai_error(exc):
     """Map any provider exception to (category, friendly_message).
 
@@ -152,6 +415,9 @@ def classify_ai_error(exc):
     so it works across the anthropic / openai / google SDKs.
     """
     prov = T_disp(AI_PROVIDER)
+    cached_cat = getattr(exc, "ai_category", None)
+    if cached_cat:
+        return (cached_cat, str(exc))
     raw = str(exc or "")
     low = raw.lower()
     etype = type(exc).__name__.lower()
@@ -232,10 +498,19 @@ def classify_ai_error(exc):
 # — these PAUSE the run (so the user can act + Resume). Everything else (a bad
 # JSON response, content filter, oversized context) falls back to raw steps.
 # Errors worth PAUSING the run for so the user can switch provider / fix the key.
-# Transient categories (rate_limit, server, overloaded, network, timeout) are
-# deliberately EXCLUDED — ai_complete already retries those patiently, so pausing
-# for them would just nag the user about something that clears on its own.
-_RECOVERABLE_AI_CATS = {"auth", "credit", "bad_model", "not_found"}
+# Transient categories (rate_limit, server, overloaded, timeout) are deliberately
+# EXCLUDED — ai_complete already retries those patiently, so pausing for them
+# would just nag the user about something that clears on its own.
+#
+# "network" is the one exception: ai_complete DOES retry it too (budget=4,
+# capped backoff ~20s total), but that budget assumes a brief blip. A real
+# outage (wifi drops, VPN disconnects) outlives it, and every subsequent test
+# case then burns through its own fresh 20s of retries and logs the exact same
+# "cannot reach the provider" line — which just looks like the run is stuck
+# repeating an error rather than actually failing. Once ai_complete's own
+# budget is exhausted, treat it like auth/bad_model: stop the run with one
+# clear message instead of nagging per test case.
+_RECOVERABLE_AI_CATS = {"auth", "credit", "bad_model", "not_found", "network"}
 
 def _is_recoverable_ai_error(exc):
     try:
@@ -360,6 +635,28 @@ def _extract_openai_text_json(data):
     return text
 
 
+def _norm_usage(input_tokens=None, output_tokens=None, exact=False):
+    """One normalized shape for exact-usage extraction across every provider
+    adapter: {"input_tokens", "output_tokens", "total_tokens", "exact"}.
+    exact=False means the provider's response didn't report usage at all —
+    the caller must NOT estimate/guess a number in that case (see
+    record_ai_usage / PRICING), just record the call as usage-unknown."""
+    have = input_tokens is not None or output_tokens is not None
+    return {"input_tokens": input_tokens, "output_tokens": output_tokens,
+            "total_tokens": ((input_tokens or 0) + (output_tokens or 0)) if have else None,
+            "exact": bool(exact and have)}
+
+
+def _extract_openai_usage_json(data):
+    """Exact token usage from an OpenAI-shaped response (openai, nvidia,
+    deepseek, qwen, groq, cerebras, openrouter, mistral, azure_openai all
+    share this 'usage': {prompt_tokens, completion_tokens} shape)."""
+    u = (data or {}).get("usage") or {}
+    if not u:
+        return _norm_usage()
+    return _norm_usage(u.get("prompt_tokens"), u.get("completion_tokens"), exact=True)
+
+
 def _openai_compat_http(cfg, prompt_text, images, max_tokens, timeout, want_json=False):
     """Pure-HTTP chat completion for any OpenAI-compatible endpoint. Mirrors the
     openai SDK branch (text or text+images, optional JSON mode)."""
@@ -380,7 +677,7 @@ def _openai_compat_http(cfg, prompt_text, images, max_tokens, timeout, want_json
     if key:
         headers["Authorization"] = f"Bearer {key}"
     data = _http_post_json(base + "/chat/completions", headers, payload, timeout)
-    return _extract_openai_text_json(data)
+    return _extract_openai_text_json(data), _extract_openai_usage_json(data)
 
 
 def _openai_compat_models_http(base_url, key, timeout=15):
@@ -422,7 +719,10 @@ def _anthropic_http(cfg, prompt_text, images, max_tokens, timeout):
     out = "".join(b.get("text", "") for b in blocks if b.get("type") == "text").strip()
     if not out:
         raise EmptyAIResponse(f"empty response (stop_reason={(data or {}).get('stop_reason')})")
-    return out
+    u = (data or {}).get("usage") or {}
+    usage = (_norm_usage(u.get("input_tokens"), u.get("output_tokens"), exact=True)
+             if u else _norm_usage())
+    return out, usage
 
 
 def _anthropic_models_http(key, timeout=15):
@@ -458,7 +758,8 @@ def _azure_http(cfg, prompt_text, images, max_tokens, timeout):
     url = f"{endpoint}/openai/deployments/{cfg['deployment']}/chat/completions?api-version={ver}"
     headers = {"api-key": (cfg.get("api_key") or "").strip(), "content-type": "application/json"}
     payload = {"messages": [{"role": "user", "content": content}], "max_tokens": max_tokens}
-    return _extract_openai_text_json(_http_post_json(url, headers, payload, timeout))
+    data = _http_post_json(url, headers, payload, timeout)
+    return _extract_openai_text_json(data), _extract_openai_usage_json(data)
 
 
 def _azure_models_http(cfg, timeout=15):
@@ -490,7 +791,10 @@ def _gemini_http(cfg, prompt_text, images, max_tokens, timeout, want_json=False)
     txt = "".join(p.get("text", "") for p in parts_out).strip()
     if not txt:
         raise EmptyAIResponse(f"empty response from Gemini (finish_reason={cands[0].get('finishReason')})")
-    return txt
+    um = (data or {}).get("usageMetadata") or {}
+    usage = (_norm_usage(um.get("promptTokenCount"), um.get("candidatesTokenCount"), exact=True)
+             if um else _norm_usage())
+    return txt, usage
 
 
 def _gemini_models_http(key, timeout=15):
@@ -548,11 +852,17 @@ def _manus_http(cfg, prompt_text, images, max_tokens, timeout):
     out = "\n".join(texts).strip()
     if not out:
         raise EmptyAIResponse(f"Manus returned no assistant text (status={status})")
-    return out
+    # Manus' agent-task Responses API doesn't report token usage — the call is
+    # still counted (record_ai_usage logs it), just with tokens/cost unknown
+    # rather than guessed.
+    return out, _norm_usage()
 
 
 def _ai_call_once(provider, cfg, prompt_text, images, max_tokens, timeout, want_json=False):
-    """One provider call. Returns text or raises (EmptyAIResponse / SDK error).
+    """One provider call. Returns (text, usage) or raises (EmptyAIResponse / SDK
+    error). `usage` is the EXACT token count the provider itself reported for
+    THIS call (see _norm_usage) — never an estimate — with usage["exact"]=False
+    when a provider's response doesn't include it at all.
     want_json=True asks the provider for strict JSON output where supported (used
     for the intent-compiler calls), so models like Gemini don't wrap the JSON in
     reasoning prose ('Wait, let's…') which then fails to parse."""
@@ -577,7 +887,11 @@ def _ai_call_once(provider, cfg, prompt_text, images, max_tokens, timeout, want_
         txt = (data.get("message") or {}).get("content")
         if not (txt or "").strip():
             raise EmptyAIResponse("empty response from Ollama")
-        return txt
+        # Ollama's /api/chat reports usage at the TOP level of the response
+        # (not nested under "usage" like the OpenAI-shaped providers).
+        usage = (_norm_usage(data.get("prompt_eval_count"), data.get("eval_count"), exact=True)
+                 if ("prompt_eval_count" in data or "eval_count" in data) else _norm_usage())
+        return txt, usage
 
     if provider == "manus":
         return _manus_http(cfg, prompt_text, images, max_tokens, timeout)
@@ -666,7 +980,8 @@ def _retry_after_seconds(exc):
     return None
 
 def ai_complete(prompt_text, images=None, max_tokens=4096, timeout=None,
-                retries=3, on_retry=None, want_json=False):
+                retries=3, on_retry=None, want_json=False, usage_out=None,
+                usage_tag=None):
     """Call the active AI provider with defensive extraction + retry on transient
     errors (rate limit / 5xx / overloaded / timeout / network).
 
@@ -675,6 +990,15 @@ def ai_complete(prompt_text, images=None, max_tokens=4096, timeout=None,
     user. Raises CreditBalanceError for out-of-credit, or a RuntimeError carrying
     the friendly classified message for non-transient failures. `on_retry(msg)`
     (if given) is called before each retry so the UI can log "retrying…".
+
+    Still returns a plain string on success, exactly as before — every existing
+    call site keeps working unchanged. Two purely additive params for callers
+    that care about usage: `usage_out` (a dict, filled in-place with this
+    call's EXACT token usage before returning — see _norm_usage) and
+    `usage_tag` (an optional short label like "generate_test_cases" recorded
+    alongside the usage so a report can break totals down by feature, not
+    just provider). Every successful call is ALSO recorded automatically
+    (record_ai_usage, off-thread) regardless of whether a caller passes these.
     """
     cfg = _ai_cfg(); provider = AI_PROVIDER; images = images or []
     # Per-category retry budgets. Rate-limit / overloaded clear on their own, so
@@ -686,7 +1010,24 @@ def ai_complete(prompt_text, images=None, max_tokens=4096, timeout=None,
     while True:
         attempt += 1
         try:
-            return _ai_call_once(provider, cfg, prompt_text, images, max_tokens, timeout, want_json)
+            text, usage = _ai_call_once(provider, cfg, prompt_text, images,
+                                        max_tokens, timeout, want_json)
+            if usage_out is not None:
+                try:
+                    usage_out.update(usage or {})
+                except Exception:
+                    pass
+            # Off-thread: recording (local ledger write + best-effort Supabase
+            # upload) must never add latency to — or ever break — the actual
+            # generation call that just succeeded. record_ai_usage() itself
+            # now just enqueues onto a shared background worker (see its
+            # docstring) instead of spawning a new thread per call, so this
+            # call returns essentially immediately either way.
+            try:
+                record_ai_usage(provider, cfg.get("model"), usage, usage_tag)
+            except Exception:
+                pass
+            return text
         except CreditBalanceError:
             raise
         except EmptyAIResponse as e:
@@ -697,7 +1038,7 @@ def ai_complete(prompt_text, images=None, max_tokens=4096, timeout=None,
                 _delay = min(2 * attempt, 8)
                 if on_retry: on_retry(f"{friendly} — retrying ({attempt}/{retries})…")
                 _interruptible_sleep(_delay); continue
-            raise RuntimeError(friendly)
+            raise _classified_error(cat, friendly)
         except Exception as e:
             if _is_credit_error(str(e)):
                 raise CreditBalanceError(str(e))
@@ -718,7 +1059,48 @@ def ai_complete(prompt_text, images=None, max_tokens=4096, timeout=None,
                     on_retry(f"{friendly} — waiting {int(_delay)}s then retry "
                              f"({attempt}/{budget})…")
                 _interruptible_sleep(_delay); continue
-            raise RuntimeError(friendly)
+            raise _classified_error(cat, friendly)
+
+
+# Extra, VISIBLE backoff for a "network" failure at the orchestrator level
+# (run_steps/run_titles), on top of ai_complete's own short internal retry
+# budget (~20s). ai_complete's budget assumes a brief blip; a real outage —
+# wifi drop, VPN reconnect — commonly clears within a couple of minutes, so
+# it's worth waiting it out here before giving up on the whole run. Each wait
+# is logged so it reads as "retrying" rather than "stuck".
+_NETWORK_RETRY_WAITS = (20, 40, 80)   # seconds; ~140s of extra patience total
+
+
+def _call_with_network_retries(fn, cb, should_stop=None):
+    """Call fn() (a zero-arg callable doing one AI generation call). If it
+    fails with a 'network' category error, wait (with the backoff above) and
+    retry the SAME call rather than surfacing the failure immediately — only
+    once every wait has been used up (or Stop is clicked) does the final
+    exception propagate to the caller, which then treats it like any other
+    fatal error (stops the run with one clear message instead of hammering
+    every remaining item). Any non-network error is raised immediately,
+    unchanged — this only adds patience for the "provider unreachable" case."""
+    should_stop = should_stop or (lambda: False)
+    attempt = 0
+    while True:
+        try:
+            return fn()
+        except (CreditBalanceError, StopRequested):
+            raise
+        except Exception as e:
+            cat, friendly = classify_ai_error(e)
+            if cat != "network" or attempt >= len(_NETWORK_RETRY_WAITS):
+                raise
+            if should_stop() or _STOP_EVENT.is_set():
+                raise
+            w = _NETWORK_RETRY_WAITS[attempt]
+            attempt += 1
+            cb("log", {"msg": f"{friendly} — retrying in {w}s "
+                              f"({attempt}/{len(_NETWORK_RETRY_WAITS)})…",
+                       "tone": "warn", "ico": "⏳"})
+            _interruptible_sleep(w)
+            if should_stop() or _STOP_EVENT.is_set():
+                raise
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -986,9 +1368,17 @@ def fetch_iterations(project, pat=None):
         out.append({"name": project, "path": project, "id": data.get("identifier", "")})
     return out
 
+def _wiql_str(value):
+    """Escape a value for interpolation into a WIQL string literal (single
+    quotes doubled, same rule SQL-style query languages use). Centralizes the
+    pattern that was previously copy-pasted at each WIQL-building call site —
+    behavior is unchanged, this only removes the duplication."""
+    return (value or "").replace("'", "''")
+
+
 def fetch_stories_in_iteration(project, iteration_path, pat=None):
     pat = pat or AZURE_PAT
-    safe = iteration_path.replace("'", "''")
+    safe = _wiql_str(iteration_path)
     wiql = {"query": ("SELECT [System.Id], [System.Title] FROM WorkItems "
                       "WHERE [System.WorkItemType] = 'User Story' "
                       f"AND [System.IterationPath] = '{safe}' ORDER BY [System.Id]")}
@@ -1094,7 +1484,7 @@ def sprint_report_data(project, iteration_path, pat=None):
     counted as sprint bugs. Best-effort: any failed call yields empty data."""
     from collections import Counter
     pat = pat or AZURE_PAT
-    safe = (iteration_path or "").replace("'", "''")
+    safe = _wiql_str(iteration_path)
 
     def _ids(wit):
         wiql = {"query": ("SELECT [System.Id] FROM WorkItems WHERE "
@@ -1211,7 +1601,7 @@ def sprint_summary(project, plan_id, pat=None):
     # 2) all User Stories in that iteration (id + title + state)
     stories = []
     if iteration:
-        safe = iteration.replace("'", "''")
+        safe = _wiql_str(iteration)
         wiql = {"query": ("SELECT [System.Id] FROM WorkItems "
                           "WHERE [System.WorkItemType] = 'User Story' "
                           f"AND [System.IterationPath] = '{safe}' ORDER BY [System.Id]")}
@@ -1679,7 +2069,16 @@ def fetch_story_screenshots(story):
     return shots
 
 
-def describe_story_ui(screenshots, story_title=""):
+def describe_story_ui(screenshots, story_title="", should_stop=None, on_slow=None):
+    """`on_slow(elapsed_seconds)` — same convention as generate_titles/generate_steps
+    — lets the caller log a heartbeat while this (vision, so often slower) call is
+    still in flight, instead of the run going silent for however long a slow/
+    rate-limited provider takes to answer. `should_stop` is accepted for API
+    symmetry with those two but is NOT wired at its current call site (run_steps):
+    this call happens mid-test-case, and the Stop button is documented/labelled
+    as "Stop after current test case" — wiring should_stop here would let Stop
+    abort mid-call instead, which is a behavior change this fix isn't making.
+    Passing should_stop remains available for any future caller that wants it."""
     if not screenshots:
         return ""
     prompt = f"""
@@ -1691,7 +2090,12 @@ def describe_story_ui(screenshots, story_title=""):
     """
     images = [{"media_type": sc["media_type"], "data": sc["b64"]} for sc in screenshots]
     try:
-        return (ai_complete(prompt, images=images, max_tokens=1500) or "").strip()
+        return (_run_stopaware(
+            lambda: ai_complete(prompt, images=images, max_tokens=1500,
+                                usage_tag="ui_description"),
+            should_stop=should_stop, on_slow=on_slow) or "").strip()
+    except StopRequested:
+        raise
     except CreditBalanceError:
         raise
     except Exception:
@@ -1875,7 +2279,8 @@ def _coerce_step_list(data):
     return [it for it in data if isinstance(it, dict)]
 
 
-def generate_steps(tc_title, acceptance_criteria, ui_description="", log=None):
+def generate_steps(tc_title, acceptance_criteria, ui_description="", log=None,
+                   should_stop=None, on_slow=None):
     if _is_arabic_out():
         ui_block = f"\n        وصف واجهة المستخدم (مستخلص من الصور):\n        {ui_description}\n" if ui_description else ""
         text = f"""
@@ -1894,6 +2299,15 @@ def generate_steps(tc_title, acceptance_criteria, ui_description="", log=None):
         - التحقق من نتيجة يوضع في حقل expected، لا كخطوة إجراء جديدة.
         - استخدم أقل عدد من الخطوات يغطي السيناريو بالكامل (عادة 2 إلى 6 خطوات).
         - لا تكرر نفس الإجراء عبر خطوات متعددة.
+
+        قاعدة صارمة بخصوص النتيجة المتوقعة (expected) — الالتزام الحرفي بمعايير القبول:
+        - لا تخترع نص رسالة أو سلوكاً محدداً غير مذكور صراحةً في "معايير القبول" أدناه.
+          مثال خاطئ: كتابة "يظهر خطأ: يجب أن تكون كلمة المرور 8 أحرف على الأقل" بينما معايير
+          القبول تذكر فقط حداً أدنى للطول دون تحديد نص رسالة لكل حالة انتهاك على حدة.
+        - إذا كانت معايير القبول تحدد رسالة/نتيجة عامة واحدة تغطي كل إدخال غير صحيح (مثل رسالة
+          خطأ عامة عند إدخال بيانات خاطئة)، استخدم تلك الرسالة العامة بالضبط كما وردت — لا تخترع
+          رسالة أكثر تحديداً حتى لو بدت منطقية أو متوقعة من الناحية التقنية.
+        - انسخ نص أي رسالة مذكورة في معايير القبول حرفياً (نفس الصياغة) بدلاً من إعادة صياغتها.
 
         عنوان حالة الاختبار: {tc_title}
         معايير القبول: {acceptance_criteria}
@@ -1923,6 +2337,18 @@ def generate_steps(tc_title, acceptance_criteria, ui_description="", log=None):
         - Use the FEWEST steps that fully cover the scenario (usually 2-6).
         - Never repeat the same action across multiple steps.
 
+        Strict rule for the 'expected' field — stay literal to the acceptance criteria:
+        - Do NOT invent specific message text or behavior that isn't explicitly stated in the
+          'Acceptance criteria' below. Bad example: writing "shows error: password must be at
+          least 8 characters" when the acceptance criteria only states a minimum length
+          constraint, without defining a distinct message text per violation.
+        - If the acceptance criteria defines ONE general message/outcome that covers any invalid
+          input (e.g. one generic error message for incorrect data), use that exact general
+          message — do not invent a more specific one, even if it sounds technically plausible
+          or expected.
+        - Copy any message text given in the acceptance criteria verbatim (same wording) rather
+          than paraphrasing it.
+
         Test case title: {tc_title}
         Acceptance criteria: {acceptance_criteria}
         Feature description: {FEATURE_DESCRIPTION}{ui_block}
@@ -1934,8 +2360,20 @@ def generate_steps(tc_title, acceptance_criteria, ui_description="", log=None):
     last_err = None
     for attempt in range(5):
         try:
-            return _coerce_step_list(parse_json_robust(
-                ai_complete(text, max_tokens=4096, want_json=True)))
+            # _run_stopaware (not a bare ai_complete call) so a slow/rate-limited
+            # provider gets a periodic on_slow(elapsed) heartbeat instead of the
+            # run going silent for however long this attempt takes — same
+            # mechanism generate_titles already uses. should_stop is intentionally
+            # NOT wired at generate_steps' current call site (run_steps): see
+            # describe_story_ui's docstring for why (Stop is "after current test
+            # case", not mid-call) — passing should_stop stays available for any
+            # future caller that wants it, with unchanged behavior for this one.
+            return _coerce_step_list(parse_json_robust(_run_stopaware(
+                lambda: ai_complete(text, max_tokens=4096, want_json=True,
+                                    usage_tag="generate_steps"),
+                should_stop=should_stop, on_slow=on_slow)))
+        except StopRequested:
+            raise
         except CreditBalanceError:
             raise
         except Exception as e:
@@ -1989,7 +2427,7 @@ def evaluate_existing_steps(tc_title, criteria, existing_steps_xml):
         Return ONLY a JSON object: {{"adequate": true/false, "reason": "short reason in English"}}
     """
         fallback_reason = "Could not parse the evaluation result"
-    raw = (ai_complete(prompt, max_tokens=1024) or "").strip()
+    raw = (ai_complete(prompt, max_tokens=1024, usage_tag="evaluate_existing_steps") or "").strip()
     raw = raw.replace("```json", "").replace("```", "").strip()
     try:
         data = parse_json_robust(raw)
@@ -2156,7 +2594,8 @@ def generate_titles(story_title, criteria, existing_titles=None, log=None,
             # once instead of waiting out the request timeout, and on_slow lets the
             # UI log a heartbeat while a large model is still generating.
             return _coerce_title_list(parse_json_robust(_run_stopaware(
-                lambda: ai_complete(prompt, max_tokens=4096, want_json=True),
+                lambda: ai_complete(prompt, max_tokens=4096, want_json=True,
+                                    usage_tag="generate_titles"),
                 should_stop=should_stop, on_slow=on_slow)))
         except StopRequested:
             raise
@@ -2270,7 +2709,8 @@ def delete_test_case(project, plan_id, suite_id, tc_id):
             return False, _classify_delete_error(None, str(e1) or str(e2))
 
 
-def dedupe_existing_suite(project, plan_id, suite_id, cb=None, do_delete=True, should_stop=None):
+def dedupe_existing_suite(project, plan_id, suite_id, cb=None, do_delete=True,
+                          should_stop=None, story_id=None, story_title=None):
     """Find duplicate test cases ALREADY in a suite and remove the less complete
     one of each duplicate group, keeping the most accurate (most steps, then
     oldest id). Duplicates are matched two ways: first the cheap semantic-key
@@ -2279,8 +2719,20 @@ def dedupe_existing_suite(project, plan_id, suite_id, cb=None, do_delete=True, s
     unclustered, to catch true synonyms/paraphrase the static check can't
     ('requests submitted for the branch' vs 'actions taken for the branch').
 
+    This runs ONCE PER STORY (run_steps calls it per suite in a loop), so its
+    own "Cleaned up…" summary line fires once per story too — with no story
+    context that line just looks like the same message repeating for no
+    reason in the activity log. `story_id`/`story_title`, when given, are
+    prefixed onto the three possible summary outcomes below so each one is
+    identifiable on its own.
+
     Returns {"removed": [ {id,title,kept_id} ], "kept": [...], "groups": n}.
     """
+    story_tag = f"Story {story_id} · {story_title} — " if story_id else ""
+    # Direction follows the STORY TITLE's own script (mirrors run_steps' own
+    # "Story {sid} → suite {suite_id} · {title}" line) — not just "a tag is
+    # present" — so an English title doesn't get forced right-to-left.
+    _story_tag_ar = bool(story_tag) and any('؀' <= c <= 'ۿ' for c in (story_title or ""))
     cb = cb or (lambda *a, **k: None)
     should_stop = should_stop or (lambda: False)
     try:
@@ -2339,7 +2791,13 @@ def dedupe_existing_suite(project, plan_id, suite_id, cb=None, do_delete=True, s
         singles = [(gk, members[0]) for gk, members in groups.items() if len(members) == 1]
         if len(singles) >= 2:
             items = [{"id": r["id"], "title": r["title"]} for _gk, r in singles]
-            ai_groups = _ai_duplicate_clusters(items, should_stop=should_stop)
+            ai_groups = _ai_duplicate_clusters(
+                items, should_stop=should_stop, story_title=story_title,
+                on_slow=lambda s: cb("log", {
+                    "msg": f"Still checking for duplicates with {T_disp(AI_PROVIDER)} "
+                           f"({current_model() or 'model'}) — {s}s so far. Large models "
+                           f"on free tiers can be slow; the run is not frozen.",
+                    "tone": "dim", "ico": "⏳", "hb_id": f"dedupe:{suite_id}"}))
             if ai_groups:
                 # Union-find over `singles` indices: the AI can legitimately
                 # return overlapping/chained groups for a tight cluster of
@@ -2384,6 +2842,18 @@ def dedupe_existing_suite(project, plan_id, suite_id, cb=None, do_delete=True, s
     # Stop attempting deletes (but keep detecting/reporting groups) once that
     # happens, and say so once instead of repeating it per case.
     perm_blocked_reason = None
+    # IDs kept as the "most complete" survivor of a duplicate group THIS RUN.
+    # A keeper's step count can legitimately exceed what its own narrow title
+    # implies — it's often the winner precisely because a deleted duplicate's
+    # scope got folded into it (e.g. an "email+password entry" case kept over
+    # an "email field validation" case, absorbing the latter's steps in the
+    # process). If the very same run then runs evaluate_existing_steps against
+    # that keeper using ONLY its own title/AC — with no memory of what was
+    # just merged into it — a keeper can be judged "inadequate" for its title
+    # and shrunk back down, silently erasing the coverage that was only ever
+    # preserved inside the now-deleted duplicates. run_steps checks this set
+    # to skip evaluation of a same-run keeper rather than risk that.
+    keeper_ids_this_run = []
     for gk, members in groups.items():
         if len(members) < 2:
             continue
@@ -2391,6 +2861,7 @@ def dedupe_existing_suite(project, plan_id, suite_id, cb=None, do_delete=True, s
         # keeper = most steps (more complete/accurate), tie-break = smallest id (oldest)
         members.sort(key=lambda m: (-m["steps"], m["id"]))
         keeper = members[0]
+        keeper_ids_this_run.append(keeper["id"])
         n_dupes = len(members) - 1
         cb("log", {"msg": f"{len(members)} test cases test the same thing — "
                           f"keeping #{keeper['id']} ({keeper['steps']} step"
@@ -2413,7 +2884,8 @@ def dedupe_existing_suite(project, plan_id, suite_id, cb=None, do_delete=True, s
                 # so it must not read as the same green ✓ "success" those use.
                 cb("log", {"msg": f"{victim['title']}", "tone": "warn", "ar": True,
                            "ico": "🗑", "id": victim["id"],
-                           "detail": f"removed #{victim['id']} (duplicate) · kept #{keeper['id']} instead"})
+                           "detail": f"removed #{victim['id']} (duplicate) · kept "
+                                     f"#{keeper['id']} — {keeper['title']} instead"})
                 removed.append({"id": victim["id"], "title": victim["title"], "kept_id": keeper["id"]})
             else:
                 # delete failed → the duplicate is STILL there; never count it as removed
@@ -2427,22 +2899,24 @@ def dedupe_existing_suite(project, plan_id, suite_id, cb=None, do_delete=True, s
         n_dupe_cases = sum(len(m) - 1 for m in groups.values() if len(m) >= 2)
         if removed:
             tail = (f"; {len(kept_dupes)} couldn't be removed" if kept_dupes else "")
-            cb("log", {"msg": f"Cleaned up {len(removed)} duplicate test case"
+            cb("log", {"msg": story_tag + f"Cleaned up {len(removed)} duplicate test case"
                               + ("s" if len(removed) != 1 else "")
                               + f" ({dup_groups} set" + ("s" if dup_groups != 1 else "")
                               + " of test cases that covered the same thing)"
                               + tail,
-                       "tone": "warn" if kept_dupes else "ok"})
+                       "tone": "warn" if kept_dupes else "ok", "ar": _story_tag_ar})
         else:
             extra = f" ({perm_blocked_reason})" if perm_blocked_reason else ""
-            cb("log", {"msg": f"Found {n_dupe_cases} duplicate test case"
+            cb("log", {"msg": story_tag + f"Found {n_dupe_cases} duplicate test case"
                               + ("s" if n_dupe_cases != 1 else "")
                               + f" across {dup_groups} set" + ("s" if dup_groups != 1 else "")
                               + f", but couldn't remove any{extra}.",
-                       "tone": "err"})
+                       "tone": "err", "ar": _story_tag_ar})
     else:
-        cb("log", {"msg": "No duplicate test cases found in the suite.", "tone": "dim"})
-    return {"removed": removed, "kept": kept_dupes, "groups": dup_groups}
+        cb("log", {"msg": story_tag + "No duplicate test cases found in the suite.",
+                   "tone": "dim", "ar": _story_tag_ar})
+    return {"removed": removed, "kept": kept_dupes, "groups": dup_groups,
+            "keeper_ids": keeper_ids_this_run}
 
 
 def dedupe_case_list(cases, log=None, should_stop=None):
@@ -2619,16 +3093,80 @@ def _is_near_duplicate(key, seen_keys, threshold=0.8):
     return False
 
 
-def _ai_duplicate_clusters(items, should_stop=None):
+def _dedupe_ai_debug_path():
+    d = os.path.join(os.path.expanduser("~"), ".qa_tool")
+    try:
+        os.makedirs(d, exist_ok=True)
+    except Exception:
+        pass
+    return os.path.join(d, "dedupe_ai_debug.log")
+
+
+def _log_dedupe_ai_call(kind, story_title, sent_items, raw_text, result):
+    """Best-effort diagnostic log for the two AI duplicate-detection passes
+    (_ai_duplicate_clusters over an existing suite, _dedupe_titles_ai over
+    freshly-proposed titles) — never raises, never blocks, and never affects
+    what the caller does with `result`.
+
+    Root-causing a false-positive merge (the AI grouping two genuinely
+    unrelated test cases as 'duplicates') used to be pure guesswork after the
+    fact: the model's raw JSON was parsed and immediately discarded, so there
+    was no way to tell whether a bad group came from a single wrong judgment
+    in one AI response, or from the union-find chaining two separate,
+    individually-plausible pairings into a bigger cluster the AI never
+    actually endorsed as a whole (see dedupe_existing_suite's union-find
+    comment). This appends one JSON line per call that returned at least one
+    group, capturing exactly what was sent, what the model said verbatim, and
+    what was parsed out of it — capped at the last ~300 lines so the file
+    never grows unbounded."""
+    if not result:
+        return
+    try:
+        entry = {
+            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "kind": kind,                 # "existing_suite" | "new_titles"
+            "story_title": story_title,
+            "sent_items": sent_items,     # exactly what was numbered in the prompt
+            "raw_response": raw_text,     # the model's response, verbatim
+            "result": result,             # what was parsed out of it
+        }
+        p = _dedupe_ai_debug_path()
+        lines = []
+        if os.path.exists(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    lines = f.readlines()
+            except Exception:
+                lines = []
+        lines.append(json.dumps(entry, ensure_ascii=False) + "\n")
+        with open(p, "w", encoding="utf-8") as f:
+            f.writelines(lines[-300:])
+    except Exception:
+        pass
+
+
+def _ai_duplicate_clusters(items, should_stop=None, story_title=None, on_slow=None):
     """items: [{"id":..,"title":..}, ...] — test cases the cheap semantic-key
     check found NO overlap for (each still alone in its own group). Asks the
     AI which of these titles describe the exact same scenario as another one
     in the list, despite different wording/synonyms it can't be expected to
     know ahead of time via a hand-maintained table.
 
+    `story_title`, when given, is included as context so the AI grounds its
+    judgment in what THIS story actually covers — without it, the model has
+    only bare titles to go on and tends to treat "same feature area" (e.g.
+    every check that happens to mention the same screen) as if it meant
+    "same scenario", which is exactly how unrelated test cases end up
+    wrongly clustered and deleted as "duplicates".
+
     Returns a list of groups, each a list of INDICES into `items` (index 0 =
     first item, etc.) that should be treated as one duplicate cluster.
-    Best-effort: returns [] on any failure, timeout, or Stop."""
+    Best-effort: returns [] on any failure, timeout, or Stop.
+
+    `on_slow(elapsed_seconds)` — same convention as generate_titles/generate_steps:
+    called periodically while waiting on a slow/retrying provider, so a caller
+    can log a heartbeat instead of this looking frozen (a free-tier model's
+    internal retry-with-backoff can legitimately run several minutes)."""
     if len(items) < 2:
         return []
     should_stop = should_stop or (lambda: False)
@@ -2638,31 +3176,78 @@ def _ai_duplicate_clusters(items, should_stop=None):
         ar = _is_arabic_out()
         shown = items[:150]
         listed = "\n".join(f"{i+1}. {it['title']}" for i, it in enumerate(shown))
+        story_ctx_ar = (f"كل هذه الحالات تنتمي إلى القصة: \"{story_title}\" — قارن بينها "
+                        f"ضمن نطاق هذه القصة فقط، ولا تفترض أن التشابه في الموضوع يعني "
+                        f"نفس السيناريو.\n\n") if story_title else ""
+        story_ctx_en = (f"All of these test cases belong to the story: \"{story_title}\" — "
+                        f"compare them within that story's scope only, and do not assume "
+                        f"that sharing a topic means they share a scenario.\n\n") if story_title else ""
         if ar:
             prompt = f"""
-            أنت مراجع ضمان جودة صارم. لديك قائمة عناوين حالات اختبار مرقمة، بعضها قد
-            يكون مكرراً بنفس المعنى رغم اختلاف الصياغة أو استخدام مرادفات مختلفة تماماً:
+            أنت مراجع ضمان جودة صارم تبحث عن تكرار حقيقي فقط، وليس تجميعاً حسب
+            الموضوع أو الميزة. يُعتبر عنوانان مكررين فقط إذا كانا يختبران نفس
+            السيناريو بالضبط — نفس الحقل أو العنصر أو الإجراء أو الشرط المسبق —
+            بصياغة مختلفة (إعادة صياغة أو مرادف أو ترجمة لنفس الفحص). العناوين
+            التي تشترك في نفس الميزة أو الشاشة أو الموضوع لكنها تختبر حقلاً أو
+            إجراءً أو شرطاً مختلفاً ليست مكررة إطلاقاً، حتى لو بدت مرتبطة ظاهرياً.
+
+            {story_ctx_ar}أمثلة:
+            - "زر الدخول معطل عند ترك كلمة المرور فارغة" مقابل "التحقق من بقاء
+              زر الدخول معطلاً عند فراغ حقل كلمة المرور" ← مكرر (نفس الفحص
+              بصياغة مختلفة)
+            - "التحقق من أن حقل المستخدمين إلزامي" مقابل "التحقق من أن الحد
+              الأقصى لطول حقل الاسم 100 حرف" ← ليس مكرراً (نفس الميزة، حقل
+              مختلف تماماً)
+            - "القائمة الجانبية تعرض خيار المستخدمين" مقابل "مجموعة الصلاحيات
+              الافتراضية بدون مستخدمين" ← ليس مكرراً (نفس الميزة، سيناريوهان
+              مختلفان تماماً)
+
+            لديك قائمة عناوين حالات اختبار مرقمة موجودة بالفعل في مجموعة اختبار:
             {listed}
 
-            اجمع الأرقام التي تختبر نفس السيناريو تماماً في مجموعات.
+            اجمع الأرقام التي تختبر نفس السيناريو تماماً فقط. كن حذراً جداً —
+            عند أي شك لا تجمعها، فترك حالة اختبار فريدة دون تجميع أفضل بكثير من
+            حذفها بالخطأ.
             أعد فقط كائن JSON: {{"groups": [[أرقام المجموعة المكررة], ...]}}
             أدرج فقط المجموعات التي تحوي أكثر من رقم واحد. إن لم يوجد أي تكرار أعد
             {{"groups": []}}.
             """
         else:
             prompt = f"""
-            You are a strict QA reviewer. Here is a numbered list of test case
-            titles already in a suite — some may test the exact same scenario
-            despite completely different wording or synonyms:
+            You are a strict QA reviewer doing duplicate detection, NOT topic
+            grouping. Two titles are duplicates ONLY if they test the exact
+            same scenario — the same target field, element, action, and
+            precondition — worded differently (paraphrase, synonym, or
+            translation of the same check). Titles that share a feature area,
+            screen, or general topic but check a DIFFERENT field, action, or
+            condition are NOT duplicates, even if they look related at a
+            glance.
+
+            {story_ctx_en}Examples:
+            - "Login button is disabled with empty password" vs "Verify login
+              button stays disabled when the password field is empty" →
+              DUPLICATE (same check, reworded)
+            - "Verify the Users field is required" vs "Verify max length of
+              the Name field is 100 characters" → NOT a duplicate (same
+              feature, completely different field)
+            - "Sidebar shows the Users menu option" vs "Default permissions
+              group has no users assigned" → NOT a duplicate (same feature,
+              completely different scenarios)
+
+            Here is a numbered list of test case titles already in a suite:
             {listed}
 
-            Group together numbers that test the exact same scenario.
+            Group together numbers ONLY when they test the exact same
+            scenario as each other. Be conservative — when in doubt, do NOT
+            group them; leaving a unique test case ungrouped is far better
+            than wrongly deleting it.
             Return ONLY a JSON object: {{"groups": [[duplicate group numbers], ...]}}
             Only include groups with more than one number. If there are no
             duplicates, return {{"groups": []}}.
             """
-        raw = _run_stopaware(lambda: ai_complete(prompt, max_tokens=1024, want_json=True),
-                             should_stop=should_stop)
+        raw = _run_stopaware(lambda: ai_complete(prompt, max_tokens=1024, want_json=True,
+                                                 usage_tag="dedupe_ai_clusters"),
+                             should_stop=should_stop, on_slow=on_slow)
         data = parse_json_robust(raw)
         raw_groups = data.get("groups") if isinstance(data, dict) else None
         if not raw_groups:
@@ -2678,12 +3263,16 @@ def _ai_duplicate_clusters(items, should_stop=None):
             idxs = sorted(i for i in idxs if 0 <= i < len(shown))
             if len(idxs) >= 2:
                 out.append(idxs)
+        _log_dedupe_ai_call(
+            "existing_suite", story_title, shown, raw,
+            [[shown[i] for i in g] for g in out])
         return out
     except Exception:
         return []
 
 
-def _dedupe_titles_ai(candidate_titles, existing_titles, story_title, log=None, should_stop=None):
+def _dedupe_titles_ai(candidate_titles, existing_titles, story_title, log=None,
+                      should_stop=None, on_slow=None):
     """Second-pass duplicate check, run AFTER the cheap word-overlap filter
     (_is_near_duplicate). That filter only catches duplicates that share enough
     literal words/hand-mapped synonyms (_AR_SYN) — it has no way to know that,
@@ -2698,7 +3287,10 @@ def _dedupe_titles_ai(candidate_titles, existing_titles, story_title, log=None, 
 
     Best-effort: any failure (timeout, bad JSON, provider error) just returns
     candidate_titles unchanged — this is a quality refinement, never a reason
-    to block generation."""
+    to block generation.
+
+    `on_slow(elapsed_seconds)` — same convention as generate_titles/generate_steps,
+    see _ai_duplicate_clusters for why this matters."""
     if not candidate_titles:
         return candidate_titles
     should_stop = should_stop or (lambda: False)
@@ -2742,8 +3334,9 @@ def _dedupe_titles_ai(candidate_titles, existing_titles, story_title, log=None, 
             Return ONLY a JSON object: {{"duplicate_numbers": [numbers to remove]}}.
             If there are no duplicates, return {{"duplicate_numbers": []}}.
             """
-        raw = _run_stopaware(lambda: ai_complete(prompt, max_tokens=1024, want_json=True),
-                             should_stop=should_stop)
+        raw = _run_stopaware(lambda: ai_complete(prompt, max_tokens=1024, want_json=True,
+                                                 usage_tag="dedupe_titles_ai"),
+                             should_stop=should_stop, on_slow=on_slow)
         data = parse_json_robust(raw)
         nums = data.get("duplicate_numbers") if isinstance(data, dict) else None
         if not nums:
@@ -2757,6 +3350,10 @@ def _dedupe_titles_ai(candidate_titles, existing_titles, story_title, log=None, 
         if not drop:
             return candidate_titles
         kept = [t for i, t in enumerate(candidate_titles) if i not in drop]
+        _log_dedupe_ai_call(
+            "new_titles", story_title,
+            {"existing": ex_list, "candidates": candidate_titles}, raw,
+            [candidate_titles[i] for i in sorted(drop)])
         if log and len(kept) != len(candidate_titles):
             log(f"AI review caught {len(candidate_titles) - len(kept)} additional "
                 f"duplicate title(s) the quick filter missed", "dim")
@@ -2792,8 +3389,30 @@ def run_titles(project, plan_id, story_ids, cb, should_stop=lambda: False):
     cb("stat", {"total": 0, "stories_done": 0, "total_stories": total_stories,
                 "done": 0, "skipped": 0, "errors": 0})
 
-    for story in stories:
-        if should_stop(): break
+    # Each story's own pipeline (dedup its suite → generate titles → AI-dedupe
+    # those titles → create the test cases) is independent of every other
+    # story's — different suite, different AI calls — so a couple of stories
+    # run concurrently instead of strictly one at a time, same small bounded-
+    # pool rationale as run_steps' Steps-generation/dedup-check pools (still
+    # hits the same rate-limited free-tier endpoint either way, this overlaps
+    # LATENCY across a couple of stories rather than multiplying request
+    # volume). cb is shadowed with a lock so concurrent stories logging
+    # through it stays fully serialized, same guarantee as before.
+    _cb_lock = _threading.Lock()
+    _real_cb = cb
+    def cb(kind, payload):
+        with _cb_lock:
+            _real_cb(kind, payload)
+
+    _fatal = {"hit": False}   # first fatal (credit/auth/bad_model/not_found/network) wins
+
+    def _process_story(story):
+        """Runs on a worker thread: dedup this story's suite, generate +
+        AI-dedupe titles, create the resulting test cases. Returns a result
+        dict describing exactly what happened; does NOT touch total_created/
+        errors/stories_done/per_story_stats directly — the main thread does
+        all of that bookkeeping from the result, same separation as
+        run_steps' _gen_and_write/_apply_result split."""
         sid = story.id
         title = story.fields.get("System.Title", "No Title")
         criteria = story.fields.get("Microsoft.VSTS.Common.AcceptanceCriteria", "")
@@ -2801,14 +3420,15 @@ def run_titles(project, plan_id, story_ids, cb, should_stop=lambda: False):
         suite_id = story_suite_map.get(sid)
         if not suite_id:
             cb("log", {"msg": f"No suite for story {sid} — skipped", "tone": "warn"})
-            continue
-        ps = per_story_stats.setdefault(sid, {"id": sid, "title": title, "total": 0,
-                                              "ok": 0, "skipped": 0, "err": 0, "suite": suite_id})
+            return {"sid": sid, "title": title, "suite_id": None}
+
+        ps_total = 0; ps_ok = 0; ps_skipped = 0; ps_err = 0; ps_secs = 0.0
+
         # Remove pre-existing duplicate test cases in this suite first, keeping the
         # most complete one of each group (catches dupes from prior runs / manual entry).
         try:
             dedupe_existing_suite(project, plan_id, suite_id, cb=cb, do_delete=True,
-                                  should_stop=should_stop)
+                                  should_stop=should_stop, story_id=sid, story_title=title)
         except Exception as de:
             cb("log", {"msg": f"Dedup skipped: {str(de)[:80]}", "tone": "warn"})
         # existing titles (fetch_existing_titles_for_suite backfills real titles —
@@ -2822,9 +3442,16 @@ def run_titles(project, plan_id, story_ids, cb, should_stop=lambda: False):
         except Exception:
             pass
         if existing_titles:
-            cb("log", {"msg": f"Suite already has {len(existing_titles)} test case(s) — only new added", "tone": "warn"})
+            # Prefixed with the story tag for the same reason dedupe_existing_suite's
+            # summary lines are (above) — with 2 stories now running concurrently,
+            # this generic one-liner is indistinguishable from another story's
+            # identical line without it.
+            _title_is_ar = any('؀' <= c <= 'ۿ' for c in title)
+            cb("log", {"msg": f"Story {sid} · {title} — Suite already has "
+                              f"{len(existing_titles)} test case(s) — only new added",
+                       "tone": "warn", "ar": _title_is_ar})
         try:
-            titles = generate_titles(
+            titles = _call_with_network_retries(lambda: generate_titles(
                 title, criteria, existing_titles,
                 log=lambda m, t="warn": cb("log", {"msg": m, "tone": t}),
                 should_stop=should_stop,
@@ -2832,13 +3459,33 @@ def run_titles(project, plan_id, story_ids, cb, should_stop=lambda: False):
                     "msg": f"Still generating titles with {T_disp(AI_PROVIDER)} "
                            f"({current_model() or 'model'}) — {s}s so far. Large models "
                            f"on free tiers can be slow; click Stop to cancel.",
-                    "tone": "dim", "ico": "⏳"}))
+                    "tone": "dim", "ico": "⏳", "hb_id": f"titles:{sid}"}),
+            ), cb, should_stop=should_stop)
         except StopRequested:
-            break
+            # Caught explicitly (not the generic except below) — StopRequested
+            # carries no message text, so classify_ai_error() would otherwise
+            # misreport this expected Stop-triggered cancellation as a fake
+            # "{provider}: unknown error." (same bug fixed in run_steps).
+            return {"sid": sid, "title": title, "suite_id": suite_id, "stopped": True,
+                    "total": ps_total, "ok": ps_ok, "skipped": ps_skipped, "err": ps_err, "secs": ps_secs}
         except CreditBalanceError:
-            cb("done", {"summary": "Stopped — out of AI credits", "reason": "credit"}); return
+            return {"sid": sid, "title": title, "suite_id": suite_id, "fatal": "credit",
+                    "fatal_summary": "Stopped — out of AI credits",
+                    "total": ps_total, "ok": ps_ok, "skipped": ps_skipped, "err": ps_err, "secs": ps_secs}
         except Exception as e:
-            cb("log", {"msg": f"AI error: {e}", "tone": "err"}); errors += 1; ps["err"] += 1; continue
+            cat, friendly = classify_ai_error(e)
+            # Same reasoning as run_steps: a config error or a real network
+            # outage hits every remaining story identically, so stop once
+            # with one clear message instead of repeating the same failure
+            # per story.
+            if cat in ("auth", "bad_model", "not_found", "network"):
+                return {"sid": sid, "title": title, "suite_id": suite_id, "fatal": cat,
+                        "fatal_summary": f"Stopped — {friendly}",
+                        "total": ps_total, "ok": ps_ok, "skipped": ps_skipped, "err": ps_err, "secs": ps_secs}
+            cb("log", {"msg": f"AI error: {e}", "tone": "err"})
+            ps_err += 1
+            return {"sid": sid, "title": title, "suite_id": suite_id, "ai_error": True,
+                    "total": ps_total, "ok": ps_ok, "skipped": ps_skipped, "err": ps_err, "secs": ps_secs}
 
         existing_norm = {_norm_title(t) for t in existing_titles}
         seen_keys = {_semantic_key(t) for t in existing_titles}
@@ -2854,7 +3501,7 @@ def run_titles(project, plan_id, story_ids, cb, should_stop=lambda: False):
             existing_norm.add(nk)
             seen_keys.add(sk)
         if dropped_dupes:
-            ps["skipped"] += dropped_dupes
+            ps_skipped += dropped_dupes
             cb("log", {"msg": f"Skipped {dropped_dupes} duplicate/near-duplicate title"
                               + ("s" if dropped_dupes > 1 else ""), "tone": "dim", "ico": "⏭"})
         # Second pass: the word-overlap filter above only catches duplicates that
@@ -2865,39 +3512,133 @@ def run_titles(project, plan_id, story_ids, cb, should_stop=lambda: False):
             unique = _dedupe_titles_ai(
                 unique, existing_titles, title,
                 log=lambda m, t="dim": cb("log", {"msg": m, "tone": t}),
-                should_stop=should_stop)
+                should_stop=should_stop,
+                on_slow=lambda s: cb("log", {
+                    "msg": f"Still checking for duplicate titles with {T_disp(AI_PROVIDER)} "
+                           f"({current_model() or 'model'}) — {s}s so far. Large models "
+                           f"on free tiers can be slow; the run is not frozen.",
+                    "tone": "dim", "ico": "⏳", "hb_id": f"dedupetitles:{sid}"}))
         except StopRequested:
-            break
+            return {"sid": sid, "title": title, "suite_id": suite_id, "stopped": True,
+                    "total": ps_total, "ok": ps_ok, "skipped": ps_skipped, "err": ps_err, "secs": ps_secs}
         if len(unique) != _before_ai:
-            ps["skipped"] += (_before_ai - len(unique))
+            ps_skipped += (_before_ai - len(unique))
         for tc_title in unique:
             if should_stop(): break
-            ps["total"] += 1
             _tc_start = time.time()
             try:
                 tc_id = create_test_case(project, plan_id, suite_id, tc_title, sid)
-                total_created += 1
-                ps["ok"] += 1
+                ps_ok += 1
                 _elapsed = time.time() - _tc_start
-                ps["secs"] = ps.get("secs", 0.0) + _elapsed
+                ps_secs += _elapsed
                 cb("log", {"msg": tc_title, "tone": "ok", "id": tc_id, "ar": True,
                            "secs": round(_elapsed, 1), "detail": f"⏱ {_fmt_mmss(_elapsed)}"})
             except Exception as e:
-                errors += 1
-                ps["err"] += 1
-                ps["secs"] = ps.get("secs", 0.0) + (time.time() - _tc_start)
+                ps_err += 1
+                ps_secs += (time.time() - _tc_start)
                 cb("log", {"msg": f"{tc_title} — {e}", "tone": "err", "ar": True})
-            cb("stat", {"total": total_created, "stories_done": stories_done,
-                        "total_stories": total_stories, "done": total_created,
-                        "skipped": 0, "errors": errors})
-        if not should_stop():
-            stories_done += 1
-            cb("log", {"msg": f"Story {sid} completed", "tone": "ok", "ico": "└"})
+
+        # total = ok + skipped + err by construction (not incremented separately
+        # during the creation loop above) — report.py's per-story percentage ring
+        # assumes `total` is the full candidate count so `processed
+        # (ok+skipped+err) / total` naturally lands at 100%. The old formula only
+        # counted post-dedup attempted titles into `total`, excluding whatever
+        # dedup had already filtered out — any story with a nonzero skipped count
+        # (title-level dedup catching duplicates, the normal/expected case for a
+        # suite that already has content) showed >100% in the report (seen live:
+        # 200%/166% on stories with 11 and 2 skipped titles respectively). This
+        # exact "total set upfront to the full candidate count" invariant is
+        # already how run_steps' story_prog avoids the same issue.
+        ps_total = ps_ok + ps_skipped + ps_err
+        return {"sid": sid, "title": title, "suite_id": suite_id,
+                "total": ps_total, "ok": ps_ok, "skipped": ps_skipped, "err": ps_err, "secs": ps_secs}
+
+    _TITLES_WORKERS = 2
+    import concurrent.futures as _cf_rt
+    _futs = {}   # future -> story
+
+    def _apply_story_result(fut, story):
+        """Main-thread-only: applies one completed story's bookkeeping/log
+        lines. Always called from _drain_titles, which runs on the main
+        thread and always finishes (including the "Story X completed" line
+        below) BEFORE the dispatch loop submits the next story into a freed
+        slot. That ordering is what guarantees a story's completion is never
+        logged AFTER the next story that took its slot has already logged
+        its own start — without it, the ThreadPoolExecutor auto-reuses a
+        freed worker thread for the next queued task the instant it's idle,
+        which can race ahead of this thread's own completion logging (seen
+        live: "Story 101049 · Profile" logging before "Story 101048
+        completed", even though 101048 genuinely finished first — same
+        thread, so execution order was correct, only the LOG order raced)."""
+        try:
+            res = fut.result()
+        except Exception as e:
+            cb("log", {"msg": f"Story {story.id} — unexpected error: {str(e)[:120]}", "tone": "err"})
+            return
+        suite_id = res.get("suite_id")
+        if suite_id is None:
+            return   # "no suite" — already logged inside _process_story, no stats entry
+        sid = res["sid"]; title = res["title"]
+        ps = per_story_stats.setdefault(sid, {"id": sid, "title": title, "total": 0,
+                                              "ok": 0, "skipped": 0, "err": 0, "suite": suite_id})
+        ps["total"] += res.get("total", 0)
+        ps["ok"] += res.get("ok", 0)
+        ps["skipped"] += res.get("skipped", 0)
+        ps["err"] += res.get("err", 0)
+        ps["secs"] = ps.get("secs", 0.0) + res.get("secs", 0.0)
+        nonlocal total_created, errors, stories_done
+        total_created += res.get("ok", 0)
+        errors += res.get("err", 0)
+        if res.get("fatal"):
+            if not _fatal["hit"]:
+                _fatal.update(hit=True, summary=res["fatal_summary"], reason=res["fatal"])
+            return
+        if res.get("stopped") or res.get("ai_error"):
+            return   # matches the original sequential code's `continue` — not "completed"
+        stories_done += 1
+        cb("log", {"msg": f"Story {sid} completed", "tone": "ok", "ico": "└"})
+        cb("stat", {"total": total_created, "stories_done": stories_done,
+                    "total_stories": total_stories, "done": total_created,
+                    "skipped": 0, "errors": errors})
+
+    def _drain_titles(wait_for_all):
+        """Harvest completed futures and apply their results on the main
+        thread — same rationale (and the same timeout=0-can't-really-wait
+        pitfall this avoids) as run_steps' own _drain. Called BEFORE every
+        new submission in the dispatch loop below, so a freed slot's
+        completion is always logged before that slot's next story starts."""
+        if not _futs:
+            return
+        if wait_for_all:
+            done_set, _ = _cf_rt.wait(list(_futs), return_when=_cf_rt.ALL_COMPLETED)
+        elif len(_futs) >= _TITLES_WORKERS:
+            done_set, _ = _cf_rt.wait(list(_futs), return_when=_cf_rt.FIRST_COMPLETED)
+        else:
+            done_set, _ = _cf_rt.wait(list(_futs), timeout=0, return_when=_cf_rt.ALL_COMPLETED)
+        for fut in done_set:
+            story = _futs.pop(fut)
+            _apply_story_result(fut, story)
+
+    with _cf_rt.ThreadPoolExecutor(max_workers=_TITLES_WORKERS) as _ex:
+        for story in stories:
+            if should_stop() or _fatal["hit"]:
+                break
+            _drain_titles(wait_for_all=False)
+            fut = _ex.submit(_process_story, story)
+            _futs[fut] = story
+        _drain_titles(wait_for_all=True)
 
     # round per-story seconds
     for v in per_story_stats.values():
         v["secs"] = round(v.get("secs", 0.0), 1)
     _total_secs = round(time.time() - _titles_start, 1)
+    if _fatal["hit"]:
+        cb("done", {"summary": _fatal["summary"], "reason": _fatal["reason"],
+                    "created": total_created, "errors": errors,
+                    "stories_done": stories_done, "total_stories": total_stories,
+                    "per_story": list(per_story_stats.values()),
+                    "total_secs": _total_secs})
+        return
     cb("done", {"summary": f"{total_created} created · {errors} failed",
                 "created": total_created, "errors": errors,
                 "stories_done": stories_done, "total_stories": total_stories,
@@ -2909,6 +3650,23 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
               existing_mode="skip", dedupe_existing=True):
     """existing_mode: 'skip' or 'evaluate'. dedupe_existing: remove pre-existing
     duplicate test cases in each suite before processing."""
+    # The step-generation loop below runs a small bounded pool of workers so
+    # multiple cases' generate_steps() calls (the dominant per-case cost) can
+    # be in flight at once instead of strictly one-at-a-time. Every existing
+    # log line / heartbeat / progress update in this function calls cb() —
+    # previously always from this one function running on a single thread, so
+    # cb() was implicitly never called concurrently. Shadowing cb here with a
+    # lock-guarded wrapper preserves that same guarantee (cb is still only
+    # ever invoked one call at a time, fully serialized) even though the work
+    # THAT LEADS UP TO some of those calls may now run on worker threads —
+    # every single cb(...) call site below this line (unchanged, pre-existing
+    # ones included) gets this for free without needing to touch each one.
+    _cb_lock = _threading.Lock()
+    _real_cb = cb
+    def cb(kind, payload):
+        with _cb_lock:
+            _real_cb(kind, payload)
+
     wit, test = connect_azure_sdk(project)
     # Timer starts HERE, before suite discovery/removal/seeding — those used to
     # run before _run_start was set further down, so the pre-existing-duplicate
@@ -2944,17 +3702,44 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
     # ── Remove pre-existing duplicate test cases in each suite ──
     # Catches duplicates already sitting in Azure (from prior runs or manual
     # entry), keeping the most complete one of each group and deleting the rest.
+    # Track which test case IDs were kept as a same-run dedup "winner": a keeper
+    # can absorb scope from the duplicates it survives (that's often WHY it has
+    # more steps and wins), so the evaluate-existing-steps pass below must not
+    # judge it against its own narrow title alone — that would shrink it back
+    # down and permanently lose coverage that only existed in the now-deleted
+    # duplicates.
+    _dedup_keeper_ids_this_run = set()
+    import concurrent.futures as _cf_rs
     if dedupe_existing:
         cb("log", {"msg": "Checking suites for duplicate test cases…", "tone": "dim"})
-        for sid, suite_id in story_suite_map.items():
-            if should_stop(): break
-            if suite_id:
+        # Each suite's dedup pass is independent (its own suite, its own AI
+        # mop-up call), so run a couple concurrently instead of strictly one
+        # at a time — same bounded-pool rationale as the Steps-generation
+        # worker pool further below (kept small on purpose: this still hits
+        # the same rate-limited free-tier endpoint, just a couple of calls in
+        # flight instead of one, not meant to multiply request volume). cb is
+        # already lock-guarded from this point on (see _cb_lock above), so
+        # concurrent dedupe_existing_suite calls logging through it is safe.
+        _DEDUP_WORKERS = 2
+        _dedup_jobs = [(sid, suite_id) for sid, suite_id in story_suite_map.items() if suite_id]
+        with _cf_rs.ThreadPoolExecutor(max_workers=_DEDUP_WORKERS) as _dedup_ex:
+            _dedup_futs = {}
+            for sid, suite_id in _dedup_jobs:
+                if should_stop():
+                    break
+                fut = _dedup_ex.submit(
+                    dedupe_existing_suite, project, plan_id, suite_id, cb=cb,
+                    do_delete=True, should_stop=should_stop, story_id=sid,
+                    story_title=story_ctx.get(sid, {}).get("title", ""))
+                _dedup_futs[fut] = (sid, suite_id)
+            for fut in _cf_rs.as_completed(_dedup_futs):
+                sid, suite_id = _dedup_futs[fut]
                 try:
-                    dedupe_existing_suite(project, plan_id, suite_id, cb=cb, do_delete=True,
-                                          should_stop=should_stop)
+                    _dd_res = fut.result()
+                    _dedup_keeper_ids_this_run.update(_dd_res.get("keeper_ids", []) or [])
                 except Exception as de:
-                    cb("log", {"msg": f"Dedup skipped for suite {suite_id}: {str(de)[:80]}",
-                               "tone": "warn"})
+                    cb("log", {"msg": f"Story {sid} — dedup skipped for suite {suite_id}: "
+                                      f"{str(de)[:80]}", "tone": "warn"})
     # ── Seed titles for empty suites ──
     # If a story's suite has NO test cases yet, generate titles first (same dedup
     # as the titles tool) and create the test cases, so the steps run can proceed
@@ -2984,7 +3769,7 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
         cb("log", {"msg": f"Suite {suite_id} is empty — generating test case titles…",
                    "tone": "dim", "ico": "▸"})
         try:
-            titles = generate_titles(
+            titles = _call_with_network_retries(lambda: generate_titles(
                 s_title, s_criteria, [],
                 log=lambda m, t="warn": cb("log", {"msg": m, "tone": t}),
                 should_stop=should_stop,
@@ -2992,12 +3777,17 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
                     "msg": f"Still generating titles with {T_disp(AI_PROVIDER)} "
                            f"({current_model() or 'model'}) — {s}s so far. Large models "
                            f"on free tiers can be slow; click Stop to cancel.",
-                    "tone": "dim", "ico": "⏳"}))
+                    "tone": "dim", "ico": "⏳", "hb_id": f"seedtitles:{sid}"}),
+            ), cb, should_stop=should_stop)
         except StopRequested:
             break
         except CreditBalanceError:
             cb("done", {"summary": "Stopped — out of AI credits", "reason": "credit"}); return
         except Exception as e:
+            cat, friendly = classify_ai_error(e)
+            if cat in ("auth", "bad_model", "not_found", "network"):
+                cb("log", {"msg": friendly, "tone": "err"})
+                cb("done", {"summary": f"Stopped — {friendly}", "reason": cat}); return
             cb("log", {"msg": f"Title generation failed for story {sid}: {e}", "tone": "err"})
             continue
 
@@ -3018,7 +3808,12 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
             unique = _dedupe_titles_ai(
                 unique, [], s_title,
                 log=lambda m, t="dim": cb("log", {"msg": m, "tone": t}),
-                should_stop=should_stop)
+                should_stop=should_stop,
+                on_slow=lambda s: cb("log", {
+                    "msg": f"Still checking for duplicate titles with {T_disp(AI_PROVIDER)} "
+                           f"({current_model() or 'model'}) — {s}s so far. Large models "
+                           f"on free tiers can be slow; the run is not frozen.",
+                    "tone": "dim", "ico": "⏳", "hb_id": f"dedupetitles:{sid}"}))
         except StopRequested:
             break
         if len(unique) != _before_ai2:
@@ -3088,49 +3883,269 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
     cb("stat", {"total": total, "stories_done": 0, "total_stories": total_stories,
                 "done": 0, "skipped": 0, "errors": 0, "created": seeded_total})
 
-    for tc, story_id, suite_id in suite_test_cases:
-        if should_stop(): break
-        _tc_start = time.time()
-        wi = tc.get("workItem", {})
-        tc_id = wi.get("id")
-        tc_title = wi.get("name") or _title_map.get(tc_id) or "No Title"
-        ctx = story_ctx.get(story_id, {})
-        criteria = ctx.get("criteria", "")
+    # ── bounded concurrency for the expensive part (generate_steps + write) ──
+    # Everything ABOVE (existing-steps check, skip/evaluate decision, the
+    # once-per-story UI-description trigger) stays exactly sequential, in the
+    # original order, with identical cost/behavior — only the generate_steps()
+    # AI call + Azure write for a case that actually needs generation gets
+    # handed to a small worker pool so a few of them can be in flight at once
+    # instead of strictly one-at-a-time. _STEPS_WORKERS is deliberately small:
+    # each in-flight call still goes through the same ai_complete() retry/
+    # backoff machinery as before, so this isn't meant to hammer a rate-
+    # limited/free-tier provider much harder than the sequential path already
+    # could — it's meant to overlap LATENCY (waiting on the network) across a
+    # few cases, not multiply request volume. (_cf_rs already imported above,
+    # for the dedup-check worker pool.)
+    _STEPS_WORKERS = 2
+    _executor = _cf_rs.ThreadPoolExecutor(max_workers=_STEPS_WORKERS)
+    _inflight = {}   # future -> None
+    _fatal = {"hit": False}   # first fatal (credit/auth/bad_model/not_found/network) wins
 
-        # Live progress the instant this case starts (so the bar leaves "Starting…"
-        # and the active story flips to "Running" immediately, not only when it ends).
-        _start_pct = int(done / total * 100) if total else 0
-        cb("progress", {"pct": _start_pct, "label": f"{_start_pct}% · {done} of {total}"})
-        _sp = story_prog.get(story_id)
-        if _sp is not None and _sp.get("done", 0) == 0:
-            # mark the story active (done stays 0 but emit so the card shows Running)
-            cb("story_progress", {"id": story_id, **_sp, "_active": True})
+    def _finish_case(story_id):
+        """The per-story progress/stat/log tail that used to run unconditionally
+        at the bottom of every loop iteration — factored out so both the
+        synchronous skip/evaluate paths AND async-completed generate results
+        can call it the same way, with identical behavior to before."""
+        nonlocal stories_done
+        sp = story_prog.get(story_id)
+        if sp is not None:
+            sp["done"] = sp["total"] - (remaining[story_id] - 1)
+            sp["ok"] = ok_by_story.get(story_id, 0)
+            sp["skipped"] = skip_by_story.get(story_id, 0)
+            sp["err"] = err_by_story.get(story_id, 0)
+            cb("story_progress", {"id": story_id, **sp})
+        remaining[story_id] -= 1
+        if remaining[story_id] == 0:
+            stories_done += 1
+            cb("log", {"msg": f"Story {story_id} completed · all test cases processed",
+                       "tone": "ok", "ico": "└"})
+        pct = int(done / total * 100) if total else 0
+        cb("stat", {"total": total, "stories_done": stories_done, "total_stories": total_stories,
+                    "done": ok, "skipped": skipped, "errors": err, "created": seeded_total})
+        cb("progress", {"pct": pct, "label": f"{pct}% · {done} of {total}"})
 
-        # existing steps?
-        existing_xml = ""
+    def _gen_and_write(tc_id, tc_title, criteria, ui_desc, story_id, inadequate_reason, _tc_start):
+        """Runs on a worker thread. Returns a result dict describing exactly
+        what happened; does NOT touch any shared counter — _apply_result
+        (main thread only) does all bookkeeping, so every existing ordering
+        guarantee for those counters is unchanged. cb() itself IS called from
+        here (for the 'generating…'/heartbeat lines, which need to appear
+        live while the call is in flight) — safe because cb was shadowed
+        with a lock at the top of run_steps."""
+        cb("log", {"msg": tc_title + " — generating…", "tone": "info",
+                   "id": tc_id, "ar": True, "wip": True, "wip_id": tc_id})
         try:
-            ex = wit.get_work_item(tc_id, fields=["Microsoft.VSTS.TCM.Steps"])
-            existing_xml = (ex.fields or {}).get("Microsoft.VSTS.TCM.Steps", "") or ""
-        except Exception:
-            pass
-        has_existing = bool(existing_xml and "<step " in existing_xml)
+            steps = _call_with_network_retries(
+                lambda: generate_steps(
+                    tc_title, criteria, ui_desc,
+                    log=lambda m, t="warn": cb("log", {"msg": m, "tone": t}),
+                    on_slow=lambda s: cb("log", {
+                        "msg": f"Still generating steps with {T_disp(AI_PROVIDER)} "
+                               f"({current_model() or 'model'}) — {s}s so far. Large "
+                               f"models on free tiers can be slow; the run is not frozen.",
+                        "tone": "dim", "ico": "⏳", "id": tc_id, "indent": True,
+                        "hb_id": tc_id}),
+                ), cb, should_stop=should_stop)
+            update_test_case_with_steps(tc_id, build_steps_xml(steps), project, story_id)
+            return {"ok": True, "tc_id": tc_id, "tc_title": tc_title, "story_id": story_id,
+                    "steps": steps, "inadequate_reason": inadequate_reason,
+                    "tc_start": _tc_start}
+        except StopRequested:
+            # Stop was clicked while THIS case was mid-generation. Must be
+            # caught before the generic `except Exception` below — StopRequested
+            # carries no message text (str(StopRequested()) == ""), so if it
+            # fell through to classify_ai_error() like a real provider error,
+            # every case in flight at the moment of Stop would misleadingly
+            # log as "{provider}: unknown error." (classify_ai_error's generic
+            # fallback for an exception with empty text) — a real bug seen live:
+            # clicking Stop while 2 cases were generating produced two fake
+            # "NVIDIA: unknown error." lines that looked like provider failures
+            # but were just this cancellation being misclassified.
+            return {"ok": False, "stopped": True, "tc_id": tc_id, "tc_title": tc_title,
+                    "story_id": story_id, "tc_start": _tc_start}
+        except CreditBalanceError:
+            return {"ok": False, "credit": True, "tc_id": tc_id, "tc_title": tc_title,
+                    "story_id": story_id, "tc_start": _tc_start}
+        except Exception as e:
+            return {"ok": False, "error": e, "tc_id": tc_id, "tc_title": tc_title,
+                    "story_id": story_id, "tc_start": _tc_start}
 
-        if has_existing and existing_mode == "skip":
-            skipped += 1; done += 1; skip_by_story[story_id] += 1
-            _el = round(time.time() - _tc_start, 1)
-            skipped_items.append({"id": tc_id, "title": tc_title,
-                                  "reason": "Already had steps", "secs": _el})
-            cb("log", {"msg": tc_title + " — already has steps, skipped", "tone": "skip",
-                       "id": tc_id, "ico": "⏭", "ar": True, "secs": _el,
-                       "detail": f"skipped · ⏱ {_fmt_mmss(_el)}"})
+    def _apply_result(res):
+        """Main-thread-only: identical bookkeeping to what the old inline
+        generate_steps() success/error handling did, now applied to a
+        completed future's result instead of an immediate return value."""
+        nonlocal ok, done, err
+        story_id = res["story_id"]; tc_id = res["tc_id"]; tc_title = res["tc_title"]
+        if res.get("credit"):
+            if not _fatal["hit"]:
+                _fatal.update(hit=True, summary="Stopped — out of AI credits", reason="credit")
+            return
+        if res.get("stopped"):
+            # Honest "stopped", not a fake provider error — see the
+            # StopRequested note in _gen_and_write. Not counted toward
+            # ok/err/done: this case simply didn't finish, same as if the
+            # loop above had never dispatched it in the first place.
+            cb("log", {"msg": tc_title + " — stopped (Stop was clicked while this "
+                              "was generating)", "tone": "dim", "id": tc_id,
+                       "ar": True, "replace_wip": tc_id})
+            return
+        if not res["ok"]:
+            e = res["error"]
+            cat, friendly = classify_ai_error(e)
+            if cat in ("auth", "bad_model", "not_found", "network"):
+                cb("log", {"msg": tc_title + f" — {friendly}", "tone": "err",
+                           "id": tc_id, "ar": True, "replace_wip": tc_id})
+                if not _fatal["hit"]:
+                    _fatal.update(hit=True, summary=f"Stopped — {friendly}", reason=cat)
+                return
+            err += 1; done += 1; err_by_story[story_id] += 1
+            cb("log", {"msg": tc_title + f" — {friendly}", "tone": "err", "id": tc_id,
+                       "ar": True, "replace_wip": tc_id})
+            time_by_story[story_id] = time_by_story.get(story_id, 0.0) + (time.time() - res["tc_start"])
+            _finish_case(story_id)
+            return
+        steps = res["steps"]
+        ok += 1; done += 1; ok_by_story[story_id] += 1
+        npre = sum(1 for s in steps if s.get("precondition", "").strip())
+        _elapsed = time.time() - res["tc_start"]
+        cb("log", {"msg": tc_title, "tone": "ok", "id": tc_id, "ar": True,
+                   "replace_wip": tc_id,
+                   "secs": round(_elapsed, 1),
+                   "detail": f"{len(steps)} steps · pre {npre} · action {len(steps)} · "
+                             f"expected {len(steps)} · ⏱ {_fmt_mmss(_elapsed)}"})
+        if res.get("inadequate_reason"):
+            action_items.append({"id": tc_id, "title": tc_title,
+                                 "reason": res["inadequate_reason"],
+                                 "secs": round(_elapsed, 1)})
+        time_by_story[story_id] = time_by_story.get(story_id, 0.0) + _elapsed
+        _finish_case(story_id)
+
+    def _drain(wait_for_all):
+        """Process completed futures. wait_for_all=False only harvests
+        whatever's already done UNLESS the pool is already at capacity, in
+        which case it genuinely BLOCKS until at least one slot frees up —
+        that's what actually keeps the in-flight window bounded to
+        _STEPS_WORKERS. wait_for_all=True blocks until every submitted
+        future is done (used once at the very end).
+
+        BUG FIX: this used to pass timeout=0 even in the "pool full" branch,
+        which made the wait() call return IMMEDIATELY regardless of
+        return_when — concurrent.futures.wait() can't honor FIRST_COMPLETED
+        with a zero timeout, there's no time budget left to actually wait in.
+        Net effect: the in-flight window was never really bounded — the scan
+        loop kept dispatching new work as fast as it could decide it, so many
+        more than _STEPS_WORKERS cases could pile up in the executor's own
+        internal queue and then fire their 'generating…' lines back-to-back
+        in a burst as workers cycled through the backlog (visible in the app
+        as several simultaneous un-replaced 'generating…' lines instead of
+        the intended 2)."""
+        if not _inflight:
+            return
+        if wait_for_all:
+            done_set, _ = _cf_rs.wait(list(_inflight), return_when=_cf_rs.ALL_COMPLETED)
+        elif len(_inflight) >= _STEPS_WORKERS:
+            # Pool at capacity: block for real until a slot frees up (no
+            # timeout — this is the actual backpressure mechanism).
+            done_set, _ = _cf_rs.wait(list(_inflight), return_when=_cf_rs.FIRST_COMPLETED)
         else:
+            # Pool has room: just a non-blocking opportunistic harvest of
+            # anything already finished — never delays dispatching the next
+            # case.
+            done_set, _ = _cf_rs.wait(list(_inflight), timeout=0,
+                                      return_when=_cf_rs.ALL_COMPLETED)
+        for fut in done_set:
+            _inflight.pop(fut, None)
+            try:
+                _apply_result(fut.result())
+            except Exception:
+                pass   # a worker itself should never raise (all paths return a dict) —
+                       # belt-and-suspenders so a bug here can't crash the whole run
+
+    _user_stopped = False
+    try:
+        for tc, story_id, suite_id in suite_test_cases:
+            if _fatal["hit"]:
+                break
+            if should_stop():
+                # Deliberately does NOT wait for in-flight generate_steps
+                # calls below (see the shutdown(wait=...) call in `finally`)
+                # — matching this codebase's existing "Stop should feel
+                # instant, not wait out an in-flight AI call" precedent
+                # (see DEV_ROADMAP.md's Automation-Stop fix). Any case already
+                # submitted to the pool still finishes and still writes its
+                # steps to Azure in the background (that work can't be
+                # un-started), it just won't be counted in this run's summary.
+                _user_stopped = True
+                break
+            _tc_start = time.time()
+            wi = tc.get("workItem", {})
+            tc_id = wi.get("id")
+            tc_title = wi.get("name") or _title_map.get(tc_id) or "No Title"
+            ctx = story_ctx.get(story_id, {})
+            criteria = ctx.get("criteria", "")
+
+            # Live progress the instant this case starts (so the bar leaves "Starting…"
+            # and the active story flips to "Running" immediately, not only when it ends).
+            _start_pct = int(done / total * 100) if total else 0
+            cb("progress", {"pct": _start_pct, "label": f"{_start_pct}% · {done} of {total}"})
+            _sp = story_prog.get(story_id)
+            if _sp is not None and _sp.get("done", 0) == 0:
+                # mark the story active (done stays 0 but emit so the card shows Running)
+                cb("story_progress", {"id": story_id, **_sp, "_active": True})
+
+            # existing steps?
+            existing_xml = ""
+            try:
+                ex = wit.get_work_item(tc_id, fields=["Microsoft.VSTS.TCM.Steps"])
+                existing_xml = (ex.fields or {}).get("Microsoft.VSTS.TCM.Steps", "") or ""
+            except Exception:
+                pass
+            has_existing = bool(existing_xml and "<step " in existing_xml)
+
+            if has_existing and existing_mode == "skip":
+                skipped += 1; done += 1; skip_by_story[story_id] += 1
+                _el = round(time.time() - _tc_start, 1)
+                skipped_items.append({"id": tc_id, "title": tc_title,
+                                      "reason": "Already had steps", "secs": _el})
+                cb("log", {"msg": tc_title + " — already has steps, skipped", "tone": "skip",
+                           "id": tc_id, "ico": "⏭", "ar": True, "secs": _el,
+                           "detail": f"skipped · ⏱ {_fmt_mmss(_el)}"})
+                time_by_story[story_id] = time_by_story.get(story_id, 0.0) + (time.time() - _tc_start)
+                _finish_case(story_id)
+                continue
+
             inadequate_reason = ""
             proceed = True
-            if has_existing and existing_mode == "evaluate":
+            if has_existing and tc_id in _dedup_keeper_ids_this_run:
+                # This case was just kept moments ago as the most-complete
+                # survivor of a duplicate group in THIS run — its step count
+                # may already exceed what its own title implies because it
+                # absorbed scope from the (now permanently deleted) duplicates
+                # it beat out. Judging it against its own narrow title here
+                # would risk shrinking it back down and losing that coverage
+                # for good, since the siblings that used to carry it are gone.
+                # Leave it untouched this run regardless of existing_mode.
+                skipped += 1; done += 1; proceed = False; skip_by_story[story_id] += 1
+                _el = round(time.time() - _tc_start, 1)
+                skipped_items.append({"id": tc_id, "title": tc_title,
+                                      "reason": "Kept as most-complete duplicate survivor this run",
+                                      "secs": _el})
+                cb("log", {"msg": tc_title + " — kept as the most complete of a duplicate "
+                                  "set moments ago, left as-is this run to avoid losing "
+                                  "the coverage that made it the keeper",
+                           "tone": "ok", "id": tc_id, "ar": True, "secs": _el,
+                           "detail": f"dedup keeper — left as-is · ⏱ {_fmt_mmss(_el)}"})
+            elif has_existing and existing_mode == "evaluate":
                 try:
                     verdict = evaluate_existing_steps(tc_title, criteria, existing_xml)
                 except CreditBalanceError:
-                    cb("done", {"summary": "Stopped — out of AI credits", "reason": "credit"}); return
+                    # Route through _fatal (not an immediate return) so any
+                    # generate_steps work already in flight from EARLIER
+                    # iterations still gets drained/counted below instead of
+                    # being silently discarded — see the _fatal handling notes
+                    # above the worker-pool setup.
+                    _fatal.update(hit=True, summary="Stopped — out of AI credits", reason="credit")
+                    break
                 except Exception:
                     verdict = {"adequate": False, "reason": "تعذر التقييم"}
                 if verdict.get("adequate"):
@@ -3144,68 +4159,61 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
                                "detail": f"existing steps adequate · ⏱ {_fmt_mmss(_el)}"})
                 else:
                     inadequate_reason = verdict.get("reason", "")
-            if proceed:
-                # UI description cached once per story
-                if "ui_desc" not in ctx:
-                    if ctx.get("screenshots"):
-                        cb("log", {"msg": f"read {len(ctx['screenshots'])} screenshot(s) once — UI described", "tone": "dim", "ico": "👁", "indent": True})
-                    try:
-                        ctx["ui_desc"] = describe_story_ui(ctx.get("screenshots"), ctx.get("title",""))
-                    except CreditBalanceError:
-                        cb("done", {"summary": "Stopped — out of AI credits", "reason": "credit"}); return
-                    story_ctx[story_id] = ctx
-                cb("log", {"msg": tc_title + " — generating…", "tone": "info",
-                           "id": tc_id, "ar": True, "wip": True, "wip_id": tc_id})
+            if not proceed:
+                time_by_story[story_id] = time_by_story.get(story_id, 0.0) + (time.time() - _tc_start)
+                _finish_case(story_id)
+                continue
+
+            # UI description cached once per story — still computed
+            # SYNCHRONOUSLY here, exactly as before, so it's never duplicated
+            # even when several of this story's cases get dispatched to the
+            # worker pool back-to-back (they all see ctx["ui_desc"] already set).
+            if "ui_desc" not in ctx:
+                if ctx.get("screenshots"):
+                    cb("log", {"msg": f"read {len(ctx['screenshots'])} screenshot(s) once — UI described", "tone": "dim", "ico": "👁", "indent": True})
                 try:
-                    steps = generate_steps(tc_title, criteria, ctx.get("ui_desc",""),
-                                           log=lambda m,t="warn": cb("log",{"msg":m,"tone":t}))
-                    update_test_case_with_steps(tc_id, build_steps_xml(steps), project, story_id)
-                    ok += 1; done += 1; ok_by_story[story_id] += 1
-                    npre = sum(1 for s in steps if s.get("precondition","").strip())
-                    _elapsed = time.time() - _tc_start
-                    cb("log", {"msg": tc_title, "tone": "ok", "id": tc_id, "ar": True,
-                               "replace_wip": tc_id,
-                               "secs": round(_elapsed, 1),
-                               "detail": f"{len(steps)} steps · pre {npre} · action {len(steps)} · "
-                                         f"expected {len(steps)} · ⏱ {_fmt_mmss(_elapsed)}"})
-                    if inadequate_reason:
-                        action_items.append({"id": tc_id, "title": tc_title,
-                                             "reason": inadequate_reason,
-                                             "secs": round(_elapsed, 1)})
+                    on_slow_uidesc = lambda s: cb("log", {
+                        "msg": f"Still describing the UI with {T_disp(AI_PROVIDER)} "
+                               f"({current_model() or 'model'}) — {s}s so far. "
+                               f"Vision calls on free-tier providers can be slow.",
+                        "tone": "dim", "ico": "⏳", "indent": True,
+                        "hb_id": f"uidesc:{story_id}"})
+                    ctx["ui_desc"] = _call_with_network_retries(
+                        lambda: describe_story_ui(
+                            ctx.get("screenshots"), ctx.get("title", ""),
+                            on_slow=on_slow_uidesc,
+                        ), cb, should_stop=should_stop)
                 except CreditBalanceError:
-                    cb("done", {"summary": "Stopped — out of AI credits", "reason": "credit",
-                                "action_items": action_items}); return
-                except Exception as e:
-                    cat, friendly = classify_ai_error(e)
-                    # A provider/config error (bad key, wrong/unknown model) hits
-                    # EVERY case identically — stop now with one clear message
-                    # instead of failing the whole suite one case at a time.
-                    if cat in ("auth", "bad_model", "not_found"):
-                        cb("log", {"msg": friendly, "tone": "err"})
-                        cb("done", {"summary": f"Stopped — {friendly}", "reason": cat,
-                                    "action_items": action_items}); return
-                    err += 1; done += 1; err_by_story[story_id] += 1
-                    cb("log", {"msg": tc_title + f" — {friendly}", "tone": "err", "id": tc_id,
-                               "ar": True, "replace_wip": tc_id})
+                    # Same reasoning as the evaluate-path CreditBalanceError
+                    # above: go through _fatal so in-flight work from earlier
+                    # iterations still gets drained/counted instead of
+                    # discarded.
+                    _fatal.update(hit=True, summary="Stopped — out of AI credits", reason="credit")
+                    break
+                story_ctx[story_id] = ctx
 
-        # update per-story progress snapshot
-        time_by_story[story_id] = time_by_story.get(story_id, 0.0) + (time.time() - _tc_start)
-        sp = story_prog.get(story_id)
-        if sp is not None:
-            sp["done"] = sp["total"] - (remaining[story_id] - 1)
-            sp["ok"] = ok_by_story.get(story_id, 0)
-            sp["skipped"] = skip_by_story.get(story_id, 0)
-            sp["err"] = err_by_story.get(story_id, 0)
-            cb("story_progress", {"id": story_id, **sp})
+            # Keep the in-flight window bounded: harvest whatever's already
+            # finished, and if we're already at capacity, block for the next
+            # completion before dispatching this one.
+            _drain(wait_for_all=False)
+            fut = _executor.submit(_gen_and_write, tc_id, tc_title, criteria,
+                                   ctx.get("ui_desc", ""), story_id, inadequate_reason,
+                                   _tc_start)
+            _inflight[fut] = None
 
-        remaining[story_id] -= 1
-        if remaining[story_id] == 0:
-            stories_done += 1
-            cb("log", {"msg": f"Story {story_id} completed · all test cases processed", "tone": "ok", "ico": "└"})
-        pct = int(done/total*100) if total else 0
-        cb("stat", {"total": total, "stories_done": stories_done, "total_stories": total_stories,
-                    "done": ok, "skipped": skipped, "errors": err, "created": seeded_total})
-        cb("progress", {"pct": pct, "label": f"{pct}% · {done} of {total}"})
+        # Drain whatever's still in flight before finishing up — skipped on a
+        # user Stop so Stop stays instant (see the should_stop() branch above);
+        # still done on natural completion AND on a fatal error (credit/auth/
+        # bad_model/not_found/network), since those in-flight calls were
+        # already committed and typically fail/finish fast in that case too.
+        if not _user_stopped:
+            _drain(wait_for_all=True)
+    finally:
+        _executor.shutdown(wait=not _user_stopped)
+
+    if _fatal["hit"]:
+        cb("done", {"summary": _fatal["summary"], "reason": _fatal["reason"],
+                    "action_items": action_items}); return
 
     per_story = []
     for sid, sp in story_prog.items():
@@ -3577,7 +4585,8 @@ def build_report_email(tool, summary, stats, action_items=None, skipped_items=No
     # per-story (top of the report)
     if per_story:
         rows = ""
-        for sp in per_story:
+        _ps_shown = per_story[:80]
+        for sp in _ps_shown:
             sid = _html.escape(str(sp.get("id", "")))
             title = _html.escape(str(sp.get("title", "")))
             total = int(sp.get("total", 0) or 0)
@@ -3604,17 +4613,24 @@ def build_report_email(tool, summary, stats, action_items=None, skipped_items=No
                      f"margin-top:3px'>#{sid} &middot; {total} test case" + ("s" if total != 1 else "") + tsub + "</div></td>"
                      f"<td align='right' style='padding:13px 0;border-top:1px solid {LINE2};"
                      f"vertical-align:top;white-space:nowrap'>{chips}</td></tr>")
+        _ps_more = (f"<div style='font-size:12px;color:{INK3};margin-top:10px'>&hellip; and "
+                    f"{len(per_story)-80} more &middot; see the attached export / open the full "
+                    f"report in QA Studio</div>") if len(per_story) > 80 else ""
         sections += (f"<tr><td style='padding:26px 32px;border-top:1px solid {LINE}'>"
                      f"{_sec_head(VIOLET, 'Per-story breakdown', len(per_story))}"
                      f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0' "
-                     f"style='margin-top:6px'>{rows}</table></td></tr>")
+                     f"style='margin-top:6px'>{rows}</table>{_ps_more}</td></tr>")
 
     # needs review
     if action_items:
-        cards = "".join(_case_card(a, AMBER, AMBER, AMBER_SOFT, "Review") for a in action_items)
+        _ai_shown = action_items[:40]
+        cards = "".join(_case_card(a, AMBER, AMBER, AMBER_SOFT, "Review") for a in _ai_shown)
+        _ai_more = (f"<div style='font-size:12px;color:{INK3};margin-top:10px'>&hellip; and "
+                    f"{len(action_items)-40} more &middot; see the attached export / open the "
+                    f"full report in QA Studio</div>") if len(action_items) > 40 else ""
         sections += (f"<tr><td style='padding:26px 32px;border-top:1px solid {LINE}'>"
                      f"{_sec_head(AMBER, 'Needs your review', len(action_items), 'Steps that no longer match the story&rsquo;s acceptance criteria were regenerated &mdash; confirm them before the next run.')}"
-                     f"{cards}</td></tr>")
+                     f"{cards}{_ai_more}</td></tr>")
 
     # skipped
     if skipped_items:
@@ -3697,12 +4713,14 @@ def build_report_email(tool, summary, stats, action_items=None, skipped_items=No
               + (f"<div style='font-family:{MONO};font-size:11px;color:{INK3};margin-top:8px;line-height:1.6'>"
                  f"Org: {_html.escape(str(org))} &middot; Project: {_html.escape(str(project))}</div>" if (org and project) else ""))
 
-    return f"""<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'></head>
+    return f"""<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
+<style>@media only screen and (max-width:660px){{.qas-card{{width:100% !important;max-width:100% !important}}}}</style>
+</head>
 <body style='margin:0;padding:0;background:{PAPER};-webkit-text-size-adjust:100%'>
 <center style='width:100%;background:{PAPER}'>
 <table role='presentation' width='100%' cellpadding='0' cellspacing='0' style='background:{PAPER}'><tr>
 <td align='center' style='padding:26px 12px 48px'>
-<table role='presentation' width='640' cellpadding='0' cellspacing='0' style='width:640px;max-width:640px;background:{CARD};border:1px solid #DEDDE6;border-radius:16px;overflow:hidden;font-family:{UI};color:{INK}'>
+<table role='presentation' width='640' cellpadding='0' cellspacing='0' class='qas-card' style='width:640px;max-width:640px;background:{CARD};border:1px solid #DEDDE6;border-radius:16px;overflow:hidden;font-family:{UI};color:{INK}'>
   <tr><td style='height:3px;line-height:3px;font-size:0;background:{accent}'>&nbsp;</td></tr>
   <tr><td style='padding:24px 32px 0'>{masthead}</td></tr>
   <tr><td style='padding:18px 32px 4px'>{hero}</td></tr>
@@ -3892,12 +4910,14 @@ def build_automation_report_email(target, summary, stats, project_dir=None, git_
               + (f"<div style='font-family:{MONO};font-size:11px;color:{INK3};margin-top:8px;line-height:1.6'>"
                  f"Org: {_html.escape(str(org))} &middot; Project: {_html.escape(str(project))}</div>" if (org and project) else ""))
 
-    return f"""<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'></head>
+    return f"""<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
+<style>@media only screen and (max-width:660px){{.qas-card{{width:100% !important;max-width:100% !important}}}}</style>
+</head>
 <body style='margin:0;padding:0;background:{PAPER};-webkit-text-size-adjust:100%'>
 <center style='width:100%;background:{PAPER}'>
 <table role='presentation' width='100%' cellpadding='0' cellspacing='0' style='background:{PAPER}'><tr>
 <td align='center' style='padding:26px 12px 48px'>
-<table role='presentation' width='640' cellpadding='0' cellspacing='0' style='width:640px;max-width:640px;background:{CARD};border:1px solid #DEDDE6;border-radius:16px;overflow:hidden;font-family:{UI};color:{INK}'>
+<table role='presentation' width='640' cellpadding='0' cellspacing='0' class='qas-card' style='width:640px;max-width:640px;background:{CARD};border:1px solid #DEDDE6;border-radius:16px;overflow:hidden;font-family:{UI};color:{INK}'>
   <tr><td style='height:3px;line-height:3px;font-size:0;background:{accent}'>&nbsp;</td></tr>
   <tr><td style='padding:24px 32px 0'>{masthead}</td></tr>
   <tr><td style='padding:18px 32px 4px'>{hero}</td></tr>
@@ -3992,9 +5012,15 @@ def build_sprint_summary_email(data):
                     f"{_sec_head(VIOLET, 'Status breakdown', len(by_state))}"
                     f"<div style='font-size:0;margin-top:14px'>{chips}</div></td></tr>") if by_state else ""
 
-    # stories
+    # stories — capped like every other email report's row list (see
+    # build_report_email's per_story/skipped_items, build_ai_usage_email's
+    # rows): a big sprint can run into hundreds of stories, and listing every
+    # one makes the email huge (some inboxes clip or flag oversized mail) and
+    # unreadable on a phone. The in-app Sprint Report/Plan screens already
+    # show the full list; the email is a summary, not the source of truth.
+    _stories_shown = stories[:150]
     rows = ""
-    for s in stories:
+    for s in _stories_shown:
         title = _html.escape(str(s.get("title", "")))
         sid = _html.escape(str(s.get("id", "")))
         state = str(s.get("state", ""))
@@ -4011,27 +5037,399 @@ def build_sprint_summary_email(data):
                  f"<span style='font-family:{MONO};font-size:11px;font-weight:700;color:{INK2};margin-right:8px'>{tc} TC</span>"
                  f"<span style='display:inline-block;background:{bg};color:{fg};font-size:11px;font-weight:800;padding:3px 10px;border-radius:20px'>{_html.escape(state)}</span></td>"
                  f"</tr>")
+    _stories_more = (f"<div style='font-size:12px;color:{INK3};margin-top:10px'>&hellip; and "
+                     f"{len(stories)-150} more &middot; see the full list in the Sprint Report/"
+                     f"Plan screen</div>") if len(stories) > 150 else ""
     story_block = (f"<tr><td style='padding:26px 32px;border-top:1px solid {LINE}'>"
                    f"{_sec_head(INK, 'Stories', len(stories))}"
-                   f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0' style='margin-top:6px'>{rows}</table></td></tr>") if stories else ""
+                   f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0' style='margin-top:6px'>{rows}</table>{_stories_more}</td></tr>") if stories else ""
 
     footer = (f"<table role='presentation' cellpadding='0' cellspacing='0'><tr>"
               f"<td valign='middle' style='padding-right:9px'>{_logo_tag(24)}</td>"
               f"<td valign='middle' style='font-size:11.5px;font-weight:600;color:{INK3}'>Generated by QA Studio &middot; Azure DevOps + AI</td></tr></table>"
               + (f"<div style='font-family:{MONO};font-size:11px;color:{INK3};margin-top:8px'>Org: {_html.escape(str(_org))} &middot; Project: {_html.escape(str(_proj))}</div>" if _proj else ""))
 
-    return f"""<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'></head>
+    return f"""<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
+<style>@media only screen and (max-width:660px){{.qas-card{{width:100% !important;max-width:100% !important}}}}</style>
+</head>
 <body style='margin:0;padding:0;background:{PAPER};-webkit-text-size-adjust:100%'>
 <center style='width:100%;background:{PAPER}'>
 <table role='presentation' width='100%' cellpadding='0' cellspacing='0' style='background:{PAPER}'><tr>
 <td align='center' style='padding:26px 12px 48px'>
-<table role='presentation' width='640' cellpadding='0' cellspacing='0' style='width:640px;max-width:640px;background:{CARD};border:1px solid #DEDDE6;border-radius:16px;overflow:hidden;font-family:{UI};color:{INK}'>
+<table role='presentation' width='640' cellpadding='0' cellspacing='0' class='qas-card' style='width:640px;max-width:640px;background:{CARD};border:1px solid #DEDDE6;border-radius:16px;overflow:hidden;font-family:{UI};color:{INK}'>
   <tr><td style='height:3px;line-height:3px;font-size:0;background:{VIOLET}'>&nbsp;</td></tr>
   <tr><td style='padding:24px 32px 0'>{masthead}</td></tr>
   <tr><td style='padding:18px 32px 4px'>{hero}</td></tr>
   <tr><td style='padding:18px 32px 0'>{metrics}</td></tr>
   {status_block}
   {story_block}
+  <tr><td style='padding:20px 32px 26px;border-top:1px solid {LINE};background:{TINT}'>{footer}</td></tr>
+</table>
+</td></tr></table></center></body></html>"""
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  AI USAGE REPORT (admin-only, whole org — see auth_supabase.admin_get_ai_usage)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def usage_report_all_users(start_date=None, end_date=None):
+    """Admin-only: build the whole-org AI usage report for an optional
+    [start_date, end_date] ('YYYY-MM-DD' strings, inclusive; None = no bound).
+    Returns (ok, report_or_message) — ok is False with a friendly message for
+    every failure mode (not configured, not signed in, not an Admin, offline,
+    function not deployed), never a raise.
+
+    report = {
+      "start", "end", "generated",
+      "rows": [{"date","user","provider","model","module","calls",
+                "input_tokens","output_tokens","cost_usd"}, ...],  # grouped +
+                                                                    # summed
+      "totals": {"calls","input_tokens","output_tokens","cost_usd"},
+      "unpriced_calls": N,   # calls whose model has no rate in PRICING —
+                             # excluded from totals["cost_usd"], never guessed
+      "truncated": bool,     # the server-side row cap was hit (see ai-usage)
+    }
+    Token counts are EXACT (each row is built from what the provider itself
+    reported for that call — see _norm_usage). Cost is an ESTIMATE from the
+    local PRICING table, computed here (not server-side) so a price update
+    never needs redeploying the Edge Function.
+    """
+    import datetime as _dt
+    import auth_supabase as auth
+    ok, res = auth.admin_get_ai_usage(start_date, end_date)
+    if not ok:
+        return False, res
+    raw_rows = res if isinstance(res, list) else []
+
+    from collections import defaultdict
+    # Grouped by tag too (the raw usage_tag a call site passed to ai_complete,
+    # e.g. "generate_steps") — NOT the friendly label, so two tags that happen
+    # to map to the same label can never collide. Historical rows logged
+    # before call sites were tagged have tag=None, which buckets separately
+    # as "Other" via _usage_module_label() below — they never silently merge
+    # into a real module's numbers.
+    buckets = defaultdict(lambda: {"calls": 0, "input_tokens": 0, "output_tokens": 0,
+                                   "first_time": None, "last_time": None})
+    for r in raw_rows:
+        ts = str(r.get("created_at") or "")
+        date = ts[:10] or "unknown"
+        # "HH:MM" slice of the UTC timestamp (created_at is always UTC — see
+        # record_ai_usage) — kept alongside the day-level grouping below rather
+        # than used AS the grouping key, so rows stay one-per-day/user/provider/
+        # model/module (summed) instead of exploding into one row per exact
+        # timestamp. Tracked as a min/max range so a day's row can show WHEN
+        # during the day the usage happened, not just which day.
+        time_str = ts[11:16] if len(ts) >= 16 else None
+        user = r.get("user_email") or "(unknown)"
+        provider = r.get("provider") or "unknown"
+        model = r.get("model") or "unknown"
+        tag = r.get("tag") or None
+        b = buckets[(date, user, provider, model, tag)]
+        b["calls"] += 1
+        b["input_tokens"] += int(r.get("input_tokens") or 0)
+        b["output_tokens"] += int(r.get("output_tokens") or 0)
+        if time_str:
+            if b["first_time"] is None or time_str < b["first_time"]:
+                b["first_time"] = time_str
+            if b["last_time"] is None or time_str > b["last_time"]:
+                b["last_time"] = time_str
+
+    rows = []
+    totals = {"calls": 0, "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}
+    unpriced_calls = 0
+    # key=... coerces the tag slot to "" for the sort only (buckets themselves
+    # still key on the real None) — plain tuple sort would otherwise raise
+    # comparing None against a str the moment two rows share every other
+    # field but one has a tag and the other doesn't (an untagged historical
+    # row next to a freshly-tagged one on the same date/user/provider/model).
+    for (date, user, provider, model, tag), b in sorted(
+            buckets.items(), key=lambda kv: kv[0][:4] + (kv[0][4] or "",)):
+        cost = _call_cost(provider, model, b["input_tokens"], b["output_tokens"])
+        # "date" stays a bare YYYY-MM-DD (used for sorting above and by any
+        # machine consumer of the JSON export); "date_range" is the display
+        # string every human-facing renderer (screen table, xlsx/docx/pdf,
+        # email) should use instead — same day, plus the UTC time span the
+        # calls in this row actually happened within.
+        if b["first_time"] and b["last_time"]:
+            date_range = (f"{date} ({b['first_time']} UTC)" if b["first_time"] == b["last_time"]
+                          else f"{date} ({b['first_time']}–{b['last_time']} UTC)")
+        else:
+            date_range = date
+        rows.append({"date": date, "date_range": date_range, "user": user,
+                     "provider": provider, "model": model,
+                     "module": _usage_module_label(tag),
+                     "calls": b["calls"], "input_tokens": b["input_tokens"],
+                     "output_tokens": b["output_tokens"], "cost_usd": cost})
+        totals["calls"] += b["calls"]
+        totals["input_tokens"] += b["input_tokens"]
+        totals["output_tokens"] += b["output_tokens"]
+        if cost is None:
+            unpriced_calls += b["calls"]
+        else:
+            totals["cost_usd"] += cost
+    totals["cost_usd"] = round(totals["cost_usd"], 4)
+
+    report = {"start": start_date, "end": end_date,
+             "generated": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
+             "rows": rows, "totals": totals, "unpriced_calls": unpriced_calls,
+             "row_count_raw": len(raw_rows)}
+    return True, report
+
+
+def _usage_out_dir():
+    d = os.path.join(os.path.expanduser("~"), "QA Studio", "AI Usage Reports")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _usage_stamp(report):
+    from datetime import datetime as _dtc
+    rng = ""
+    if report.get("start") or report.get("end"):
+        rng = f"_{report.get('start') or 'start'}_to_{report.get('end') or 'now'}"
+    return f"AIUsage{rng}_{_dtc.now():%Y%m%d-%H%M}"
+
+
+def export_usage_json(report):
+    p = os.path.join(_usage_out_dir(), _usage_stamp(report) + ".json")
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump(report, f, ensure_ascii=False, indent=2)
+    return p
+
+
+def export_usage_xlsx(report):
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "AI Usage"
+    head = Font(bold=True, color="FFFFFF", name="Segoe UI")
+    fill = PatternFill("solid", fgColor="3A57D6")
+    thin = Border(*[Side(style="thin", color="E6E8F1")] * 4)
+    cols = ["Date", "User", "Provider", "Model", "Module", "Calls", "Input Tokens",
+            "Output Tokens", "Cost (USD)"]
+    for c, name in enumerate(cols, 1):
+        cell = ws.cell(1, c, name)
+        cell.font = head; cell.fill = fill; cell.border = thin
+        cell.alignment = Alignment(horizontal="center")
+    r = 2
+    for row in report["rows"]:
+        vals = [row.get("date_range", row["date"]), row["user"], row["provider"], row["model"],
+                row.get("module", "Other"), row["calls"],
+                row["input_tokens"], row["output_tokens"],
+                (round(row["cost_usd"], 4) if row["cost_usd"] is not None else "—")]
+        for c, v in enumerate(vals, 1):
+            ws.cell(r, c, v).border = thin
+        r += 1
+    t = report["totals"]
+    ws.cell(r, 5, "TOTAL").font = Font(bold=True)
+    for c, v in ((6, t["calls"]), (7, t["input_tokens"]), (8, t["output_tokens"]),
+                 (9, t["cost_usd"])):
+        cell = ws.cell(r, c, v)
+        cell.font = Font(bold=True)
+    if report.get("unpriced_calls"):
+        r += 2
+        ws.cell(r, 1, f"{report['unpriced_calls']} call(s) use a model with no "
+                       "published price and are excluded from the cost total above.")
+    for c, w in zip("ABCDEFGHI", (26, 28, 12, 22, 22, 8, 13, 13, 12)):
+        ws.column_dimensions[c].width = w
+    p = os.path.join(_usage_out_dir(), _usage_stamp(report) + ".xlsx")
+    wb.save(p)
+    return p
+
+
+def export_usage_docx(report):
+    from docx import Document
+    from docx.shared import Pt, RGBColor
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    doc = Document()
+    try:
+        ns = doc.styles["Normal"]
+        ns.font.name = "Segoe UI"; ns.font.size = Pt(10)
+    except Exception:
+        pass
+    h = doc.add_heading("AI Usage Report", level=0)
+    h.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    sub = doc.add_paragraph()
+    sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    rn = sub.add_run(f"{report.get('start') or 'earliest'} → {report.get('end') or 'latest'}")
+    rn.font.size = Pt(11); rn.font.color.rgb = RGBColor(0x6A, 0x4D, 0xFF)
+
+    heads = ["Date", "User", "Provider", "Model", "Module", "Calls", "Input", "Output", "Cost (USD)"]
+    tbl = doc.add_table(rows=1, cols=len(heads))
+    try:
+        tbl.style = "Medium Shading 1 Accent 1"
+    except Exception:
+        pass
+    for i, hd in enumerate(heads):
+        tbl.rows[0].cells[i].text = hd
+    for row in report["rows"]:
+        c = tbl.add_row().cells
+        vals = [row.get("date_range", row["date"]), row["user"], row["provider"], row["model"],
+                row.get("module", "Other"), str(row["calls"]),
+                str(row["input_tokens"]), str(row["output_tokens"]),
+                (f'{row["cost_usd"]:.4f}' if row["cost_usd"] is not None else "—")]
+        for i, v in enumerate(vals):
+            c[i].text = v
+    t = report["totals"]
+    c = tbl.add_row().cells
+    c[4].text = "TOTAL"
+    c[5].text = str(t["calls"]); c[6].text = str(t["input_tokens"])
+    c[7].text = str(t["output_tokens"]); c[8].text = f'{t["cost_usd"]:.4f}'
+    for cell in c:
+        for para in cell.paragraphs:
+            for run in para.runs:
+                run.font.bold = True
+    if report.get("unpriced_calls"):
+        doc.add_paragraph(f"{report['unpriced_calls']} call(s) use a model with no "
+                          "published price and are excluded from the cost total above.")
+    p = os.path.join(_usage_out_dir(), _usage_stamp(report) + ".docx")
+    doc.save(p)
+    return p
+
+
+def export_usage_pdf(report):
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib import colors
+    from reportlab.lib.units import mm
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+    from reportlab.lib.styles import getSampleStyleSheet
+    p = os.path.join(_usage_out_dir(), _usage_stamp(report) + ".pdf")
+    doc = SimpleDocTemplate(p, pagesize=landscape(A4), topMargin=14 * mm, bottomMargin=14 * mm)
+    styles = getSampleStyleSheet()
+    elems = [Paragraph("AI Usage Report", styles["Title"]),
+             Paragraph(f"{report.get('start') or 'earliest'} &rarr; {report.get('end') or 'latest'}",
+                       styles["Normal"]),
+             Spacer(1, 6 * mm)]
+    data = [["Date", "User", "Provider", "Model", "Module", "Calls", "Input", "Output", "Cost (USD)"]]
+    for row in report["rows"]:
+        data.append([row.get("date_range", row["date"]), row["user"], row["provider"], row["model"],
+                    row.get("module", "Other"),
+                    str(row["calls"]), str(row["input_tokens"]), str(row["output_tokens"]),
+                    (f'{row["cost_usd"]:.4f}' if row["cost_usd"] is not None else "—")])
+    t = report["totals"]
+    data.append(["", "", "", "", "TOTAL", str(t["calls"]), str(t["input_tokens"]),
+                str(t["output_tokens"]), f'{t["cost_usd"]:.4f}'])
+    tbl = Table(data, repeatRows=1)
+    tbl.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#3A57D6")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#E6E8F1")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -2), [colors.white, colors.HexColor("#F7F7FB")]),
+        ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#ECEBF5")),
+        ("ALIGN", (5, 1), (-1, -1), "RIGHT"),
+    ]))
+    elems.append(tbl)
+    if report.get("unpriced_calls"):
+        elems.append(Spacer(1, 4 * mm))
+        elems.append(Paragraph(f"{report['unpriced_calls']} call(s) use a model with no "
+                               "published price and are excluded from the cost total above.",
+                               styles["Normal"]))
+    doc.build(elems)
+    return p
+
+
+def build_ai_usage_email(report):
+    """Restrained, email-safe AI Usage report — same visual language as
+    build_sprint_summary_email (masthead/hero/metric strip/table/footer)."""
+    PAPER = "#E9E8EE"; CARD = "#FFFFFF"; TINT = "#FAFAFC"
+    INK = "#1B1A22"; INK2 = "#6B6975"; INK3 = "#9C9AA6"
+    LINE = "#E8E7EE"; LINE2 = "#F1F0F5"
+    VIOLET = "#0E9CC0"; VIOLET_INK = "#0B6E86"; VIOLET_SOFT = "#D6F4FB"
+    GREEN = "#1F8A52"; AMBER = "#AB780C"
+    UI = '"Segoe UI",Roboto,Helvetica,Arial,sans-serif'
+    MONO = '"SFMono-Regular",Consolas,Menlo,monospace'
+
+    import datetime as _dt
+    today = _dt.date.today().strftime("%d %b %Y")
+    rng = f"{report.get('start') or 'earliest'} &rarr; {report.get('end') or 'latest'}"
+    t = report.get("totals", {})
+    rows = report.get("rows", [])
+
+    masthead = (
+        f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0'><tr>"
+        f"<td width='40' valign='middle' style='padding-right:13px'>{_logo_tag(40)}</td>"
+        f"<td valign='middle'>"
+        f"<div style='font-size:15px;font-weight:700;color:{INK};letter-spacing:-.2px'>QA Studio</div>"
+        f"<div style='font-size:12px;font-weight:700;color:{VIOLET_INK};margin-top:2px'>AI Usage &middot; Report</div>"
+        f"</td>"
+        f"<td valign='middle' align='right' style='font-family:{MONO};font-size:11px;color:{INK3};font-weight:700'>{today}</td>"
+        f"</tr></table>")
+
+    hero = (f"<span style='display:inline-block;background:{VIOLET_SOFT};color:{VIOLET_INK};"
+            f"font-size:11px;font-weight:700;letter-spacing:.4px;padding:5px 12px;border-radius:20px'>WHOLE-ORG USAGE</span>"
+            f"<div style='font-family:{MONO};font-size:12px;color:{INK2};font-weight:600;margin-top:10px'>{rng}</div>")
+
+    metrics_data = [("Calls", t.get("calls", 0), VIOLET_INK),
+                    ("Input Tokens", t.get("input_tokens", 0), INK),
+                    ("Output Tokens", t.get("output_tokens", 0), INK),
+                    ("Est. Cost", f'${t.get("cost_usd", 0):.2f}', GREEN)]
+    mcells = ""
+    for i, (k, v, col) in enumerate(metrics_data):
+        bl = "" if i == 0 else f"border-left:1px solid {LINE2};"
+        mcells += (f"<td width='1' style='{bl}padding:14px 8px 15px;text-align:center'>"
+                  f"<div style='font-size:9.5px;font-weight:800;letter-spacing:1px;color:{INK3};text-transform:uppercase'>{_html.escape(str(k))}</div>"
+                  f"<div style='font-family:{MONO};font-size:22px;font-weight:700;color:{col};margin-top:6px;line-height:1'>{v}</div></td>")
+    metrics = (f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0' "
+              f"style='border:1px solid {LINE};border-radius:12px;table-layout:fixed'><tr>{mcells}</tr></table>")
+
+    # flat rows table, one line per date/user/provider/model — capped so the
+    # email stays a reasonable size; the full data is in the attached/exported file.
+    shown = rows[:200]
+    trows = ""
+    for row in shown:
+        cost = f'${row["cost_usd"]:.4f}' if row["cost_usd"] is not None else "&mdash;"
+        trows += (f"<tr><td style='padding:8px 0;border-top:1px solid {LINE2};font-family:{MONO};"
+                  f"font-size:11px;color:{INK2}'>{_html.escape(row.get('date_range', row['date']))}</td>"
+                  f"<td style='padding:8px 10px;border-top:1px solid {LINE2};font-size:11.5px;font-weight:600;color:{INK}'>{_html.escape(row['user'])}</td>"
+                  f"<td style='padding:8px 10px;border-top:1px solid {LINE2};font-size:11px;color:{INK2}'>{_html.escape(row['provider'])}</td>"
+                  f"<td style='padding:8px 10px;border-top:1px solid {LINE2};font-family:{MONO};font-size:10.5px;color:{INK2}'>{_html.escape(row['model'])}</td>"
+                  f"<td style='padding:8px 10px;border-top:1px solid {LINE2};font-size:11px;color:{INK2}'>{_html.escape(row.get('module') or 'Other')}</td>"
+                  f"<td align='right' style='padding:8px 10px;border-top:1px solid {LINE2};font-family:{MONO};font-size:11px;color:{INK}'>{row['calls']}</td>"
+                  f"<td align='right' style='padding:8px 10px;border-top:1px solid {LINE2};font-family:{MONO};font-size:11px;color:{INK}'>{row['input_tokens']}</td>"
+                  f"<td align='right' style='padding:8px 10px;border-top:1px solid {LINE2};font-family:{MONO};font-size:11px;color:{INK}'>{row['output_tokens']}</td>"
+                  f"<td align='right' style='padding:8px 0;border-top:1px solid {LINE2};font-family:{MONO};font-size:11px;font-weight:700;color:{GREEN}'>{cost}</td></tr>")
+    more = (f"<tr><td colspan='9' style='padding:10px 0;border-top:1px solid {LINE2};text-align:center;"
+           f"font-size:11px;color:{INK3}'>&hellip; and {len(rows) - 200} more rows &middot; see the attached export</td></tr>"
+           ) if len(rows) > 200 else ""
+    theads = "".join(f"<th align='{'left' if i < 5 else 'right'}' style='padding:0 10px 8px 0;font-size:10px;"
+                     f"font-weight:800;letter-spacing:.4px;color:{INK3};text-transform:uppercase'>{h}</th>"
+                     for i, h in enumerate(["Date", "User", "Provider", "Model", "Module", "Calls", "In", "Out", "Cost"]))
+    table_block = (f"<tr><td style='padding:26px 32px;border-top:1px solid {LINE}'>"
+                  f"<div style='font-size:14.5px;font-weight:800;color:{INK};letter-spacing:-.2px'>Usage by date &middot; user &middot; model</div>"
+                  f"<div style='margin-top:12px;overflow-x:auto;-webkit-overflow-scrolling:touch'>"
+                  f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0' style='min-width:520px'>"
+                  f"<tr>{theads}</tr>{trows}{more}</table></div></td></tr>") if rows else (
+        f"<tr><td style='padding:26px 32px;border-top:1px solid {LINE};text-align:center;"
+        f"color:{INK3};font-size:12.5px'>No AI usage recorded in this range.</td></tr>")
+
+    unpriced_note = (
+        f"<tr><td style='padding:0 32px 18px'><div style='font-size:11px;color:{AMBER};"
+        f"background:#FBF3DC;border-radius:8px;padding:9px 12px'>{report['unpriced_calls']} call(s) "
+        f"use a model with no published price and are excluded from the cost total above.</div></td></tr>"
+    ) if report.get("unpriced_calls") else ""
+
+    footer = (f"<table role='presentation' cellpadding='0' cellspacing='0'><tr>"
+             f"<td valign='middle' style='padding-right:9px'>{_logo_tag(24)}</td>"
+             f"<td valign='middle' style='font-size:11.5px;font-weight:600;color:{INK3}'>"
+             f"Generated by QA Studio &middot; token counts are exact (from each provider's own "
+             f"response); cost is an estimate from a locally maintained price table.</td></tr></table>")
+
+    return f"""<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
+<style>@media only screen and (max-width:700px){{.qas-card{{width:100% !important;max-width:100% !important}}}}</style>
+</head>
+<body style='margin:0;padding:0;background:{PAPER};-webkit-text-size-adjust:100%'>
+<center style='width:100%;background:{PAPER}'>
+<table role='presentation' width='100%' cellpadding='0' cellspacing='0' style='background:{PAPER}'><tr>
+<td align='center' style='padding:26px 12px 48px'>
+<table role='presentation' width='680' cellpadding='0' cellspacing='0' class='qas-card' style='width:680px;max-width:680px;background:{CARD};border:1px solid #DEDDE6;border-radius:16px;overflow:hidden;font-family:{UI};color:{INK}'>
+  <tr><td style='height:3px;line-height:3px;font-size:0;background:{VIOLET}'>&nbsp;</td></tr>
+  <tr><td style='padding:24px 32px 0'>{masthead}</td></tr>
+  <tr><td style='padding:18px 32px 4px'>{hero}</td></tr>
+  <tr><td style='padding:18px 32px 0'>{metrics}</td></tr>
+  {table_block}
+  {unpriced_note}
   <tr><td style='padding:20px 32px 26px;border-top:1px solid {LINE};background:{TINT}'>{footer}</td></tr>
 </table>
 </td></tr></table></center></body></html>"""
@@ -4411,7 +5809,8 @@ def compile_test_case(tc, story=None, log=None, case_type="interaction"):
     try:
         out = parse_json_robust(ai_complete(prompt, max_tokens=4096, timeout=90,
                                             on_retry=lambda m: log(m, "dim"),
-                                            want_json=True))
+                                            want_json=True,
+                                            usage_tag="automation_compile"))
         # JSON mode forces an object on OpenAI-compatible providers, so unwrap the
         # intents array from whatever key the model used (it may invent one).
         if isinstance(out, dict):
@@ -4569,7 +5968,8 @@ def _tiebreak_with_ai(intent, shortlist, cb):
         '{"idx": <chosen idx or -1>}'
     )
     try:
-        data = parse_json_robust(ai_complete(prompt, max_tokens=256, timeout=45, want_json=True))
+        data = parse_json_robust(ai_complete(prompt, max_tokens=256, timeout=45, want_json=True,
+                                             usage_tag="automation_tiebreak"))
         if isinstance(data, list) and data:
             data = data[0]
         idx = int(data.get("idx", -1))
@@ -4633,12 +6033,14 @@ def _match_step_to_element(action, elements, cb):
         '\"value\": \"<text to type if kind==type/select, else empty>\"}'
     )
     try:
-        raw = ai_complete(prompt, max_tokens=1024, timeout=60)
+        raw = ai_complete(prompt, max_tokens=1024, timeout=60,
+                          usage_tag="automation_match_element")
         if not (raw or "").strip():
             # reasoning models (e.g. NVIDIA qwen) sometimes spend the whole
             # budget thinking and return empty — retry once before giving up
             cb("    matcher returned empty — retrying once…", "dim")
-            raw = ai_complete(prompt, max_tokens=1024, timeout=60)
+            raw = ai_complete(prompt, max_tokens=1024, timeout=60,
+                              usage_tag="automation_match_element")
         data = parse_json_robust(raw)
         if isinstance(data, list) and data:
             data = data[0]
@@ -6039,23 +7441,71 @@ def _latest_zipball(timeout=6):
     data = r.json()
     return (data.get("tag_name") or ""), (data.get("zipball_url") or "")
 
+
+def _resolve_branch_sha(headers, timeout=15):
+    """Resolve GITHUB_BRANCH to its current commit SHA via the (read-only,
+    cheap) Git API, so the update download is pinned to one immutable commit
+    instead of the mutable branch ref (a ref that could resolve to different
+    content between two requests, or be force-pushed mid-update)."""
+    url = (f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}"
+           f"/commits/{GITHUB_BRANCH}")
+    r = requests.get(url, timeout=timeout, headers=headers)
+    r.raise_for_status()
+    sha = r.json().get("sha")
+    if not sha:
+        raise RuntimeError("GitHub API returned no commit sha for the branch.")
+    return sha
+
+
+def _validate_update_tree(src_root):
+    """Sanity-check that an extracted update actually looks like a QA Studio
+    source tree before we copy it over the live, running install. This is not
+    cryptographic integrity (see _apply_update_zip's docstring for why a
+    branch zipball can't get the same checksum guarantee the .exe path has)
+    — it's a fails-closed guard against a truncated/empty/wrong-repo archive
+    silently clobbering the app with garbage."""
+    required = ("main.py", "engine.py", "VERSION")
+    missing = [f for f in required if not os.path.isfile(os.path.join(src_root, f))]
+    return (not missing), missing
+
+
 def _apply_update_zip(cb):
     """Source (non-git) updater: download the latest release's source zip and copy
     it over the app folder in place, then reinstall deps. Used by ZIP/.bat
-    installs that aren't git clones and aren't frozen exes."""
+    installs that aren't git clones and aren't frozen exes.
+
+    SECURITY: the .exe update path (_apply_update_exe/_verify_download) checks
+    the download against a maintainer-published SHA-256 checksum file, which
+    doesn't exist for an on-the-fly branch zipball — GitHub doesn't publish
+    one for those, so there's nothing to compare against, and that's a real,
+    structural gap vs. the exe path that a client-side check alone can't
+    close. What this DOES add, to raise the bar as far as it reasonably can
+    without a published checksum: (1) pin the download to one immutable
+    commit SHA resolved just before downloading, instead of trusting a
+    mutable branch ref that could change between requests; (2) fail closed
+    if that resolution fails, rather than silently falling back to the old
+    unpinned-branch behavior; (3) validate the extracted tree actually looks
+    like this app's source before overwriting the live install; (4) log the
+    exact commit SHA + downloaded file's own SHA-256 locally (diag_log) for
+    every applied update, so there's always a durable, after-the-fact record
+    of precisely what was installed and from where."""
     import sys, tempfile, zipfile, shutil, subprocess
     cb = cb or (lambda *a, **k: None)
-    # Pull the latest code from the BRANCH — the same source check_for_update reads
-    # its VERSION from, and the same archive install.bat uses. Using the branch (not
-    # a release tag/zipball) keeps "apply update" consistent with the version banner:
-    # a stale or lagging release tag can no longer make the app reinstall old code
-    # forever (which left the version stuck and the banner permanently showing).
-    zb = (f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}"
-          f"/zipball/{GITHUB_BRANCH}")
     headers = {"Accept": "application/vnd.github+json"}
     token = _github_token()
     if token:
         headers["Authorization"] = f"Bearer {token}"
+    try:
+        sha = _resolve_branch_sha(headers)
+    except Exception as e:
+        return (False, f"Couldn't resolve the update branch to a commit: "
+                       f"{str(e)[:140]}. Update aborted for your safety.")
+    # Pull the latest code from that PINNED COMMIT (not a mutable branch name) —
+    # still the same source check_for_update reads its VERSION from, and the
+    # same archive install.bat uses; pinning just removes the "which content
+    # did we actually get" ambiguity a plain branch-name URL has.
+    zb = (f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}"
+          f"/zipball/{sha}")
     tmp = tempfile.mkdtemp(prefix="qastudio_up_")
     zpath = os.path.join(tmp, "src.zip")
     cb("Downloading the latest version…", "dim")
@@ -6070,6 +7520,10 @@ def _apply_update_zip(cb):
     except Exception as e:
         shutil.rmtree(tmp, ignore_errors=True)
         return (False, f"Download failed: {str(e)[:160]}")
+    try:
+        zip_sha256 = _sha256_file(zpath)
+    except Exception:
+        zip_sha256 = "?"
     cb("Installing…", "dim")
     try:
         with zipfile.ZipFile(zpath) as z:
@@ -6083,6 +7537,18 @@ def _apply_update_zip(cb):
         shutil.rmtree(tmp, ignore_errors=True)
         return (False, "Update archive was empty.")
     src_root, dst = roots[0], _app_dir()
+    ok_tree, missing = _validate_update_tree(src_root)
+    if not ok_tree:
+        shutil.rmtree(tmp, ignore_errors=True)
+        return (False, "The downloaded update doesn't look like a QA Studio "
+                       f"source tree (missing {', '.join(missing)}). Update "
+                       "aborted for your safety.")
+    try:
+        import diag_log
+        diag_log.log_warn("engine._apply_update_zip",
+                           f"applying commit {sha} — zip sha256={zip_sha256}")
+    except Exception:
+        pass
     try:
         for name in os.listdir(src_root):
             s = os.path.join(src_root, name)

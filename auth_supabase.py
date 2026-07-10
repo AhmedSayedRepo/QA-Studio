@@ -37,6 +37,11 @@ import threading
 
 import requests
 
+try:
+    import diag_log as _diag
+except Exception:
+    _diag = None
+
 # ── Config ───────────────────────────────────────────────────────────────────
 SUPABASE_URL = os.environ.get(
     "SUPABASE_URL", "https://psiyktcrggmgralyswua.supabase.co").rstrip("/")
@@ -77,13 +82,20 @@ CATALOG = [
     ("act.settings",      "Change settings",          "act"),
     ("nav.users",         "Users (admin)",            "nav"),
     ("act.manage_users",  "Manage users & roles",     "act"),
+    ("nav.ai_usage",      "AI Usage (admin)",         "nav"),
+    ("act.view_usage",    "View AI usage report (admin)", "act"),
 ]
 ALL_KEYS = [k for k, _, _ in CATALOG]
 NAV_KEYS = [k for k, _, kind in CATALOG if kind == "nav"]
 ACT_KEYS = [k for k, _, kind in CATALOG if kind == "act"]
 
-_NAV_NO_USERS = [k for k in NAV_KEYS if k != "nav.users"]
-_ACT_NO_MANAGE = [k for k in ACT_KEYS if k != "act.manage_users"]
+# nav.ai_usage / act.view_usage are held out of the Member preset (same as
+# nav.users / act.manage_users) — this report exposes every user's activity,
+# not just the signed-in user's own, so it defaults to Admin-only. The Edge
+# Function's own hard role check (see supabase/functions/ai-usage) is the real
+# security boundary; these presets just keep the nav/UI consistent with that.
+_NAV_NO_USERS = [k for k in NAV_KEYS if k not in ("nav.users", "nav.ai_usage")]
+_ACT_NO_MANAGE = [k for k in ACT_KEYS if k not in ("act.manage_users", "act.view_usage")]
 
 # Role presets (the starting point; admins can customise per user afterwards).
 ROLE_PRESETS = {
@@ -168,7 +180,13 @@ def _load_session():
         import store
         with open(_CACHE_FILE, "rb") as f:
             _session_data = json.loads(store._decrypt(f.read()).decode("utf-8"))
-    except Exception:
+    except FileNotFoundError:
+        _session_data = None   # normal — no cached session yet, not worth logging
+    except Exception as ex:
+        # A corrupt/undecryptable cache silently drops the user back to signed-out
+        # with no trace of why — worth a local log line so "I keep getting logged
+        # out" is diagnosable instead of a mystery.
+        if _diag: _diag.log("auth_supabase._load_session", ex)
         _session_data = None
     return _session_data
 
@@ -188,8 +206,11 @@ def _save_session(data):
         blob = store._encrypt(json.dumps(data).encode("utf-8"))
         with open(_CACHE_FILE, "wb") as f:
             f.write(blob)
-    except Exception:
-        pass
+    except Exception as ex:
+        # Silent failure here means sign-in APPEARS to succeed but the session
+        # never persists — the user gets signed out again on next launch with
+        # no indication why. Log it so that's diagnosable.
+        if _diag: _diag.log("auth_supabase._save_session", ex)
 
 
 # ── Identity helpers ─────────────────────────────────────────────────────────
@@ -295,7 +316,11 @@ def _refresh(refresh_token):
     try:
         r = _post_retry(f"{SUPABASE_URL}/auth/v1/token?grant_type=refresh_token",
                         json={"refresh_token": refresh_token})
-    except Exception:
+    except Exception as ex:
+        # Feeds acquire_silent()'s decision to wipe the session and bounce to
+        # the sign-in screen — worth a trace so a real outage vs. a token
+        # actually being dead aren't indistinguishable after the fact.
+        if _diag: _diag.log("auth_supabase._refresh", ex)
         return None
     if r.status_code != 200:
         return None
@@ -403,7 +428,11 @@ def revalidate():
     try:
         r = _client().get(f"{SUPABASE_URL}/auth/v1/user",
                           headers={"Authorization": f"Bearer {tok}"}, timeout=_TIMEOUT)
-    except Exception:
+    except Exception as ex:
+        # revalidate() is what picks up an admin's role/cap change without
+        # waiting for a token refresh — a silent failure here just means the
+        # change quietly doesn't take effect, with nothing to go on. Log it.
+        if _diag: _diag.log("auth_supabase.revalidate", ex)
         return None
     if r.status_code != 200:
         return None
@@ -599,3 +628,76 @@ def admin_set_org_email(sender, sender_name, app_password):
             "app_password": (app_password or "").strip()}
     ok, err = _org_settings_post({"key": "email", "value": value})
     return (True, "Email settings saved for everyone.") if ok else (False, err)
+
+
+# ── AI usage tracking (via the 'ai-usage' Edge Function) ──────────────────────
+# Same server-side-privileged pattern as org-settings/admin-users. Every
+# signed-in user may log THEIR OWN calls (the function derives user_id/email
+# from the caller's verified JWT — never from the request body, so a call
+# can't be logged under someone else's identity). Only an Admin may read the
+# cross-user report; that check is enforced server-side (hard role check, not
+# just a capability toggle) — see the security notes in
+# supabase/functions/ai-usage/index.ts.
+def log_ai_usage(provider, model, input_tokens, output_tokens, tag=None):
+    """Best-effort: upload one AI call's exact usage to the shared ai-usage
+    log, so an Admin can later pull a whole-org report. This NEVER raises and
+    NEVER blocks a caller on network trouble — it's a convenience mirror of
+    the local per-user usage log (which is the source of truth for the
+    signed-in user's OWN history and works fully offline); losing one upload
+    just means that one call is missing from the admin's cross-user report,
+    nothing else degrades. Returns True/False for callers that want to know,
+    but nobody is required to check it."""
+    if not configured():
+        return False
+    tok = access_token()
+    if not tok:
+        return False
+    try:
+        r = _client().post(_functions_url("ai-usage"),
+                           headers={"Authorization": f"Bearer {tok}"},
+                           json={"provider": provider, "model": model,
+                                 "input_tokens": int(input_tokens or 0),
+                                 "output_tokens": int(output_tokens or 0),
+                                 "tag": tag},
+                           timeout=_TIMEOUT)
+        return r.status_code == 200
+    except Exception:
+        return False
+
+
+def admin_get_ai_usage(start_date=None, end_date=None):
+    """Admin-only: fetch raw per-call usage rows across ALL users, optionally
+    bounded to [start_date, end_date] ('YYYY-MM-DD' strings, inclusive).
+    Returns (ok, rows_or_message). Each row is
+    {created_at, user_email, provider, model, input_tokens, output_tokens, tag}
+    — cost isn't included (computed locally from engine.PRICING so a price
+    change never needs a redeploy). A non-Admin caller gets a clean, friendly
+    'Admins only' message; the actual enforcement happens server-side
+    regardless of what this client sends."""
+    if not configured():
+        return False, "Auth is not configured."
+    tok = access_token()
+    if not tok:
+        return False, "You’re not signed in."
+    params = {}
+    if start_date:
+        params["start"] = start_date
+    if end_date:
+        params["end"] = end_date
+    try:
+        r = _client().get(_functions_url("ai-usage"),
+                          headers={"Authorization": f"Bearer {tok}"},
+                          params=params, timeout=_TIMEOUT)
+    except Exception as ex:
+        return False, f"Network error: {ex}"
+    if r.status_code == 404:
+        return False, ("The ‘ai-usage’ Edge Function isn’t deployed yet — see "
+                       "ADMIN_USERS_SETUP.md.")
+    if r.status_code == 403:
+        return False, "Admins only."
+    if r.status_code != 200:
+        return False, _friendly(r)
+    try:
+        return True, (r.json() or {}).get("rows", [])
+    except Exception as ex:
+        return False, f"Bad response from ai-usage: {ex}"

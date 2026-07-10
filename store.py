@@ -18,6 +18,11 @@ never fails on a non-Windows host and any crypto error degrades gracefully.
 import os, json, base64, ctypes, stat
 import ctypes.wintypes as wintypes
 
+try:
+    import diag_log as _diag
+except Exception:
+    _diag = None
+
 CRED_DIR  = os.path.join(os.path.expanduser("~"), ".qa_tool")
 _DEFAULT_FILE = os.path.join(CRED_DIR, "creds.dat")
 # Active credential file. Switched to a per-user file via set_user() so different
@@ -132,19 +137,40 @@ def _fernet_ok():
         return False
 
 
+_used_insecure_fallback = False   # set True the first time a save() falls through
+                                   # to plain base64 — see used_insecure_fallback()
+
+
+def used_insecure_fallback():
+    """True once this process has saved credentials with plain base64 instead
+    of DPAPI/Fernet — i.e. effectively unencrypted on disk. Callers (main.py)
+    can poll this after a save/load to surface a one-time warning to the
+    user; store.py itself stays UI-agnostic and never shows anything."""
+    return _used_insecure_fallback
+
+
 def _encrypt(plain):
     if _dpapi_ok():
         try:
             return _DPAPI_MAGIC + _dpapi("CryptProtectData", plain)
-        except Exception:
-            pass
+        except Exception as ex:
+            if _diag: _diag.log("store._encrypt.dpapi", ex)
     if _fernet_ok():
         try:
             from cryptography.fernet import Fernet
             return _FERNET_MAGIC + Fernet(_fernet_key()).encrypt(plain)
-        except Exception:
-            pass
-    return base64.b64encode(plain)            # last-resort fallback only
+        except Exception as ex:
+            if _diag: _diag.log("store._encrypt.fernet", ex)
+    # Last-resort fallback only — not real encryption. Flagged (not just
+    # logged) so a caller with UI access can warn the user their credentials
+    # are being stored in effectively-plaintext form.
+    global _used_insecure_fallback
+    _used_insecure_fallback = True
+    if _diag:
+        _diag.log_warn("store._encrypt",
+                        "DPAPI and Fernet both unavailable — saving credentials "
+                        "with base64 only (NOT encrypted).")
+    return base64.b64encode(plain)
 
 
 def _decrypt(raw):

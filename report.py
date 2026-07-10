@@ -136,9 +136,15 @@ def screen(app):
                                  app._clear_run_log, danger=True)],
                    vertical_alignment=ft.CrossAxisAlignment.CENTER),
             ft.Container(height=8),
+            # NOT wrapped in its own ft.SelectionArea — shell() (main.py) already
+            # wraps the whole screen body in one outer SelectionArea, so a nested
+            # one here is redundant and breaks Ctrl+C on this panel specifically
+            # (two overlapping SelectionArea widgets fight over which one owns
+            # the current selection for keyboard-shortcut purposes). Same fix as
+            # run.py's identical log panel and automation.py's Activity log —
+            # see either for the full writeup.
             ft.Container(
-                ft.SelectionArea(content=ft.Column(log_lines, spacing=2,
-                                                    scroll=ft.ScrollMode.AUTO, expand=True)),
+                ft.Column(log_lines, spacing=2, scroll=ft.ScrollMode.AUTO, expand=True),
                 height=240, bgcolor=T.CARD_2, border=ft.Border.all(1, T.BORDER),
                 border_radius=T.R, padding=12),
         ], spacing=0))

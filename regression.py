@@ -701,8 +701,19 @@ def _plan_html(d):
         _feat_grps_h.setdefault(
             (r.get("feature_id"), r.get("feature_name") or "No Feature"), []).append(r)
     _html_ncols = 4 + (1 if show_cases else 0)  # id + title + pri + [cases] + hours + asg
+    # Capped like every other email report's row list (build_report_email's
+    # per_story/skipped_items, build_sprint_summary_email's stories,
+    # build_ai_usage_email's rows) — a big regression/sprint plan can run into
+    # hundreds of stories, and listing every one makes the email huge and
+    # unreadable on a phone. The in-app Regression Plan screen is still the
+    # full source of truth. Stops mid-feature-group once the cap is hit so a
+    # feature header is never shown with zero stories under it.
+    _STORY_CAP_H = 150
     srows = []
+    _shown_h = 0
     for (_fid_h, _fname_h), _fstories_h in _feat_grps_h.items():
+        if _shown_h >= _STORY_CAP_H:
+            break
         _fid_label_h = f"[{_fid_h}]  " if _fid_h else ""
         srows.append(
             f"<tr style='background:{VIOLET_SOFT};border-top:2px solid {VIOLET}'>"
@@ -711,7 +722,10 @@ def _plan_html(d):
             f"text-transform:uppercase'>"
             f"Feature: {_fid_label_h}{_fname_h}</td></tr>")
         for r in _fstories_h:
+            if _shown_h >= _STORY_CAP_H:
+                break
             srows.append(_story_html_row(r))
+            _shown_h += 1
     _cols = [("Story", "14px", ""), ("Title", "8px", ""),
              ("Pri", "8px", "text-align:center")]
     if show_cases:
@@ -719,12 +733,16 @@ def _plan_html(d):
     _cols += [("Hours", "8px", "text-align:right"), ("Assignee", "14px", "")]
     story_tbl = (
         f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0' "
-        f"style='border:1px solid {LINE};border-radius:12px'>"
+        f"style='border:1px solid {LINE};border-radius:12px;min-width:520px'>"
         f"<tr style='background:{TINT}'>"
         + "".join(f"<td style='padding:10px {p};font-size:10.5px;letter-spacing:.5px;"
                   f"text-transform:uppercase;color:{INK3};font-weight:700;{a}'>{h}</td>"
                   for h, p, a in _cols)
         + "</tr>" + "".join(srows) + "</table>")
+    _plan_stories_more_h = (
+        f"<div style='margin-top:8px;font-size:11px;color:{INK3}'>&hellip; and "
+        f"{len(d['stories']) - _shown_h} more &middot; see the attached document for the "
+        f"full list</div>") if len(d["stories"]) > _shown_h else ""
 
     # workload bars
     wl_block = ""
@@ -800,19 +818,23 @@ def _plan_html(d):
         f"<div style='font-family:{MONO};font-size:11px;color:{INK3};margin-top:8px;"
         f"line-height:1.6'>The full plan is attached as a Word document. {footer_note}</div>")
 
-    return f"""<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'></head>
+    return f"""<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
+<style>@media only screen and (max-width:700px){{.qas-card{{width:100% !important;max-width:100% !important}}}}</style>
+</head>
 <body style='margin:0;padding:0;background:{PAPER};-webkit-text-size-adjust:100%'>
 <center style='width:100%;background:{PAPER}'>
 <table role='presentation' width='100%' cellpadding='0' cellspacing='0' style='background:{PAPER}'><tr>
 <td align='center' style='padding:26px 12px 48px'>
-<table role='presentation' width='680' cellpadding='0' cellspacing='0' style='width:680px;max-width:680px;background:{CARD};border:1px solid #DEDDE6;border-radius:16px;overflow:hidden;font-family:{UI};color:{INK}'>
+<table role='presentation' width='680' cellpadding='0' cellspacing='0' class='qas-card' style='width:680px;max-width:680px;background:{CARD};border:1px solid #DEDDE6;border-radius:16px;overflow:hidden;font-family:{UI};color:{INK}'>
   <tr><td style='height:3px;line-height:3px;font-size:0;background:{VIOLET}'>&nbsp;</td></tr>
   <tr><td style='padding:24px 32px 0'>{masthead}</td></tr>
   <tr><td style='padding:18px 32px 4px'>{hero}</td></tr>
   <tr><td style='padding:18px 32px 0'>{kpis}</td></tr>
   <tr><td style='padding:26px 32px 6px;border-top:1px solid {LINE}'>
     {_sec_head(VIOLET, 'Stories in scope', len(d.get('stories') or []))}
-    <div style='margin-top:14px'>{story_tbl}</div></td></tr>
+    <div style='margin-top:14px;overflow-x:auto;-webkit-overflow-scrolling:touch'>{story_tbl}</div>
+    {_plan_stories_more_h}
+    </td></tr>
   {wl_block}
   <tr><td style='padding:20px 32px 26px;border-top:1px solid {LINE};background:{TINT}'>{footer}</td></tr>
 </table>
