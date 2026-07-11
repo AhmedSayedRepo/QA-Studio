@@ -2,6 +2,22 @@
 Run:  pip install flet pillow anthropic openai azure-devops requests
       flet run main.py        (or)   python main.py
 """
+# ── Stale-bytecode guard ───────────────────────────────────────────────────
+# This folder commonly lives under Downloads, which is often OneDrive-synced.
+# mtime-based .pyc cache invalidation can misfire across cloud sync/clock skew,
+# so Python can silently keep executing an OLD cached __pycache__/*.pyc even
+# after the matching .py source was edited and saved on disk — every source
+# edit then appears to have "no effect" no matter how the file is rewritten.
+# Wipe any cached bytecode and skip writing new cache for this run, BEFORE any
+# local module below is imported, so every import always compiles from the
+# current source on disk. Must stay above every `import <local module>` line.
+import os as _os, shutil as _shutil, sys as _sys
+_sys.dont_write_bytecode = True
+_pc = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "__pycache__")
+if _os.path.isdir(_pc):
+    _shutil.rmtree(_pc, ignore_errors=True)
+del _pc, _os, _shutil, _sys
+
 import threading, traceback, time
 import flet as ft
 
@@ -4702,40 +4718,54 @@ class QAStudio:
                 "skipped": getattr(self, "_auto_skipped", 0)}
 
     def _auto_counts_header(self):
-        # Stacked layout (dot+count on top, label wrapped beneath) instead of a
-        # single unbounded Row — the old version crammed a colored dot, a long
-        # label ("Locators self-healed at runtime"), and the count value onto
-        # ONE line inside a ~185px-wide pill. A Row's children don't wrap, so
-        # once that line ran out of room the text just got clipped mid-word by
-        # the pill's own rounded corners instead of wrapping or shrinking.
-        # Putting the label in its own Text below the count — inside a Column,
-        # where width IS constrained by the container — lets it wrap onto up to
-        # two lines, with an ellipsis as a last-resort safety net so nothing is
-        # ever cut off raw.
+        # Restyled to match Run screen's stat_tile (ui.py) cards exactly —
+        # neutral card background + border, a small label row with a tone
+        # dot, and a big brand-gradient number underneath — instead of the
+        # solid-tinted colored pills this used before. Not calling stat_tile()
+        # directly: it builds its own number Text internally with no way to
+        # get a handle back, and _upd_todo/_upd_skipped (above) need to keep
+        # updating that Text in place on every TODO_LIVE/SKIPPED_LIVE line
+        # without a full app.render() (which would reset scroll position
+        # mid-run). This mirrors stat_tile's exact visual recipe by hand so
+        # that handle can be kept, same as the previous chip() closure did.
         c = self._auto_count()
         self._auto_count_ctl = {}
-        def chip(key, label, color, soft):
-            val = ft.Text(str(c[key]), size=17, weight=ft.FontWeight.BOLD, color=color)
-            self._auto_count_ctl[key] = val
+        def tile(key, label, dot_color):
+            num = ft.Text(str(c[key]), size=22, weight=ft.FontWeight.BOLD, color="#FFFFFF")
+            self._auto_count_ctl[key] = num
+            try:
+                num_display = ft.ShaderMask(
+                    content=num, blend_mode=ft.BlendMode.SRC_IN,
+                    shader=ft.LinearGradient(begin=ft.Alignment.TOP_LEFT,
+                                             end=ft.Alignment.BOTTOM_RIGHT,
+                                             colors=list(T.GRAD_LOGO)))
+            except Exception:
+                num.color = T.VIOLET_INK
+                num_display = num
             return ft.Container(
                 ft.Column([
-                    ft.Row([ft.Container(width=7, height=7, border_radius=4, bgcolor=color),
-                            val], spacing=6, alignment=ft.MainAxisAlignment.CENTER),
-                    ft.Text(label, size=10, weight=ft.FontWeight.W_600, color=T.INK_2,
-                            text_align=ft.TextAlign.CENTER, max_lines=2,
-                            overflow=ft.TextOverflow.ELLIPSIS),
-                ], spacing=4, tight=True, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
-                padding=ft.Padding.symmetric(vertical=10, horizontal=8),
-                bgcolor=soft, border_radius=T.R, expand=True,
-                alignment=ft.Alignment.CENTER)
+                    ft.Row([ft.Text(label, size=10.5, color=T.INK_2, weight=ft.FontWeight.BOLD,
+                                    expand=True, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
+                            ft.Container(width=8, height=8, bgcolor=dot_color, border_radius=5)],
+                           vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    num_display,
+                ], spacing=3),
+                padding=ft.Padding.symmetric(vertical=14, horizontal=12),
+                bgcolor=T.CARD, border=ft.Border.all(1, T.BORDER),
+                border_radius=T.R, expand=True)
         return ft.Row([
-            chip("todo", "Locators self-healed at runtime", T.VIOLET, T.VIOLET_SOFT),
-            chip("skipped", "Duplicate cases skipped", T.AMBER, T.AMBER_SOFT),
+            tile("todo", "Locators self-healed at runtime", T.VIOLET_INK),
+            tile("skipped", "Duplicate cases skipped", T.AMBER),
         ], spacing=7, vertical_alignment=ft.CrossAxisAlignment.STRETCH)
 
     def _auto_log_line(self, msg, tone):
+        # "case" (Sequencing/title/⏱ lines from engine.py's _compile_one) gets
+        # its own color — T.STORY, a brighter cyan than "story"/"info"'s
+        # VIOLET_INK — so a case's own group of lines visually stands apart
+        # from connection/retry/status noise around it, instead of blending
+        # into "dim" gray like everything else did before.
         cmap = {"ok": T.GREEN, "err": T.RED, "warn": T.AMBER, "story": T.VIOLET_INK,
-                "info": T.VIOLET_INK, "dim": T.INK_3}
+                "info": T.VIOLET_INK, "case": T.STORY, "dim": T.INK_3}
         color = cmap.get(tone, T.INK_2)
         stripped = (msg or "").lstrip(" ")
         indent = len(msg or "") - len(stripped)
@@ -4747,7 +4777,14 @@ class QAStudio:
         # RTL too, which garbled the English prefix/suffix around the title.
         is_ar = bool(stripped) and ("\u0600" <= stripped[0] <= "\u06ff")
         weight = ft.FontWeight.BOLD if tone in ("story", "ok") else ft.FontWeight.W_500
-        # tone symbol, matching the Run activity log (icon + colour, not a plain dot)
+        # A heartbeat line ("\u23f1 0:25") already carries its own leading glyph in
+        # the message text (engine.py) \u2014 giving it a second symbol in front
+        # doubled up visually ("\u2022 \u23f1 0:25"). Skip the symbol slot for those.
+        _has_own_symbol = stripped.startswith("\u23f1")  # \u23f1
+        # tone symbol, matching the Run activity log (icon + colour). "dim"
+        # used to be a plain gray dot; replaced with a small chevron so the
+        # (most common) plain progress/status lines read as a real marker
+        # instead of a bullet-list look.
         if tone == "ok":
             sym = ft.Icon(ft.Icons.CHECK, size=13, color=T.GREEN)
         elif tone == "err":
@@ -4758,25 +4795,54 @@ class QAStudio:
             sym = ft.Text("\u25b8", size=13, color=T.VIOLET_INK, weight=ft.FontWeight.BOLD)
         elif tone == "info":
             sym = ft.Icon(ft.Icons.PLAY_ARROW, size=13, color=T.VIOLET_INK)
-        else:  # dim (and unknown): a subtle bullet
-            sym = ft.Container(width=6, height=6, border_radius=3, bgcolor=T.INK_3)
-        sym_wrap = ft.Container(sym, width=16, alignment=ft.Alignment.CENTER,
-                                margin=ft.Margin.only(top=2))
+        elif _has_own_symbol:
+            sym = None
+        elif tone == "case":
+            sym = ft.Text("\u203a", size=14, color=T.STORY, weight=ft.FontWeight.BOLD)
+        else:  # dim (and unknown): a small chevron instead of a plain bullet dot
+            sym = ft.Text("\u203a", size=14, color=T.INK_3, weight=ft.FontWeight.BOLD)
+        # Hugged to the RIGHT of its slot (toward the text) instead of
+        # centered — centering a narrow glyph like "›" in a 16px box left
+        # visible dead space on both sides, reading as a gap between the
+        # symbol and the line instead of one connected entry.
+        sym_wrap = (ft.Container(sym, width=13, alignment=ft.Alignment.CENTER_RIGHT,
+                                 margin=ft.Margin.only(top=2))
+                    if sym is not None else ft.Container(width=13))
         # Trailing "\n" copy-separator fix REVERTED — see _render_one_log's
         # comment (Run/Report log): it visibly added extra vertical gaps
         # between every log line in the actual app, confirmed live. Use the
         # "Copy entire log" toolbar button instead until a copy-friendly fix
         # is found that doesn't touch visible layout.
+        # RIGHT-aligning Arabic lines was reverted: in this narrow (384px)
+        # rail, it left the tone icon pinned at the far left and the text
+        # pushed to the far right, reading as a broken/disconnected line
+        # instead of one entry. run.py's _render_one_log never right-aligns
+        # Arabic text either (only swaps the font) — matching that exactly.
         txt = ft.Text(stripped, size=12, color=color, weight=weight,
-                      font_family=(T.F_AR if is_ar else (T.F_MONO if tone in ("dim", "info") else None)),
-                      text_align=(ft.TextAlign.RIGHT if is_ar else ft.TextAlign.LEFT),
+                      font_family=(T.F_AR if is_ar else
+                                   (T.F_MONO if tone in ("dim", "info", "case") else None)),
+                      text_align=ft.TextAlign.LEFT,
                       expand=True)
         return ft.Container(
-            ft.Row([sym_wrap, ft.Container(width=4), txt], spacing=0,
+            ft.Row([sym_wrap, ft.Container(width=6), txt], spacing=0,
                    vertical_alignment=ft.CrossAxisAlignment.START),
             padding=ft.Padding.only(left=pad, top=1, bottom=1))
 
+    def _auto_log_scroll_end(self, col):
+        # ft.ListView had auto_scroll=True built in; the plain Column it was
+        # reverted to (see automation.screen()'s comment on why) doesn't, so
+        # this restores "follow the tail during a live run" manually. A large
+        # finite offset rather than an unbounded one — Flet's IPC payload is
+        # JSON, which has no real Infinity value. Best-effort: any failure
+        # here (e.g. the control isn't laid out yet on the very first call)
+        # just means the log doesn't auto-follow that one time, not a crash.
+        try:
+            col.scroll_to(offset=10_000_000, duration=100)
+        except Exception:
+            pass
+
     def _auto_logmsg(self, msg, tone="dim"):
+        import re as _re
         # 'TODO_LIVE: N' is a HIDDEN control line — update the TODO counter in place
         # (live, as cases are sequenced) without adding a visible log entry.
         if (msg or "").startswith("TODO_LIVE:"):
@@ -4817,10 +4883,33 @@ class QAStudio:
         # worker threads, the dup-check read + append must be atomic together
         # or two concurrent calls can both pass the check and double-append,
         # or interleave an append between another call's check and append.
+        #
+        # Provider-retry lines ("NVIDIA: provider error (503). Retrying… —
+        # waiting 2s then retry (1/5)…") aren't exact duplicates — only the
+        # delay/attempt count changes each retry — so the check above never
+        # caught them; a flaky provider could stack 4-5 near-identical lines
+        # in a row (confirmed live). Collapsing same-cause retries into ONE
+        # line that updates in place, same idea as Run's "still generating…"
+        # heartbeat (see _refresh_run's hb_id handling), without needing the
+        # full dict-based hb_id machinery Run uses — this just compares the
+        # message text with the "waiting Ns then retry (k/N)…" tail stripped
+        # off, and if that base matches the previous line's, replaces it
+        # in place instead of appending a new one.
+        _retry_base = _re.match(r"^(.*?)\s*—\s*waiting \d+s then retry \(\d+/\d+\)…$", msg or "")
         with self._auto_log_ui_lock:
             if self._auto_log and self._auto_log[-1].get("msg") == msg:
                 return
-            self._auto_log.append({"msg": msg, "tone": tone})
+            _inplace = False
+            if _retry_base and self._auto_log:
+                _prev_base = _re.match(
+                    r"^(.*?)\s*—\s*waiting \d+s then retry \(\d+/\d+\)…$",
+                    self._auto_log[-1].get("msg", "") or "")
+                if _prev_base and _prev_base.group(1) == _retry_base.group(1):
+                    self._auto_log[-1] = {"msg": msg, "tone": tone}
+                    _inplace = True
+            if not _inplace:
+                self._auto_log.append({"msg": msg, "tone": tone})
+            self._auto_log_last_inplace = _inplace
         def upd():
             try:
                 lock = getattr(self, "_auto_log_ui_lock", None)
@@ -4830,34 +4919,60 @@ class QAStudio:
                     col = getattr(self, "_auto_log_col", None)
                     if col is not None:
                         real = len(self._auto_log)
-                        have = len(col.controls)
-                        # render() rebuilds the column from self._auto_log, and this
-                        # incremental append can race it at run-end — appending a line
-                        # render already added (the duplicate "Stopped." etc.). Only
-                        # touch the column when it's actually behind self._auto_log.
-                        if real == 1 and have <= 1:
-                            # replace the empty-state placeholder with the first line
-                            first = self._auto_log[0]
-                            col.controls = [self._auto_log_line(first["msg"], first["tone"])]
-                            col.update()
-                        elif have < real:
-                            # Catch the column up to the FULL current log, in source
-                            # order — NOT just this call's own (msg, tone). ui_safe()
-                            # hands each call's UI update to Flet's page.run_thread,
-                            # which starts a brand-new thread per call with no
-                            # ordering guarantee, so several updates can be in
-                            # flight and finish in any order. Reading fresh from
-                            # self._auto_log[have:real] (rather than the value this
-                            # particular closure captured) means whichever update
-                            # happens to run — first, last, or anywhere between —
-                            # always renders every missing line in the right order,
-                            # so the screen can't end up scrambled relative to the
-                            # (always correctly-ordered) underlying log list.
-                            for entry in self._auto_log[have:real]:
-                                col.controls.append(
-                                    self._auto_log_line(entry["msg"], entry["tone"]))
-                            col.update()
-                        # have >= real → render already has this line; skip (no dup)
+                        # The empty-state placeholder is ONE control but ZERO log
+                        # lines — it's flagged explicitly at both build sites
+                        # (automation.screen / _clear_auto_log below) so it can't
+                        # be mistaken for a rendered line. The old heuristic
+                        # (real == 1 and have <= 1) missed the case where TWO
+                        # lines land before the first upd() runs: it took the
+                        # have<real append path, which left the placeholder on
+                        # screen as row 0 and dropped line 1 forever.
+                        if getattr(col, "_qa_placeholder", False):
+                            if real > 0:
+                                col.controls = [self._auto_log_line(e["msg"], e["tone"])
+                                                for e in self._auto_log]
+                                col._qa_placeholder = False
+                                col.update()
+                                self._auto_log_scroll_end(col)
+                        else:
+                            have = len(col.controls)
+                            # render() rebuilds the column from self._auto_log, and
+                            # this incremental append can race it at run-end —
+                            # appending a line render already added (the duplicate
+                            # "Stopped." etc.). Only touch the column when it's
+                            # actually behind self._auto_log.
+                            if have < real:
+                                # Catch the column up to the FULL current log, in
+                                # source order — NOT just this call's own (msg,
+                                # tone). ui_safe() hands each call's UI update to
+                                # Flet's page.run_thread, which starts a brand-new
+                                # thread per call with no ordering guarantee, so
+                                # several updates can be in flight and finish in
+                                # any order. Reading fresh from
+                                # self._auto_log[have:real] (rather than the value
+                                # this particular closure captured) means whichever
+                                # update happens to run — first, last, or anywhere
+                                # between — always renders every missing line in
+                                # the right order, so the screen can't end up
+                                # scrambled relative to the (always correctly-
+                                # ordered) underlying log list.
+                                for entry in self._auto_log[have:real]:
+                                    col.controls.append(
+                                        self._auto_log_line(entry["msg"], entry["tone"]))
+                                col.update()
+                                self._auto_log_scroll_end(col)
+                            elif (have == real and have > 0
+                                  and getattr(self, "_auto_log_last_inplace", False)):
+                                # A retry line was collapsed into the existing last
+                                # entry above (same count, content changed) rather
+                                # than appended — re-render just that one row.
+                                last = self._auto_log[-1]
+                                col.controls[-1] = self._auto_log_line(
+                                    last["msg"], last["tone"])
+                                col.update()
+                                self._auto_log_last_inplace = False
+                            # have >= real (and not an in-place edit) → render
+                            # already has this line; skip
                     ctl = getattr(self, "_auto_count_ctl", None)
                     if ctl:
                         c = self._auto_count()
@@ -5032,10 +5147,18 @@ class QAStudio:
         col = getattr(self, "_auto_log_col", None)
         if col is not None:
             try:
-                col.controls = [empty_state(
+                # Fixed-height wrapper: see automation.py's screen() comment on
+                # the same construct — empty_state()'s own expand=True can't
+                # be a direct child of this scroll=AUTO column (unbounded
+                # scroll-axis constraint), which was blanking the whole
+                # Activity card, not just the log, right after Clear.
+                col.controls = [ft.Container(empty_state(
                     ft.Icons.TERMINAL, "No activity yet",
                     "Fill in the site and Git details, then Generate — "
-                    "each step shows up here live.")]
+                    "each step shows up here live."), height=320)]
+                # Back to placeholder state — see _auto_logmsg's upd(): the next
+                # real line must REPLACE this control, not append after it.
+                col._qa_placeholder = True
                 col.update()
                 return
             except Exception:

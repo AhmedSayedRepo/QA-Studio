@@ -15,7 +15,18 @@ set "ZIP=%TEMP%\qastudio_src.zip"
 set "WORK=%TEMP%\qastudio_src"
 
 rem --- find Python; if missing, INSTALL IT AUTOMATICALLY (no manual download) ---
+rem QA Studio is built/tested against 3.12 specifically (flet==0.85.3 pinned in
+rem requirements.txt was never validated on newer Python releases). `py -3`
+rem alone resolves to whichever 3.x is HIGHEST on this machine, so installing
+rem ANY newer Python later (e.g. as a side effect of setting up Node.js/
+rem Playwright, which was seen live to silently pull in a "latest" Python)
+rem retargets every future launch to that newer interpreter with no visible
+rem warning ??? same site-packages pin (flet 0.85.3), different Python minor
+rem version, and DevOps/Flet's desktop rendering isn't guaranteed to behave
+rem identically there. Prefer an exact 3.12 match first; only fall back to
+rem whatever `py -3`/`python` resolves to if 3.12 truly isn't installed.
 set "PY="
+if not defined PY ( py -3.12 --version >nul 2>&1 && set "PY=py -3.12" )
 if not defined PY ( py -3 --version   >nul 2>&1 && set "PY=py -3" )
 if not defined PY ( python --version  >nul 2>&1 && set "PY=python" )
 
@@ -24,6 +35,7 @@ if not defined PY (
   rem 1) winget (built into Windows 10/11) - silent, adds Python to PATH
   where winget >nul 2>&1 && winget install --id Python.Python.3.12 -e --scope user --silent --accept-package-agreements --accept-source-agreements
 )
+if not defined PY ( py -3.12 --version >nul 2>&1 && set "PY=py -3.12" )
 if not defined PY ( py -3 --version   >nul 2>&1 && set "PY=py -3" )
 if not defined PY ( python --version  >nul 2>&1 && set "PY=python" )
 
@@ -37,6 +49,7 @@ if not defined PY (
     del "%TEMP%\python-setup.exe" >nul 2>&1
   )
 )
+if not defined PY ( py -3.12 --version >nul 2>&1 && set "PY=py -3.12" )
 if not defined PY ( py -3 --version   >nul 2>&1 && set "PY=py -3" )
 if not defined PY ( python --version  >nul 2>&1 && set "PY=python" )
 if not defined PY (
@@ -55,7 +68,11 @@ if not defined PY (
 )
 
 rem --- find pythonw (windowless) to launch the GUI without a console box ---
-set "PYW=pyw -3"
+rem Mirror whichever %PY% was actually resolved above (3.12 if available) so
+rem installer.py ??? which does its own pip install + bakes ITS OWN
+rem sys.executable into the Desktop shortcut ??? doesn't independently drift to
+rem a different/newer Python than the one just picked.
+if "%PY%"=="py -3.12" ( set "PYW=pyw -3.12" ) else ( set "PYW=pyw -3" )
 where pyw >nul 2>&1 || set "PYW=pythonw"
 %PYW% --version >nul 2>&1 || set "PYW=%PY%"
 
@@ -101,6 +118,8 @@ echo Launching installer...
 start "" %PYW% "%DEST%\installer.py"
 
 endlocal
+
+
 
 
 

@@ -9,7 +9,15 @@ rem the frozen build, downloads the new exe from the latest GitHub release, and
 rem swaps itself on next close).
 
 rem 1) tooling
-py -3 -m pip install --upgrade flet pyinstaller >nul 2>&1
+rem Pinned to 3.12 (see launch.bat/install.bat for why: `py -3` drifts to
+rem whichever 3.x is highest on this machine, and flet==0.85.3 was never
+rem validated against newer releases). Also stopped blindly `--upgrade`-ing
+rem flet on every build — that silently overrides the flet==0.85.3 pin in
+rem requirements.txt with whatever's newest on PyPI at build time, which
+rem defeats the whole point of pinning it. Installs the exact pinned
+rem versions from requirements.txt instead, plus pyinstaller (unpinned,
+rem build-tool-only, not part of the shipped app).
+where py >nul 2>&1 && (py -3.12 -m pip install --upgrade -r requirements.txt pyinstaller >nul 2>&1) || (py -3 -m pip install --upgrade -r requirements.txt pyinstaller >nul 2>&1)
 
 rem 2) clean previous build
 if exist build rmdir /s /q build

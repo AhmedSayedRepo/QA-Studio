@@ -8463,7 +8463,7 @@ def validate_and_sequence_suite(stories_payload, log=None, want_ai=True,
     log("Sequencing %d test case(s) — this is the slow part (one AI pass each)…"
         % _total, "info")
 
-    def _compile_one(tc, story, case_no):
+    def _compile_one(tc, story, case_no, seq_no=None, seq_total=None):
         """Runs on a worker thread: classify/bucket + compile_test_case (with
         its own retry-on-recoverable-error loop) for ONE case. Returns a
         result dict; does NOT touch has_app/has_positive_login/_todo_running/
@@ -8473,12 +8473,33 @@ def validate_and_sequence_suite(stories_payload, log=None, want_ai=True,
         later skipped as non-automatable — the ORIGINAL sequential code set
         both accumulators BEFORE its skip check ran, so a skipped bucket-3
         case could still flip has_app; that quirk is preserved here
-        deliberately, not "fixed", to avoid changing sequencing behavior."""
+        deliberately, not "fixed", to avoid changing sequencing behavior.
+        seq_no/seq_total are the same "k/N" already announced by the
+        submission loop's "Sequencing case k/N" line — stamped onto this
+        title line too because the two can log seconds apart and completely
+        out of order (compile runs concurrently across worker threads), with
+        nothing else tying a given title back to which case it belongs to."""
         _ctitle = (tc.get("title", "") or "").strip()
         # Always log a description line, even when the generated case has no
         # title — otherwise the entry renders blank with no way to tell which
         # case it was (previously silently skipped when _ctitle was empty).
-        log("  %s" % (_ctitle[:90] if _ctitle else "(untitled test case)"), "dim")
+        _body = _ctitle[:90] if _ctitle else "(untitled test case)"
+        # RTL/LTR: the "#k/N" tag has to sit on whichever SIDE keeps the
+        # title's own script leading the line — putting it in FRONT of an
+        # Arabic title broke RTL detection (main.py's _auto_log_line only
+        # checks the line's first character) and produced a visually mixed
+        # LTR-tag-then-RTL-text line. For an Arabic title the tag goes at the
+        # end instead, so the Arabic text still opens the line.
+        _is_ar_title = bool(_ctitle) and ("؀" <= _ctitle[0] <= "ۿ")
+        if seq_no:
+            _line = ("  %s · #%d/%d" % (_body, seq_no, seq_total) if _is_ar_title
+                     else "  #%d/%d · %s" % (seq_no, seq_total, _body))
+        else:
+            _line = "  %s" % _body
+        # "case" tone (not "dim") — a distinct accent color so a case's own
+        # progress/title lines read as one visual group, separate from
+        # connection/retry/status noise around them.
+        log(_line, "case")
         _case_start = time.time()   # ⏱ per-case sequencing time, same convention
                                     # as the Run log's create/update timing
         ctype = _classify_case(tc)
@@ -8533,7 +8554,15 @@ def validate_and_sequence_suite(stories_payload, log=None, want_ai=True,
                     return {"abort": True}   # user chose Stop (should_stop is now True)
         if not intents:
             intents = _intents_from_raw_steps(tc)
-        log("  ⏱ %s" % _fmt_mmss(time.time() - _case_start), "dim")
+        # Stamped with the same "#k/N" as the title line, for the same reason:
+        # with _COMPILE_WORKERS running concurrently, a case's heartbeat can
+        # land seconds before OR after an unrelated case's title line — with
+        # nothing tying it to a case number, it's impossible to tell which
+        # case just finished (confirmed live: this line and "#k/N · title"
+        # interleave out of order relative to each other once a few cases hit
+        # provider retries and finish at different speeds).
+        _tag = (" · #%d/%d" % (seq_no, seq_total)) if seq_no else ""
+        log("  ⏱ %s%s" % (_fmt_mmss(time.time() - _case_start), _tag), "case")
         # A case that drives username/password fields belongs on the LOGIN page,
         # not the app page — otherwise it runs logged-in against BASE_URL where
         # those fields don't exist (guaranteed failure). Pull it back to a
@@ -8564,8 +8593,9 @@ def validate_and_sequence_suite(stories_payload, log=None, want_ai=True,
                     "expected": "", "from_steps": []})
                 has_assert = True
             else:
+                _skip_tag = ("#%d/%d · " % (seq_no, seq_total)) if seq_no else ""
                 log(f"    skipping non-automatable case (no actions): "
-                    f"{tc.get('title','')[:40]}", "warn")
+                    f"{_skip_tag}{tc.get('title','')[:40]}", "warn")
                 return {"skip": True, "has_app": has_app, "has_positive_login": positive_login}
         case_dict = {"tc": tc, "title": tc.get("title", ""), "ctype": ctype,
                     "page_context": pctx, "bucket": bucket, "intents": intents}
@@ -8605,9 +8635,21 @@ def validate_and_sequence_suite(stories_payload, log=None, want_ai=True,
                 _done += 1
                 # Counter (LTR) and the case title on SEPARATE lines — so an Arabic (RTL)
                 # title renders right-aligned on its own line instead of fighting the
-                # left-to-right "Sequencing case k/N" text.
-                log("Sequencing case %d/%d" % (_done, _total), "dim")
-                fut = _ex.submit(_compile_one, tc, story, i)
+                # left-to-right "Sequencing case k/N" text. "case" tone (not "dim") so
+                # this and its matching title line read as one visual group.
+                log("Sequencing case %d/%d" % (_done, _total), "case")
+                # _done is captured NOW (submission order) and threaded through to
+                # _compile_one so its own title log line can stamp the same "k/N"
+                # onto itself. Cases compile concurrently across _COMPILE_WORKERS
+                # threads, so a case's title can log seconds after (and completely
+                # out of order relative to) its own "Sequencing case k/N" line —
+                # confirmed live: cases 3-18 of a 19-case story showed no title at
+                # all, only 1, 2 and the last few, because those finished fast
+                # enough to log right after their own progress line while the
+                # others' titles landed much later, buried under retry noise with
+                # nothing tying them back to a case number. Self-labeling each
+                # title line makes it identifiable regardless of arrival order.
+                fut = _ex.submit(_compile_one, tc, story, i, _done, _total)
                 _futs[fut] = i
             for fut in _cf_vs.as_completed(_futs):
                 res = fut.result()

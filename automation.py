@@ -276,16 +276,60 @@ def screen(app):
         # after Generate starts, before anything has rendered into the new
         # column yet — completely blank despite a run actively in progress.
         # Same root cause/fix shape as run.py's screen() rebuild.
+        #
+        # CONFIRMED (flet-dev/flet#6087 — "Large empty blank area when using
+        # Column with expand=True and scroll on desktop", Windows, same
+        # symptom): a `ft.Column(..., scroll=..., expand=True)` is a known-broken
+        # combo on Flet desktop — Column's scroll support is a SingleChildScroll-
+        # View wrapped around a plain Column under the hood, and giving that
+        # inner Column expand=True while its own parent is unbounded (which is
+        # exactly this panel's chain of nested expand=True Containers, never
+        # pinned to a concrete pixel height until the outer Row's cross-axis
+        # stretch, several levels up) is the textbook Flutter "RenderFlex
+        # children have non-zero flex but incoming height constraints are
+        # unbounded" conflict — it doesn't crash, it just silently renders
+        # blank. Run's own log column (run.py) uses this exact same
+        # Column(scroll=, expand=True) shape and is fine ONLY because it's
+        # wrapped in a Container with a literal height=380 one level up —
+        # never true here, where the log area is meant to fill whatever
+        # vertical space is left, not a fixed box.
+        #
+        # Reverted from ft.ListView back to Column(scroll=..., expand=True) —
+        # ListView fixed the blank-panel bug at the time, but that bug's REAL
+        # cause (found this session) was a missing expand=True several levels
+        # up the ancestor chain, not the Column/ListView choice itself; now
+        # that the chain is fixed, Column works fine here too, same as it
+        # always has in run.py/report.py. Switching back also fixes text
+        # selection/copy: ListView lazily builds only its visible rows, and
+        # Flutter's SelectionArea (wrapping the whole screen body, see
+        # shell()) can't reliably register selectable text in rows that
+        # aren't built yet — this is why the log couldn't be drag-selected or
+        # Ctrl+C copied. A plain Column has no such virtualization, matching
+        # run.py's/report.py's already-working, already-copyable log panels.
+        # `.controls` still works the same way main.py's _auto_logmsg/
+        # _clear_auto_log read and mutate it (same API surface as ListView).
         with app._auto_log_ui_lock:
             log_lines = [app._auto_log_line(ln.get("msg", ""), ln.get("tone", "dim"))
                          for ln in app._auto_log]
             if not log_lines:
-                log_lines = [empty_state(
+                # A flex/expand=True ITEM still can't size itself inside a
+                # SCROLLING column — that's a hard Flutter constraint (there's
+                # no maximum to "expand" to on the scroll axis), unrelated to
+                # the ancestor-chain bug above — so the empty-state
+                # placeholder keeps its fixed-height wrapper regardless.
+                log_lines = [ft.Container(empty_state(
                     ft.Icons.TERMINAL, "No activity yet",
                     "Fill in the site and Git details, then Generate — "
-                    "each step shows up here live.")]
-            app._auto_log_col = ft.Column(log_lines, spacing=3, scroll=ft.ScrollMode.AUTO,
-                                           expand=True, auto_scroll=True)
+                    "each step shows up here live."), height=320)]
+            app._auto_log_col = ft.Column(controls=log_lines, spacing=3,
+                                          scroll=ft.ScrollMode.AUTO, expand=True)
+            # Flag set ONLY while the single control is the empty-state
+            # placeholder (zero real log lines). _auto_logmsg's upd() (main.py)
+            # checks this to know it must REPLACE the controls list rather than
+            # append after the placeholder — a plain len() heuristic can't tell
+            # "1 placeholder" from "1 rendered line", and got it wrong whenever
+            # two log lines landed before the first upd() ran.
+            app._auto_log_col._qa_placeholder = not app._auto_log
 
         spinner = (ft.ProgressRing(width=15, height=15, stroke_width=2, color=T.VIOLET)
                    if app._auto_running else ft.Icon(ft.Icons.TERMINAL, size=15, color=T.INK_3))
@@ -323,53 +367,56 @@ def screen(app):
             margin=ft.Margin.only(bottom=10),
             border=ft.Border.only(bottom=ft.BorderSide(1, T.BORDER)))
 
-        # `right` is the card Container itself (NOT wrapped in an outer
-        # ft.Column) so shell()'s _install_top_gap (main.py) treats it the same
-        # way it already treats Setup's right panel (_setup_right(), which
-        # likewise returns a card()/Container directly): as an opaque "static
-        # side card" that gets its header-gap spacer stacked ABOVE it as a
-        # sibling. When this was a bare ft.Column([card(...)]) instead,
-        # _install_top_gap's Row-handling saw a Column and spliced the spacer
-        # straight into ITS OWN controls list (ahead of the card, inside a
-        # non-scrolling expand=True Column) rather than wrapping around it —
-        # the "static side card" branch never ran. That is the one path in
-        # _install_top_gap not covered by any other screen's right-hand panel
-        # (Setup's is already Container-shaped; Run's whole body is a single
-        # scrolling Column, a different branch entirely), so it went
-        # unnoticed until Automation's Activity panel was compared side by
-        # side against Setup's and came up empty/misplaced.
+        # ACTUAL root cause, found by comparing against setup.py's _setup_right()
+        # — the one other screen that shares Automation's exact `Row([Container
+        # (left, expand=True), Container(right, width=N)])` shell shape and is
+        # NOT reported broken. run.py (the earlier "mirror" reference) doesn't
+        # count as a real precedent for this bug: its body is a bare ft.Column,
+        # not a Row with a static side card, so its log card never passes
+        # through shell()'s _install_top_gap() Row-handling branch at all.
+        # That branch (main.py) re-wraps any Row child whose `.content` isn't
+        # itself a bare Column — which is exactly what `card(...)` produces —
+        # into a NEW `ft.Column([spacer, inner], expand=True)`. `_setup_right()`
+        # passes expand=True on BOTH its inner Column and the outer card()
+        # Container; the previous version of `right` here (this session) had
+        # neither, so `inner` had no expand of its own to participate correctly
+        # as a flex child of that freshly-created expand=True wrapper Column —
+        # resolving to zero/collapsed height, rendering nothing at all (not
+        # even the card's own border/background), matching every screenshot
+        # exactly, including a bright test banner placed as the very first
+        # child. Fixed by matching _setup_right()'s exact shape: expand=True
+        # on the inner Column AND on the outer card() Container. The log's own
+        # fixed height=460 Container is kept — that part was a separate, real
+        # fix (ft.ListView needs a bounded-height ancestor).
+        # Second real issue, found via the DIAG2 banner: a plain Text/Container
+        # child rendered fine as the first item, but everything after it —
+        # starting with app._auto_counts_header() — did not. That header
+        # returns a bare ft.Row whose two chip() children each carry their
+        # own expand=True; placed as a plain (non-expand) child of a Column,
+        # that Row has no explicit height and nothing pinning one, same class
+        # of "flex child needs a concrete extent from somewhere" issue already
+        # solved for the log ListView (height=460) and the empty-state
+        # placeholder (height=320) — just not yet applied to this Row or to
+        # log_toolbar's Row (which also has an expand=True child, the
+        # "ACTIVITY" label). Wrapping both in their own fixed-height
+        # Containers, matching the same proven pattern.
         right = card(ft.Column([
-            app._auto_counts_header(),
+            ft.Container(app._auto_counts_header(), height=76),
             ft.Container(height=12),
-            ft.Container(
-                ft.Column([
-                    log_toolbar,
-                    # NOT wrapped in its own ft.SelectionArea: shell() already
-                    # wraps the ENTIRE screen body in one outer SelectionArea
-                    # (main.py, around the body/GestureDetector), so this text
-                    # is already selectable — a SECOND, nested SelectionArea
-                    # here was both redundant AND the actual root cause of the
-                    # "Activity log doesn't work" report. Flutter's SelectionArea
-                    # auto-scrolls its wrapped Scrollable during a selection drag
-                    # via _ScrollableSelectionContainerDelegate, which needs a
-                    # concretely-bounded scroll extent; app._auto_log_col here has
-                    # no fixed height of its own — its size only ever resolves
-                    # through a chain of nested expand=True Containers/Columns,
-                    # never a concrete pixel bound like run.py's log panel (which
-                    # wraps the same SelectionArea+scroll_col pattern inside a
-                    # FIXED height=380 Container instead of expand=True). Nesting
-                    # a second SelectionArea around an expand-only Scrollable hits
-                    # Flutter's own known bug class here (an unresolved/undefined
-                    # scroll offset breaks the inner Scrollable's gestures/paint —
-                    # see upstream flutter/flutter#183079, "guard auto-scroll
-                    # against Offset.infinite in _ScrollableSelectionContainerDelegate").
-                    # Dropping the inner SelectionArea removes the broken codepath
-                    # entirely while keeping the column's own expand+scroll=AUTO
-                    # (needed for live auto-scroll during a run) intact.
-                    ft.Container(app._auto_log_col, expand=True),
-                ], spacing=0, expand=True),
-                expand=True, bgcolor=T.CARD_2,
-                border=ft.Border.all(1, T.BORDER), border_radius=T.R, padding=12),
+            ft.Container(log_toolbar, height=50),
+            # NOT wrapped in its own ft.SelectionArea — shell() already wraps
+            # the entire screen body in one outer SelectionArea, so this text
+            # is already selectable (drag-select + Ctrl+C), same as run.py/
+            # report.py's log panels; a second, nested SelectionArea here
+            # would fight the outer one instead of helping.
+            # expand=True instead of a fixed height — now that the ancestor
+            # chain properly threads expand=True all the way down (see the
+            # `right`/counts-header/toolbar fixes above), this can fill
+            # whatever space is actually left instead of stopping at a
+            # guessed pixel value and leaving a gap at the bottom of the card.
+            ft.Container(app._auto_log_col, expand=True, bgcolor=T.CARD_2,
+                        border=ft.Border.all(1, T.BORDER), border_radius=T.R,
+                        padding=12),
         ], spacing=0, expand=True), expand=True)
 
         body = ft.Row([ft.Container(left, expand=True),
