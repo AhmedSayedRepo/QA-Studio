@@ -306,11 +306,17 @@ def _resolve_reg_features(app, stories, gen=None):
         pass
 
 
-def _fetch_cp_complexity(app, ids):
-    """Rough 'amount of work' units per story from its CONTENT — acceptance
-    criteria (weighted most), description, and title word counts. Lets the sprint
-    estimate reflect each story's complexity/size instead of a random number.
-    Returns {story_id: units(float)}; falls back to {} on error."""
+def _cp_plain(html):
+    s = re.sub(r"<[^>]+>", " ", html or "")
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _cp_fetch_fields(app, ids):
+    """Batch-fetch Title/Description/AcceptanceCriteria (plain-text) for a
+    list of work-item ids via raw REST (this module doesn't use the SDK
+    work-item client _resolve_ac_links relies on in engine.py — same idea,
+    reimplemented over E._azure_get's batching instead). Returns
+    {id: {"title","desc","crit"}}; missing/failed ids are just absent."""
     ids = [int(i) for i in ids if i]
     if not ids:
         return {}
@@ -318,11 +324,6 @@ def _fetch_cp_complexity(app, ids):
     flds = ("System.Id,System.Title,System.Description,"
             "Microsoft.VSTS.Common.AcceptanceCriteria")
     out = {}
-
-    def _plain(html):
-        s = re.sub(r"<[^>]+>", " ", html or "")
-        return re.sub(r"\s+", " ", s).strip()
-
     for i in range(0, len(ids), 200):
         batch = ids[i:i + 200]
         url = (f"https://dev.azure.com/{org}/{proj}/_apis/wit/workitems"
@@ -333,14 +334,241 @@ def _fetch_cp_complexity(app, ids):
             data = {}
         for w in data.get("value", []):
             f = w.get("fields", {})
-            crit = _plain(f.get("Microsoft.VSTS.Common.AcceptanceCriteria", ""))
-            desc = _plain(f.get("System.Description", ""))
-            title = f.get("System.Title", "") or ""
-            units = (len(crit.split()) * 1.0
-                     + len(desc.split()) * 0.4
-                     + len(title.split()) * 0.2)
-            out[int(w["id"])] = max(1.0, units)
+            out[int(w["id"])] = {
+                "title": f.get("System.Title", "") or "",
+                "desc": _cp_plain(f.get("System.Description", "")),
+                "crit": _cp_plain(f.get("Microsoft.VSTS.Common.AcceptanceCriteria", "")),
+            }
         _time.sleep(0.05)   # background; yield GIL so the Sprint table stays responsive
+    return out
+
+
+def _fetch_cp_complexity(app, ids):
+    """Rough 'amount of work' units per story from its CONTENT — acceptance
+    criteria (weighted most), description, and title word counts. Lets the sprint
+    estimate reflect each story's complexity/size instead of a random number.
+    Returns (units, texts): units={story_id: units(float)}, falls back to {}
+    on error; texts={story_id: {"title","desc","crit"}} (AC-link-resolved,
+    see below) is also returned so _fetch_cp_ai_complexity can reuse the same
+    fetched text instead of hitting Azure DevOps a second time."""
+    texts = _cp_fetch_fields(app, ids)
+    if not texts:
+        return {}, {}
+
+    # Some stories' AC field is just a pasted link to another story ("same
+    # requirements as <link>") instead of restating the rules — same blind
+    # spot already fixed for test-case generation (engine.py's
+    # _resolve_ac_links). Left alone, a story like that scores as trivially
+    # simple by word count no matter how complex the linked story actually
+    # is. Reuses engine.py's link regex (E._AC_WI_LINK_RE) so both features
+    # recognize the same link formats; fetches the referenced stories' own
+    # AC via the same REST batching above rather than the SDK client
+    # _resolve_ac_links uses, since this module doesn't connect the SDK.
+    link_map, referenced = {}, set()
+    for sid, t in texts.items():
+        found = []
+        for m in E._AC_WI_LINK_RE.finditer(t["crit"]):
+            wid = m.group(1) or m.group(2)
+            if not wid:
+                continue
+            wid = int(wid)
+            if wid != sid and wid not in found:
+                found.append(wid)
+            if len(found) >= 3:
+                break
+        if found:
+            link_map[sid] = found
+            referenced.update(found)
+    if referenced:
+        missing = referenced - set(texts.keys())
+        linked = _cp_fetch_fields(app, list(missing)) if missing else {}
+        linked.update({w: texts[w] for w in referenced if w in texts})  # already-fetched ones
+        for sid, wids in link_map.items():
+            extra = "\n\n".join(
+                f"[Referenced story #{w} — {linked[w]['title']}]\n{linked[w]['crit']}"
+                for w in wids if w in linked and linked[w]["crit"])
+            if extra:
+                texts[sid]["crit"] = (texts[sid]["crit"] + "\n\n" + extra).strip()
+
+    units = {}
+    for sid, t in texts.items():
+        u = (len(t["crit"].split()) * 1.0
+             + len(t["desc"].split()) * 0.4
+             + len(t["title"].split()) * 0.2)
+        units[sid] = max(1.0, u)
+    return units, texts
+
+
+# ── AI-based complexity scoring (augments, never replaces, the word-count
+# heuristic above) ───────────────────────────────────────────────────────────
+# Design consulted with Claude Fable 5: a weak/free-tier model is far more
+# reliable at COUNTING objective facets in a story's text (mechanical
+# pattern-matching) than at directly judging "how complex is this, 1-10"
+# (abstract self-applied judgment, the same class of unreliability behind
+# this app's other prompt fixes). So the model only ever counts; the actual
+# score is computed deterministically in Python from those counts
+# (_cp_facet_score), which is what makes scores comparable across
+# independently-scored CHUNKS of the sprint even though no single AI call
+# ever sees the whole sprint or knows about hours/min/max.
+_CP_CHUNK_SIZE = 10   # stories per AI call — big enough to keep call count low
+                      # for a large sprint, small enough to avoid truncation/
+                      # attention dilution on a weak model (Fable's rec)
+_CP_AI_WORKERS = 2
+_CP_FACET_WEIGHTS = {"rules": 1.0, "surfaces": 1.5, "actors": 0.5, "negatives": 0.75}
+_CP_FACET_CAPS = {"rules": 25, "surfaces": 5, "actors": 10, "negatives": 15}
+
+
+def _cp_facet_prompt(chunk):
+    """chunk: list of (story_id, {"title","desc","crit"}). The model is
+    deliberately never told about hours, min/max, or other chunks — only
+    asked to count objective facets in the text it's given, so its output is
+    comparable across independently-run chunks by construction."""
+    lines = []
+    for sid, t in chunk:
+        title = (t.get("title") or "")[:200]
+        desc = " ".join((t.get("desc") or "").split()[:80])
+        crit = " ".join((t.get("crit") or "").split()[:150])
+        lines.append(f"### Story {sid}\nTitle: {title}\nDescription: {desc}\n"
+                     f"Acceptance criteria: {crit}\n")
+    stories_block = "\n".join(lines)
+    ids_list = ", ".join(str(sid) for sid, _ in chunk)
+    return f"""
+You analyze user stories to count objective complexity facets. Do NOT estimate
+hours, story points, or a difficulty rating — only count what is literally
+stated or clearly implied by the text below.
+
+For EACH story, count:
+- rules: number of distinct testable rules/behaviors in the acceptance criteria
+- surfaces: number of distinct layers touched (UI, API, database, external
+  system, background job) — count each layer once even if mentioned twice
+- actors: number of distinct user roles/personas involved
+- negatives: number of error/edge/permission/validation cases stated or
+  clearly implied
+- ambiguous: true if the acceptance criteria is missing, vague, or defers to
+  another document with no real detail of its own, else false
+
+Stories:
+{stories_block}
+
+Return ONLY a JSON array with exactly one object per story, using these
+exact ids: {ids_list}
+Format: [{{"id": <id>, "rules": <int>, "surfaces": <int>, "actors": <int>, "negatives": <int>, "ambiguous": <bool>}}]
+"""
+
+
+def _cp_facet_score(rec):
+    def _clamp(key, v):
+        try:
+            v = int(v)
+        except Exception:
+            v = 0
+        return max(0, min(_CP_FACET_CAPS[key], v))
+    rules = _clamp("rules", rec.get("rules", 0))
+    surfaces = _clamp("surfaces", rec.get("surfaces", 0))
+    actors = _clamp("actors", rec.get("actors", 0))
+    negatives = _clamp("negatives", rec.get("negatives", 0))
+    ambiguous = bool(rec.get("ambiguous", False))
+    return (rules * _CP_FACET_WEIGHTS["rules"] + surfaces * _CP_FACET_WEIGHTS["surfaces"]
+            + actors * _CP_FACET_WEIGHTS["actors"] + negatives * _CP_FACET_WEIGHTS["negatives"]
+            + (2.0 if ambiguous else 0.0))
+
+
+def _fetch_cp_ai_complexity(app, texts):
+    """Returns {story_id: ai_score} — missing ids simply mean 'no AI signal
+    for this one,' handled by _cp_blend_complexity falling back to the
+    heuristic alone for those. Best-effort and fully non-fatal throughout:
+    any chunk that fails to call/parse, or whose response looks unreliable,
+    is discarded for those ids rather than trusted — same "distrust,
+    silently fall back" philosophy as this app's other AI backstops."""
+    ids = list(texts.keys())
+    if not ids:
+        return {}
+    chunks = [ids[i:i + _CP_CHUNK_SIZE] for i in range(0, len(ids), _CP_CHUNK_SIZE)]
+    out = {}
+    lock = threading.Lock()
+
+    def _do_chunk(chunk_ids):
+        chunk = [(sid, texts[sid]) for sid in chunk_ids]
+        prompt = _cp_facet_prompt(chunk)
+        try:
+            raw = E.ai_complete(prompt, max_tokens=1536, want_json=True,
+                                usage_tag="sprint_plan_complexity")
+            data = E.parse_json_robust(raw)
+            if isinstance(data, dict):
+                data = next((v for v in data.values() if isinstance(v, list)), [])
+            if not isinstance(data, list):
+                return
+            wanted = set(chunk_ids)
+            seen, scored = set(), {}
+            for rec in data:
+                if not isinstance(rec, dict):
+                    continue
+                try:
+                    sid = int(rec.get("id"))
+                except Exception:
+                    continue
+                if sid not in wanted or sid in seen:
+                    continue   # hallucinated/duplicate id — ignore rather than trust
+                seen.add(sid)
+                score = _cp_facet_score(rec)
+                # A story with substantial AC text but an all-zero facet
+                # count reads as a lazy/empty answer, not a genuinely
+                # trivial story — don't trust it, fall back to heuristic
+                # for just this one id.
+                crit_words = len((texts[sid].get("crit") or "").split())
+                if score <= 0 and crit_words > 50:
+                    continue
+                scored[sid] = score
+            # Most of the chunk failing validation suggests the whole reply
+            # was unreliable — discard the chunk entirely rather than trust
+            # a couple of survivors that might just be coincidental.
+            if len(scored) < max(1, len(chunk_ids) * 0.7):
+                return
+            with lock:
+                out.update(scored)
+        except Exception:
+            return   # this chunk's ids simply fall back to the heuristic
+
+    import concurrent.futures as _cf
+    with _cf.ThreadPoolExecutor(max_workers=_CP_AI_WORKERS) as ex:
+        list(ex.map(_do_chunk, chunks))
+    return out
+
+
+def _cp_blend_complexity(units, ai_scores):
+    """Combine the word-count heuristic with the AI facet score, 70% AI /
+    30% heuristic where an AI score exists, heuristic-only otherwise. Both
+    signals are normalized to [0,1] ACROSS THIS SPRINT'S STORIES first —
+    the heuristic is unbounded word count and the AI score is a small
+    bounded sum, so blending raw values would just let whichever signal has
+    the bigger numbers dominate. Returns a new {id: blended_units} dict on
+    the same rough scale _cp_estimate_and_assign already expects (its own
+    min/max mapping renormalizes again across the priority-boosted score,
+    so this only needs to get the RELATIVE ordering right, not any
+    particular absolute scale)."""
+    if not units:
+        return units
+    ids = list(units.keys())
+    u_vals = [units[i] for i in ids]
+    u_lo, u_hi = min(u_vals), max(u_vals)
+    u_span = (u_hi - u_lo) or 1.0
+
+    ai_ids = [i for i in ids if i in ai_scores]
+    if ai_ids:
+        a_vals = [ai_scores[i] for i in ai_ids]
+        a_lo, a_hi = min(a_vals), max(a_vals)
+        a_span = (a_hi - a_lo) or 1.0
+    else:
+        a_lo = a_span = 1.0
+
+    out = {}
+    for i in ids:
+        u_norm = (units[i] - u_lo) / u_span
+        if i in ai_scores:
+            a_norm = (ai_scores[i] - a_lo) / a_span
+            out[i] = 0.7 * a_norm + 0.3 * u_norm
+        else:
+            out[i] = u_norm
     return out
 
 
@@ -819,13 +1047,12 @@ def _plan_html(d):
         f"line-height:1.6'>The full plan is attached as a Word document. {footer_note}</div>")
 
     return f"""<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
-<style>@media only screen and (max-width:700px){{.qas-card{{width:100% !important;max-width:100% !important}}}}</style>
 </head>
 <body style='margin:0;padding:0;background:{PAPER};-webkit-text-size-adjust:100%'>
 <center style='width:100%;background:{PAPER}'>
 <table role='presentation' width='100%' cellpadding='0' cellspacing='0' style='background:{PAPER}'><tr>
 <td align='center' style='padding:26px 12px 48px'>
-<table role='presentation' width='680' cellpadding='0' cellspacing='0' class='qas-card' style='width:680px;max-width:680px;background:{CARD};border:1px solid #DEDDE6;border-radius:16px;overflow:hidden;font-family:{UI};color:{INK}'>
+<table role='presentation' width='680' cellpadding='0' cellspacing='0' style='width:680px;max-width:680px;background:{CARD};border:1px solid #DEDDE6;border-radius:16px;overflow:hidden;font-family:{UI};color:{INK}'>
   <tr><td style='height:3px;line-height:3px;font-size:0;background:{VIOLET}'>&nbsp;</td></tr>
   <tr><td style='padding:24px 32px 0'>{masthead}</td></tr>
   <tr><td style='padding:18px 32px 4px'>{hero}</td></tr>
@@ -2828,7 +3055,18 @@ def _cp_load_stories(app):
                     r["feature_name"] = (fnames.get(r.get("feature_id"), "")
                                          if r.get("feature_id") else "")
                 # Content-complexity units per story → drives a non-random estimate.
-                comp = _fetch_cp_complexity(app, [int(r["id"]) for r in agg])
+                # units: word-count heuristic (always available, including
+                # AC-link resolution). ai_scores: AI facet-counting signal,
+                # best-effort — any failure just leaves it empty and the
+                # blend below falls back to the heuristic alone, so this
+                # whole block degrades gracefully with zero behavior change
+                # from before if the AI call fails or credits are out.
+                comp, texts = _fetch_cp_complexity(app, [int(r["id"]) for r in agg])
+                try:
+                    ai_scores = _fetch_cp_ai_complexity(app, texts)
+                except Exception:
+                    ai_scores = {}
+                comp = _cp_blend_complexity(comp, ai_scores)
                 for r in agg:
                     r["work_units"] = comp.get(int(r["id"]), 1.0)
         except Exception:

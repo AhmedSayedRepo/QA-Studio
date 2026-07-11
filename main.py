@@ -2416,8 +2416,24 @@ class QAStudio:
             self._connecting = False
             self._connect_status = ""
             self._err("")
-        # changing provider while connected invalidates the connection
-        if prev and prev != name and getattr(self, "connected", False):
+        # changing provider while connected invalidates the connection — EXCEPT
+        # while a Run/Automation is actively in progress. _disconnect() clears
+        # self.project/self.plan_id/self.connected wholesale; the in-flight
+        # run's own Azure calls are unaffected (project/plan_id were captured
+        # as local args when it started, not re-read from self.* live), but
+        # wiping the Setup screen's live selection out from under an ACTIVE
+        # run corrupts state for whatever the user does next (e.g. Setup's
+        # story loader / estimate fetch both bail out via `if not
+        # (self.connected and self.project and self.plan_id)`), and was seen
+        # live to also desync the Run screen's activity log (see run.py's
+        # screen() for that half of the fix). The explicit reason this
+        # provider switch exists at all — letting a PAUSED automation Resume
+        # on a new provider without re-running Connect — never actually
+        # needed self.connected to drop either; only a genuine, no-run-active
+        # reconnect should force one.
+        if (prev and prev != name and getattr(self, "connected", False)
+                and not getattr(self, "_run_active", False)
+                and not getattr(self, "_auto_running", False)):
             self._disconnect(f"Provider changed to {T.disp_name(name)} — reconnect to continue.")
         # reset the model list so it refetches for the newly selected provider
         self._models_for = None
@@ -4110,6 +4126,24 @@ class QAStudio:
                 else:
                     E.run_titles(self.project, self.plan_id, self.story_ids, cb,
                                  should_stop=lambda: self.stop_flag)
+            except E.StopRequested:
+                # Defensive backstop: run_steps/run_titles are supposed to
+                # catch StopRequested internally at every AI call site and
+                # resolve to a normal cb("done", ...) instead of ever letting
+                # it escape — but one call site (evaluate_existing_steps,
+                # reached via run_steps' UI-description fetch) was missing
+                # that catch, so clicking Stop while it was in flight let
+                # StopRequested propagate all the way out here uncaught.
+                # Since str(StopRequested()) == "" (no message text), the
+                # generic branch below rendered it as a bare "Run failed: "
+                # with nothing after the colon — a real bug seen live, now
+                # fixed at its actual source too. This branch stays as a
+                # safety net in case any OTHER call site has the same gap:
+                # an honest "stopped" outcome instead of a fake failure.
+                self._log_lines.append({"tone": "dim", "ico": "⏹",
+                    "msg": "Stopped."})
+                self.last_report = {"summary": "Stopped", "reason": "stopped", "errors": 0}
+                self._refresh_run()
             except Exception as ex:
                 emsg = str(ex)
                 if "credit" in emsg.lower() or "balance" in emsg.lower():
@@ -4393,6 +4427,17 @@ class QAStudio:
         idtxt = (ft.Text(f"[{ln['id']}]", size=11, color=T.INK_3,
                          weight=ft.FontWeight.BOLD, font_family=T.F_MONO)
                  if ln.get("id") else None)
+        # A trailing "\n" was tried here to fix Ctrl+C copy losing line
+        # breaks between entries (each line is its own Row, not one shared
+        # multi-line Text, so Flutter's SelectionArea doesn't reliably insert
+        # a break between separate Row siblings on copy). REVERTED — it
+        # visibly added extra vertical gaps between every log line in the
+        # actual app (confirmed live via screenshot), contrary to the
+        # assumption that Flutter drops a lone trailing newline from layout
+        # height. Use the "Copy entire log" toolbar button instead
+        # (_copy_log_text, unaffected either way — it joins app._log_lines
+        # with "\n" directly, not via SelectionArea's copy behavior) until a
+        # copy-friendly fix is found that doesn't touch visible layout.
         txt = ft.Text(ln.get("msg", ""), size=12,
                       color=color,
                       weight=ft.FontWeight.BOLD if tone in ("story", "ok") else ft.FontWeight.W_500,
@@ -4699,6 +4744,11 @@ class QAStudio:
             sym = ft.Container(width=6, height=6, border_radius=3, bgcolor=T.INK_3)
         sym_wrap = ft.Container(sym, width=16, alignment=ft.Alignment.CENTER,
                                 margin=ft.Margin.only(top=2))
+        # Trailing "\n" copy-separator fix REVERTED — see _render_one_log's
+        # comment (Run/Report log): it visibly added extra vertical gaps
+        # between every log line in the actual app, confirmed live. Use the
+        # "Copy entire log" toolbar button instead until a copy-friendly fix
+        # is found that doesn't touch visible layout.
         txt = ft.Text(stripped, size=12, color=color, weight=weight,
                       font_family=(T.F_AR if is_ar else (T.F_MONO if tone in ("dim", "info") else None)),
                       text_align=(ft.TextAlign.RIGHT if is_ar else ft.TextAlign.LEFT),
@@ -4743,10 +4793,16 @@ class QAStudio:
                         pass
             self.ui_safe(_upd_skipped)
             return
-        # drop consecutive duplicate lines (e.g. repeated "Paused…" notices)
-        if self._auto_log and self._auto_log[-1].get("msg") == msg:
-            return
-        self._auto_log.append({"msg": msg, "tone": tone})
+        # drop consecutive duplicate lines (e.g. repeated "Paused…" notices).
+        # Guarded by the same lock upd() uses below for the UI-sync read —
+        # now that Automation's compile/dedupe loops call this from multiple
+        # worker threads, the dup-check read + append must be atomic together
+        # or two concurrent calls can both pass the check and double-append,
+        # or interleave an append between another call's check and append.
+        with self._auto_log_ui_lock:
+            if self._auto_log and self._auto_log[-1].get("msg") == msg:
+                return
+            self._auto_log.append({"msg": msg, "tone": tone})
         def upd():
             try:
                 lock = getattr(self, "_auto_log_ui_lock", None)
@@ -5287,8 +5343,14 @@ class QAStudio:
                 # lead-in explaining what's happening.
                 cb("Checking for duplicate test cases...", "dim")
 
-                # Assemble in the original story order.
-                total_skipped = 0
+                # Assemble each story's test-case list first (fast, no AI) in
+                # original story order, THEN run the (slow) AI dedup pass with
+                # up to _AUTO_DEDUP_WORKERS concurrent workers — same
+                # dedup-check parallelization already applied to run_steps/
+                # run_titles this session. Results are re-applied in ORIGINAL
+                # story order below (not completion order) so stories_payload
+                # and the "Loaded N stories…" summary stay deterministic.
+                _story_prep = []
                 for s in stories:
                     if self._auto_stop:
                         cb("Stopped before scraping.", "warn"); return
@@ -5309,22 +5371,48 @@ class QAStudio:
                         tcs.append({"id": tc["id"],
                                     "title": (tc.get("title") or title_map.get(tc["id"], "")),
                                     "steps": steps})
-                    # Duplicate test cases already sitting in the suite (same
-                    # scenario, different wording) would otherwise each get
-                    # sequenced and get their own generated script. Skip-only —
-                    # nothing is deleted from Azure DevOps here, the most
-                    # complete case of each duplicate set is just the only one
-                    # carried forward into automation.
-                    if len(tcs) > 1:
-                        _before = len(tcs)
-                        tcs = E.dedupe_case_list(tcs, log=cb,
-                                                 should_stop=lambda: self._auto_stop)
-                        total_skipped += _before - len(tcs)
+                    _story_prep.append((sid, title, criteria, tcs))
+
+                # Duplicate test cases already sitting in the suite (same
+                # scenario, different wording) would otherwise each get
+                # sequenced and get their own generated script. Skip-only —
+                # nothing is deleted from Azure DevOps here, the most
+                # complete case of each duplicate set is just the only one
+                # carried forward into automation.
+                total_skipped = 0
+                _AUTO_DEDUP_WORKERS = 2
+                _dedup_results = {}   # sid -> deduped tcs (only set when len(tcs) > 1)
+                with _cf.ThreadPoolExecutor(max_workers=_AUTO_DEDUP_WORKERS) as _ex:
+                    _futs = {}
+                    for sid, _t, _c, tcs in _story_prep:
+                        if self._auto_stop:
+                            break
+                        if len(tcs) > 1:
+                            fut = _ex.submit(E.dedupe_case_list, tcs, log=cb,
+                                             should_stop=lambda: self._auto_stop,
+                                             story_title=_t)
+                            _futs[fut] = sid
+                    for fut in _cf.as_completed(_futs):
+                        sid = _futs[fut]
+                        try:
+                            _dedup_results[sid] = fut.result()
+                        except Exception as e:
+                            cb(f"Dedup check failed for story {sid}: {e} "
+                               f"— keeping all its test case(s).", "warn")
+
+                if self._auto_stop:
+                    cb("Stopped before scraping.", "warn"); return
+
+                for sid, title, criteria, tcs in _story_prep:
+                    _before = len(tcs)
+                    final_tcs = _dedup_results.get(sid, tcs)
+                    if _before > 1:
+                        total_skipped += _before - len(final_tcs)
                         cb(f"SKIPPED_LIVE: {total_skipped}", "dim")
-                    total_tc += len(tcs)
+                    total_tc += len(final_tcs)
                     stories_payload.append({
                         "story": {"id": sid, "title": title, "criteria": criteria},
-                        "test_cases": tcs,
+                        "test_cases": final_tcs,
                     })
                 cb(f"Loaded {len(stories_payload)} story/stories - {total_tc} test case(s) - "
                    f"{total_steps} step(s) from Azure.", "ok")

@@ -2031,6 +2031,74 @@ def fetch_stories(story_ids):
     return stories
 
 
+# Matches an Azure DevOps work-item link as Azure's rich-text editor actually
+# emits it when you insert a "link to work item" inside a field (the common
+# way an AC field says "same as <link>" instead of restating the rules) —
+# .../_workitems/edit/<id>, optionally with a trailing slash/query string —
+# plus the legacy on-prem TFS #_a=edit&id=<id> form, as a fallback.
+_AC_WI_LINK_RE = re.compile(r'_workitems/edit/(\d+)|[?&#]id=(\d+)', re.I)
+
+
+def _resolve_ac_links(criteria, project, cb=None, cache=None, current_id=None):
+    """Some stories' acceptance criteria is just a link to another story
+    ("same as <link>") instead of restating the rules — left alone,
+    generate_titles/generate_steps only ever see that raw link text, with
+    nothing to actually test against. This scans the AC text for a linked
+    work item id, fetches THAT story's own AcceptanceCriteria via the
+    work-item API, and appends it as a clearly-labeled block so the AI has
+    real requirements to generate from.
+
+    `cache` should be one plain dict created ONCE per run and passed to
+    every call (run_titles/run_steps both do this) — a shared "spec" story
+    referenced by many stories in the same run is then only fetched once.
+    Capped at the first 3 distinct linked ids found and does NOT recurse
+    into whatever the linked story's own AC references — this is meant to
+    be a bounded, cheap best-effort resolution, not a general graph walk.
+    Failures (deleted item, no permission, wrong project) are logged as a
+    warning and skipped rather than raising — a bad/stale link shouldn't be
+    able to fail an otherwise-fine generation run."""
+    if not criteria:
+        return criteria
+    cache = cache if cache is not None else {}
+    cb = cb or (lambda *a, **k: None)
+    seen, ids = set(), []
+    for m in _AC_WI_LINK_RE.finditer(criteria):
+        wid = m.group(1) or m.group(2)
+        if not wid:
+            continue
+        wid = int(wid)
+        if wid == current_id or wid in seen:
+            continue
+        seen.add(wid)
+        ids.append(wid)
+        if len(ids) >= 3:
+            break
+    if not ids:
+        return criteria
+    blocks = []
+    for wid in ids:
+        if wid not in cache:
+            resolved = None
+            try:
+                wi = _wit_client.get_work_item(
+                    wid, fields=["System.Title", "Microsoft.VSTS.Common.AcceptanceCriteria"])
+                t = wi.fields.get("System.Title", "")
+                ac = _strip_html(wi.fields.get("Microsoft.VSTS.Common.AcceptanceCriteria", ""))
+                if ac:
+                    resolved = f"[Referenced story #{wid} — {t}]\n{ac}"
+                    cb("log", {"msg": f"Resolved acceptance-criteria link to story #{wid} "
+                                       f"({t[:60]})", "tone": "dim"})
+            except Exception as e:
+                cb("log", {"msg": f"Could not resolve linked story #{wid} in acceptance "
+                                   f"criteria: {str(e)[:80]}", "tone": "warn"})
+            cache[wid] = resolved
+        if cache[wid]:
+            blocks.append(cache[wid])
+    if not blocks:
+        return criteria
+    return criteria + "\n\n" + "\n\n".join(blocks)
+
+
 def _downscale_image(raw_bytes, max_dim=1024):
     try:
         from PIL import Image
@@ -2309,12 +2377,21 @@ def generate_steps(tc_title, acceptance_criteria, ui_description="", log=None,
           رسالة أكثر تحديداً حتى لو بدت منطقية أو متوقعة من الناحية التقنية.
         - انسخ نص أي رسالة مذكورة في معايير القبول حرفياً (نفس الصياغة) بدلاً من إعادة صياغتها.
 
+        قاعدة التأصيل — يجب أن ترتبط الحالة بمعايير القبول فعلياً:
+        - أولاً، حدد الجملة في "معايير القبول" أدناه التي يختبرها عنوان حالة الاختبار هذا.
+          انسخ تلك الجملة حرفياً في حقل "ac_quote".
+        - كل قيمة في expected يجب أن تكون مبررة بتلك الجملة أو بجملة أخرى في معايير القبول.
+          إذا لم تحدد معايير القبول نتيجة محددة لهذا السيناريو، اكتب النتيجة العامة التي
+          تنص عليها المعايير فعلاً — لا تخترع نتيجة جديدة.
+        - في action وprecondition، لا تذكر إلا شاشات وحقولاً وأزراراً واردة في معايير
+          القبول أو وصف الميزة. لا تخترع عناصر واجهة غير مذكورة.
+
         عنوان حالة الاختبار: {tc_title}
         معايير القبول: {acceptance_criteria}
         وصف الميزة: {FEATURE_DESCRIPTION}{ui_block}
 
         الصيغة:
-        {{"steps": [{{"precondition":"...","action":"...","expected":"..."}}]}}
+        {{"ac_quote":"...","steps": [{{"precondition":"...","action":"...","expected":"..."}}]}}
     """
     else:
         ui_block = f"\n        UI description (extracted from screenshots):\n        {ui_description}\n" if ui_description else ""
@@ -2349,12 +2426,21 @@ def generate_steps(tc_title, acceptance_criteria, ui_description="", log=None,
         - Copy any message text given in the acceptance criteria verbatim (same wording) rather
           than paraphrasing it.
 
+        Grounding rule — the test must trace to the acceptance criteria:
+        - First, find the sentence in 'Acceptance criteria' below that this test case title
+          verifies. Copy that sentence VERBATIM into the "ac_quote" field.
+        - Every 'expected' value must be justified by that sentence or another sentence in the
+          acceptance criteria. If the criteria do not state a specific outcome for this
+          scenario, write the general outcome the criteria DO state — never invent one.
+        - In 'action' and 'precondition', only mention screens, fields, and buttons that appear
+          in the acceptance criteria or feature description. Do not invent UI elements.
+
         Test case title: {tc_title}
         Acceptance criteria: {acceptance_criteria}
         Feature description: {FEATURE_DESCRIPTION}{ui_block}
 
         Format:
-        {{"steps": [{{"precondition":"...","action":"...","expected":"..."}}]}}
+        {{"ac_quote":"...","steps": [{{"precondition":"...","action":"...","expected":"..."}}]}}
     """
     time.sleep(1)
     last_err = None
@@ -2368,10 +2454,24 @@ def generate_steps(tc_title, acceptance_criteria, ui_description="", log=None,
             # describe_story_ui's docstring for why (Stop is "after current test
             # case", not mid-call) — passing should_stop stays available for any
             # future caller that wants it, with unchanged behavior for this one.
-            return _coerce_step_list(parse_json_robust(_run_stopaware(
+            data = parse_json_robust(_run_stopaware(
                 lambda: ai_complete(text, max_tokens=4096, want_json=True,
                                     usage_tag="generate_steps"),
-                should_stop=should_stop, on_slow=on_slow)))
+                should_stop=should_stop, on_slow=on_slow))
+            # Programmatic backstop for the grounding rule above: a token-
+            # overlap check between the model's own ac_quote and the real
+            # acceptance criteria. Doesn't block/retry (steps are still
+            # returned either way) — just surfaces a case where the model
+            # likely fabricated its grounding rather than quoting it, same
+            # "distrust, don't silently drop" spirit as _check_ac_coverage.
+            if isinstance(data, dict):
+                quote = str(data.get("ac_quote", "")).strip()
+                if quote and acceptance_criteria and log:
+                    if not _rules_overlap(quote, acceptance_criteria):
+                        log(f"Note: steps for \"{tc_title[:60]}\" cite acceptance-criteria "
+                            f"text that doesn't match what's on the story — worth a spot check.",
+                            "dim")
+            return _coerce_step_list(data)
         except StopRequested:
             raise
         except CreditBalanceError:
@@ -2394,7 +2494,18 @@ def generate_steps(tc_title, acceptance_criteria, ui_description="", log=None,
     raise RuntimeError(f"Failed after 5 attempts: {last_err}")
 
 
-def evaluate_existing_steps(tc_title, criteria, existing_steps_xml):
+def evaluate_existing_steps(tc_title, criteria, existing_steps_xml, should_stop=None, on_slow=None):
+    """Decide whether a test case's EXISTING steps already adequately cover
+    its acceptance criteria, or need regenerating. `should_stop`/`on_slow`
+    were added after this call was found to be the single biggest source of
+    "the run looks frozen" reports for re-runs against a suite that already
+    has most of its steps: it used to call ai_complete() directly with no
+    stop-awareness or heartbeat at all — unlike generate_steps/describe_
+    story_ui/the dedup AI calls, which all got this treatment earlier. A
+    slow/rate-limited provider could silently stall for minutes with zero
+    log output (confirmed live: 2:56 of total silence evaluating one case),
+    and Stop couldn't interrupt it either. See run_steps' _gen_and_write for
+    why this call moved off the main thread and into the worker pool too."""
     plain = re.sub(r"<[^>]+>", " ", existing_steps_xml or "")
     plain = _html.unescape(re.sub(r"\s+", " ", plain)).strip()[:4000]
     if _is_arabic_out():
@@ -2410,7 +2521,7 @@ def evaluate_existing_steps(tc_title, criteria, existing_steps_xml):
         الخطوات الحالية: {plain}
         أعد فقط كائن JSON: {{"adequate": true/false, "reason": "سبب مختصر بالعربية"}}
     """
-        fallback_reason = "تعذر تحليل نتيجة التقييم"
+        fallback_reason = "تعذر فهم رد الذكاء الاصطناعي حول التقييم — تم الإبقاء على الخطوات الحالية كما هي احتياطياً"
     else:
         prompt = f"""
         You are an expert QA engineer. You have a test case with its current steps and its
@@ -2426,15 +2537,37 @@ def evaluate_existing_steps(tc_title, criteria, existing_steps_xml):
         Current steps: {plain}
         Return ONLY a JSON object: {{"adequate": true/false, "reason": "short reason in English"}}
     """
-        fallback_reason = "Could not parse the evaluation result"
-    raw = (ai_complete(prompt, max_tokens=1024, usage_tag="evaluate_existing_steps") or "").strip()
-    raw = raw.replace("```json", "").replace("```", "").strip()
-    try:
-        data = parse_json_robust(raw)
-        if isinstance(data, list) and data: data = data[0]
-        return {"adequate": bool(data.get("adequate", False)), "reason": str(data.get("reason", "")).strip()}
-    except Exception:
-        return {"adequate": False, "reason": fallback_reason}
+        fallback_reason = "Could not understand the AI's evaluation reply — left the existing steps unchanged as a precaution"
+    # One retry before giving up on a parse failure — cheap (a bad JSON reply
+    # is often a one-off formatting slip, not a systemic problem) and avoids
+    # falling back on the very first hiccup.
+    for attempt in range(2):
+        raw = (_run_stopaware(lambda: ai_complete(prompt, max_tokens=1024, usage_tag="evaluate_existing_steps"),
+                              should_stop=should_stop, on_slow=on_slow) or "").strip()
+        raw = raw.replace("```json", "").replace("```", "").strip()
+        try:
+            data = parse_json_robust(raw)
+            if isinstance(data, list) and data: data = data[0]
+            return {"adequate": bool(data.get("adequate", False)), "reason": str(data.get("reason", "")).strip()}
+        except Exception:
+            if attempt == 0:
+                continue
+            # Fail OPEN, not closed: a parse failure tells us nothing about
+            # whether the existing steps are actually fine or not — it's a
+            # formatting problem with the AI's reply, not a finding about
+            # the test case. Treating that as "definitely inadequate" (the
+            # old behavior) forced a regeneration on every parse hiccup,
+            # which could itself land on a degenerate result (seen live: a
+            # regenerated case with an empty action/expected step — see the
+            # steps-count fix in _apply_result and the empty-step guard in
+            # _gen_and_write) — silently replacing a possibly-fine test case
+            # with a genuinely worse one, then flagging it "Needs your
+            # review" with a reason that reads like a real coverage
+            # judgment when it was actually just noise. Leaving the
+            # existing steps untouched is the safer default: worst case is
+            # a real problem goes unflagged until the next run, instead of
+            # a fine test case getting silently degraded on this one.
+            return {"adequate": True, "reason": fallback_reason}
 
 
 def build_steps_xml(steps):
@@ -2513,10 +2646,98 @@ def _coerce_title_list(data):
     return out
 
 
+def _numbered_criteria(criteria):
+    """Split a raw acceptance-criteria blob into AC1/AC2/... lines for the
+    generation prompts' coverage-enumeration rule (see generate_titles'
+    docstring note below). Splits on newlines and common bullet/numbering
+    prefixes; falls back to treating the whole blob as a single AC1 if it
+    doesn't look like a list. Returns (numbered_text, ac_ids) — ac_ids is
+    the list of "AC1".."ACn" the model is expected to cover, used afterward
+    to check which ones its output actually referenced.
+
+    A `[Referenced story #id — Title]` line — the section header
+    _resolve_ac_links prepends when a story's AC pointed at another story
+    for its remaining requirements — is deliberately NOT given its own AC
+    number: it's a label, not a testable requirement, and numbering it
+    would waste a title slot / confuse the coverage check with a phantom
+    "criterion" that has nothing to actually verify. It's kept in the
+    numbered text as unnumbered context so the model still knows where the
+    lines under it came from. This is exactly the mixed case where a
+    story's own AC states some requirements directly and points to another
+    story for the rest — both halves end up numbered here, just not the
+    header line introducing the linked half."""
+    raw = (criteria or "").strip()
+    if not raw:
+        return "", []
+    lines = [re.sub(r"^[\s\-•*•]+|^\d+[.\)]\s*", "", ln).strip()
+             for ln in re.split(r"[\r\n]+", raw)]
+    lines = [ln for ln in lines if ln][:40]
+    if not lines:
+        lines = [raw]
+    ac_ids = []
+    numbered_parts = []
+    for ln in lines:
+        if re.match(r"^\[.*\]$", ln):
+            numbered_parts.append(ln)
+            continue
+        aid = f"AC{len(ac_ids) + 1}"
+        ac_ids.append(aid)
+        numbered_parts.append(f"{aid}: {ln}")
+    numbered = "\n".join(numbered_parts)
+    return numbered, ac_ids
+
+
+def _rules_overlap(quote, criteria):
+    """Is `quote` plausibly lifted from `criteria` rather than fabricated?
+    Primary check is a normalized substring match (the grounding rule asks
+    for a verbatim copy); falls back to token-Jaccard overlap so minor
+    whitespace/punctuation differences from the model don't produce false
+    warnings. Shared by generate_steps' ac_quote backstop."""
+    nq, nc = _norm_title(quote), _norm_title(criteria)
+    if not nq:
+        return True  # nothing to check against — don't warn on an empty quote
+    if nq in nc:
+        return True
+    tq, tc_ = set(nq.split()), set(nc.split())
+    if not tq:
+        return True
+    return (len(tq & tc_) / len(tq)) >= 0.6
+
+
+def _check_ac_coverage(items, ac_ids, log=None, kind="titles"):
+    """Programmatic backstop for the coverage-enumeration rule below: look at
+    which 'ac' ids the model actually attached to its output and warn (does
+    NOT retry/block — see generate_titles docstring) if any numbered
+    criterion got zero titles. Purely a visibility aid for now; a targeted
+    retry against just the missed ACs is a reasonable future extension but
+    wasn't added here to keep this change proportionate to what was asked."""
+    if not ac_ids or not log:
+        return
+    used = set()
+    for it in items:
+        if isinstance(it, dict):
+            a = str(it.get("ac", "")).strip().upper()
+            if a:
+                used.add(a)
+    missing = [a for a in ac_ids if a not in used]
+    if missing and len(missing) < len(ac_ids):  # partial gap is the interesting case
+        log(f"Note: AI {kind} didn't reference {', '.join(missing)} — "
+            f"double-check those criteria got covered.", "dim")
+
+
 def generate_titles(story_title, criteria, existing_titles=None, log=None,
                     should_stop=None, on_slow=None):
+    # Numbering the acceptance criteria as AC1/AC2/... and requiring the
+    # model to tag each title with the AC it tests turns "cover the
+    # requirements" (an abstract judgment weak/flash-tier models don't
+    # reliably self-apply) into a mechanical enumerate-and-tag loop, which
+    # they follow far more reliably — the same structural trick that fixed
+    # the recurring dedup false-merge bug (see _ai_duplicate_clusters).
+    # _check_ac_coverage below is the matching programmatic backstop: it
+    # can't fix a gap, but it surfaces one instead of silently dropping it.
+    ac_text, ac_ids = _numbered_criteria(criteria)
     if _is_arabic_out():
-        ct = criteria or "لا توجد معايير قبول. أنشئ عناوين عامة بناءً على العنوان."
+        ct = ac_text or "لا توجد معايير قبول. أنشئ عناوين عامة بناءً على العنوان."
         existing_block = ""
         if existing_titles:
             listed = "\n".join(f"- {t}" for t in existing_titles[:150])
@@ -2525,10 +2746,20 @@ def generate_titles(story_title, criteria, existing_titles=None, log=None,
 {listed}
             أنشئ فقط عناوين لسيناريوهات جديدة. إذا كانت جميعها مغطاة، أعد {{"titles": []}}.
         """
+        coverage_block = ("""
+        قواعد التغطية — كل معيار قبول يجب أن يُختبر:
+        - معايير القبول أدناه مرقمة AC1 وAC2 وهكذا.
+        - لكل معيار ACn، أنشئ عنواناً واحداً على الأقل يختبره (الحالة الصحيحة؛
+          أضف حالات خاطئة/حدّية فقط إذا كان المعيار يذكر قيداً يمكن انتهاكه).
+        - كل عنوان يجب أن يستند إلى معيار واحد بالضبط. لا تنشئ عناوين عن
+          سلوكيات لم تُذكر في معايير القبول (لا عناوين عامة عن الأداء أو الأمان
+          أو التوافق ما لم يذكرها معيار صراحة).
+        - أرفق مع كل عنوان رقم المعيار الذي يختبره.
+""" if ac_ids else "")
         prompt = f"""
         أنت مهندس QA خبير. أنشئ عناوين حالات اختبار لقصة المستخدم التالية.
         اكتب العناوين باللغة العربية فقط. لا تستخدم علامات اقتباس مزدوجة داخل النصوص.
-        أعد كائن JSON فقط يحتوي على مفتاح "titles" قيمته مصفوفة من العناوين النصية.
+        أعد كائن JSON فقط يحتوي على مفتاح "titles" قيمته مصفوفة كائنات {{"ac":"ACn","title":"..."}}.
 
         قواعد صارمة لمنع التكرار:
         - لا تنشئ عنوانين يختبران نفس السلوك بصياغة مختلفة. كل عنوان يجب أن يغطي
@@ -2542,14 +2773,14 @@ def generate_titles(story_title, criteria, existing_titles=None, log=None,
           حدّي)، وليس عدة صياغات لنفس السيناريو.
         - ادمج الحالات المتشابهة في عنوان واحد واضح بدلاً من تكرارها.
         - قبل الإخراج، راجع القائمة واحذف أي عنوان يكرر معنى عنوان آخر.
-
+{coverage_block}
         العنوان: {story_title}
         معايير القبول: {ct}
         {existing_block}
-        الصيغة: {{"titles": ["عنوان 1","عنوان 2"]}}
+        الصيغة: {{"titles": [{{"ac":"AC1","title":"عنوان 1"}},{{"ac":"AC2","title":"عنوان 2"}}]}}
     """
     else:
-        ct = criteria or "No acceptance criteria. Generate general titles based on the title."
+        ct = ac_text or "No acceptance criteria. Generate general titles based on the title."
         existing_block = ""
         if existing_titles:
             listed = "\n".join(f"- {t}" for t in existing_titles[:150])
@@ -2558,10 +2789,23 @@ def generate_titles(story_title, criteria, existing_titles=None, log=None,
 {listed}
             Only generate titles for NEW scenarios. If all are covered, return {{"titles": []}}.
         """
+        coverage_block = ("""
+        Coverage rules — every criterion must be tested:
+        - The acceptance criteria below are numbered AC1, AC2, ...
+        - For EACH criterion ACn, write at least one title that tests it (the
+          valid case; add invalid/boundary cases only if that criterion states
+          a constraint that can be violated).
+        - Every title MUST be based on exactly one criterion. Do NOT write
+          titles about behaviors the criteria never mention (no generic
+          performance, security, or compatibility titles unless a criterion
+          explicitly mentions them).
+        - Tag each title with the criterion number it tests.
+""" if ac_ids else "")
         prompt = f"""
         You are an expert QA engineer. Generate test case titles for the following user story.
         Write the titles in English only. Do not use double quotes inside the text.
-        Return ONLY a JSON object with a "titles" key whose value is an array of title strings.
+        Return ONLY a JSON object with a "titles" key whose value is an array of
+        {{"ac":"ACn","title":"..."}} objects.
 
         Strict rules to prevent duplication:
         - Do not create two titles that test the same behavior with different wording.
@@ -2575,11 +2819,11 @@ def generate_titles(story_title, criteria, existing_titles=None, log=None,
           boundary), not several phrasings of the same scenario.
         - Merge similar cases into one clear title instead of repeating them.
         - Before output, review the list and remove any title that repeats another's meaning.
-
+{coverage_block}
         Title: {story_title}
         Acceptance criteria: {ct}
         {existing_block}
-        Format: {{"titles": ["title 1","title 2"]}}
+        Format: {{"titles": [{{"ac":"AC1","title":"title 1"}},{{"ac":"AC2","title":"title 2"}}]}}
     """
     should_stop = should_stop or (lambda: False)
     _interruptible_sleep(1)
@@ -2593,10 +2837,14 @@ def generate_titles(story_title, criteria, existing_titles=None, log=None,
             # Run the (possibly slow) provider call stop-aware: Stop unwinds it at
             # once instead of waiting out the request timeout, and on_slow lets the
             # UI log a heartbeat while a large model is still generating.
-            return _coerce_title_list(parse_json_robust(_run_stopaware(
+            data = parse_json_robust(_run_stopaware(
                 lambda: ai_complete(prompt, max_tokens=4096, want_json=True,
                                     usage_tag="generate_titles"),
-                should_stop=should_stop, on_slow=on_slow)))
+                should_stop=should_stop, on_slow=on_slow))
+            raw_items = data.get("titles") if isinstance(data, dict) else data
+            if isinstance(raw_items, list):
+                _check_ac_coverage(raw_items, ac_ids, log=log, kind="titles")
+            return _coerce_title_list(data)
         except StopRequested:
             raise
         except CreditBalanceError:
@@ -2904,31 +3152,49 @@ def dedupe_existing_suite(project, plan_id, suite_id, cb=None, do_delete=True,
                               + f" ({dup_groups} set" + ("s" if dup_groups != 1 else "")
                               + " of test cases that covered the same thing)"
                               + tail,
-                       "tone": "warn" if kept_dupes else "ok", "ar": _story_tag_ar})
+                       "tone": "warn" if kept_dupes else "ok", "ar": _story_tag_ar,
+                       "replace_wip": f"dedupe:{suite_id}"})
         else:
             extra = f" ({perm_blocked_reason})" if perm_blocked_reason else ""
             cb("log", {"msg": story_tag + f"Found {n_dupe_cases} duplicate test case"
                               + ("s" if n_dupe_cases != 1 else "")
                               + f" across {dup_groups} set" + ("s" if dup_groups != 1 else "")
                               + f", but couldn't remove any{extra}.",
-                       "tone": "err", "ar": _story_tag_ar})
+                       "tone": "err", "ar": _story_tag_ar,
+                       "replace_wip": f"dedupe:{suite_id}"})
     else:
+        # All three summary branches carry "replace_wip": f"dedupe:{suite_id}" —
+        # clears the AI-mop-up heartbeat above (if it ever fired) once the pass
+        # actually resolves. Without this, a heartbeat that fired even once is
+        # never removed — nothing else here logs a matching completion line the
+        # UI could hitch replace_wip onto — so it sits in the activity log
+        # forever, frozen at its last elapsed value (seen live: "Still checking
+        # for duplicates… — 15s so far" displayed well after the suite's dedup
+        # pass had already logged its own result).
         cb("log", {"msg": story_tag + "No duplicate test cases found in the suite.",
-                   "tone": "dim", "ar": _story_tag_ar})
+                   "tone": "dim", "ar": _story_tag_ar,
+                   "replace_wip": f"dedupe:{suite_id}"})
     return {"removed": removed, "kept": kept_dupes, "groups": dup_groups,
             "keeper_ids": keeper_ids_this_run}
 
 
-def dedupe_case_list(cases, log=None, should_stop=None):
+def dedupe_case_list(cases, log=None, should_stop=None, story_title=None):
     """Skip-only duplicate detection for a list of in-memory test cases,
     used by the automation flow to avoid generating a script twice for the
     same scenario. Unlike dedupe_existing_suite this makes NO Azure DevOps
     calls and deletes nothing — duplicates are simply left out of the
     returned list. Same two-layer matching: cheap semantic-key grouping
     first, then an AI mop-up pass over whatever's still unclustered, to
-    catch true synonyms/paraphrase the static check can't.
+    catch true synonyms/paraphrase the static check can't — including the
+    structural target/rule extraction + programmatic backstop added to
+    _ai_duplicate_clusters, since this function calls it directly and gets
+    both automatically.
 
     `cases` — list of {"id": int, "title": str, "steps": [...]}.
+    `story_title`, when given, is passed through to _ai_duplicate_clusters
+    for the same grounding reason dedupe_existing_suite passes it — without
+    it the model only sees bare titles and can more easily conflate "same
+    feature area" with "same scenario".
     Returns the deduplicated list (most-complete case kept per duplicate
     group; non-duplicate cases pass through untouched).
     """
@@ -2963,7 +3229,8 @@ def dedupe_case_list(cases, log=None, should_stop=None):
         singles = [(gk, members[0]) for gk, members in groups.items() if len(members) == 1]
         if len(singles) >= 2:
             items = [{"id": r["id"], "title": r["title"]} for _gk, r in singles]
-            ai_groups = _ai_duplicate_clusters(items, should_stop=should_stop)
+            ai_groups = _ai_duplicate_clusters(items, should_stop=should_stop,
+                                               story_title=story_title)
             if ai_groups:
                 # Union-find — see dedupe_existing_suite for why: the AI can
                 # return overlapping/chained groups for a tight cluster of
@@ -3184,85 +3451,213 @@ def _ai_duplicate_clusters(items, should_stop=None, story_title=None, on_slow=No
                         f"that sharing a topic means they share a scenario.\n\n") if story_title else ""
         if ar:
             prompt = f"""
-            أنت مراجع ضمان جودة صارم تبحث عن تكرار حقيقي فقط، وليس تجميعاً حسب
-            الموضوع أو الميزة. يُعتبر عنوانان مكررين فقط إذا كانا يختبران نفس
-            السيناريو بالضبط — نفس الحقل أو العنصر أو الإجراء أو الشرط المسبق —
-            بصياغة مختلفة (إعادة صياغة أو مرادف أو ترجمة لنفس الفحص). العناوين
-            التي تشترك في نفس الميزة أو الشاشة أو الموضوع لكنها تختبر حقلاً أو
-            إجراءً أو شرطاً مختلفاً ليست مكررة إطلاقاً، حتى لو بدت مرتبطة ظاهرياً.
+            أنت مراجع ضمان جودة. مهمتك الوحيدة هي إيجاد عناوين حالات الاختبار المكررة
+            فعلياً — أي نفس الفحص مكتوباً مرتين بصياغة مختلفة. اتبع الإجراء أدناه
+            بالترتيب وبدقة، ولا تتخطَّ أي خطوة.
 
-            {story_ctx_ar}أمثلة:
-            - "زر الدخول معطل عند ترك كلمة المرور فارغة" مقابل "التحقق من بقاء
-              زر الدخول معطلاً عند فراغ حقل كلمة المرور" ← مكرر (نفس الفحص
-              بصياغة مختلفة)
-            - "التحقق من أن حقل المستخدمين إلزامي" مقابل "التحقق من أن الحد
-              الأقصى لطول حقل الاسم 100 حرف" ← ليس مكرراً (نفس الميزة، حقل
-              مختلف تماماً)
-            - "القائمة الجانبية تعرض خيار المستخدمين" مقابل "مجموعة الصلاحيات
-              الافتراضية بدون مستخدمين" ← ليس مكرراً (نفس الميزة، سيناريوهان
-              مختلفان تماماً)
+            التعريف
+            يُعتبر عنوانان مكررين فقط إذا تطابق الشرطان التاليان معاً:
+            (أ) نفس الهدف — نفس الحقل أو الزر أو العنصر أو الإجراء؛ و
+            (ب) نفس القاعدة — نفس الشرط أو السلوك المتوقع أو قاعدة التحقق التي
+                يتم فحصها بالضبط.
+            إذا تطابق (أ) واختلف (ب) بأي شكل — حتى بكلمة واحدة مثل «رقم» مقابل
+            «حرف كبير» مقابل «رمز» مقابل «8 أحرف» — فهما ليسا مكررين.
 
-            لديك قائمة عناوين حالات اختبار مرقمة موجودة بالفعل في مجموعة اختبار:
+            العناوين التي تشترك في نفس الميزة أو الشاشة أو الحقل أو قالب الجملة ليست
+            مكررة ما لم تكن القاعدة المفحوصة نفسها متطابقة. تشابه الصياغة لا يثبت
+            شيئاً. الحقل الواحد كثيراً ما يخضع لعدة قواعد تحقق منفصلة (إلزامي، حد
+            أدنى للطول، حد أقصى للطول، احتواء رقم، احتواء حرف كبير، احتواء رمز، منع
+            المسافات، ...). كل قاعدة من هذه القواعد حالة اختبار مستقلة يجب الإبقاء
+            عليها كلها.
+
+            الإجراء (إلزامي)
+            الخطوة 1 — لكل عنوان مرقم، استخرج قيمتين قصيرتين:
+              "target": الحقل أو العنصر أو الإجراء محل الاختبار
+              "rule":   الشرط المحدد الذي يُفحص، منقولاً من نص العنوان حرفياً قدر
+                        الإمكان
+            الخطوة 2 — قارن العناوين مثنى مثنى. اعتبر عنوانين مكررين فقط إذا تطابق
+              "target" وكان "rule" يعني نفس الشيء تماماً. إذا ذكرت القاعدتان متطلبين
+              مختلفين أو حدين مختلفين أو نوعين مختلفين من المحارف فهما اختباران
+              مختلفان — لا تجمعهما أبداً.
+            الخطوة 3 — كوّن المجموعات فقط من الأزواج التي تأكدت في الخطوة 2. عند أي
+              شك في أي زوج لا تجمعه؛ تفويت تكرار لا يسبب ضرراً، أما الدمج الخاطئ
+              فيحذف حالة اختبار حقيقية نهائياً.
+
+            صيغة المخرجات
+            أعد كائن JSON واحداً فقط دون أي نص آخر، بهذين المفتاحين وبهذا الترتيب:
+            {{
+              "analysis": [{{"n": الرقم, "target": "...", "rule": "..."}}, ...],
+              "groups": [[أرقام العناوين المكررة فعلاً], ...]
+            }}
+            يجب أن يحتوي "analysis" على عنصر واحد لكل عنوان في القائمة. أدرج في
+            "groups" فقط المجموعات التي تضم رقمين أو أكثر. إن لم يوجد أي تكرار:
+            "groups": [].
+
+            مثال — ادرسه جيداً؛ فهو يوضح الخطأ الأكثر شيوعاً:
+            العناوين:
+            1. التحقق أن كلمة المرور تحتوي على رمز واحد على الأقل
+            2. التحقق من أن كلمة المرور تحتوي على حرف كبير واحد على الأقل
+            3. التحقق من أن كلمة المرور تحتوي على رقم واحد على الأقل
+            4. التأكد من أن كلمة المرور يجب أن تتضمن رقماً واحداً على الأقل
+            الناتج الصحيح:
+            {{
+              "analysis": [
+                {{"n": 1, "target": "حقل كلمة المرور", "rule": "رمز واحد على الأقل"}},
+                {{"n": 2, "target": "حقل كلمة المرور", "rule": "حرف كبير واحد على الأقل"}},
+                {{"n": 3, "target": "حقل كلمة المرور", "rule": "رقم واحد على الأقل"}},
+                {{"n": 4, "target": "حقل كلمة المرور", "rule": "رقم واحد على الأقل"}}
+              ],
+              "groups": [[3, 4]]
+            }}
+            العناوين 1 و2 و3 تتشارك نفس الحقل ونفس قالب الجملة تقريباً، لكن «رمز»
+            و«حرف كبير» و«رقم» ثلاث قواعد مختلفة ← ثلاثة اختبارات مختلفة ← لا تُجمع
+            أبداً. أما العنوانان 3 و4 فيفحصان نفس القاعدة (احتواء رقم) بصياغتين
+            مختلفتين ← مكرران.
+
+            أمثلة سريعة إضافية:
+            - «زر الدخول معطل عند ترك كلمة المرور فارغة» مقابل «التحقق من بقاء زر
+              الدخول معطلاً عند فراغ حقل كلمة المرور» ← مكرر (نفس الهدف ونفس
+              القاعدة بصياغة مختلفة).
+            - «التحقق من أن حقل المستخدمين إلزامي» مقابل «التحقق من أن الحد الأقصى
+              لطول حقل الاسم 100 حرف» ← ليس مكرراً (هدف مختلف وقاعدة مختلفة).
+
+            {story_ctx_ar}عناوين حالات الاختبار المرقمة الموجودة في المجموعة:
             {listed}
 
-            اجمع الأرقام التي تختبر نفس السيناريو تماماً فقط. كن حذراً جداً —
-            عند أي شك لا تجمعها، فترك حالة اختبار فريدة دون تجميع أفضل بكثير من
-            حذفها بالخطأ.
-            أعد فقط كائن JSON: {{"groups": [[أرقام المجموعة المكررة], ...]}}
-            أدرج فقط المجموعات التي تحوي أكثر من رقم واحد. إن لم يوجد أي تكرار أعد
-            {{"groups": []}}.
+            نفّذ الآن الخطوة 1 ثم الخطوة 2 ثم الخطوة 3، وأعد كائن JSON فقط.
             """
         else:
             prompt = f"""
-            You are a strict QA reviewer doing duplicate detection, NOT topic
-            grouping. Two titles are duplicates ONLY if they test the exact
-            same scenario — the same target field, element, action, and
-            precondition — worded differently (paraphrase, synonym, or
-            translation of the same check). Titles that share a feature area,
-            screen, or general topic but check a DIFFERENT field, action, or
-            condition are NOT duplicates, even if they look related at a
-            glance.
+            You are a QA reviewer. Your ONLY job is to find test-case titles that are true
+            duplicates — the SAME check written twice in different words. Follow the
+            procedure below exactly, in order. Do not skip any step.
 
-            {story_ctx_en}Examples:
-            - "Login button is disabled with empty password" vs "Verify login
-              button stays disabled when the password field is empty" →
-              DUPLICATE (same check, reworded)
-            - "Verify the Users field is required" vs "Verify max length of
-              the Name field is 100 characters" → NOT a duplicate (same
-              feature, completely different field)
-            - "Sidebar shows the Users menu option" vs "Default permissions
-              group has no users assigned" → NOT a duplicate (same feature,
-              completely different scenarios)
+            DEFINITION
+            Two titles are duplicates ONLY if BOTH of the following are identical:
+            (A) the same target — the same field, button, element, or action; AND
+            (B) the same rule — the exact same condition, expected behavior, or
+                validation rule being checked.
+            If (A) matches but (B) differs in ANY way — even by a single word such as
+            "digit" vs "uppercase letter" vs "symbol" vs "8 characters" — they are NOT
+            duplicates.
 
-            Here is a numbered list of test case titles already in a suite:
+            Titles that share the same feature, screen, field, or sentence template are
+            NOT duplicates unless the checked rule itself is identical. Similar wording
+            proves nothing. One single field often has MANY separate validation rules
+            (required, minimum length, maximum length, must contain a digit, must contain
+            an uppercase letter, must contain a symbol, no spaces, ...). Each of those
+            rules is a separate test case and every one of them must be kept.
+
+            PROCEDURE (mandatory)
+            Step 1 — For EVERY numbered title, extract two short values:
+              "target": the field/element/action under test
+              "rule":   the specific condition being checked, copied as literally as
+                        possible from the title
+            Step 2 — Compare titles pairwise. Two titles are duplicates ONLY if their
+              "target" is the same AND their "rule" means exactly the same thing. If the
+              two rules name different requirements, limits, quantities, or character
+              types, they are DIFFERENT tests — never group them.
+            Step 3 — Build groups only from pairs confirmed in Step 2. If you are unsure
+              about any pair, DO NOT group it. Missing a duplicate is harmless; a wrong
+              merge permanently deletes a real test case.
+
+            OUTPUT FORMAT
+            Return ONE JSON object and nothing else, with exactly these two keys in this
+            order:
+            {{
+              "analysis": [{{"n": <number>, "target": "...", "rule": "..."}}, ...],
+              "groups": [[numbers that are true duplicates], ...]
+            }}
+            "analysis" must contain one entry per input title. "groups" must contain only
+            groups of 2 or more numbers. If there are no duplicates: "groups": [].
+
+            EXAMPLE — study it carefully; it shows the single most common mistake:
+            Input titles:
+            1. Verify the password contains at least one symbol
+            2. Verify the password contains at least one uppercase letter
+            3. Verify the password contains at least one digit
+            4. Confirm password must include at least 1 number
+            Correct output:
+            {{
+              "analysis": [
+                {{"n": 1, "target": "password field", "rule": "at least one symbol"}},
+                {{"n": 2, "target": "password field", "rule": "at least one uppercase letter"}},
+                {{"n": 3, "target": "password field", "rule": "at least one digit"}},
+                {{"n": 4, "target": "password field", "rule": "at least one digit"}}
+              ],
+              "groups": [[3, 4]]
+            }}
+            Titles 1, 2 and 3 share the same field and almost the same sentence, but
+            "symbol", "uppercase letter" and "digit" are three DIFFERENT rules, so they
+            are three different tests and must NOT be grouped. Titles 3 and 4 check the
+            same rule (contains a digit) in different words, so they ARE duplicates.
+
+            Other quick examples:
+            - "Login button is disabled when password is empty" vs "Verify the login
+              button stays disabled when the password field is blank" → duplicates
+              (same target, same rule, different wording).
+            - "Verify the users field is required" vs "Verify the name field max length
+              is 100" → NOT duplicates (different target AND different rule).
+
+            {story_ctx_en}Numbered test-case titles already in the suite:
             {listed}
 
-            Group together numbers ONLY when they test the exact same
-            scenario as each other. Be conservative — when in doubt, do NOT
-            group them; leaving a unique test case ungrouped is far better
-            than wrongly deleting it.
-            Return ONLY a JSON object: {{"groups": [[duplicate group numbers], ...]}}
-            Only include groups with more than one number. If there are no
-            duplicates, return {{"groups": []}}.
+            Now perform Step 1, Step 2, and Step 3, and return only the JSON object.
             """
-        raw = _run_stopaware(lambda: ai_complete(prompt, max_tokens=1024, want_json=True,
+        raw = _run_stopaware(lambda: ai_complete(prompt, max_tokens=1536, want_json=True,
                                                  usage_tag="dedupe_ai_clusters"),
                              should_stop=should_stop, on_slow=on_slow)
         data = parse_json_robust(raw)
         raw_groups = data.get("groups") if isinstance(data, dict) else None
         if not raw_groups:
             return []
-        out = []
-        for g in (raw_groups or []):
-            idxs = set()
-            for n in (g or []):
+        # Programmatic backstop: cross-check the model's OWN structured
+        # "analysis" (its {n, target, rule} extraction, forced by the
+        # prompt's Step 1) before trusting a group in "groups" — a weak
+        # model can still merge on lexical similarity between TITLES despite
+        # the prompt's instructions, but if its own analysis names a
+        # DIFFERENT "rule" for two members of the group it just returned
+        # (e.g. "at least one digit" vs "at least one uppercase letter"),
+        # that is a direct self-contradiction and the group is dropped
+        # rather than trusted. If the model omitted/malformed the analysis
+        # for a group's numbers, this falls back to trusting the group as
+        # before, so a formatting slip doesn't silently disable detection
+        # entirely — it's a backstop against the specific "grouped despite
+        # naming different rules" failure, not a hard requirement.
+        analysis = data.get("analysis") if isinstance(data, dict) else None
+        rule_by_n = {}
+        if isinstance(analysis, list):
+            for entry in analysis:
                 try:
-                    idxs.add(int(n) - 1)
+                    rule_by_n[int(entry.get("n"))] = str(entry.get("rule", "")).strip()
                 except Exception:
                     continue
+        def _rules_match(r1, r2):
+            a, b = _norm_title(r1 or ""), _norm_title(r2 or "")
+            if not a or not b or a == b:
+                return True
+            ta, tb = set(a.split()), set(b.split())
+            if not ta or not tb:
+                return True
+            union = len(ta | tb)
+            return union > 0 and len(ta & tb) / union >= 0.6
+        out = []
+        for g in (raw_groups or []):
+            nums, idxs = [], set()
+            for n in (g or []):
+                try:
+                    ni = int(n)
+                except Exception:
+                    continue
+                nums.append(ni)
+                idxs.add(ni - 1)
             idxs = sorted(i for i in idxs if 0 <= i < len(shown))
-            if len(idxs) >= 2:
-                out.append(idxs)
+            if len(idxs) < 2:
+                continue
+            rules = [rule_by_n[n] for n in nums if n in rule_by_n]
+            if len(rules) >= 2 and not all(_rules_match(rules[0], r) for r in rules[1:]):
+                continue
+            out.append(idxs)
         _log_dedupe_ai_call(
             "existing_suite", story_title, shown, raw,
             [[shown[i] for i in g] for g in out])
@@ -3303,7 +3698,7 @@ def _dedupe_titles_ai(candidate_titles, existing_titles, story_title, log=None,
         cand_block = "\n".join(f"{i+1}. {t}" for i, t in enumerate(candidate_titles))
         if ar:
             prompt = f"""
-            أنت مراجع ضمان جودة صارم. عنوان قصة المستخدم: {story_title}
+            أنت مراجع ضمان جودة. قصة المستخدم: {story_title}
 
             حالات اختبار "موجودة بالفعل" لهذه القصة:
             {ex_block}
@@ -3311,15 +3706,39 @@ def _dedupe_titles_ai(candidate_titles, existing_titles, story_title, log=None,
             حالات اختبار "جديدة مقترحة" (مرقمة):
             {cand_block}
 
-            راجع القائمة الجديدة وحدد أي رقم يكرر — بنفس المعنى حتى لو اختلفت الكلمات
-            أو استخدمت مرادفات مختلفة تماماً — إما حالة موجودة بالفعل، أو حالة أخرى
-            سابقة لها رقم أصغر في نفس القائمة الجديدة.
-            أعد فقط كائن JSON بالصيغة: {{"duplicate_numbers": [الأرقام المكررة الواجب حذفها]}}.
-            إن لم يوجد أي تكرار أعد {{"duplicate_numbers": []}}.
+            اتبع الإجراء التالي بالترتيب لتحديد أي حالة جديدة تكرر حالة موجودة أو
+            حالة جديدة أخرى سابقة لها رقم أصغر.
+
+            التعريف: يُعتبر عنوانان مكررين فقط إذا تطابق الهدف (نفس الحقل/العنصر/
+            الإجراء) والقاعدة (نفس الشرط أو السلوك المتوقع بالضبط) معاً. الحقل
+            الواحد كثيراً ما يخضع لعدة قواعد تحقق منفصلة (حد أدنى للطول، احتواء
+            حرف كبير، احتواء رقم، احتواء رمز، ...) — كل قاعدة حالة اختبار مستقلة،
+            حتى لو تشابهت صياغة العناوين بشدة.
+
+            الخطوة 1 — لكل حالة "جديدة مقترحة"، استخرج "target" (الهدف) و"rule"
+            (القاعدة المحددة، منقولة حرفياً قدر الإمكان) من نص عنوانها.
+            الخطوة 2 — قارن كل حالة جديدة بكل الحالات الموجودة بالفعل وبالحالات
+            الجديدة الأخرى. اعتبرها مكررة فقط إذا تطابق "target" و"rule" تماماً.
+            إذا اختلفت القاعدة بأي شكل — حتى بكلمة واحدة مثل «رقم» مقابل «حرف
+            كبير» — فهما اختباران مختلفان، لا تُدرجها كتكرار.
+            الخطوة 3 — عند أي شك لا تُدرج الرقم كتكرار؛ تفويت تكرار غير ضار، أما
+            حذف حالة فريدة بالخطأ فيفقد تغطية اختبار حقيقية.
+
+            مثال يوضح الخطأ الأكثر شيوعاً: "التحقق أن كلمة المرور تحتوي على رمز
+            واحد على الأقل" و"التحقق أن كلمة المرور تحتوي على حرف كبير واحد على
+            الأقل" و"التحقق أن كلمة المرور تحتوي على رقم واحد على الأقل" تتشارك
+            نفس الحقل وقالب الجملة لكن «رمز» و«حرف كبير» و«رقم» ثلاث قواعد
+            مختلفة ← ثلاث حالات مختلفة، لا تُجمع أبداً كمكررة لبعضها.
+
+            أعد فقط كائن JSON بهذين المفتاحين:
+            {{"analysis": [{{"n": الرقم, "target": "...", "rule": "..."}}, ...],
+              "duplicate_numbers": [الأرقام المكررة الواجب حذفها]}}
+            يجب أن يحتوي "analysis" على عنصر واحد لكل حالة جديدة مقترحة.
+            إن لم يوجد أي تكرار أعد "duplicate_numbers": [].
             """
         else:
             prompt = f"""
-            You are a strict QA reviewer. User story: {story_title}
+            You are a QA reviewer. User story: {story_title}
 
             Test cases that "already exist" for this story:
             {ex_block}
@@ -3327,14 +3746,41 @@ def _dedupe_titles_ai(candidate_titles, existing_titles, story_title, log=None,
             "Newly proposed" test cases (numbered):
             {cand_block}
 
-            Review the newly-proposed list and identify any number that duplicates —
-            same meaning, even with completely different wording or synonyms — either
-            an already-existing case, or an earlier-numbered case in the same
-            newly-proposed list.
-            Return ONLY a JSON object: {{"duplicate_numbers": [numbers to remove]}}.
-            If there are no duplicates, return {{"duplicate_numbers": []}}.
+            Follow this procedure, in order, to find which new cases duplicate an
+            existing case or an earlier-numbered new case.
+
+            DEFINITION: two titles are duplicates ONLY if BOTH the target (same
+            field/element/action) AND the rule (the exact same condition or
+            expected behavior) match. One field often has several separate
+            validation rules (minimum length, requires an uppercase letter,
+            requires a digit, requires a symbol, ...) — each rule is its own
+            test case, even when the titles look very similar.
+
+            Step 1 — For every "newly proposed" title, extract "target" and
+            "rule" (copied as literally as possible from the title).
+            Step 2 — Compare each new title against every existing title and every
+            other new title. Call it a duplicate ONLY if target AND rule both
+            match exactly. If the rule differs in ANY way — even one word like
+            "digit" vs "uppercase letter" — they are different tests; do not
+            flag it.
+            Step 3 — When in doubt, do NOT flag it as a duplicate. Missing a
+            duplicate is harmless; wrongly dropping a unique case loses real
+            test coverage.
+
+            Example of the most common mistake: "Verify the password contains at
+            least one symbol", "...at least one uppercase letter", and "...at
+            least one digit" share the same field and almost the same sentence,
+            but "symbol", "uppercase letter", and "digit" are three DIFFERENT
+            rules → three different tests, never group them as duplicates of
+            each other.
+
+            Return ONLY a JSON object with exactly these two keys:
+            {{"analysis": [{{"n": <number>, "target": "...", "rule": "..."}}, ...],
+              "duplicate_numbers": [numbers to remove]}}
+            "analysis" must contain one entry per newly-proposed title.
+            If there are no duplicates, return "duplicate_numbers": [].
             """
-        raw = _run_stopaware(lambda: ai_complete(prompt, max_tokens=1024, want_json=True,
+        raw = _run_stopaware(lambda: ai_complete(prompt, max_tokens=1536, want_json=True,
                                                  usage_tag="dedupe_titles_ai"),
                              should_stop=should_stop, on_slow=on_slow)
         data = parse_json_robust(raw)
@@ -3347,6 +3793,25 @@ def _dedupe_titles_ai(candidate_titles, existing_titles, story_title, log=None,
                 drop.add(int(n) - 1)
             except Exception:
                 pass
+        if not drop:
+            return candidate_titles
+        # NOTE: no programmatic backstop here, unlike _ai_duplicate_clusters.
+        # That one can cross-check a group's members against EACH OTHER's
+        # extracted "rule" because every member of a group is a numbered item
+        # in the SAME list the model analyzed. Here, "analysis" only covers
+        # the newly-proposed candidates — a dropped candidate could equally
+        # have been matched against an EXISTING title (which has no extracted
+        # rule to compare against) or another candidate, and the flat
+        # duplicate_numbers list doesn't say which. Any veto rule built on
+        # that ambiguity risks silently disabling itself (a candidate's own
+        # rule simply won't resemble anything when it matched an existing
+        # title, which is the common/expected case) — worse than no check at
+        # all, since it would look like protection without providing any.
+        # The structural prompt fix above (forced target/rule extraction,
+        # step-by-step comparison, explicit password-rule example) is the
+        # actual defense here; stakes are also lower than the existing-suite
+        # cleanup — a wrongly-dropped candidate here just never gets created,
+        # nothing real is deleted.
         if not drop:
             return candidate_titles
         kept = [t for i, t in enumerate(candidate_titles) if i not in drop]
@@ -3405,6 +3870,7 @@ def run_titles(project, plan_id, story_ids, cb, should_stop=lambda: False):
             _real_cb(kind, payload)
 
     _fatal = {"hit": False}   # first fatal (credit/auth/bad_model/not_found/network) wins
+    _ac_link_cache = {}       # shared across all stories this run — see _resolve_ac_links
 
     def _process_story(story):
         """Runs on a worker thread: dedup this story's suite, generate +
@@ -3416,6 +3882,7 @@ def run_titles(project, plan_id, story_ids, cb, should_stop=lambda: False):
         sid = story.id
         title = story.fields.get("System.Title", "No Title")
         criteria = story.fields.get("Microsoft.VSTS.Common.AcceptanceCriteria", "")
+        criteria = _resolve_ac_links(criteria, project, cb=cb, cache=_ac_link_cache, current_id=sid)
         cb("story", {"id": sid, "title": title})
         suite_id = story_suite_map.get(sid)
         if not suite_id:
@@ -3487,6 +3954,15 @@ def run_titles(project, plan_id, story_ids, cb, should_stop=lambda: False):
             return {"sid": sid, "title": title, "suite_id": suite_id, "ai_error": True,
                     "total": ps_total, "ok": ps_ok, "skipped": ps_skipped, "err": ps_err, "secs": ps_secs}
 
+        # Clears the "Still generating titles…" heartbeat above once the call
+        # actually resolves. Without this, a heartbeat that fired even once is
+        # never removed — the only log lines below this point fire
+        # CONDITIONALLY (only if something was actually dropped/skipped), so a
+        # clean run with nothing to skip would leave the heartbeat as a
+        # permanent ghost, frozen at its last elapsed value.
+        cb("log", {"msg": f"Generated {len(titles)} candidate title(s)", "tone": "dim",
+                   "replace_wip": f"titles:{sid}"})
+
         existing_norm = {_norm_title(t) for t in existing_titles}
         seen_keys = {_semantic_key(t) for t in existing_titles}
         unique = []
@@ -3521,6 +3997,14 @@ def run_titles(project, plan_id, story_ids, cb, should_stop=lambda: False):
         except StopRequested:
             return {"sid": sid, "title": title, "suite_id": suite_id, "stopped": True,
                     "total": ps_total, "ok": ps_ok, "skipped": ps_skipped, "err": ps_err, "secs": ps_secs}
+        # Clears the "Still checking for duplicate titles…" heartbeat above —
+        # same reasoning as the generate_titles cleanup a few lines up.
+        # _dedupe_titles_ai's own internal log() call (the "AI review caught…"
+        # line) fires conditionally AND doesn't carry a replace_wip anyway
+        # (its log callback signature is just (msg, tone)), so it can't be
+        # relied on to clean this up either.
+        cb("log", {"msg": "Title dedup check complete", "tone": "dim",
+                   "replace_wip": f"dedupetitles:{sid}"})
         if len(unique) != _before_ai:
             ps_skipped += (_before_ai - len(unique))
         for tc_title in unique:
@@ -3678,11 +4162,21 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
     story_suite_map = discover_suites_for_stories(project, plan_id, set(story_ids))
     stories = fetch_stories(story_ids)
     story_ctx = {}
+    _ac_link_cache = {}   # shared across all stories this run — see _resolve_ac_links
     for s in stories:
+        _criteria = s.fields.get("Microsoft.VSTS.Common.AcceptanceCriteria", "")
+        _criteria = _resolve_ac_links(_criteria, project, cb=cb, cache=_ac_link_cache, current_id=s.id)
         story_ctx[s.id] = {
             "title": s.fields.get("System.Title", "No Title"),
-            "criteria": s.fields.get("Microsoft.VSTS.Common.AcceptanceCriteria", ""),
+            "criteria": _criteria,
             "screenshots": fetch_story_screenshots(s),
+            # Guards the once-per-story ui_desc lazy-fill below (_gen_and_write)
+            # now that several of a story's cases can reach that fill point on
+            # DIFFERENT worker threads at once — pre-created here (single-
+            # threaded at this point) so there's no race creating the lock
+            # itself; _gen_and_write also lazily setdefault()s it as a
+            # belt-and-suspenders fallback.
+            "ui_desc_lock": _threading.Lock(),
         }
     # Log each story → suite mapping up front
     for sid in story_ids:
@@ -3791,6 +4285,14 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
             cb("log", {"msg": f"Title generation failed for story {sid}: {e}", "tone": "err"})
             continue
 
+        # Clears the "Still generating titles…" heartbeat above once the call
+        # actually resolves — see the identical fix/comment in run_titles's
+        # _process_story for why this is needed (nothing below fires
+        # unconditionally, so a heartbeat that fired even once would
+        # otherwise be a permanent ghost).
+        cb("log", {"msg": f"Generated {len(titles)} candidate title(s)", "tone": "dim",
+                   "replace_wip": f"seedtitles:{sid}"})
+
         # de-duplicate (exact + semantic), same as the titles tool
         seen_norm = set(); seen_keys = set(); unique = []; dropped = 0
         for t in titles:
@@ -3816,6 +4318,10 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
                     "tone": "dim", "ico": "⏳", "hb_id": f"dedupetitles:{sid}"}))
         except StopRequested:
             break
+        # Clears the "Still checking for duplicate titles…" heartbeat above —
+        # same reasoning as the generate_titles cleanup a few lines up.
+        cb("log", {"msg": "Title dedup check complete", "tone": "dim",
+                   "replace_wip": f"dedupetitles:{sid}"})
         if len(unique) != _before_ai2:
             dropped += (_before_ai2 - len(unique))
         for tc_title in unique:
@@ -3883,19 +4389,26 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
     cb("stat", {"total": total, "stories_done": 0, "total_stories": total_stories,
                 "done": 0, "skipped": 0, "errors": 0, "created": seeded_total})
 
-    # ── bounded concurrency for the expensive part (generate_steps + write) ──
-    # Everything ABOVE (existing-steps check, skip/evaluate decision, the
-    # once-per-story UI-description trigger) stays exactly sequential, in the
-    # original order, with identical cost/behavior — only the generate_steps()
-    # AI call + Azure write for a case that actually needs generation gets
-    # handed to a small worker pool so a few of them can be in flight at once
-    # instead of strictly one-at-a-time. _STEPS_WORKERS is deliberately small:
-    # each in-flight call still goes through the same ai_complete() retry/
-    # backoff machinery as before, so this isn't meant to hammer a rate-
-    # limited/free-tier provider much harder than the sequential path already
-    # could — it's meant to overlap LATENCY (waiting on the network) across a
-    # few cases, not multiply request volume. (_cf_rs already imported above,
-    # for the dedup-check worker pool.)
+    # ── bounded concurrency for the expensive part (evaluate + generate_steps + write) ──
+    # Only the CHEAP, non-AI checks stay sequential on the main thread: the
+    # existing-steps fetch, the instant "already has steps, skipped" (skip
+    # mode) short-circuit, and the dedup-keeper short-circuit. Every case that
+    # isn't short-circuited there — a brand-new case, OR an existing one that
+    # needs the evaluate_existing_steps AI decision — is handed to a small
+    # worker pool where _gen_and_write does the whole rest of the pipeline:
+    # the evaluate decision (when applicable), the once-per-story UI-
+    # description fetch, and generate_steps() + the Azure write. This used to
+    # split evaluate_existing_steps out as its OWN sequential main-thread
+    # phase before any case ever reached this pool — for a story whose cases
+    # mostly already have steps, that left the pool idle while cases were
+    # evaluated one at a time (see _gen_and_write's docstring for the full
+    # story). _STEPS_WORKERS is deliberately small: each in-flight call still
+    # goes through the same ai_complete() retry/backoff machinery as before,
+    # so this isn't meant to hammer a rate-limited/free-tier provider much
+    # harder than the sequential path already could — it's meant to overlap
+    # LATENCY (waiting on the network) across a few cases, not multiply
+    # request volume. (_cf_rs already imported above, for the dedup-check
+    # worker pool.)
     _STEPS_WORKERS = 2
     _executor = _cf_rs.ThreadPoolExecutor(max_workers=_STEPS_WORKERS)
     _inflight = {}   # future -> None
@@ -3924,16 +4437,129 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
                     "done": ok, "skipped": skipped, "errors": err, "created": seeded_total})
         cb("progress", {"pct": pct, "label": f"{pct}% · {done} of {total}"})
 
-    def _gen_and_write(tc_id, tc_title, criteria, ui_desc, story_id, inadequate_reason, _tc_start):
-        """Runs on a worker thread. Returns a result dict describing exactly
-        what happened; does NOT touch any shared counter — _apply_result
-        (main thread only) does all bookkeeping, so every existing ordering
-        guarantee for those counters is unchanged. cb() itself IS called from
-        here (for the 'generating…'/heartbeat lines, which need to appear
-        live while the call is in flight) — safe because cb was shadowed
-        with a lock at the top of run_steps."""
+    def _gen_and_write(tc_id, tc_title, criteria, ctx, story_id, has_existing,
+                       existing_xml, _tc_start):
+        """Runs on a worker thread. Owns the WHOLE post-dedup pipeline for one
+        case: the evaluate_existing_steps AI decision when applicable, the
+        once-per-story UI-description fetch (lazily, guarded by ctx's own
+        lock), and generate_steps() + the Azure write.
+
+        This used to be split in two: evaluate_existing_steps ran
+        SEQUENTIALLY on the main thread for every case BEFORE any dispatch to
+        this worker pool, and only generate+write was pooled. For a story
+        whose cases mostly already have steps (the common case re-running
+        against an established suite), that left the 2-worker pool sitting
+        idle while cases were evaluated one at a time on the main thread —
+        and evaluate_existing_steps had no should_stop/on_slow awareness at
+        all, so a slow/rate-limited provider could silently stall the WHOLE
+        run for minutes with nothing in the log (confirmed live: 2:56 of
+        total silence evaluating a single case) and no way for Stop to
+        interrupt it. Folding the decision into this worker fixes both: up to
+        _STEPS_WORKERS cases' evaluate calls now genuinely run concurrently,
+        and evaluate_existing_steps gets the same heartbeat/should_stop
+        handling generate_steps already had.
+
+        Returns a result dict describing exactly what happened; does NOT
+        touch any shared counter — _apply_result (main thread only) does all
+        bookkeeping. cb() itself IS called from here — safe because cb was
+        shadowed with a lock at the top of run_steps."""
+        inadequate_reason = ""
+        if has_existing and existing_mode == "evaluate":
+            try:
+                if should_stop():
+                    return {"ok": False, "stopped": True, "tc_id": tc_id, "tc_title": tc_title,
+                            "story_id": story_id, "tc_start": _tc_start,
+                            "stopped_wip_id": f"eval:{tc_id}"}
+                cb("log", {"msg": tc_title + " — checking if existing steps are adequate…",
+                           "tone": "dim", "id": tc_id, "ar": True, "wip": True,
+                           "wip_id": f"eval:{tc_id}"})
+                verdict = evaluate_existing_steps(
+                    tc_title, criteria, existing_xml, should_stop=should_stop,
+                    on_slow=lambda s: cb("log", {
+                        "msg": f"Still checking existing steps with {T_disp(AI_PROVIDER)} "
+                               f"({current_model() or 'model'}) — {s}s so far. Large "
+                               f"models on free tiers can be slow; the run is not frozen.",
+                        "tone": "dim", "ico": "⏳", "id": tc_id, "indent": True,
+                        "hb_id": f"eval:{tc_id}"}))
+            except StopRequested:
+                # Must be caught explicitly, same reasoning as the generate-
+                # phase StopRequested handling below: it carries no message
+                # text, so if it fell through to the generic `except
+                # Exception` below it would be misreported as "تعذر التقييم"
+                # (evaluation failed) instead of an honest stop — or, worse,
+                # if it escaped this function entirely uncaught (as it did
+                # before this refactor, when evaluate_existing_steps ran on
+                # the main thread with no try/except StopRequested around
+                # it at all), it would propagate all the way out of
+                # run_steps and surface in main.py's generic exception
+                # handler as "Run failed: " (empty message) — a real bug
+                # reported live, root-caused to exactly this gap.
+                return {"ok": False, "stopped": True, "tc_id": tc_id, "tc_title": tc_title,
+                        "story_id": story_id, "tc_start": _tc_start,
+                        "stopped_wip_id": f"eval:{tc_id}"}
+            except CreditBalanceError:
+                return {"ok": False, "credit": True, "tc_id": tc_id, "tc_title": tc_title,
+                        "story_id": story_id, "tc_start": _tc_start}
+            except Exception:
+                verdict = {"adequate": False, "reason": "تعذر التقييم"}
+            if verdict.get("adequate"):
+                return {"ok": True, "skip_adequate": True, "tc_id": tc_id, "tc_title": tc_title,
+                        "story_id": story_id,
+                        "reason": verdict.get("reason", "Existing steps adequate"),
+                        "tc_start": _tc_start}
+            inadequate_reason = verdict.get("reason", "")
+
+        # UI description cached once per story, lazily, guarded by ctx's own
+        # lock — several of this story's cases can reach this at once now
+        # that evaluate_existing_steps also runs on a worker (previously this
+        # ran on the main thread, one case at a time, so a plain "'ui_desc'
+        # not in ctx" check was already safe with no lock needed). Double-
+        # checked locking: skip the lock entirely once ui_desc is set.
+        if "ui_desc" not in ctx:
+            _uidesc_lock = ctx.setdefault("ui_desc_lock", _threading.Lock())
+            with _uidesc_lock:
+                if "ui_desc" not in ctx:
+                    if ctx.get("screenshots"):
+                        cb("log", {"msg": f"read {len(ctx['screenshots'])} screenshot(s) once — UI described",
+                                   "tone": "dim", "ico": "👁", "indent": True})
+                    try:
+                        ctx["ui_desc"] = _call_with_network_retries(
+                            lambda: describe_story_ui(
+                                ctx.get("screenshots"), ctx.get("title", ""),
+                                on_slow=lambda s: cb("log", {
+                                    "msg": f"Still describing the UI with {T_disp(AI_PROVIDER)} "
+                                           f"({current_model() or 'model'}) — {s}s so far. "
+                                           f"Vision calls on free-tier providers can be slow.",
+                                    "tone": "dim", "ico": "⏳", "indent": True,
+                                    "hb_id": f"uidesc:{story_id}"}),
+                            ), cb, should_stop=should_stop)
+                        # Clears the heartbeat line above once the call actually
+                        # resolves — without this a heartbeat that fired even
+                        # once is never removed (nothing else logs a "this call
+                        # finished" line to hitch replace_wip onto), so it sits
+                        # in the activity log forever frozen at its last value.
+                        cb("log", {"msg": "UI description ready", "tone": "dim", "ico": "👁",
+                                   "indent": True, "replace_wip": f"uidesc:{story_id}"})
+                    except StopRequested:
+                        # THE bug reported live: this call previously had no
+                        # except StopRequested clause at all (it only caught
+                        # CreditBalanceError), so clicking Stop while this was
+                        # in flight propagated all the way out of run_steps
+                        # uncaught, landing in main.py's generic exception
+                        # handler as "Run failed: " (StopRequested's message
+                        # text is empty). Fixed by handling it explicitly here,
+                        # same as every other AI call site in this run.
+                        return {"ok": False, "stopped": True, "tc_id": tc_id, "tc_title": tc_title,
+                                "story_id": story_id, "tc_start": _tc_start,
+                                "stopped_wip_id": f"uidesc:{story_id}"}
+                    except CreditBalanceError:
+                        return {"ok": False, "credit": True, "tc_id": tc_id, "tc_title": tc_title,
+                                "story_id": story_id, "tc_start": _tc_start}
+        ui_desc = ctx.get("ui_desc", "")
+
         cb("log", {"msg": tc_title + " — generating…", "tone": "info",
-                   "id": tc_id, "ar": True, "wip": True, "wip_id": tc_id})
+                   "id": tc_id, "ar": True, "wip": True, "wip_id": tc_id,
+                   "replace_wip": f"eval:{tc_id}"})
         try:
             steps = _call_with_network_retries(
                 lambda: generate_steps(
@@ -3946,6 +4572,20 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
                         "tone": "dim", "ico": "⏳", "id": tc_id, "indent": True,
                         "hb_id": tc_id}),
                 ), cb, should_stop=should_stop)
+            # Drop steps with neither action nor expected text — seen live: a
+            # technically-valid JSON reply (e.g. {"steps":[{}]}) with empty
+            # string values sails straight through parse_json_robust/
+            # _coerce_step_list as an apparently successful "1 steps" result,
+            # gets written to Azure DevOps as a genuinely blank step row, and
+            # only shows up as "the test case has no steps" when someone
+            # actually opens it — nothing before this point ever checked the
+            # step's own content, only that the list was non-empty. If EVERY
+            # step turns out empty this way, that's not a usable result at
+            # all — raise so it's counted/logged as a real failure instead of
+            # silently writing nothing useful.
+            steps = [s for s in steps if (s.get("action", "").strip() or s.get("expected", "").strip())]
+            if not steps:
+                raise RuntimeError("AI returned steps with no action/expected text")
             update_test_case_with_steps(tc_id, build_steps_xml(steps), project, story_id)
             return {"ok": True, "tc_id": tc_id, "tc_title": tc_title, "story_id": story_id,
                     "steps": steps, "inadequate_reason": inadequate_reason,
@@ -3962,7 +4602,7 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
             # "NVIDIA: unknown error." lines that looked like provider failures
             # but were just this cancellation being misclassified.
             return {"ok": False, "stopped": True, "tc_id": tc_id, "tc_title": tc_title,
-                    "story_id": story_id, "tc_start": _tc_start}
+                    "story_id": story_id, "tc_start": _tc_start, "stopped_wip_id": tc_id}
         except CreditBalanceError:
             return {"ok": False, "credit": True, "tc_id": tc_id, "tc_title": tc_title,
                     "story_id": story_id, "tc_start": _tc_start}
@@ -3974,7 +4614,7 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
         """Main-thread-only: identical bookkeeping to what the old inline
         generate_steps() success/error handling did, now applied to a
         completed future's result instead of an immediate return value."""
-        nonlocal ok, done, err
+        nonlocal ok, done, err, skipped
         story_id = res["story_id"]; tc_id = res["tc_id"]; tc_title = res["tc_title"]
         if res.get("credit"):
             if not _fatal["hit"]:
@@ -3982,12 +4622,33 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
             return
         if res.get("stopped"):
             # Honest "stopped", not a fake provider error — see the
-            # StopRequested note in _gen_and_write. Not counted toward
+            # StopRequested notes in _gen_and_write. Not counted toward
             # ok/err/done: this case simply didn't finish, same as if the
             # loop above had never dispatched it in the first place.
+            # stopped_wip_id targets whichever wip/heartbeat line was actually
+            # showing when the stop happened (eval:{tc_id}, uidesc:{story_id},
+            # or plain tc_id for the generate phase) — falls back to tc_id so
+            # this still behaves correctly for any older/other caller.
             cb("log", {"msg": tc_title + " — stopped (Stop was clicked while this "
                               "was generating)", "tone": "dim", "id": tc_id,
-                       "ar": True, "replace_wip": tc_id})
+                       "ar": True, "replace_wip": res.get("stopped_wip_id", tc_id)})
+            return
+        if res.get("skip_adequate"):
+            # existing steps judged adequate — the AI-decision analogue of the
+            # "already has steps, skipped" fast path above, just resolved via
+            # a (potentially slow) AI call on a worker thread instead of a
+            # cheap sync check. Mirrors the original inline log/stats exactly.
+            skipped += 1; done += 1; skip_by_story[story_id] += 1
+            _el = round(time.time() - res["tc_start"], 1)
+            skipped_items.append({"id": tc_id, "title": tc_title,
+                                  "reason": res.get("reason", "Existing steps adequate"),
+                                  "secs": _el})
+            cb("log", {"msg": tc_title + " — existing steps adequate", "tone": "ok",
+                       "id": tc_id, "ar": True, "secs": _el,
+                       "detail": f"existing steps adequate · ⏱ {_fmt_mmss(_el)}",
+                       "replace_wip": f"eval:{tc_id}"})
+            time_by_story[story_id] = time_by_story.get(story_id, 0.0) + (time.time() - res["tc_start"])
+            _finish_case(story_id)
             return
         if not res["ok"]:
             e = res["error"]
@@ -4006,13 +4667,26 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
             return
         steps = res["steps"]
         ok += 1; done += 1; ok_by_story[story_id] += 1
+        # pre/action/expected each count steps with actual non-empty content
+        # in that field — NOT just len(steps) repeated three times (the old
+        # behavior). That made "action"/"expected" meaningless as a sanity
+        # check: a step with genuinely blank action/expected text (seen
+        # live — the AI's JSON parsed fine but with empty string values)
+        # still showed as "1 steps · pre 0 · action 1 · expected 1", looking
+        # completely normal in the log while the case being written to Azure
+        # DevOps actually had no real step content — exactly what surfaced
+        # later as "the test case has no steps." pre already counted real
+        # content correctly; action/expected now match that same pattern,
+        # so a genuinely broken result is visible here instead of hidden.
         npre = sum(1 for s in steps if s.get("precondition", "").strip())
+        nact = sum(1 for s in steps if s.get("action", "").strip())
+        nexp = sum(1 for s in steps if s.get("expected", "").strip())
         _elapsed = time.time() - res["tc_start"]
         cb("log", {"msg": tc_title, "tone": "ok", "id": tc_id, "ar": True,
                    "replace_wip": tc_id,
                    "secs": round(_elapsed, 1),
-                   "detail": f"{len(steps)} steps · pre {npre} · action {len(steps)} · "
-                             f"expected {len(steps)} · ⏱ {_fmt_mmss(_elapsed)}"})
+                   "detail": f"{len(steps)} steps · pre {npre} · action {nact} · "
+                             f"expected {nexp} · ⏱ {_fmt_mmss(_elapsed)}"})
         if res.get("inadequate_reason"):
             action_items.append({"id": tc_id, "title": tc_title,
                                  "reason": res["inadequate_reason"],
@@ -4114,8 +4788,6 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
                 _finish_case(story_id)
                 continue
 
-            inadequate_reason = ""
-            proceed = True
             if has_existing and tc_id in _dedup_keeper_ids_this_run:
                 # This case was just kept moments ago as the most-complete
                 # survivor of a duplicate group in THIS run — its step count
@@ -4125,7 +4797,9 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
                 # would risk shrinking it back down and losing that coverage
                 # for good, since the siblings that used to carry it are gone.
                 # Leave it untouched this run regardless of existing_mode.
-                skipped += 1; done += 1; proceed = False; skip_by_story[story_id] += 1
+                # Fast/sync, no AI call — stays on the main thread, same as
+                # the "already has steps, skipped" branch above.
+                skipped += 1; done += 1; skip_by_story[story_id] += 1
                 _el = round(time.time() - _tc_start, 1)
                 skipped_items.append({"id": tc_id, "title": tc_title,
                                       "reason": "Kept as most-complete duplicate survivor this run",
@@ -4135,69 +4809,29 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
                                   "the coverage that made it the keeper",
                            "tone": "ok", "id": tc_id, "ar": True, "secs": _el,
                            "detail": f"dedup keeper — left as-is · ⏱ {_fmt_mmss(_el)}"})
-            elif has_existing and existing_mode == "evaluate":
-                try:
-                    verdict = evaluate_existing_steps(tc_title, criteria, existing_xml)
-                except CreditBalanceError:
-                    # Route through _fatal (not an immediate return) so any
-                    # generate_steps work already in flight from EARLIER
-                    # iterations still gets drained/counted below instead of
-                    # being silently discarded — see the _fatal handling notes
-                    # above the worker-pool setup.
-                    _fatal.update(hit=True, summary="Stopped — out of AI credits", reason="credit")
-                    break
-                except Exception:
-                    verdict = {"adequate": False, "reason": "تعذر التقييم"}
-                if verdict.get("adequate"):
-                    skipped += 1; done += 1; proceed = False; skip_by_story[story_id] += 1
-                    _el = round(time.time() - _tc_start, 1)
-                    skipped_items.append({"id": tc_id, "title": tc_title,
-                                          "reason": verdict.get("reason","Existing steps adequate"),
-                                          "secs": _el})
-                    cb("log", {"msg": tc_title + " — existing steps adequate", "tone": "ok",
-                               "id": tc_id, "ar": True, "secs": _el,
-                               "detail": f"existing steps adequate · ⏱ {_fmt_mmss(_el)}"})
-                else:
-                    inadequate_reason = verdict.get("reason", "")
-            if not proceed:
                 time_by_story[story_id] = time_by_story.get(story_id, 0.0) + (time.time() - _tc_start)
                 _finish_case(story_id)
                 continue
 
-            # UI description cached once per story — still computed
-            # SYNCHRONOUSLY here, exactly as before, so it's never duplicated
-            # even when several of this story's cases get dispatched to the
-            # worker pool back-to-back (they all see ctx["ui_desc"] already set).
-            if "ui_desc" not in ctx:
-                if ctx.get("screenshots"):
-                    cb("log", {"msg": f"read {len(ctx['screenshots'])} screenshot(s) once — UI described", "tone": "dim", "ico": "👁", "indent": True})
-                try:
-                    on_slow_uidesc = lambda s: cb("log", {
-                        "msg": f"Still describing the UI with {T_disp(AI_PROVIDER)} "
-                               f"({current_model() or 'model'}) — {s}s so far. "
-                               f"Vision calls on free-tier providers can be slow.",
-                        "tone": "dim", "ico": "⏳", "indent": True,
-                        "hb_id": f"uidesc:{story_id}"})
-                    ctx["ui_desc"] = _call_with_network_retries(
-                        lambda: describe_story_ui(
-                            ctx.get("screenshots"), ctx.get("title", ""),
-                            on_slow=on_slow_uidesc,
-                        ), cb, should_stop=should_stop)
-                except CreditBalanceError:
-                    # Same reasoning as the evaluate-path CreditBalanceError
-                    # above: go through _fatal so in-flight work from earlier
-                    # iterations still gets drained/counted instead of
-                    # discarded.
-                    _fatal.update(hit=True, summary="Stopped — out of AI credits", reason="credit")
-                    break
-                story_ctx[story_id] = ctx
-
-            # Keep the in-flight window bounded: harvest whatever's already
-            # finished, and if we're already at capacity, block for the next
-            # completion before dispatching this one.
+            # Everything else — a brand-new case, OR an existing one that
+            # needs the (potentially slow) evaluate_existing_steps AI
+            # decision — now dispatches straight to the worker pool.
+            # evaluate_existing_steps used to run HERE, synchronously, one
+            # case at a time, before ANY case reached the pool — for a story
+            # whose cases mostly already have steps (the common case
+            # re-running against an established suite), that left both
+            # workers idle while cases were evaluated one after another, each
+            # a slow AI call with zero should_stop/heartbeat awareness
+            # (confirmed live: a single evaluate call silently stalling the
+            # whole run for 2:56, and clicking Stop during one of these
+            # calls used to escape run_steps entirely uncaught and surface
+            # in main.py as a fake "Run failed: " — see _gen_and_write's own
+            # docstring). The evaluate decision, the once-per-story
+            # UI-description fetch, and generate_steps()+write all now run
+            # inside _gen_and_write on a worker thread instead.
             _drain(wait_for_all=False)
             fut = _executor.submit(_gen_and_write, tc_id, tc_title, criteria,
-                                   ctx.get("ui_desc", ""), story_id, inadequate_reason,
+                                   ctx, story_id, has_existing, existing_xml,
                                    _tc_start)
             _inflight[fut] = None
 
@@ -4714,13 +5348,12 @@ def build_report_email(tool, summary, stats, action_items=None, skipped_items=No
                  f"Org: {_html.escape(str(org))} &middot; Project: {_html.escape(str(project))}</div>" if (org and project) else ""))
 
     return f"""<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
-<style>@media only screen and (max-width:660px){{.qas-card{{width:100% !important;max-width:100% !important}}}}</style>
 </head>
 <body style='margin:0;padding:0;background:{PAPER};-webkit-text-size-adjust:100%'>
 <center style='width:100%;background:{PAPER}'>
 <table role='presentation' width='100%' cellpadding='0' cellspacing='0' style='background:{PAPER}'><tr>
 <td align='center' style='padding:26px 12px 48px'>
-<table role='presentation' width='640' cellpadding='0' cellspacing='0' class='qas-card' style='width:640px;max-width:640px;background:{CARD};border:1px solid #DEDDE6;border-radius:16px;overflow:hidden;font-family:{UI};color:{INK}'>
+<table role='presentation' width='640' cellpadding='0' cellspacing='0' style='width:640px;max-width:640px;background:{CARD};border:1px solid #DEDDE6;border-radius:16px;overflow:hidden;font-family:{UI};color:{INK}'>
   <tr><td style='height:3px;line-height:3px;font-size:0;background:{accent}'>&nbsp;</td></tr>
   <tr><td style='padding:24px 32px 0'>{masthead}</td></tr>
   <tr><td style='padding:18px 32px 4px'>{hero}</td></tr>
@@ -4911,13 +5544,12 @@ def build_automation_report_email(target, summary, stats, project_dir=None, git_
                  f"Org: {_html.escape(str(org))} &middot; Project: {_html.escape(str(project))}</div>" if (org and project) else ""))
 
     return f"""<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
-<style>@media only screen and (max-width:660px){{.qas-card{{width:100% !important;max-width:100% !important}}}}</style>
 </head>
 <body style='margin:0;padding:0;background:{PAPER};-webkit-text-size-adjust:100%'>
 <center style='width:100%;background:{PAPER}'>
 <table role='presentation' width='100%' cellpadding='0' cellspacing='0' style='background:{PAPER}'><tr>
 <td align='center' style='padding:26px 12px 48px'>
-<table role='presentation' width='640' cellpadding='0' cellspacing='0' class='qas-card' style='width:640px;max-width:640px;background:{CARD};border:1px solid #DEDDE6;border-radius:16px;overflow:hidden;font-family:{UI};color:{INK}'>
+<table role='presentation' width='640' cellpadding='0' cellspacing='0' style='width:640px;max-width:640px;background:{CARD};border:1px solid #DEDDE6;border-radius:16px;overflow:hidden;font-family:{UI};color:{INK}'>
   <tr><td style='height:3px;line-height:3px;font-size:0;background:{accent}'>&nbsp;</td></tr>
   <tr><td style='padding:24px 32px 0'>{masthead}</td></tr>
   <tr><td style='padding:18px 32px 4px'>{hero}</td></tr>
@@ -5050,13 +5682,12 @@ def build_sprint_summary_email(data):
               + (f"<div style='font-family:{MONO};font-size:11px;color:{INK3};margin-top:8px'>Org: {_html.escape(str(_org))} &middot; Project: {_html.escape(str(_proj))}</div>" if _proj else ""))
 
     return f"""<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
-<style>@media only screen and (max-width:660px){{.qas-card{{width:100% !important;max-width:100% !important}}}}</style>
 </head>
 <body style='margin:0;padding:0;background:{PAPER};-webkit-text-size-adjust:100%'>
 <center style='width:100%;background:{PAPER}'>
 <table role='presentation' width='100%' cellpadding='0' cellspacing='0' style='background:{PAPER}'><tr>
 <td align='center' style='padding:26px 12px 48px'>
-<table role='presentation' width='640' cellpadding='0' cellspacing='0' class='qas-card' style='width:640px;max-width:640px;background:{CARD};border:1px solid #DEDDE6;border-radius:16px;overflow:hidden;font-family:{UI};color:{INK}'>
+<table role='presentation' width='640' cellpadding='0' cellspacing='0' style='width:640px;max-width:640px;background:{CARD};border:1px solid #DEDDE6;border-radius:16px;overflow:hidden;font-family:{UI};color:{INK}'>
   <tr><td style='height:3px;line-height:3px;font-size:0;background:{VIOLET}'>&nbsp;</td></tr>
   <tr><td style='padding:24px 32px 0'>{masthead}</td></tr>
   <tr><td style='padding:18px 32px 4px'>{hero}</td></tr>
@@ -5417,13 +6048,12 @@ def build_ai_usage_email(report):
              f"response); cost is an estimate from a locally maintained price table.</td></tr></table>")
 
     return f"""<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
-<style>@media only screen and (max-width:700px){{.qas-card{{width:100% !important;max-width:100% !important}}}}</style>
 </head>
 <body style='margin:0;padding:0;background:{PAPER};-webkit-text-size-adjust:100%'>
 <center style='width:100%;background:{PAPER}'>
 <table role='presentation' width='100%' cellpadding='0' cellspacing='0' style='background:{PAPER}'><tr>
 <td align='center' style='padding:26px 12px 48px'>
-<table role='presentation' width='680' cellpadding='0' cellspacing='0' class='qas-card' style='width:680px;max-width:680px;background:{CARD};border:1px solid #DEDDE6;border-radius:16px;overflow:hidden;font-family:{UI};color:{INK}'>
+<table role='presentation' width='680' cellpadding='0' cellspacing='0' style='width:680px;max-width:680px;background:{CARD};border:1px solid #DEDDE6;border-radius:16px;overflow:hidden;font-family:{UI};color:{INK}'>
   <tr><td style='height:3px;line-height:3px;font-size:0;background:{VIOLET}'>&nbsp;</td></tr>
   <tr><td style='padding:24px 32px 0'>{masthead}</td></tr>
   <tr><td style='padding:18px 32px 4px'>{hero}</td></tr>
@@ -5722,6 +6352,27 @@ def _wants_empty_field(text):
     return any(k in t for k in _EMPTY_FIELD_KWS)
 
 
+# Programmatic backstop for compile_test_case's verb field — a weak model
+# will often pattern-match a step's OWN wording into "verb" instead of the
+# 6 allowed enum values (e.g. "press", "enter", or an Arabic verb), and will
+# sometimes phrase an assertion step ("verify X appears") as if it were an
+# action. Both get corrected here rather than trusted from the prompt alone
+# — same philosophy as the dedup prompts' structured-output backstop:
+# constrain in the prompt, THEN verify/repair in Python, since a weak model
+# following instructions is a probability, not a guarantee.
+_VERB_SYNONYMS = {
+    "press": "click", "tap": "click", "اضغط": "click", "انقر": "click",
+    "enter": "type", "write": "type", "fill": "type", "input": "type",
+    "اكتب": "type", "أدخل": "type", "ادخل": "type",
+    "open": "navigate", "goto": "navigate", "go": "navigate",
+    "انتقل": "navigate", "افتح": "navigate",
+    "choose": "select", "pick": "select", "اختر": "select",
+}
+_ASSERTION_VERB_WORDS = {"verify", "check", "assert", "expect", "confirm",
+                         "تأكد", "تحقق", "يظهر", "تظهر"}
+_VALID_ACTION_VERBS = ("navigate", "click", "type", "select", "hover", "wait")
+
+
 def compile_test_case(tc, story=None, log=None, case_type="interaction"):
     """STAGE 1 — turn a test case's raw steps into a normalized, deduplicated list
     of typed INTENTS. The LLM reads the (often messy, Arabic) steps and returns
@@ -5751,16 +6402,23 @@ def compile_test_case(tc, story=None, log=None, case_type="interaction"):
                     "action": (s.get("action", "") or "").strip(),
                     "expected": (s.get("expected", "") or "").strip()})
     lang = "Arabic" if _is_arabic_out() else "English"
+    # Concrete per-case-type templates instead of a soft description — a weak
+    # model follows "typically N actions + M assertions" far more reliably
+    # than an abstract instruction like "don't over-split" (see the deleted
+    # SIZE rule below, which just told the model to self-correct — something
+    # small models don't reliably do while generating token-by-token).
     shape = {
-        "presence": ("This is a PRESENCE/visibility case. Emit the MINIMUM: an "
-                     "optional navigate, then ONE assertion that the element is "
-                     "visible. Do NOT click/select or walk an interaction."),
-        "negative_login": ("This is a NEGATIVE-LOGIN case. Emit: type the (invalid "
-                           "or empty) credentials, click submit, then ONE assertion "
+        "presence": ("PRESENCE/visibility case. Typical shape: 0-1 navigate action, "
+                     "then exactly 1 assertion that the element is visible. No "
+                     "click/select/type — this is a look-only check."),
+        "negative_login": ("NEGATIVE-LOGIN case. Typical shape: 1-2 type actions "
+                           "(the invalid/empty credentials, value=\"\" for an empty "
+                           "field), 1 click action (submit), then exactly 1 assertion "
                            "that the error/validation message is visible."),
-        "interaction": ("This is an INTERACTION case. Emit the real action sequence "
-                        "the user performs, each action ONCE."),
-    }.get(case_type, "Emit the real action sequence, each action once.")
+        "interaction": ("INTERACTION case. Typical shape: one action per distinct "
+                        "UI operation the user performs, then 1-2 assertions TOTAL "
+                        "for the outcome — not one assertion per step."),
+    }.get(case_type, "One action per distinct UI operation, then 1-2 assertions total.")
     prompt = (
         "ROLE\n"
         "You convert ONE UI test case into an ordered list of atomic INTENTS that a "
@@ -5768,7 +6426,9 @@ def compile_test_case(tc, story=None, log=None, case_type="interaction"):
         "INPUT\n"
         "The raw steps may be Arabic or English and are usually noisy: preconditions "
         "written as steps, the same action restated across several steps, or an action "
-        "merged with its expected result. Read intent, don't transcribe literally.\n\n"
+        "merged with its expected result. Read intent, don't transcribe literally. Each "
+        "raw step below carries its own \"n\" — use those exact values in from_steps, "
+        "never invent your own numbering.\n\n"
         f"CASE TYPE: {case_type} — {shape}\n\n"
         "OUTPUT\n"
         'Return ONLY a JSON object shaped {"intents": [ <intent>, ... ]} — no markdown, '
@@ -5776,14 +6436,15 @@ def compile_test_case(tc, story=None, log=None, case_type="interaction"):
         '  "role"      : "precondition" | "action" | "assertion"\n'
         '  "verb"      : for role=action one of [navigate,click,type,select,hover,wait]; else ""\n'
         '  "target"    : short human name of the element or goal\n'
-        '  "keywords"  : 1-6 short tokens of the element\'s visible text / aria-label / '
-        f'placeholder in the page language ({lang}); add an English guess when unsure; '
+        '  "keywords"  : 1-6 short tokens — the EXACT visible text/aria-label/placeholder '
+        f'as it appears on the page, in {lang} FIRST, then an English guess when unsure; '
+        "each token ≤3 words (never a whole sentence copied from the step); "
         "for icon-only buttons add icon tokens (globe,language,lang,flag,world,translate)\n"
         '  "kind"      : expected element type (button,input,link,menuitem,text,...)\n'
         '  "value"     : text to type ("" for an empty-field check); for select = the option\'s visible text\n'
         '  "check"     : optional assertion kind, else ""\n'
         '  "expected"  : the expected-outcome text, if any, else ""\n'
-        '  "from_steps": array of the original step number(s) this intent came from\n\n'
+        '  "from_steps": array of the original step "n" value(s) this intent came from\n\n'
         "RULES\n"
         "1) ROLES\n"
         "   • precondition = environmental/state setup with NO UI action (internet up, "
@@ -5793,8 +6454,11 @@ def compile_test_case(tc, story=None, log=None, case_type="interaction"):
         "   • assertion = a verification of an outcome. Collapse hard: at most ONE per "
         "distinct observable outcome; most cases need 1-2 assertions TOTAL, not one per "
         "step. An assertion is never a click.\n"
-        "2) SIZE — total intents ≈ (distinct actions) + 1-2 assertions. If assertions "
-        "outnumber actions you over-split; redo it smaller.\n"
+        "2) VERB WORDS THAT MEAN ASSERTION, NOT ACTION — if a step's wording is "
+        "verify/check/confirm/expect/تأكد/تحقق/يظهر/تظهر (\"appears\"/\"shows\"), that step "
+        "is role=assertion with verb=\"\", NEVER an action. Verb synonyms for real "
+        "actions: press/tap/اضغط/انقر → click; enter/write/fill/اكتب/أدخل → type; "
+        "open page/انتقل → navigate; choose/اختر → select.\n"
         "3) CUSTOM DROPDOWN (PrimeNG/Material, not a native <select>) = TWO actions: "
         "click the trigger to open it, then click the option. For the option set "
         'kind="menuitem" and value = its visible text (e.g. English / العربية).\n'
@@ -5802,9 +6466,27 @@ def compile_test_case(tc, story=None, log=None, case_type="interaction"):
         f"TEST CASE TITLE: {tc.get('title','')}\n"
         f"ACCEPTANCE CRITERIA: {((story or {}).get('criteria') or '')[:800]}\n"
         f"RAW STEPS (JSON): {json.dumps(raw, ensure_ascii=False)[:5000]}\n\n"
-        'EXAMPLE intent: {"role":"action","verb":"click","target":"language switcher",'
-        '"keywords":["اللغة","language","lang"],"kind":"button","value":"",'
-        '"check":"","expected":"","from_steps":[4,5,6]}'
+        "EXAMPLE — study it carefully; it shows precondition handling, collapsing a "
+        "restated step into one action, and merging into one assertion:\n"
+        'Steps: {"n":1,"action":"الانترنت متاح"} {"n":2,"action":"افتح صفحة تسجيل الدخول"} '
+        '{"n":3,"action":"اضغط زر الدخول"} {"n":4,"action":"اضغط على زر الدخول مرة أخرى"} '
+        '{"n":5,"expected":"تظهر رسالة: البريد مطلوب"}\n'
+        'Output: {"intents": [\n'
+        '  {"role":"precondition","verb":"","target":"internet available","keywords":[],'
+        '"kind":"","value":"","check":"","expected":"","from_steps":[1]},\n'
+        '  {"role":"action","verb":"navigate","target":"login page","keywords":['
+        '"تسجيل الدخول","login"],"kind":"link","value":"","check":"","expected":"",'
+        '"from_steps":[2]},\n'
+        '  {"role":"action","verb":"click","target":"login button","keywords":['
+        '"الدخول","login"],"kind":"button","value":"","check":"","expected":"",'
+        '"from_steps":[3,4]},\n'
+        '  {"role":"assertion","verb":"","target":"required-email message","keywords":['
+        '"البريد مطلوب","required"],"kind":"text","value":"","check":"text_visible",'
+        '"expected":"البريد مطلوب","from_steps":[5]}\n'
+        "]}\n"
+        "Note steps 3+4 collapsed into ONE click action (from_steps:[3,4]), and the "
+        "precondition has verb=\"\" with no invented click.\n\n"
+        'Return ONLY {"intents":[...]}. Every intent has all 9 fields. No markdown, no explanation.'
     )
     try:
         out = parse_json_robust(ai_complete(prompt, max_tokens=4096, timeout=90,
@@ -5819,6 +6501,7 @@ def compile_test_case(tc, story=None, log=None, case_type="interaction"):
                    or [])
         if not isinstance(out, list) or not out:
             return []
+        _n_steps = len(raw)
         clean = []
         for it in out:
             if not isinstance(it, dict):
@@ -5826,29 +6509,61 @@ def compile_test_case(tc, story=None, log=None, case_type="interaction"):
             role = (it.get("role") or "action").strip().lower()
             if role not in ("precondition", "action", "assertion"):
                 role = "action"
+            verb_raw = (it.get("verb") or "").strip().lower()
+            # A verify/check-worded "verb" means this is really an assertion,
+            # regardless of what role the model assigned it — this is the
+            # single most common weak-model mistake for this prompt (see
+            # compile_test_case's own docstring/comments above).
+            if verb_raw in _ASSERTION_VERB_WORDS:
+                role = "assertion"
+            if role == "action":
+                verb = _VERB_SYNONYMS.get(verb_raw, verb_raw)
+                if verb not in _VALID_ACTION_VERBS:
+                    # Unmapped/unknown verb text — fall back by element kind
+                    # rather than dropping the intent or guessing wildly.
+                    _kind_hint = (it.get("kind") or "").strip().lower()
+                    verb = "type" if _kind_hint in ("input", "textarea") else "click"
+            else:
+                verb = ""
             fs = it.get("from_steps") or []
             if isinstance(fs, int):
                 fs = [fs]
+            # Clamp from_steps to the actual valid range — the prompt now
+            # tells the model to reuse each raw step's own "n", but a
+            # hallucinated/off-by-one reference is still possible; silently
+            # dropping out-of-range values is safer than keeping a reference
+            # to a step that doesn't exist.
+            from_steps = sorted({int(x) for x in fs if str(x).strip().lstrip("-").isdigit()
+                                 and 1 <= int(x) <= _n_steps})
             clean.append({
                 "role": role,
-                "verb": (it.get("verb") or ("navigate" if role == "action" else "")).strip().lower(),
+                "verb": verb,
                 "target": (it.get("target") or "").strip(),
                 "keywords": [str(k) for k in (it.get("keywords") or []) if str(k).strip()][:6],
                 "kind": (it.get("kind") or "any").strip().lower(),
                 "value": str(it.get("value") or ""),
                 "check": (it.get("check") or "").strip().lower(),
                 "expected": str(it.get("expected") or ""),
-                "from_steps": [int(x) for x in fs if str(x).strip().lstrip("-").isdigit()],
+                "from_steps": from_steps,
             })
-        # Safety net: collapse consecutive assertions that check the same thing
-        # (the LLM sometimes still emits one per restated step). Merge their
-        # from_steps so each original step still receives an assert_locator.
+        # Safety net: collapse consecutive actions that repeat the SAME verb
+        # + target (the LLM sometimes still emits a restated step as its own
+        # action despite the prompt's example demonstrating this exact
+        # collapse), and consecutive assertions that check the same thing.
+        # Merge their from_steps so each original step still receives an
+        # assert_locator / the right action mapping.
         collapsed = []
         for it in clean:
             if (it["role"] == "assertion" and collapsed and
                     collapsed[-1]["role"] == "assertion" and
                     _norm(collapsed[-1]["target"]) == _norm(it["target"]) and
                     _norm(collapsed[-1]["expected"]) == _norm(it["expected"])):
+                collapsed[-1]["from_steps"] = sorted(set(collapsed[-1]["from_steps"] + it["from_steps"]))
+                continue
+            if (it["role"] == "action" and collapsed and
+                    collapsed[-1]["role"] == "action" and
+                    collapsed[-1]["verb"] == it["verb"] and
+                    _norm(collapsed[-1]["target"]) == _norm(it["target"])):
                 collapsed[-1]["from_steps"] = sorted(set(collapsed[-1]["from_steps"] + it["from_steps"]))
                 continue
             collapsed.append(it)
@@ -5956,7 +6671,8 @@ def _rank_candidates(intent, elements):
 
 def _tiebreak_with_ai(intent, shortlist, cb):
     """The ONLY place the LLM picks an element — and only among a short list of
-    real candidates (never the full DOM). Returns the chosen element or None."""
+    real candidates (never the full DOM), already pre-filtered/scored by
+    _rank_candidates. Returns the chosen element or None."""
     brief = [{"idx": e["idx"], "tag": e.get("tag"), "type": e.get("type"),
               "text": e.get("text"), "aname": e.get("aname"), "aria": e.get("aria"),
               "placeholder": e.get("placeholder"), "id": e.get("id")}
@@ -5965,20 +6681,39 @@ def _tiebreak_with_ai(intent, shortlist, cb):
         "Pick the ONE element that best matches the intent. Reply ONLY JSON.\n"
         f"INTENT: {json.dumps({k: intent.get(k) for k in ('role','verb','target','keywords','kind')}, ensure_ascii=False)}\n"
         f"CANDIDATES: {json.dumps(brief, ensure_ascii=False)[:3000]}\n"
+        "idx MUST be one of the idx values in CANDIDATES, or -1.\n"
+        "Match by meaning: prefer visible text/aria-label matching the keywords "
+        "(the intent's language and the element's text may differ), then "
+        "placeholder, then id.\n"
         '{"idx": <chosen idx or -1>}'
     )
+    raw = ""
     try:
-        data = parse_json_robust(ai_complete(prompt, max_tokens=256, timeout=45, want_json=True,
-                                             usage_tag="automation_tiebreak"))
+        raw = ai_complete(prompt, max_tokens=256, timeout=45, want_json=True,
+                          usage_tag="automation_tiebreak")
+        data = parse_json_robust(raw)
         if isinstance(data, list) and data:
             data = data[0]
-        idx = int(data.get("idx", -1))
-        return next((e for e in shortlist if e.get("idx") == idx), None) if idx >= 0 else None
+        idx = int((data or {}).get("idx", -1))
     except CreditBalanceError:
         raise
     except Exception as e:
-        cb(f"    tiebreak error: {str(e)[:60]}", "warn")
+        # Regex fallback for a malformed-but-close-enough reply (e.g. stray
+        # prose around the JSON, or idx returned as a quoted string) — makes
+        # this call nearly unbreakable for the one thing that actually
+        # matters here, before giving up entirely.
+        m = re.search(r'"idx"\s*:\s*"?(-?\d+)', raw or "")
+        if not m:
+            cb(f"    tiebreak error: {str(e)[:60]}", "warn")
+            return None
+        idx = int(m.group(1))
+    if idx < 0:
         return None
+    # idx MUST reference a real candidate — a hallucinated idx not in the
+    # shortlist would otherwise silently corrupt the match (the caller's
+    # `next(...)` already guards this structurally, but making the intent
+    # explicit here rather than relying on that fallthrough).
+    return next((e for e in shortlist if e.get("idx") == idx), None)
 
 
 def _to_locator(el):
@@ -6013,20 +6748,61 @@ def _to_locator(el):
     return {"by": "xpath", "value": el.get("xpath", "")}
 
 
+_KIND_SYNONYMS = {"press": "click", "tap": "click", "open": "navigate",
+                  "goto": "navigate", "input": "type", "enter": "type",
+                  "fill": "type", "verify": "none", "check": "none",
+                  "assert": "none"}
+_VALID_MATCH_KINDS = ("click", "type", "select", "navigate", "none")
+
+
+def _rank_elements_by_step(action, elements):
+    """Cheap deterministic pre-filter for _match_step_to_element — token
+    overlap between the raw step-action text and each element's haystack
+    (_el_haystack). Exists because sending up to 120 elements/6000 chars to a
+    weak model is a needle-in-haystack task it handles poorly: it tends to
+    pick from whichever elements happen to be early in the list, and the
+    6000-char truncation can silently cut the correct element out entirely
+    on a busy page. Pre-ranking and sending only the strongest handful both
+    fixes the truncation risk and cuts token cost substantially. No LLM
+    involved — same spirit as _rank_candidates (STAGE 2 scoring), just
+    against a raw action string instead of a structured intent."""
+    toks = [t for t in re.split(r"[\s,.:؛،]+", _norm(action or "")) if len(t) > 2]
+    scored = []
+    for el in elements:
+        if not el.get("visible", True):
+            continue
+        hay = _el_haystack(el)
+        score = sum(1.0 for t in toks if t in hay)
+        scored.append((score, el))
+    scored.sort(key=lambda t: t[0], reverse=True)
+    return [el for _s, el in scored]
+
+
 def _match_step_to_element(action, elements, cb):
     """Ask the AI which real DOM element best matches a step's action.
     Returns (element_dict_or_None, kind) where kind in
     {'type','click','select','navigate','none'} and a value to type if relevant."""
-    # Trim elements to the fields the model needs (keep idx for reference)
+    # Pre-rank by cheap token overlap and cap at ~30 — see
+    # _rank_elements_by_step's docstring for why this matters more than any
+    # wording change to the prompt itself. Falls back to the natural DOM
+    # order for anything beyond the token-overlap signal (stable sort keeps
+    # ties in original order), so this never does worse than the old
+    # first-120 cutoff, only better.
+    ranked = _rank_elements_by_step(action, elements)[:30]
     brief = [{"idx": e["idx"], "tag": e["tag"], "type": e["type"], "id": e["id"],
               "name": e["name"], "text": e["text"], "placeholder": e["placeholder"],
               "aria": e["aria"], "visible": e["visible"]}
-             for e in elements if e.get("visible", True)][:120]
+             for e in ranked]
     prompt = (
         "You map a single UI test step to ONE real element on the current page.\n"
         "The step action may be in Arabic or English. Choose the best matching element.\n\n"
         f"STEP ACTION: {action}\n\n"
         f"ELEMENTS (JSON, use the 'idx'):\n{json.dumps(brief, ensure_ascii=False)[:6000]}\n\n"
+        "idx MUST be an idx value from ELEMENTS, or -1.\n"
+        "If the step only describes an expected result or verification (no user "
+        "action performed), return {\"idx\":-1,\"kind\":\"none\",\"value\":\"\"}.\n"
+        "The step's language may differ from the element's text — match by "
+        "meaning, not exact words.\n"
         "Reply with ONLY a JSON object, no markdown:\n"
         '{\"idx\": <element idx or -1 if none fits>, '
         '\"kind\": \"click|type|select|navigate|none\", '
@@ -6044,12 +6820,30 @@ def _match_step_to_element(action, elements, cb):
         data = parse_json_robust(raw)
         if isinstance(data, list) and data:
             data = data[0]
-        idx = int(data.get("idx", -1))
-        kind = (data.get("kind") or "none").strip().lower()
-        value = data.get("value", "") or ""
+        idx = int((data or {}).get("idx", -1))
+        kind_raw = ((data or {}).get("kind") or "none").strip().lower()
+        kind = _KIND_SYNONYMS.get(kind_raw, kind_raw)
+        if kind not in _VALID_MATCH_KINDS:
+            kind = "none"
+        value = (data or {}).get("value", "") or ""
         if idx is None or idx < 0:
             return None, kind, value
-        match = next((e for e in elements if e.get("idx") == idx), None)
+        # idx must reference one of the elements actually offered (the
+        # pre-ranked+capped list, not the full original set) — a
+        # hallucinated idx would otherwise silently resolve to the wrong
+        # element or None via a coincidental match elsewhere in `elements`.
+        match = next((e for e in ranked if e.get("idx") == idx), None)
+        if match is None:
+            return None, "none", ""
+        # Cross-check kind against the matched element's own tag — a "type"
+        # verdict on a non-input element (or "select" on a non-select-ish
+        # one) is a clear self-contradiction; downgrade rather than trust it
+        # blindly, same philosophy as the dedup prompts' structured backstop.
+        tag = (match.get("tag") or "").lower()
+        if kind == "type" and tag not in ("input", "textarea"):
+            kind = "click" if tag in ("button", "a") else "none"
+        elif kind == "select" and not (tag == "select" or match.get("role") in ("combobox", "listbox")):
+            kind = "click"
         return match, kind, value
     except CreditBalanceError:
         raise  # propagate so explore_and_map can auto-stop on repeated hits
@@ -7650,12 +8444,135 @@ def validate_and_sequence_suite(stories_payload, log=None, want_ai=True,
       2  the successful-login case        (transition; synthesized if absent)
       3  app cases                        (logged IN; e.g. language toggle)"""
     log = log or (lambda *a, **k: None)
+    # `log` is now called concurrently from the compile-worker pool below as
+    # well as this function's own main-thread code — shadow it with a lock so
+    # every individual call stays atomic (same cb-locking pattern already
+    # used for run_steps'/run_titles' worker pools).
+    _log_lock = _threading.Lock()
+    _real_log = log
+    def log(msg, tone="dim"):
+        with _log_lock:
+            _real_log(msg, tone)
+
     out = []
     _total = sum(len(sp.get("test_cases", []) or []) for sp in stories_payload)
     _done = 0
     _todo_running = 0
+    _COMPILE_WORKERS = 2
+    import concurrent.futures as _cf_vs
     log("Sequencing %d test case(s) — this is the slow part (one AI pass each)…"
         % _total, "info")
+
+    def _compile_one(tc, story, case_no):
+        """Runs on a worker thread: classify/bucket + compile_test_case (with
+        its own retry-on-recoverable-error loop) for ONE case. Returns a
+        result dict; does NOT touch has_app/has_positive_login/_todo_running/
+        cases directly — the main thread applies those from the result,
+        mirroring run_steps' _gen_and_write/_apply_result split. has_app and
+        has_positive_login are computed and returned even when the case is
+        later skipped as non-automatable — the ORIGINAL sequential code set
+        both accumulators BEFORE its skip check ran, so a skipped bucket-3
+        case could still flip has_app; that quirk is preserved here
+        deliberately, not "fixed", to avoid changing sequencing behavior."""
+        _ctitle = (tc.get("title", "") or "").strip()
+        # Always log a description line, even when the generated case has no
+        # title — otherwise the entry renders blank with no way to tell which
+        # case it was (previously silently skipped when _ctitle was empty).
+        log("  %s" % (_ctitle[:90] if _ctitle else "(untitled test case)"), "dim")
+        _case_start = time.time()   # ⏱ per-case sequencing time, same convention
+                                    # as the Run log's create/update timing
+        ctype = _classify_case(tc)
+        pctx = _infer_page_context(tc, ctype)
+        # bucket + priority
+        if pctx == "login" and ctype == "negative_login":
+            bucket = 0
+        elif pctx == "login":
+            bucket = 1
+        else:
+            bucket = 3
+        low = _norm(tc.get("title", ""))
+        positive_login = (pctx == "login" and ctype not in ("negative_login", "presence")
+                          and any(k in low for k in ("نجاح", "صحيح", "الصحيحة", "valid",
+                                                     "success", "successful")))
+        if positive_login:
+            bucket = 2
+        # compile to intents, pausing (not aborting) on a recoverable AI error
+        intents = []
+        if want_ai:
+            while True:
+                if should_stop():
+                    return {"abort": True}
+                try:
+                    # Run the (blocking, up-to-90s) AI call stop-aware: without
+                    # this, clicking Stop mid-case had to wait out the current
+                    # compile_test_case call before should_stop() was checked
+                    # again — up to a 90s delay. _run_stopaware polls should_stop
+                    # every 0.3s in a separate thread and raises StopRequested at
+                    # once when Stop is clicked; the abandoned request finishes
+                    # on its own timeout in the background and is harmless since
+                    # compiling a case has no side effects.
+                    intents = _run_stopaware(
+                        lambda: compile_test_case(tc, story, log, ctype),
+                        should_stop=should_stop) or []
+                    break
+                except StopRequested:
+                    return {"abort": True}   # Stop clicked mid-call — abort now,
+                                              # don't wait for this case's AI call.
+                except Exception as e:
+                    # compile_test_case only raises for RECOVERABLE provider
+                    # errors (credit, expired/invalid key, rate limit, outage).
+                    # Pause and let the user fix it / switch provider + Resume.
+                    # _auto_on_ai_error's threading.Condition-based pause gate
+                    # is already safe for multiple concurrent callers (each
+                    # worker independently waits/wakes), so no extra
+                    # coordination is needed for two workers to hit this at once.
+                    decision = on_error(friendly_ai_error(e)) if on_error else "stop"
+                    if decision == "retry":
+                        log("Retrying compile with the current provider…", "dim")
+                        continue
+                    return {"abort": True}   # user chose Stop (should_stop is now True)
+        if not intents:
+            intents = _intents_from_raw_steps(tc)
+        log("  ⏱ %s" % _fmt_mmss(time.time() - _case_start), "dim")
+        # A case that drives username/password fields belongs on the LOGIN page,
+        # not the app page — otherwise it runs logged-in against BASE_URL where
+        # those fields don't exist (guaranteed failure). Pull it back to a
+        # logged-out login bucket.
+        if bucket == 3:
+            # Only pull an app case back to the login page when its TITLE says it's
+            # about login. A login PRECONDITION in the steps/intents (present in
+            # almost every app case) must NOT drag a real app case onto the login
+            # page — that's what made every case land "logged-out".
+            _blob = _norm(tc.get("title", ""))
+            if any(s in _blob for s in ("password", "username", "كلمة المرور",
+                                        "كلمه المرور", "تسجيل الدخول",
+                                        "login button", "login field", "login submit")):
+                bucket = 0
+                pctx = "login"
+        has_app = (bucket == 3)
+        n_act = sum(1 for i in intents if i["role"] == "action")
+        has_assert = any(i["role"] == "assertion" for i in intents)
+        if n_act == 0 and bucket != 2 and not has_assert:
+            # A presence case ("verify X exists") is still automatable as a
+            # single visibility check — synthesize one rather than drop it.
+            if ctype == "presence":
+                title = tc.get("title", "")
+                intents.append({
+                    "role": "assertion", "verb": "", "target": title,
+                    "keywords": [w for w in re.split(r"\s+", title) if len(w) > 1][:6],
+                    "kind": "any", "value": "", "check": "visible",
+                    "expected": "", "from_steps": []})
+                has_assert = True
+            else:
+                log(f"    skipping non-automatable case (no actions): "
+                    f"{tc.get('title','')[:40]}", "warn")
+                return {"skip": True, "has_app": has_app, "has_positive_login": positive_login}
+        case_dict = {"tc": tc, "title": tc.get("title", ""), "ctype": ctype,
+                    "page_context": pctx, "bucket": bucket, "intents": intents}
+        return {"case": case_dict, "case_no": case_no,
+                "has_app": has_app, "has_positive_login": positive_login,
+                "todo_delta": _count_null_seeds(bucket, intents)}
+
     for sp in stories_payload:
         if should_stop():
             return out
@@ -7667,116 +8584,56 @@ def validate_and_sequence_suite(stories_payload, log=None, want_ai=True,
         _n_cases = len(sp.get("test_cases", []) or [])
         log(f"Story {story.get('id', '')} · {story.get('title', '')} "
             f"({_n_cases} test case" + ("s" if _n_cases != 1 else "") + ")", "story")
-        cases = []
+        cases_by_no = {}
         has_app = False
         has_positive_login = False
-        for tc in sp.get("test_cases", []):
-            if should_stop():
-                return out
-            if gate and not gate():   # manual pause point (returns False on stop)
-                return out
-            _done += 1
-            # Counter (LTR) and the case title on SEPARATE lines — so an Arabic (RTL)
-            # title renders right-aligned on its own line instead of fighting the
-            # left-to-right "Sequencing case k/N" text.
-            log("Sequencing case %d/%d" % (_done, _total), "dim")
-            _ctitle = (tc.get("title", "") or "").strip()
-            # Always log a description line, even when the generated case has no
-            # title — otherwise the entry renders blank with no way to tell which
-            # case it was (previously silently skipped when _ctitle was empty).
-            log("  %s" % (_ctitle[:90] if _ctitle else "(untitled test case)"), "dim")
-            _case_start = time.time()   # ⏱ per-case sequencing time, same convention
-                                        # as the Run log's create/update timing
-            ctype = _classify_case(tc)
-            pctx = _infer_page_context(tc, ctype)
-            # bucket + priority
-            if pctx == "login" and ctype == "negative_login":
-                bucket = 0
-            elif pctx == "login":
-                bucket = 1
-            else:
-                bucket = 3
-            low = _norm(tc.get("title", ""))
-            positive_login = (pctx == "login" and ctype not in ("negative_login", "presence")
-                              and any(k in low for k in ("نجاح", "صحيح", "الصحيحة", "valid",
-                                                         "success", "successful")))
-            if positive_login:
-                bucket = 2
-                has_positive_login = True
-            # compile to intents, pausing (not aborting) on a recoverable AI error
-            intents = []
-            if want_ai:
-                while True:
-                    if should_stop():
-                        return out
-                    try:
-                        # Run the (blocking, up-to-90s) AI call stop-aware: without
-                        # this, clicking Stop mid-case had to wait out the current
-                        # compile_test_case call before should_stop() was checked
-                        # again — up to a 90s delay. _run_stopaware polls should_stop
-                        # every 0.3s in a separate thread and raises StopRequested at
-                        # once when Stop is clicked; the abandoned request finishes
-                        # on its own timeout in the background and is harmless since
-                        # compiling a case has no side effects.
-                        intents = _run_stopaware(
-                            lambda: compile_test_case(tc, story, log, ctype),
-                            should_stop=should_stop) or []
-                        break
-                    except StopRequested:
-                        return out   # Stop clicked mid-call — abort now, don't
-                                     # wait for this case's AI call to finish.
-                    except Exception as e:
-                        # compile_test_case only raises for RECOVERABLE provider
-                        # errors (credit, expired/invalid key, rate limit, outage).
-                        # Pause and let the user fix it / switch provider + Resume.
-                        decision = on_error(friendly_ai_error(e)) if on_error else "stop"
-                        if decision == "retry":
-                            log("Retrying compile with the current provider…", "dim")
-                            continue
-                        return out   # user chose Stop (should_stop is now True)
-            if not intents:
-                intents = _intents_from_raw_steps(tc)
-            log("  ⏱ %s" % _fmt_mmss(time.time() - _case_start), "dim")
-            # A case that drives username/password fields belongs on the LOGIN page,
-            # not the app page — otherwise it runs logged-in against BASE_URL where
-            # those fields don't exist (guaranteed failure). Pull it back to a
-            # logged-out login bucket.
-            if bucket == 3:
-                # Only pull an app case back to the login page when its TITLE says it's
-                # about login. A login PRECONDITION in the steps/intents (present in
-                # almost every app case) must NOT drag a real app case onto the login
-                # page — that's what made every case land "logged-out".
-                _blob = _norm(tc.get("title", ""))
-                if any(s in _blob for s in ("password", "username", "كلمة المرور",
-                                            "كلمه المرور", "تسجيل الدخول",
-                                            "login button", "login field", "login submit")):
-                    bucket = 0
-                    pctx = "login"
-            if bucket == 3:
-                has_app = True
-            n_act = sum(1 for i in intents if i["role"] == "action")
-            has_assert = any(i["role"] == "assertion" for i in intents)
-            if n_act == 0 and bucket != 2 and not has_assert:
-                # A presence case ("verify X exists") is still automatable as a
-                # single visibility check — synthesize one rather than drop it.
-                if ctype == "presence":
-                    title = tc.get("title", "")
-                    intents.append({
-                        "role": "assertion", "verb": "", "target": title,
-                        "keywords": [w for w in re.split(r"\s+", title) if len(w) > 1][:6],
-                        "kind": "any", "value": "", "check": "visible",
-                        "expected": "", "from_steps": []})
-                    has_assert = True
-                else:
-                    log(f"    skipping non-automatable case (no actions): "
-                        f"{tc.get('title','')[:40]}", "warn")
+        aborted = False
+        # Compile this story's cases with up to _COMPILE_WORKERS concurrent
+        # AI passes. Only this story's OWN cases are pooled together (stories
+        # still run one after another) — keeps abort/pause semantics simple:
+        # a stop/pause mid-story still discards just that story's progress,
+        # same as the original "return out" behavior.
+        with _cf_vs.ThreadPoolExecutor(max_workers=_COMPILE_WORKERS) as _ex:
+            _futs = {}
+            for i, tc in enumerate(sp.get("test_cases", []) or []):
+                if should_stop():
+                    aborted = True
+                    break
+                if gate and not gate():   # manual pause point (returns False on stop)
+                    aborted = True
+                    break
+                _done += 1
+                # Counter (LTR) and the case title on SEPARATE lines — so an Arabic (RTL)
+                # title renders right-aligned on its own line instead of fighting the
+                # left-to-right "Sequencing case k/N" text.
+                log("Sequencing case %d/%d" % (_done, _total), "dim")
+                fut = _ex.submit(_compile_one, tc, story, i)
+                _futs[fut] = i
+            for fut in _cf_vs.as_completed(_futs):
+                res = fut.result()
+                if res.get("abort"):
+                    aborted = True
                     continue
-            cases.append({"tc": tc, "title": tc.get("title", ""), "ctype": ctype,
-                          "page_context": pctx, "bucket": bucket, "intents": intents})
-            # live TODO tally — grows as each case is sequenced (hidden control line
-            # the UI reads to update the TODO counter without cluttering the log).
-            _todo_running += _count_null_seeds(bucket, intents)
-            log("TODO_LIVE: %d" % _todo_running, "meta")
+                if res.get("has_app"):
+                    has_app = True
+                if res.get("has_positive_login"):
+                    has_positive_login = True
+                if res.get("skip"):
+                    continue
+                cases_by_no[res["case_no"]] = res["case"]
+                # live TODO tally — grows as each case is sequenced (hidden control line
+                # the UI reads to update the TODO counter without cluttering the log).
+                _todo_running += res.get("todo_delta", 0)
+                log("TODO_LIVE: %d" % _todo_running, "meta")
+
+        if aborted or should_stop():
+            return out
+
+        # Original authored order (NOT completion order) — the stable sort
+        # below relies on cases within a bucket keeping their original
+        # authored order (the order they appear in the story's test_cases).
+        cases = [cases_by_no[i] for i in sorted(cases_by_no)]
+
         # synthesize a successful-login transition if app cases exist but no
         # explicit positive-login case was authored
         if has_app and not has_positive_login:

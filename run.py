@@ -100,7 +100,22 @@ def screen(app):
         # Per-story cards grid
         app._story_grid = ft.Column(app._build_story_cards(), spacing=12)
 
-        # Recent activity log (compact)
+        # Recent activity log (compact). Rebuilding this Column from scratch on
+        # every screen() call (e.g. navigating away to Settings mid-run to
+        # switch the AI provider, then back to Run) used to leave
+        # app._rendered_count stale — _refresh_run's _apply() (main.py) tracks
+        # how many of app._log_lines are already reflected in app._log_col so
+        # it only needs to append the DELTA on each new line, but this full
+        # rebuild replaces app._log_col wholesale without telling that
+        # bookkeeping anything changed. Depending on timing that produced
+        # either duplicated lines (rendered_count too LOW for the fresh
+        # column) or an empty-looking panel that wouldn't grow again until
+        # app._log_lines caught back up past a stale, too-HIGH count — seen
+        # live right after a mid-run provider switch. Locked the same as
+        # _apply() itself so this rebuild can't race a concurrent background
+        # append, and _rendered_count is set to match this exact snapshot so
+        # the next _apply() call's delta is correct no matter what happened
+        # to the count before this render.
         log_lines = app._render_log_lines()
         if not log_lines:
             log_lines = [ft.Row([
@@ -108,8 +123,16 @@ def screen(app):
                 ft.Text("Starting run — discovering suites & test cases…",
                         size=12.5, color=T.INK_3, weight=ft.FontWeight.BOLD),
             ], spacing=10)]
-        app._log_col = ft.Column(log_lines, spacing=2,
-                                  scroll=ft.ScrollMode.AUTO, expand=True, auto_scroll=True)
+        _log_lock = getattr(app, "_run_log_ui_lock", None)
+        if _log_lock:
+            with _log_lock:
+                app._log_col = ft.Column(log_lines, spacing=2,
+                                         scroll=ft.ScrollMode.AUTO, expand=True, auto_scroll=True)
+                app._rendered_count = len(getattr(app, "_log_lines", []))
+        else:
+            app._log_col = ft.Column(log_lines, spacing=2,
+                                     scroll=ft.ScrollMode.AUTO, expand=True, auto_scroll=True)
+            app._rendered_count = len(getattr(app, "_log_lines", []))
 
         def _log_tool_btn(icon, tip, cb, danger=False):
             # Same small rounded icon-button "chip" as the Automation screen's
