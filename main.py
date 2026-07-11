@@ -2298,7 +2298,12 @@ class QAStudio:
         self.render()
 
     # ---- tool segment ----
-    def _tool_segment(self, compact=False):
+    def _tool_segment(self, compact=False, persist=True):
+        """persist=True (Settings' call site) writes the choice back into
+        self.creds as the app-wide default for future sessions. persist=False
+        (Setup's call site) only changes self.tool for the CURRENT session —
+        Setup is meant to be a per-run override of Settings' default, not
+        another way to silently rewrite it. See _set_tool's docstring."""
         def seg(label, icon, key):
             sel = (self.tool == key)
             c = ft.Container(
@@ -2317,7 +2322,7 @@ class QAStudio:
                 shadow=(ft.BoxShadow(blur_radius=10, spread_radius=-4,
                                      color=ft.Colors.with_opacity(0.35, T.VIOLET),
                                      offset=ft.Offset(0, 3)) if sel else None),
-                on_click=lambda e, k=key: self._set_tool(k))
+                on_click=lambda e, k=key: self._set_tool(k, persist=persist))
             if not sel:
                 def _h(e, _c=c):
                     try:
@@ -2336,19 +2341,29 @@ class QAStudio:
                    spacing=4, tight=compact),
             padding=4, bgcolor=T.CARD_2, border_radius=T.R, border=ft.Border.all(1, T.BORDER))
 
-    def _set_tool(self, k):
+    def _set_tool(self, k, persist=True):
+        """persist=False is Setup's per-run override: changes self.tool for
+        THIS session only, without touching Settings' stored default — so a
+        one-off "generate titles instead of steps just this once" pick on
+        Setup doesn't silently redefine what every future session starts
+        with. Settings' own toggle (persist=True, the default here for
+        backward compatibility with any other caller) is the only thing that
+        should actually rewrite self.creds['tool']. Setup still reads that
+        default fresh at the start of every new session (see __init__ /
+        _switch_user_creds) — it just doesn't write back to it anymore."""
         if getattr(self, "readonly", False):
             return
         self.tool = k
-        try:                                  # persist as the default generator
-            self.creds["tool"] = k
-            store.save(self.creds)
-        except Exception:
-            pass
+        if persist:
+            try:
+                self.creds["tool"] = k
+                store.save(self.creds)
+            except Exception:
+                pass
         self.render()
 
     # ---- output-language segment ----
-    def _lang_segment(self):
+    def _lang_segment(self, persist=True):
         def seg(label, key):
             sel = (self.lang == key)
             c = ft.Container(
@@ -2362,7 +2377,7 @@ class QAStudio:
                 shadow=(ft.BoxShadow(blur_radius=10, spread_radius=-4,
                                      color=ft.Colors.with_opacity(0.35, T.VIOLET),
                                      offset=ft.Offset(0, 3)) if sel else None),
-                on_click=lambda e, k=key: self._set_lang(k))
+                on_click=lambda e, k=key: self._set_lang(k, persist=persist))
             if not sel:
                 def _h(e, _c=c):
                     try:
@@ -2377,15 +2392,18 @@ class QAStudio:
             ft.Row([seg("العربية", "ar"), seg("English", "en")], spacing=4, tight=True),
             padding=4, bgcolor=T.CARD_2, border_radius=T.R, border=ft.Border.all(1, T.BORDER))
 
-    def _set_lang(self, k):
+    def _set_lang(self, k, persist=True):
+        """See _set_tool's docstring — persist=False (Setup's call site) is a
+        session-only override of Settings' saved default language."""
         if getattr(self, "readonly", False):
             return
         self.lang = "en" if k == "en" else "ar"
-        try:
-            self.creds["lang"] = self.lang
-            store.save(self.creds)
-        except Exception:
-            pass
+        if persist:
+            try:
+                self.creds["lang"] = self.lang
+                store.save(self.creds)
+            except Exception:
+                pass
         self.render()
 
     # ---- credential handlers ----

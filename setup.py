@@ -43,13 +43,19 @@ def screen(app):
             sec_head("2", "What to generate",
                      ft.Text("one app · two generators", size=11, color=T.INK_3, weight=ft.FontWeight.BOLD)),
             ft.Container(height=12),
-            app._tool_segment(),
+            # persist=False: Setup is a per-run override of Settings' saved
+            # default, not another way to redefine it — see main.py's
+            # _set_tool/_set_lang docstrings. Settings' own toggle (which
+            # reuses these same segment builders with the default
+            # persist=True) is the only thing meant to change what future
+            # sessions start with.
+            app._tool_segment(persist=False),
             ft.Container(height=14),
             # Output language toggle
             ft.Row([
                 ft.Text("Output language", size=12, weight=ft.FontWeight.BOLD, color=T.INK_2),
                 ft.Container(expand=True),
-                app._lang_segment(),
+                app._lang_segment(persist=False),
             ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
             ft.Container(height=10),
             ft.Text(

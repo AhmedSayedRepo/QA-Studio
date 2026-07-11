@@ -263,15 +263,29 @@ def screen(app):
         ], spacing=14, scroll=ft.ScrollMode.AUTO, expand=True)
 
         # ── right: live counters + clean log ──
-        log_lines = [app._auto_log_line(ln.get("msg", ""), ln.get("tone", "dim"))
-                     for ln in app._auto_log]
-        if not log_lines:
-            log_lines = [empty_state(
-                ft.Icons.TERMINAL, "No activity yet",
-                "Fill in the site and Git details, then Generate — "
-                "each step shows up here live.")]
-        app._auto_log_col = ft.Column(log_lines, spacing=3, scroll=ft.ScrollMode.AUTO,
-                                       expand=True, auto_scroll=True)
+        # Locked against main.py's _auto_logmsg/upd(), which reads
+        # app._auto_log_col (to append just the new line) from a worker
+        # thread while THIS rebuild replaces it wholesale from the main/
+        # render thread — unsynchronized, those two can race: upd() grabs
+        # the OLD column reference a moment before this line swaps in a new
+        # one, appends the newest line onto that now-discarded widget
+        # (invisible — it's no longer on the page), and nothing else ever
+        # catches the NEW column up to match, since upd() thinks it already
+        # handled that line. Depending on timing that leaves the Activity
+        # log looking stuck a few lines behind, or — if the race lands right
+        # after Generate starts, before anything has rendered into the new
+        # column yet — completely blank despite a run actively in progress.
+        # Same root cause/fix shape as run.py's screen() rebuild.
+        with app._auto_log_ui_lock:
+            log_lines = [app._auto_log_line(ln.get("msg", ""), ln.get("tone", "dim"))
+                         for ln in app._auto_log]
+            if not log_lines:
+                log_lines = [empty_state(
+                    ft.Icons.TERMINAL, "No activity yet",
+                    "Fill in the site and Git details, then Generate — "
+                    "each step shows up here live.")]
+            app._auto_log_col = ft.Column(log_lines, spacing=3, scroll=ft.ScrollMode.AUTO,
+                                           expand=True, auto_scroll=True)
 
         spinner = (ft.ProgressRing(width=15, height=15, stroke_width=2, color=T.VIOLET)
                    if app._auto_running else ft.Icon(ft.Icons.TERMINAL, size=15, color=T.INK_3))
@@ -309,41 +323,54 @@ def screen(app):
             margin=ft.Margin.only(bottom=10),
             border=ft.Border.only(bottom=ft.BorderSide(1, T.BORDER)))
 
-        right = ft.Column([
-            card(ft.Column([
-                app._auto_counts_header(),
-                ft.Container(height=12),
-                ft.Container(
-                    ft.Column([
-                        log_toolbar,
-                        # NOT wrapped in its own ft.SelectionArea: shell() already
-                        # wraps the ENTIRE screen body in one outer SelectionArea
-                        # (main.py, around the body/GestureDetector), so this text
-                        # is already selectable — a SECOND, nested SelectionArea
-                        # here was both redundant AND the actual root cause of the
-                        # "Activity log doesn't work" report. Flutter's SelectionArea
-                        # auto-scrolls its wrapped Scrollable during a selection drag
-                        # via _ScrollableSelectionContainerDelegate, which needs a
-                        # concretely-bounded scroll extent; app._auto_log_col here has
-                        # no fixed height of its own — its size only ever resolves
-                        # through a chain of nested expand=True Containers/Columns,
-                        # never a concrete pixel bound like run.py's log panel (which
-                        # wraps the same SelectionArea+scroll_col pattern inside a
-                        # FIXED height=380 Container instead of expand=True). Nesting
-                        # a second SelectionArea around an expand-only Scrollable hits
-                        # Flutter's own known bug class here (an unresolved/undefined
-                        # scroll offset breaks the inner Scrollable's gestures/paint —
-                        # see upstream flutter/flutter#183079, "guard auto-scroll
-                        # against Offset.infinite in _ScrollableSelectionContainerDelegate").
-                        # Dropping the inner SelectionArea removes the broken codepath
-                        # entirely while keeping the column's own expand+scroll=AUTO
-                        # (needed for live auto-scroll during a run) intact.
-                        ft.Container(app._auto_log_col, expand=True),
-                    ], spacing=0, expand=True),
-                    expand=True, bgcolor=T.CARD_2,
-                    border=ft.Border.all(1, T.BORDER), border_radius=T.R, padding=12),
-            ], spacing=0, expand=True), expand=True),
-        ], spacing=14, expand=True)
+        # `right` is the card Container itself (NOT wrapped in an outer
+        # ft.Column) so shell()'s _install_top_gap (main.py) treats it the same
+        # way it already treats Setup's right panel (_setup_right(), which
+        # likewise returns a card()/Container directly): as an opaque "static
+        # side card" that gets its header-gap spacer stacked ABOVE it as a
+        # sibling. When this was a bare ft.Column([card(...)]) instead,
+        # _install_top_gap's Row-handling saw a Column and spliced the spacer
+        # straight into ITS OWN controls list (ahead of the card, inside a
+        # non-scrolling expand=True Column) rather than wrapping around it —
+        # the "static side card" branch never ran. That is the one path in
+        # _install_top_gap not covered by any other screen's right-hand panel
+        # (Setup's is already Container-shaped; Run's whole body is a single
+        # scrolling Column, a different branch entirely), so it went
+        # unnoticed until Automation's Activity panel was compared side by
+        # side against Setup's and came up empty/misplaced.
+        right = card(ft.Column([
+            app._auto_counts_header(),
+            ft.Container(height=12),
+            ft.Container(
+                ft.Column([
+                    log_toolbar,
+                    # NOT wrapped in its own ft.SelectionArea: shell() already
+                    # wraps the ENTIRE screen body in one outer SelectionArea
+                    # (main.py, around the body/GestureDetector), so this text
+                    # is already selectable — a SECOND, nested SelectionArea
+                    # here was both redundant AND the actual root cause of the
+                    # "Activity log doesn't work" report. Flutter's SelectionArea
+                    # auto-scrolls its wrapped Scrollable during a selection drag
+                    # via _ScrollableSelectionContainerDelegate, which needs a
+                    # concretely-bounded scroll extent; app._auto_log_col here has
+                    # no fixed height of its own — its size only ever resolves
+                    # through a chain of nested expand=True Containers/Columns,
+                    # never a concrete pixel bound like run.py's log panel (which
+                    # wraps the same SelectionArea+scroll_col pattern inside a
+                    # FIXED height=380 Container instead of expand=True). Nesting
+                    # a second SelectionArea around an expand-only Scrollable hits
+                    # Flutter's own known bug class here (an unresolved/undefined
+                    # scroll offset breaks the inner Scrollable's gestures/paint —
+                    # see upstream flutter/flutter#183079, "guard auto-scroll
+                    # against Offset.infinite in _ScrollableSelectionContainerDelegate").
+                    # Dropping the inner SelectionArea removes the broken codepath
+                    # entirely while keeping the column's own expand+scroll=AUTO
+                    # (needed for live auto-scroll during a run) intact.
+                    ft.Container(app._auto_log_col, expand=True),
+                ], spacing=0, expand=True),
+                expand=True, bgcolor=T.CARD_2,
+                border=ft.Border.all(1, T.BORDER), border_radius=T.R, padding=12),
+        ], spacing=0, expand=True), expand=True)
 
         body = ft.Row([ft.Container(left, expand=True),
                        ft.Container(right, width=384)], spacing=22,
