@@ -38,6 +38,7 @@ import setup
 import dialogs
 import updater_ui
 import window_chrome
+import platform_caps
 import login
 import modals
 import idle_watch
@@ -503,6 +504,7 @@ class QAStudio:
         self._auto_running = False
         self._log_lines = []
         self._auto_log = []
+        self._reset_auto_retry_state()
         self.last_report = None
         self._idle_warning_active = False   # drop any pending idle countdown
         self._idle_warn_cancel = True
@@ -684,6 +686,11 @@ class QAStudio:
         for n in T.NAV:
             _nv = self._screen_nav_cap(n["id"])
             if _nv and not self.can(_nv):
+                continue
+            # Platform gating (mobile Phase 0): same skip mechanism as the
+            # per-user capability gate above, keyed on what the PLATFORM can
+            # do — Automation needs a desktop filesystem/toolchain.
+            if n["id"] == "automation" and not platform_caps.has_automation():
                 continue
             st = self.nav_state.get(n["id"], "")
             is_active = (n["id"] == self.active)
@@ -1306,7 +1313,8 @@ class QAStudio:
             ("Go to Report", ft.Icons.DESCRIPTION_OUTLINED, "report results summary", nav("report")),
             ("Go to Regression Plan", _ic("CHECKLIST","LAYERS_OUTLINED"), "regression plan effort", nav("regression")),
             ("Go to Sprint Plan", _ic("EVENT_NOTE_OUTLINED","DESCRIPTION_OUTLINED"), "sprint plan capacity", nav("testplan")),
-            ("Go to Automation", ft.Icons.CODE, "automation selenium tests", nav("automation")),
+            *((("Go to Automation", ft.Icons.CODE, "automation selenium tests",
+                nav("automation")),) if platform_caps.has_automation() else ()),
             ("Go to Useful Links", _ic("BOOKMARK_BORDER","BOOKMARKS"), "links bookmarks", nav("links")),
             ("Open Settings", ft.Icons.SETTINGS_OUTLINED, "settings preferences", nav("settings")),
             (("Switch to dark mode" if T.MODE == "light" else "Switch to light mode"),
@@ -2320,8 +2328,16 @@ class QAStudio:
         (Setup's call site) only changes self.tool for the CURRENT session —
         Setup is meant to be a per-run override of Settings' default, not
         another way to silently rewrite it. See _set_tool's docstring."""
+        # Settings' call site (persist=True) must show the PERSISTED default
+        # (self.creds["tool"]), not the live self.tool — Setup's own toggle
+        # (persist=False) changes self.tool for this session only (so
+        # generation actually uses the override), but self.tool is one
+        # shared attribute read everywhere. Without this split, overriding
+        # the tool on Setup made Settings' toggle visually flip too, looking
+        # like the saved default had silently changed when it hadn't.
+        _cur_tool = (self.creds.get("tool", self.tool) if persist else self.tool)
         def seg(label, icon, key):
-            sel = (self.tool == key)
+            sel = (_cur_tool == key)
             c = ft.Container(
                 ft.Row([ft.Icon(icon, size=(15 if compact else 16),
                                 color=(T.VIOLET_INK if sel else T.INK_2)),
@@ -2380,8 +2396,12 @@ class QAStudio:
 
     # ---- output-language segment ----
     def _lang_segment(self, persist=True):
+        # Same split as _tool_segment above: Settings (persist=True) must
+        # show the persisted default language, not Setup's session-only
+        # override of self.lang.
+        _cur_lang = ("en" if self.creds.get("lang") == "en" else "ar") if persist else self.lang
         def seg(label, key):
-            sel = (self.lang == key)
+            sel = (_cur_lang == key)
             c = ft.Container(
                 ft.Text(label, size=12, weight=ft.FontWeight.BOLD,
                         color=(T.VIOLET_INK if sel else T.INK_2)),
@@ -3886,7 +3906,11 @@ class QAStudio:
 
     def _check_updates_chip(self):
         """The 'Check updates' pill under the QA Studio logo — accent-tinted and
-        visible, with a hover lift (brighter fill + border + a slight scale)."""
+        visible, with a hover lift (brighter fill + border + a slight scale).
+        Hidden entirely where self-update isn't a thing (mobile builds — store
+        distribution replaces it; see platform_caps.has_self_update)."""
+        if not platform_caps.has_self_update():
+            return ft.Container()
         chip = ft.Container(
             ft.Row([
                 ft.Icon(ft.Icons.SYSTEM_UPDATE_ALT, size=12, color=T.RAIL_INK),
@@ -4066,6 +4090,7 @@ class QAStudio:
             pass
         self.stop_flag = False
         self._stopping = False
+        self._run_paused = False   # a new run always starts un-paused
         try: E.clear_stop()
         except Exception: pass
         self.active = "run"
@@ -4156,10 +4181,14 @@ class QAStudio:
                 if self.tool == "steps":
                     E.run_steps(self.project, self.plan_id, self.story_ids, cb,
                                 should_stop=lambda: self.stop_flag,
-                                existing_mode=self.existing_mode)
+                                existing_mode=self.existing_mode,
+                                on_ai_error=self._run_on_ai_error,
+                                gate=self._run_gate)
                 else:
                     E.run_titles(self.project, self.plan_id, self.story_ids, cb,
-                                 should_stop=lambda: self.stop_flag)
+                                 should_stop=lambda: self.stop_flag,
+                                 on_ai_error=self._run_on_ai_error,
+                                 gate=self._run_gate)
             except E.StopRequested:
                 # Defensive backstop: run_steps/run_titles are supposed to
                 # catch StopRequested internally at every AI call site and
@@ -4461,6 +4490,12 @@ class QAStudio:
         idtxt = (ft.Text(f"[{ln['id']}]", size=11, color=T.INK_3,
                          weight=ft.FontWeight.BOLD, font_family=T.F_MONO)
                  if ln.get("id") else None)
+        # "#k/N" run-progress chip (same convention as the Automation log's
+        # "Sequencing case k/N"). Its own LTR mono Text control — like the
+        # [id] chip — so it can't bidi-scramble against an Arabic title.
+        seqtxt = (ft.Text(f"#{ln['seq']}", size=11, color=T.STORY,
+                          weight=ft.FontWeight.BOLD, font_family=T.F_MONO)
+                  if ln.get("seq") else None)
         # A trailing "\n" was tried here to fix Ctrl+C copy losing line
         # breaks between entries (each line is its own Row, not one shared
         # multi-line Text, so Flutter's SelectionArea doesn't reliably insert
@@ -4478,8 +4513,8 @@ class QAStudio:
                       font_family=(T.F_AR if ln.get("ar") else T.F_UI),
                       expand=True,
                       text_align=ft.TextAlign.LEFT)
-        # Left cluster = icon + id (always on the left margin for consistency)
-        left = [c for c in (icon, idtxt) if c is not None]
+        # Left cluster = icon + id + seq (always on the left margin for consistency)
+        left = [c for c in (icon, idtxt, seqtxt) if c is not None]
         row_children = left + [txt]
         indent = ln.get("indent")
         row = ft.Row(row_children, spacing=7, vertical_alignment=ft.CrossAxisAlignment.START)
@@ -4765,22 +4800,42 @@ class QAStudio:
         # from connection/retry/status noise around it, instead of blending
         # into "dim" gray like everything else did before.
         cmap = {"ok": T.GREEN, "err": T.RED, "warn": T.AMBER, "story": T.VIOLET_INK,
-                "info": T.VIOLET_INK, "case": T.STORY, "dim": T.INK_3}
+                "info": T.VIOLET_INK, "case": T.STORY, "dim": T.INK_3, "review": T.AMBER}
         color = cmap.get(tone, T.INK_2)
         stripped = (msg or "").lstrip(" ")
         indent = len(msg or "") - len(stripped)
         pad = min(indent, 8) * 3
-        # RTL only when the line STARTS in Arabic (a raw story/test-case title).
-        # Checking for ANY Arabic character anywhere used to flip lines like
-        # "skipping duplicate: <Arabic title> (same as #103921)" \u2014 English
-        # scaffolding with an embedded Arabic title \u2014 into full right-aligned
-        # RTL too, which garbled the English prefix/suffix around the title.
-        is_ar = bool(stripped) and ("\u0600" <= stripped[0] <= "\u06ff")
+        # "\x1f" (invisible control char, never rendered) splits an LTR
+        # meta bit ("\u23f1 0:20 \u00b7 #3/36") from an RTL/LTR title body \u2014 see
+        # engine.py's _compile_one. Concatenating both into ONE Text control
+        # hit Unicode's bidi reordering: Flutter resolves a Text's paragraph
+        # direction from the first strong-directional character in its WHOLE
+        # string, so an LTR tag glued onto an Arabic title visibly scrambled
+        # ("#3/36" rendered back as "3/36#", confirmed live). Rendering meta
+        # and body as two independent Text controls means each resolves its
+        # own direction from its own content only \u2014 neither can reorder
+        # relative to the other.
+        _sep = ""
+        if _sep in stripped:
+            meta_part, body_part = stripped.split(_sep, 1)
+        else:
+            meta_part, body_part = None, stripped
+        # RTL only when the BODY starts in Arabic (a raw story/test-case
+        # title). Checking for ANY Arabic character anywhere used to flip
+        # lines like "skipping duplicate: <Arabic title> (same as #103921)"
+        # \u2014 English scaffolding with an embedded Arabic title \u2014 into full
+        # right-aligned RTL too, which garbled the English prefix/suffix
+        # around the title.
+        is_ar = bool(body_part) and ("\u0600" <= body_part[0] <= "\u06ff")
         weight = ft.FontWeight.BOLD if tone in ("story", "ok") else ft.FontWeight.W_500
-        # A heartbeat line ("\u23f1 0:25") already carries its own leading glyph in
-        # the message text (engine.py) \u2014 giving it a second symbol in front
-        # doubled up visually ("\u2022 \u23f1 0:25"). Skip the symbol slot for those.
-        _has_own_symbol = stripped.startswith("\u23f1")  # \u23f1
+        # A heartbeat line ("\u23f1 0:25") already carries its own leading glyph
+        # (in its meta half, or \u2014 for older/unsplit lines \u2014 at the very start
+        # of the string) \u2014 giving it a second symbol in front doubled up
+        # visually ("\u2022 \u23f1 0:25"). Skip the symbol slot for those.
+        _has_own_symbol = (meta_part or stripped).startswith("\u23f1")
+        meta_txt = (ft.Text(meta_part, size=12, color=color, weight=ft.FontWeight.W_500,
+                            font_family=T.F_MONO, text_align=ft.TextAlign.LEFT)
+                    if meta_part is not None else None)
         # tone symbol, matching the Run activity log (icon + colour). "dim"
         # used to be a plain gray dot; replaced with a small chevron so the
         # (most common) plain progress/status lines read as a real marker
@@ -4791,6 +4846,8 @@ class QAStudio:
             sym = ft.Icon(ft.Icons.CLOSE, size=13, color=T.RED)
         elif tone == "warn":
             sym = ft.Text("\u26a0", size=12, color=T.AMBER, weight=ft.FontWeight.BOLD)
+        elif tone == "review":
+            sym = ft.Text("\u2691", size=12, color=T.AMBER, weight=ft.FontWeight.BOLD)
         elif tone == "story":
             sym = ft.Text("\u25b8", size=13, color=T.VIOLET_INK, weight=ft.FontWeight.BOLD)
         elif tone == "info":
@@ -4818,13 +4875,17 @@ class QAStudio:
         # pushed to the far right, reading as a broken/disconnected line
         # instead of one entry. run.py's _render_one_log never right-aligns
         # Arabic text either (only swaps the font) — matching that exactly.
-        txt = ft.Text(stripped, size=12, color=color, weight=weight,
+        txt = ft.Text(body_part, size=12, color=color, weight=weight,
                       font_family=(T.F_AR if is_ar else
                                    (T.F_MONO if tone in ("dim", "info", "case") else None)),
                       text_align=ft.TextAlign.LEFT,
                       expand=True)
+        row_children = [sym_wrap, ft.Container(width=6)]
+        if meta_txt is not None:
+            row_children += [meta_txt, ft.Container(width=6)]
+        row_children.append(txt)
         return ft.Container(
-            ft.Row([sym_wrap, ft.Container(width=6), txt], spacing=0,
+            ft.Row(row_children, spacing=0,
                    vertical_alignment=ft.CrossAxisAlignment.START),
             padding=ft.Padding.only(left=pad, top=1, bottom=1))
 
@@ -4836,8 +4897,48 @@ class QAStudio:
         # JSON, which has no real Infinity value. Best-effort: any failure
         # here (e.g. the control isn't laid out yet on the very first call)
         # just means the log doesn't auto-follow that one time, not a crash.
+        def _go():
+            # key-based scroll first — the reliable Flet mechanism (the tail
+            # row is tagged "autolog-tail" by _retag_log_tail below; offset-
+            # based scroll_to was observed live NOT moving this column even
+            # as lines appended). The offset call stays as a fallback for any
+            # moment where the tag isn't present (e.g. mid-rebuild).
+            try:
+                col.scroll_to(key="autolog-tail", duration=100)
+            except Exception:
+                pass
+            try:
+                col.scroll_to(offset=10_000_000, duration=100)
+            except Exception:
+                pass
+        _go()
+        # Fire once more shortly after: the immediate scroll_to runs before
+        # Flutter has laid out the just-appended row(s) (especially tall
+        # wrapped Arabic lines), so it scrolls to the PREVIOUS content extent
+        # and the rail sits one entry behind. The delayed pass runs after
+        # layout and lands on the true bottom. (auto_scroll=True on the
+        # column — automation.py — is the primary mechanism now; this is the
+        # belt-and-suspenders backup for renders that replace the column.)
         try:
-            col.scroll_to(offset=10_000_000, duration=100)
+            import threading as _t
+            _t.Timer(0.15, lambda: self.ui_safe(_go)).start()
+        except Exception:
+            pass
+
+    def _retag_log_tail(self, col):
+        """Keep the scroll anchor on the LAST log row: clears the
+        "autolog-tail" key from whichever control held it and stamps it onto
+        the current last row, so _auto_log_scroll_end's key-based scroll_to
+        always lands on the true bottom. Keys must be unique, hence the
+        move-not-add. Called just before col.update() on every mutation."""
+        try:
+            prev = getattr(self, "_auto_tail_ctl", None)
+            last = col.controls[-1] if col.controls else None
+            if prev is not None and prev is not last:
+                prev.key = None
+            if last is not None:
+                last.key = "autolog-tail"
+                self._auto_tail_ctl = last
         except Exception:
             pass
 
@@ -4895,21 +4996,68 @@ class QAStudio:
         # message text with the "waiting Ns then retry (k/N)…" tail stripped
         # off, and if that base matches the previous line's, replaces it
         # in place instead of appending a new one.
-        _retry_base = _re.match(r"^(.*?)\s*—\s*waiting \d+s then retry \(\d+/\d+\)…$", msg or "")
+        # KEYED in-place collapse — ONE line per retrying call, updated with the
+        # latest state plus a running "×N waits" tally. The previous version
+        # only collapsed when the retry line was the LAST log line, which
+        # stopped working the moment two concurrent workers interleaved their
+        # retries (confirmed live: #27/66 and #28/66 alternating appended a
+        # dozen+ lines in a minute). Keyed by the "#k/N" case label when the
+        # line carries one — so BOTH shapes a rate-limited case emits
+        # ("… rate limited (429) … — waiting 25s then retry (4/8)…" from
+        # ai_complete's backoff AND "… rate-limited — waiting 14s (shared
+        # cooldown)…" from the shared cooldown gate) fold into the SAME line —
+        # otherwise keyed by the message base with the wait/attempt tail
+        # stripped (the old behavior's identity, minus the last-line-only
+        # restriction). The mutated line's INDEX is queued in
+        # _auto_log_inplace_idxs for upd() below to re-render in place.
+        # Three shapes fold into one keyed, in-place line: ai_complete's backoff
+        # ("… — waiting 25s then retry (4/8)…"), the shared-cooldown wait
+        # ("… — waiting 14s (shared cooldown)…"), and the slow-call heartbeat
+        # ("… — 120s so far…"). Only the two WAIT shapes (named group 'w')
+        # increment the ×N tally — heartbeats just refresh the line's text.
+        _retry_m = _re.match(
+            r"^(.*?)\s*—\s*(?:(?P<w>waiting\s+\d+s\s*(?:then retry \(\d+/\d+\)|\(shared cooldown\)))|\d+s so far)…?\s*$",
+            msg or "")
         with self._auto_log_ui_lock:
             if self._auto_log and self._auto_log[-1].get("msg") == msg:
                 return
+            _pend = self._auto_log_inplace_idxs = getattr(
+                self, "_auto_log_inplace_idxs", set())
             _inplace = False
-            if _retry_base and self._auto_log:
-                _prev_base = _re.match(
-                    r"^(.*?)\s*—\s*waiting \d+s then retry \(\d+/\d+\)…$",
-                    self._auto_log[-1].get("msg", "") or "")
-                if _prev_base and _prev_base.group(1) == _retry_base.group(1):
-                    self._auto_log[-1] = {"msg": msg, "tone": tone}
+            if _retry_m:
+                _base = _retry_m.group(1)
+                _lab = _re.match(r"^\s*(#\d+/\d+)\s*·", _base)
+                _key = "retry:" + (_lab.group(1) if _lab else _base)
+                _idx_map = self._auto_retry_idx = getattr(self, "_auto_retry_idx", {})
+                _n_map = self._auto_retry_n = getattr(self, "_auto_retry_n", {})
+                if _retry_m.group("w"):
+                    _n_map[_key] = _n_map.get(_key, 0) + 1
+                if _n_map.get(_key, 0) > 1:
+                    msg = f"{msg}  ·  ×{_n_map[_key]} waits so far"
+                _i = _idx_map.get(_key)
+                if _i is not None and 0 <= _i < len(self._auto_log):
+                    self._auto_log[_i] = {"msg": msg, "tone": tone}
+                    _pend.add(_i)
                     _inplace = True
+                else:
+                    _idx_map[_key] = len(self._auto_log)   # appended just below
             if not _inplace:
                 self._auto_log.append({"msg": msg, "tone": tone})
-            self._auto_log_last_inplace = _inplace
+            # Coalesce: ui_safe() hands upd() to page.run_thread, which spins up
+            # a BRAND-NEW thread per call. Compile/dedupe worker threads can each
+            # call this several times a second, especially right as Stop makes
+            # multiple in-flight calls all wrap up within the same instant — that
+            # was producing a visible "wall of lines appears all at once" effect
+            # (reported live), because dozens of independently-scheduled update
+            # threads were queuing/racing instead of the log growing smoothly as
+            # each line was actually generated. If an update is already in
+            # flight, skip scheduling another one — the in-flight upd() already
+            # reads self._auto_log[have:real] fresh each time (see below), so it
+            # will pick up THIS line too; scheduling a second one would just be
+            # redundant thread churn, not a faster or more correct render.
+            if getattr(self, "_auto_log_upd_pending", False):
+                return
+            self._auto_log_upd_pending = True
         def upd():
             try:
                 lock = getattr(self, "_auto_log_ui_lock", None)
@@ -4932,8 +5080,11 @@ class QAStudio:
                                 col.controls = [self._auto_log_line(e["msg"], e["tone"])
                                                 for e in self._auto_log]
                                 col._qa_placeholder = False
+                                self._retag_log_tail(col)
                                 col.update()
                                 self._auto_log_scroll_end(col)
+                                # full rebuild already reflects every in-place edit
+                                getattr(self, "_auto_log_inplace_idxs", set()).clear()
                         else:
                             have = len(col.controls)
                             # render() rebuilds the column from self._auto_log, and
@@ -4941,6 +5092,7 @@ class QAStudio:
                             # appending a line render already added (the duplicate
                             # "Stopped." etc.). Only touch the column when it's
                             # actually behind self._auto_log.
+                            _changed = False
                             if have < real:
                                 # Catch the column up to the FULL current log, in
                                 # source order — NOT just this call's own (msg,
@@ -4959,20 +5111,28 @@ class QAStudio:
                                 for entry in self._auto_log[have:real]:
                                     col.controls.append(
                                         self._auto_log_line(entry["msg"], entry["tone"]))
+                                _changed = True
+                            # Re-render any line _auto_logmsg mutated IN PLACE
+                            # (the keyed retry collapse). Generalizes the old
+                            # "last line only" flag, which broke the moment two
+                            # concurrent workers' retry lines interleaved —
+                            # col.controls maps 1:1 onto self._auto_log here
+                            # (append-only + in-place edits), so the queued
+                            # indexes address the right rows directly.
+                            _pend = getattr(self, "_auto_log_inplace_idxs", None)
+                            if _pend:
+                                for _i in sorted(_pend):
+                                    if 0 <= _i < min(len(col.controls), real):
+                                        _e = self._auto_log[_i]
+                                        col.controls[_i] = self._auto_log_line(
+                                            _e["msg"], _e["tone"])
+                                        _changed = True
+                                _pend.clear()
+                            if _changed:
+                                self._retag_log_tail(col)
                                 col.update()
                                 self._auto_log_scroll_end(col)
-                            elif (have == real and have > 0
-                                  and getattr(self, "_auto_log_last_inplace", False)):
-                                # A retry line was collapsed into the existing last
-                                # entry above (same count, content changed) rather
-                                # than appended — re-render just that one row.
-                                last = self._auto_log[-1]
-                                col.controls[-1] = self._auto_log_line(
-                                    last["msg"], last["tone"])
-                                col.update()
-                                self._auto_log_last_inplace = False
-                            # have >= real (and not an in-place edit) → render
-                            # already has this line; skip
+                            # else: render already has every line; skip
                     ctl = getattr(self, "_auto_count_ctl", None)
                     if ctl:
                         c = self._auto_count()
@@ -4981,6 +5141,10 @@ class QAStudio:
                                 t.value = str(c.get(k, 0)); t.update()
                             except Exception:
                                 pass
+                    # Cleared under the SAME lock the coalescing check above
+                    # uses, so the flip from "one is in flight" back to "none
+                    # scheduled" can't race a concurrent append.
+                    self._auto_log_upd_pending = False
                 finally:
                     if lock is not None:
                         lock.release()
@@ -5078,7 +5242,12 @@ class QAStudio:
         write (_win_clipboard_set) if that fails, and only shows a red error
         toast — with a readable, classified reason, not a raw exception dump —
         if BOTH paths fail."""
-        lines = [l for l in lines if (l or "").strip()]
+        # "\x1f" is the invisible meta/body separator in Automation "case"
+        # lines (see engine.py's _compile_one) — it renders as two separate
+        # Text controls on screen, but copied raw it disappears entirely,
+        # jamming the halves together ("#2/36التحقق…"). Swap it for a real
+        # space in the copied text. Run-log lines never contain it — no-op.
+        lines = [(l or "").replace("\x1f", " ") for l in lines if (l or "").strip()]
         if not lines:
             self._toast("Nothing to copy yet.")
             return
@@ -5136,8 +5305,18 @@ class QAStudio:
                 pass
         self.render()
 
+    def _reset_auto_retry_state(self):
+        """Reset the keyed retry-collapse bookkeeping (see _auto_logmsg) —
+        MUST be called wherever self._auto_log is cleared/replaced: the maps
+        hold INDEXES into _auto_log, and a stale index surviving a clear
+        would silently overwrite an unrelated line in the next run's log."""
+        self._auto_retry_idx = {}
+        self._auto_retry_n = {}
+        getattr(self, "_auto_log_inplace_idxs", set()).clear()
+
     def _clear_auto_log(self, e=None):
         self._auto_log = []
+        self._reset_auto_retry_state()
         # Scoped update — same reasoning as the push-flow fix earlier (see
         # _push_automation / automation._refresh_auto_state): a full render()
         # rebuilds the ENTIRE Automation screen, not just the log, which is
@@ -5245,6 +5424,64 @@ class QAStudio:
         # _resume_automation already logged "Resuming…"; no second "Retrying…" line.
         return "retry"
 
+    def _run_pause_condition(self):
+        """Lazily-created Condition shared by the Run screens' pause/resume
+        machinery: the Pause/Resume header button, the between-items gate,
+        and the fatal-provider-error auto-pause all wait/notify on it."""
+        cond = getattr(self, "_run_pause_cond", None)
+        if cond is None:
+            import threading as _t
+            cond = self._run_pause_cond = _t.Condition()
+        return cond
+
+    def _toggle_run_pause(self):
+        """Run-screen Pause/Resume header button (twin of Automation's).
+        Pause lets in-flight cases finish, then the run holds before the next
+        item; the user can switch the AI provider in Setup meanwhile. Resume
+        wakes both the between-items gate and any workers auto-paused on a
+        fatal provider error (_run_on_ai_error)."""
+        cond = self._run_pause_condition()
+        with cond:
+            self._run_paused = not getattr(self, "_run_paused", False)
+            paused = self._run_paused
+            cond.notify_all()
+        self._toast("Run paused — switch the AI provider in Setup if needed, "
+                    "then Resume." if paused else "Resuming…")
+        try:
+            self.render()
+        except Exception:
+            pass
+
+    def _run_gate(self):
+        """Between-items gate for run_steps/run_titles (engine calls it before
+        dispatching each case/story): blocks while paused; returns False when
+        Stop was clicked so the engine unwinds cleanly."""
+        cond = self._run_pause_condition()
+        with cond:
+            while getattr(self, "_run_paused", False) and not self.stop_flag:
+                cond.wait(timeout=0.5)
+        return not self.stop_flag
+
+    def _run_on_ai_error(self, msg):
+        """Called by run_steps/run_titles (engine worker threads) on a FATAL
+        provider error (out of credits / auth / bad model / network) that
+        previously STOPPED the whole run. Auto-pauses instead: the engine has
+        already logged the error + the 'Paused on provider error…' line; this
+        flips the header button to Resume and blocks until the user resumes
+        (→ 'retry', after switching provider in Setup) or stops (→ 'stop').
+        Several workers erroring at once all wait on the same Condition."""
+        cond = self._run_pause_condition()
+        with cond:
+            if self.stop_flag:
+                return "stop"
+            if not getattr(self, "_run_paused", False):
+                self._run_paused = True
+                self.ui_safe(self.render)   # flip the header button to Resume
+        with cond:
+            while getattr(self, "_run_paused", False) and not self.stop_flag:
+                cond.wait(timeout=0.5)
+        return "stop" if self.stop_flag else "retry"
+
     def _auto_project_dir(self):
         """The chosen folder IS the project home and the git repo we push from.
         Use it exactly as given (created if missing) — NO nesting, so the Maven
@@ -5332,6 +5569,7 @@ class QAStudio:
             pass
         self._auto_built = False
         self._auto_log = []
+        self._reset_auto_retry_state()
         self._auto_todo = 0          # live TODO tally, reset for this run
         self._auto_skipped = 0       # live duplicate-skip tally, reset for this run
         self._auto_run_start = time.time()
@@ -5803,6 +6041,12 @@ class QAStudio:
 
 # ═══════════════════════════════════════════════════════════════════════════════
 def main(page: ft.Page):
+    # Record the runtime platform once (mobile Phase 0) — everything that is
+    # desktop-/Windows-only asks platform_caps instead of assuming.
+    try:
+        platform_caps.set_flet_platform(getattr(page, "platform", ""))
+    except Exception:
+        pass
     # Flet needs direct font-FILE urls (.ttf), not Google's CSS endpoint — the old
     # css2?family=… links silently failed and the UI fell back to Roboto. These are
     # the variable .ttf files from the google/fonts repo (jsDelivr mirror).

@@ -160,12 +160,19 @@ module.exports = defineConfig({
   expect: { timeout: 10000 },
   fullyParallel: false,
   retries: 0,
+  // Logs in ONCE before the whole run and saves the session to .auth/state.json
+  // (see global-setup.js). Playwright gives every test a fresh isolated browser
+  // context — nothing survives from one test to the next — so a login performed
+  // inside one test can NEVER carry over; this global setup + storageState is
+  // the supported way for app-page tests to start already authenticated.
+  globalSetup: require.resolve('./global-setup'),
   // A rich HTML report is written to ./playwright-report on EVERY run (pass or
   // fail), listing every test with status, steps, screenshots and traces. Open it
   // with `npx playwright show-report` (or `npm run report`).
   reporter: [['list'], ['html', { open: 'never', outputFolder: 'playwright-report' }]],
   use: {
     baseURL: process.env.APP_BASE_URL || '',
+    storageState: '.auth/state.json',   // every test starts logged in (see global-setup.js)
     headless: true,
     screenshot: 'on',              // capture a screenshot for EVERY test (not only failures)
     video: 'retain-on-failure',    // keep a video when a test fails
@@ -175,9 +182,44 @@ module.exports = defineConfig({
 });
 """
 
+_PW_GLOBAL_SETUP = """// Runs ONCE before the whole suite: performs a real login and saves the browser
+// storage state (cookies + localStorage) to .auth/state.json. playwright.config.js
+// points use.storageState at that file, so every app-page test starts ALREADY
+// AUTHENTICATED. Login-page specs opt back out per-group with
+// test.use({ storageState: { cookies: [], origins: [] } }).
+require('dotenv').config();
+const fs = require('fs');
+const path = require('path');
+const { chromium } = require('@playwright/test');
+const { performLogin } = require('./support/auth');
+
+module.exports = async () => {
+  const dir = path.join(__dirname, '.auth');
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, 'state.json');
+  const browser = await chromium.launch();
+  const page = await browser.newPage();
+  try {
+    await performLogin(page);
+    await page.context().storageState({ path: file });
+    console.log('[auth] logged in once for the run — session saved to .auth/state.json');
+  } catch (e) {
+    // Fail soft with a LOUD message: tests still run (logged out), and every
+    // app-page failure that follows traces back to this one line instead of
+    // looking like dozens of unrelated locator failures.
+    fs.writeFileSync(file, JSON.stringify({ cookies: [], origins: [] }));
+    console.log('[auth] GLOBAL LOGIN FAILED (' + e.message + ') — app-page tests will run logged out. Check APP_USER/APP_PASS/APP_LOGIN_URL in .env');
+  } finally {
+    await browser.close();
+  }
+};
+"""
+
 _PW_GITIGNORE = """node_modules/
 test-results/
 playwright-report/
+# per-run login session state (written by global-setup.js, never committed):
+.auth/
 # environment-specific config (URLs + secrets stay out of git):
 .env
 # locators.json is COMMITTED on purpose — the UI is identical across environments,
@@ -190,6 +232,9 @@ APP_BASE_URL=https://your-app.example.com
 APP_LOGIN_URL=https://your-login.example.com/realms/.../protocol/openid-connect/auth
 APP_USER=
 APP_PASS=
+# Login-page language (ui_locales) — must match the generated tests' expected-
+# message language (e.g. ar for Arabic test cases). Baked at generation time.
+APP_UI_LOCALE=ar
 # AI self-healing (optional but recommended — auto-repairs a locator when it breaks).
 # Without a key, tests still run using the seeded/semantic locators; they just
 # won't self-heal. Provider vars also work as fallbacks (ANTHROPIC_API_KEY, ...).
@@ -270,36 +315,53 @@ function _extractJson(text) {
 async function pickLocator(intent, dom) {
   if (!HEAL) return null;
   const user = 'Intent: ' + JSON.stringify(intent) + '\\n\\nCandidates:\\n' + dom;
-  try {
-    let resp, text;
-    if (PROVIDER === 'anthropic') {
-      resp = await fetch(BASE.replace(/\\/$/, '') + '/v1/messages', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-api-key': KEY,
-                   'anthropic-version': '2023-06-01' },
-        body: JSON.stringify({ model: MODEL, max_tokens: 300, system: SYS,
-                               messages: [{ role: 'user', content: user }] }),
-      });
+  // Up to 3 attempts with backoff. Node's fetch has NO retry of its own, and a
+  // run with several parallel workers healing at once trips transient
+  // "fetch failed" network errors and provider 429/529s — confirmed live: the
+  // key was set and healing worked for other steps in the SAME run, while
+  // these one-shot failures took their tests down with a misleading
+  // "Set QA_AI_API_KEY" message (see healer.js).
+  let lastErr = '';
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      let resp, text;
+      if (PROVIDER === 'anthropic') {
+        resp = await fetch(BASE.replace(/\\/$/, '') + '/v1/messages', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-api-key': KEY,
+                     'anthropic-version': '2023-06-01' },
+          body: JSON.stringify({ model: MODEL, max_tokens: 300, system: SYS,
+                                 messages: [{ role: 'user', content: user }] }),
+        });
+      } else {
+        resp = await fetch(BASE.replace(/\\/$/, '') + '/chat/completions', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json',
+                     'authorization': 'Bearer ' + KEY },
+          body: JSON.stringify({ model: MODEL, temperature: 0,
+            messages: [{ role: 'system', content: SYS },
+                       { role: 'user', content: user }] }),
+        });
+      }
+      if (resp.status === 429 || resp.status >= 500) {
+        throw new Error('provider HTTP ' + resp.status);
+      }
       const j = await resp.json();
-      text = j && j.content && j.content[0] && j.content[0].text;
-    } else {
-      resp = await fetch(BASE.replace(/\\/$/, '') + '/chat/completions', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json',
-                   'authorization': 'Bearer ' + KEY },
-        body: JSON.stringify({ model: MODEL, temperature: 0,
-          messages: [{ role: 'system', content: SYS },
-                     { role: 'user', content: user }] }),
-      });
-      const j = await resp.json();
-      text = j && j.choices && j.choices[0] && j.choices[0].message &&
-             j.choices[0].message.content;
+      if (PROVIDER === 'anthropic') {
+        text = j && j.content && j.content[0] && j.content[0].text;
+      } else {
+        text = j && j.choices && j.choices[0] && j.choices[0].message &&
+               j.choices[0].message.content;
+      }
+      return _extractJson(text);
+    } catch (e) {
+      lastErr = e.message;
+      console.log('[heal] AI call failed (attempt ' + attempt + '/3): ' + e.message);
+      if (attempt < 3) await new Promise(r => setTimeout(r, 1500 * attempt));
     }
-    return _extractJson(text);
-  } catch (e) {
-    console.log('[heal] AI call failed: ' + e.message);
-    return null;
   }
+  console.log('[heal] giving up after 3 attempts: ' + lastErr);
+  return null;
 }
 module.exports = { pickLocator, HEAL, PROVIDER, MODEL };
 """
@@ -321,6 +383,21 @@ _PW_HEALER_JS = """// Self-healing locator resolver. Order per step key:
 const { load, save, toSelector } = require('./locators');
 const { pickLocator, HEAL, PROVIDER } = require('./aiClient');
 const { HARVEST_EXPR } = require('./harvest');
+
+// Arabic-aware text normalization for assertText: the app's on-screen copy and
+// the AI-authored expected keywords routinely differ ONLY in orthography —
+// tashkeel/diacritics (عذرًا vs عذراً), alef variants (أ/إ/آ vs ا), teh marbuta
+// vs heh (ة/ه), yaa variants (ى/ي) and tatweel. Exact substring matching failed
+// live on 8 assertions in one run whose ACTIONS had all succeeded. Both sides
+// are normalized before comparing.
+function normText(s) {
+  return String(s || '')
+    .toLowerCase()
+    .replace(/[ً-ْٰـ]/g, '')
+    .replace(/[أإآ]/g, 'ا')
+    .replace(/ة/g, 'ه')
+    .replace(/ى/g, 'ي');
+}
 
 class Healer {
   constructor(page) { this.page = page; this.store = load(); }
@@ -349,8 +426,15 @@ class Healer {
         return this._loc(picked);
       }
     }
-    throw new Error('Could not resolve step ' + key +
-      '. Set QA_AI_API_KEY to enable AI healing.');
+    // Honest failure message: "Set QA_AI_API_KEY" is only the cure when
+    // healing was actually DISABLED — with a key set, this line used to blame
+    // the key for what was really a transient AI/network failure or an
+    // element that genuinely isn't on this page (confirmed live).
+    throw new Error('Could not resolve step ' + key + (HEAL
+      ? ' — cached/seed locators matched nothing and the AI heal attempt '
+        + 'failed or found no match (see [heal] lines above; the element may '
+        + 'not exist on this page at all).'
+      : '. Set QA_AI_API_KEY to enable AI healing.'));
   }
 
   async act(key, verb, seed, intent, value) {
@@ -367,19 +451,24 @@ class Healer {
   }
 
   async assertVisible(key, seed, intent) {
+    // The failure reason is LOGGED, not swallowed: without this, a step that
+    // couldn't resolve at all surfaced in the report as a bare
+    // "expect(received).toBeTruthy() — received false" with zero hint that
+    // the element was never found (vs. found but hidden).
     try { return await (await this.resolve(key, seed, intent)).isVisible(); }
-    catch (e) { return false; }
+    catch (e) { console.log('[heal] assertVisible ' + key + ' failed: ' + e.message); return false; }
   }
 
-  // Verify by PAGE TEXT (no locator, no AI): true if the page contains ANY keyword.
+  // Verify by PAGE TEXT (no locator, no AI): true if the page contains ANY
+  // keyword — Arabic-normalized on both sides (see normText above).
   async assertText(keywords) {
     const end = Date.now() + 8000;
     do {
       let t = '';
-      try { t = (await this.page.locator('body').innerText()).toLowerCase(); }
+      try { t = normText(await this.page.locator('body').innerText()); }
       catch (e) {}
       for (const k of keywords) {
-        if (k && t.includes(String(k).toLowerCase())) return true;
+        if (k && t.includes(normText(k))) return true;
       }
       await this.page.waitForTimeout(300);
     } while (Date.now() < end);
@@ -392,8 +481,24 @@ module.exports = { Healer };
 _PW_AUTH_JS = """// Login helpers. Credentials come from the environment, never hard-coded.
 require('dotenv').config();
 
+// The language the LOGIN PAGE should render in — must match the language of
+// the generated test cases' expected messages. The frozen APP_LOGIN_URL can
+// carry a stale ui_locales=… (confirmed live: ui_locales=en forced the page
+// into English while every assertion expected the Arabic version of the SAME
+// message — behavior passed, language failed). Baked from QA Studio's output
+// language at generation time; override per-environment via APP_UI_LOCALE.
+const UI_LOCALE = process.env.APP_UI_LOCALE || '__UI_LOCALE__';
+
+function _withLocale(url) {
+  if (!UI_LOCALE || !/^https?:/.test(url)) return url;
+  if (/[?&]ui_locales=/.test(url)) {
+    return url.replace(/([?&])ui_locales=[^&]*/, '$1ui_locales=' + UI_LOCALE);
+  }
+  return url + (url.includes('?') ? '&' : '?') + 'ui_locales=' + UI_LOCALE;
+}
+
 async function openLoginPage(page) {
-  await page.goto(process.env.APP_LOGIN_URL || process.env.APP_BASE_URL || '/');
+  await page.goto(_withLocale(process.env.APP_LOGIN_URL || process.env.APP_BASE_URL || '/'));
 }
 
 async function performLogin(page) {
@@ -444,12 +549,15 @@ def _pw_env_real(cfg):
         "APP_LOGIN_URL=%s\n"
         "APP_USER=\n"
         "APP_PASS=\n"
+        "# Login-page language (ui_locales) — must match the tests' expected-message language.\n"
+        "APP_UI_LOCALE=%s\n"
         "# AI self-healing — paste a key to enable auto-repair of locators.\n"
         "QA_AI_API_KEY=\n"
         "QA_AI_PROVIDER=%s\n"
         "QA_AI_BASE_URL=%s\n"
         "QA_AI_MODEL=%s\n"
         % (cfg.get("base_url", ""), cfg.get("login_url", ""),
+           cfg.get("ui_locale", "ar"),
            cfg.get("ai_provider", "anthropic"),
            cfg.get("ai_base_url", "https://api.anthropic.com"),
            cfg.get("ai_model", "claude-sonnet-4-6")))
@@ -460,14 +568,16 @@ def _spec_name(sid):
     return "story-%s.spec.js" % safe
 
 
-def _emit_pw_intent(lines, key, intent, seed_fn, seeds):
+def _emit_pw_intent(lines, key, intent, seed_fn, seeds, app_page=False):
     """Append the Playwright JS for one intent. Mirrors engine._emit_intent: keyed
-    steps record a known seed into `seeds` for locators.json pre-seeding."""
+    steps record a known seed into `seeds` for locators.json pre-seeding.
+    `app_page` — see engine._seed_locator_for_intent: disables the login-form
+    seed rules for bucket-3 (post-login app page) cases."""
     role = intent.get("role")
     target = intent.get("target", "")
     ij = {"target": target, "keywords": intent.get("keywords", []),
           "kind": intent.get("kind", "any"), "verb": intent.get("verb", "")}
-    by, val, _known = seed_fn(intent)
+    by, val, _known = seed_fn(intent, app_page=app_page)
     seed = None if val == "TODO_RESOLVE_AT_RUNTIME" else {"by": by, "value": val}
 
     def _record():
@@ -504,30 +614,60 @@ def _emit_pw_intent(lines, key, intent, seed_fn, seeds):
 
 
 def _pw_spec(story, cases, seed_fn, seeds):
-    """Emit a Playwright spec file for one story from compiled intents."""
+    """Emit a Playwright spec file for one story from compiled intents.
+
+    Session model (mirrors the Selenium output's one-browser-per-class flow,
+    translated to Playwright's PER-TEST ISOLATION — the naive port ran every
+    app-page test logged OUT, confirmed live: profile tests redirected to the
+    login page, where their elements genuinely don't exist, so seeds failed AND
+    AI healing failed — it can only pick from the page that's actually there):
+      - bucket <= 2 (login-page cases + the successful-login case) go in a
+        nested describe that OVERRIDES the shared storageState with a clean,
+        logged-out session — they test the login page itself.
+      - bucket 3 (app cases) inherit use.storageState from playwright.config.js:
+        global-setup.js logged in ONCE and saved the session, so goto(BASE_URL)
+        lands authenticated, on the real app page."""
     sid = str(story.get("id", "0"))
+
+    def _one_case(L, ci, c, indent=""):
+        bucket = c.get("bucket", 3)
+        L.append("")
+        L.append(indent + "  test(%s, async ({ page, heal }) => {"
+                 % json.dumps(c.get("title", "case %d" % ci)))
+        body = []
+        if bucket < 2:
+            body.append("    await openLoginPage(page);")
+        elif bucket == 2:
+            body.append("    await performLogin(page);")
+        else:
+            body.append("    await page.goto(process.env.APP_BASE_URL || '/');")
+        for ii, intent in enumerate(c.get("intents", [])):
+            if bucket == 2 and intent.get("role") == "action":
+                continue
+            _emit_pw_intent(body, "%s.%d.%d" % (sid, ci, ii), intent, seed_fn,
+                            seeds, app_page=(bucket == 3))
+        L.extend(indent + ln for ln in body)
+        L.append(indent + "  });")
+
     L = []
     L.append("const { test, expect } = require('../fixtures');")
     L.append("const { openLoginPage, performLogin } = require('../support/auth');")
     L.append("")
     L.append("test.describe(%s, () => {"
              % json.dumps("Story %s — %s" % (sid, story.get("title", ""))))
-    for ci, c in enumerate(cases):
-        bucket = c.get("bucket", 3)
+    login_cases = [(ci, c) for ci, c in enumerate(cases) if c.get("bucket", 3) <= 2]
+    app_cases = [(ci, c) for ci, c in enumerate(cases) if c.get("bucket", 3) == 3]
+    if login_cases:
         L.append("")
-        L.append("  test(%s, async ({ page, heal }) => {"
-                 % json.dumps(c.get("title", "case %d" % ci)))
-        if bucket < 2:
-            L.append("    await openLoginPage(page);")
-        elif bucket == 2:
-            L.append("    await performLogin(page);")
-        else:
-            L.append("    await page.goto(process.env.APP_BASE_URL || '/');")
-        for ii, intent in enumerate(c.get("intents", [])):
-            if bucket == 2 and intent.get("role") == "action":
-                continue
-            _emit_pw_intent(L, "%s.%d.%d" % (sid, ci, ii), intent, seed_fn, seeds)
+        L.append("  // These cases test the LOGIN PAGE itself — they opt out of the")
+        L.append("  // shared logged-in session (global-setup.js) with a clean state.")
+        L.append("  test.describe('logged out (login page)', () => {")
+        L.append("    test.use({ storageState: { cookies: [], origins: [] } });")
+        for ci, c in login_cases:
+            _one_case(L, ci, c, indent="  ")
         L.append("  });")
+    for ci, c in app_cases:
+        _one_case(L, ci, c)
     L.append("});")
     return "\n".join(L) + "\n", _spec_name(sid)
 
@@ -557,6 +697,7 @@ def build_playwright_project(out_dir, sequenced, cfg, seed_fn, harvest_js,
     cb("Writing self-healing Playwright framework (healer, AI client · %s)…" % prov, "dim")
     _wif(os.path.join(out_dir, "package.json"), _PKG_JSON, written, out_dir)
     _wif(os.path.join(out_dir, "playwright.config.js"), _PW_CONFIG, written, out_dir)
+    _wif(os.path.join(out_dir, "global-setup.js"), _PW_GLOBAL_SETUP, written, out_dir)
     _wif(os.path.join(out_dir, ".gitignore"), _PW_GITIGNORE, written, out_dir)
     _wif(os.path.join(out_dir, ".env.example"), _PW_ENV_EXAMPLE, written, out_dir)
     _wif(os.path.join(out_dir, "README.md"), _PW_README, written, out_dir)
@@ -569,7 +710,9 @@ def build_playwright_project(out_dir, sequenced, cfg, seed_fn, harvest_js,
     _wif(os.path.join(support_dir, "harvest.js"),
          _PW_HARVEST_HEAD + (harvest_js or "return [];") + _PW_HARVEST_TAIL, written, out_dir)
     _wif(os.path.join(support_dir, "healer.js"), _PW_HEALER_JS, written, out_dir)
-    _wif(os.path.join(support_dir, "auth.js"), _PW_AUTH_JS, written, out_dir)
+    _wif(os.path.join(support_dir, "auth.js"),
+         _PW_AUTH_JS.replace("__UI_LOCALE__", cfg.get("ui_locale", "ar")),
+         written, out_dir)
 
     # .env holds real environment values — written ONCE so a re-run never clobbers edits.
     envp = os.path.join(out_dir, ".env")
@@ -723,31 +866,45 @@ function _extractJson(t) {
 async function _pick(intent, dom) {
   if (!KEY) return null;
   const user = 'Intent: ' + JSON.stringify(intent) + '\\n\\nCandidates:\\n' + dom;
-  try {
-    let text;
-    if (PROVIDER === 'anthropic') {
-      const r = await fetch(BASE.replace(/\\/$/, '') + '/v1/messages', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-api-key': KEY,
-                   'anthropic-version': '2023-06-01' },
-        body: JSON.stringify({ model: MODEL, max_tokens: 300, system: SYS,
-                               messages: [{ role: 'user', content: user }] }),
-      });
+  // Same 3-attempt backoff as the Playwright aiClient: Node's fetch has no
+  // retry, and parallel healing trips transient "fetch failed" / 429s.
+  let lastErr = '';
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      let r, text;
+      if (PROVIDER === 'anthropic') {
+        r = await fetch(BASE.replace(/\\/$/, '') + '/v1/messages', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-api-key': KEY,
+                     'anthropic-version': '2023-06-01' },
+          body: JSON.stringify({ model: MODEL, max_tokens: 300, system: SYS,
+                                 messages: [{ role: 'user', content: user }] }),
+        });
+      } else {
+        r = await fetch(BASE.replace(/\\/$/, '') + '/chat/completions', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'authorization': 'Bearer ' + KEY },
+          body: JSON.stringify({ model: MODEL, temperature: 0,
+            messages: [{ role: 'system', content: SYS }, { role: 'user', content: user }] }),
+        });
+      }
+      if (r.status === 429 || r.status >= 500) throw new Error('provider HTTP ' + r.status);
       const j = await r.json();
-      text = j && j.content && j.content[0] && j.content[0].text;
-    } else {
-      const r = await fetch(BASE.replace(/\\/$/, '') + '/chat/completions', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', 'authorization': 'Bearer ' + KEY },
-        body: JSON.stringify({ model: MODEL, temperature: 0,
-          messages: [{ role: 'system', content: SYS }, { role: 'user', content: user }] }),
-      });
-      const j = await r.json();
-      text = j && j.choices && j.choices[0] && j.choices[0].message &&
-             j.choices[0].message.content;
+      if (PROVIDER === 'anthropic') {
+        text = j && j.content && j.content[0] && j.content[0].text;
+      } else {
+        text = j && j.choices && j.choices[0] && j.choices[0].message &&
+               j.choices[0].message.content;
+      }
+      return _extractJson(text);
+    } catch (e) {
+      lastErr = e.message;
+      console.log('[heal] AI call failed (attempt ' + attempt + '/3): ' + e.message);
+      if (attempt < 3) await new Promise(res => setTimeout(res, 1500 * attempt));
     }
-    return _extractJson(text);
-  } catch (e) { return null; }
+  }
+  console.log('[heal] giving up after 3 attempts: ' + lastErr);
+  return null;
 }
 
 module.exports = {
@@ -815,8 +972,20 @@ function _has(spec) {
   try { return Cypress.$(sel).length > 0; } catch (e) { return false; }
 }
 
+// Login-page language — must match the generated tests' expected-message
+// language; the frozen APP_LOGIN_URL can carry a stale ui_locales=… (see the
+// Playwright auth.js comment for the live failure this caused).
+function _withLocale(url) {
+  const loc = Cypress.env('APP_UI_LOCALE') || '__UI_LOCALE__';
+  if (!loc || !/^https?:/.test(url)) return url;
+  if (/[?&]ui_locales=/.test(url)) {
+    return url.replace(/([?&])ui_locales=[^&]*/, '$1ui_locales=' + loc);
+  }
+  return url + (url.includes('?') ? '&' : '?') + 'ui_locales=' + loc;
+}
+
 Cypress.Commands.add('openLoginPage', () => {
-  cy.visit(Cypress.env('APP_LOGIN_URL') || Cypress.env('APP_BASE_URL') || '/');
+  cy.visit(_withLocale(Cypress.env('APP_LOGIN_URL') || Cypress.env('APP_BASE_URL') || '/'));
 });
 Cypress.Commands.add('performLogin', () => {
   cy.openLoginPage();
@@ -825,6 +994,16 @@ Cypress.Commands.add('performLogin', () => {
   cy.get('#password, input[type=password]').first()
     .clear().type(Cypress.env('APP_PASS') || ' ', { log: false });
   cy.get('#kc-login, button[type=submit], input[type=submit]').first().click();
+});
+
+// Log in ONCE and cache the session (cookies/localStorage) across tests AND
+// spec files. Cypress's test isolation wipes browser state before every test,
+// so a login performed in one test never survives to the next — every
+// app-page test calls cy.loginSession() first, which restores the cached
+// session instantly instead of re-typing credentials each time.
+Cypress.Commands.add('loginSession', () => {
+  cy.session('qa-studio-user', () => { cy.performLogin(); },
+             { cacheAcrossSpecs: true });
 });
 
 Cypress.Commands.add('healSelector', (key, seed, intent) => {
@@ -867,10 +1046,22 @@ Cypress.Commands.add('healAssertVisible', (key, seed, intent) => {
   });
 });
 
+// Arabic-aware normalization — same rationale as the Playwright healer's
+// normText: on-screen copy and AI keywords differ in diacritics/alef/teh-
+// marbuta/yaa variants, which exact substring matching can't survive.
+function _cyNormText(s) {
+  return String(s || '')
+    .toLowerCase()
+    .replace(/[ً-ْٰـ]/g, '')
+    .replace(/[أإآ]/g, 'ا')
+    .replace(/ة/g, 'ه')
+    .replace(/ى/g, 'ي');
+}
+
 Cypress.Commands.add('healAssertText', (keywords) => {
   cy.get('body', { timeout: 8000 }).should(($b) => {
-    const t = ($b.text() || '').toLowerCase();
-    const ok = keywords.some((k) => k && t.indexOf(String(k).toLowerCase()) !== -1);
+    const t = _cyNormText($b.text());
+    const ok = keywords.some((k) => k && t.indexOf(_cyNormText(k)) !== -1);
     expect(ok, 'page contains one of: ' + keywords.join(', ')).to.equal(true);
   });
 });
@@ -902,13 +1093,13 @@ are CSS/id/name/text and resolve directly.
 """
 
 
-def _emit_cy_intent(lines, key, intent, seed_fn, seeds):
+def _emit_cy_intent(lines, key, intent, seed_fn, seeds, app_page=False):
     """Append the Cypress JS for one intent (mirrors _emit_pw_intent)."""
     role = intent.get("role")
     target = intent.get("target", "")
     ij = {"target": target, "keywords": intent.get("keywords", []),
           "kind": intent.get("kind", "any"), "verb": intent.get("verb", "")}
-    by, val, _known = seed_fn(intent)
+    by, val, _known = seed_fn(intent, app_page=app_page)
     seed = None if val == "TODO_RESOLVE_AT_RUNTIME" else {"by": by, "value": val}
 
     def _record():
@@ -958,11 +1149,17 @@ def _cy_spec(story, cases, seed_fn, seeds):
         elif bucket == 2:
             L.append("    cy.performLogin();")
         else:
+            # App-page case: restore the cached login session FIRST (Cypress
+            # test isolation wipes state before every test — without this,
+            # visit() lands on the login redirect and none of the case's
+            # elements exist; see the identical Playwright fix in _pw_spec).
+            L.append("    cy.loginSession();")
             L.append("    cy.visit(Cypress.env('APP_BASE_URL') || '/');")
         for ii, intent in enumerate(c.get("intents", [])):
             if bucket == 2 and intent.get("role") == "action":
                 continue
-            _emit_cy_intent(L, "%s.%d.%d" % (sid, ci, ii), intent, seed_fn, seeds)
+            _emit_cy_intent(L, "%s.%d.%d" % (sid, ci, ii), intent, seed_fn, seeds,
+                            app_page=(bucket == 3))
         L.append("  });")
     L.append("});")
     return "\n".join(L) + "\n", "story-%s.cy.js" % ("".join(ch for ch in sid if ch.isalnum()) or "0")
@@ -1001,7 +1198,9 @@ def build_cypress_project(out_dir, sequenced, cfg, seed_fn, harvest_js,
     _wif(os.path.join(support_dir, "e2e.js"), _CY_SUPPORT_E2E, written, out_dir)
     _wif(os.path.join(support_dir, "harvest.js"),
          _CY_HARVEST_HEAD + (harvest_js or "return [];") + _CY_HARVEST_TAIL, written, out_dir)
-    _wif(os.path.join(support_dir, "healer.js"), _CY_HEALER_JS, written, out_dir)
+    _wif(os.path.join(support_dir, "healer.js"),
+         _CY_HEALER_JS.replace("__UI_LOCALE__", cfg.get("ui_locale", "ar")),
+         written, out_dir)
 
     envp = os.path.join(out_dir, ".env")
     if not os.path.exists(envp):

@@ -979,6 +979,21 @@ def _retry_after_seconds(exc):
         pass
     return None
 
+# Shared (cross-thread) rate-limit cooldown. run_steps/run_titles/the dedup
+# pass all run 2-worker pools against the SAME provider endpoint — before
+# this gate, each worker discovered a rate limit independently and sat out
+# its own private backoff, and the extra requests fired during the window
+# count against the limit (often extending it). When any call gets
+# rate-limited/overloaded, the wait it computed is published here; every
+# other ai_complete() call waits out the remainder BEFORE issuing its
+# request, instead of burning a request to learn what a sibling thread
+# already knows. Combined with on_retry now being threaded through every
+# Run call site, this is the fix for the "60s of total silence that was
+# actually 3-4 invisible stacked retry cycles" failure mode.
+_RL_GATE_LOCK = _threading.Lock()
+_RL_COOLDOWN_UNTIL = 0.0
+
+
 def ai_complete(prompt_text, images=None, max_tokens=4096, timeout=None,
                 retries=3, on_retry=None, want_json=False, usage_out=None,
                 usage_tag=None):
@@ -1000,15 +1015,45 @@ def ai_complete(prompt_text, images=None, max_tokens=4096, timeout=None,
     just provider). Every successful call is ALSO recorded automatically
     (record_ai_usage, off-thread) regardless of whether a caller passes these.
     """
-    cfg = _ai_cfg(); provider = AI_PROVIDER; images = images or []
+    global _RL_COOLDOWN_UNTIL
+    images = images or []
     # Per-category retry budgets. Rate-limit / overloaded clear on their own, so
     # we wait them out generously instead of surfacing an error to the user.
     _BUDGET = {"rate_limit": 8, "overloaded": 8, "server": 5,
                "timeout": 4, "network": 4}
     attempt = 0
     last_friendly = None
+    provider = None
     while True:
+        # Provider/config are re-read EVERY attempt — switching providers in
+        # Settings mid-run now rescues the in-flight call on its very next
+        # retry, instead of the call grinding through the OLD provider's full
+        # multi-minute retry budget first (reported live: user switched away
+        # from a stalled provider at ~120s and the call kept retrying the old
+        # one past 258s). A mid-call switch also resets the attempt counter —
+        # the new provider gets a fresh budget, not the old one's exhausted
+        # count.
+        _prov_now = AI_PROVIDER
+        if provider is not None and _prov_now != provider:
+            if on_retry:
+                try:
+                    on_retry(f"provider switched to {T_disp(_prov_now)} — "
+                             f"retrying there now…")
+                except Exception:
+                    pass
+            attempt = 0
+        provider = _prov_now
+        cfg = _ai_cfg()
         attempt += 1
+        # Respect a cooldown another thread just set (see _RL_COOLDOWN_UNTIL
+        # above): don't fire a request that will almost certainly 429 and
+        # start this call's own private backoff ladder on top.
+        _cd = _RL_COOLDOWN_UNTIL - time.time()
+        if _cd > 0:
+            if on_retry:
+                on_retry(f"{T_disp(provider)}: rate-limited — waiting "
+                         f"{int(_cd) + 1}s (shared cooldown)…")
+            _interruptible_sleep(min(_cd, 60))
         try:
             text, usage = _ai_call_once(provider, cfg, prompt_text, images,
                                         max_tokens, timeout, want_json)
@@ -1036,6 +1081,16 @@ def ai_complete(prompt_text, images=None, max_tokens=4096, timeout=None,
             last_friendly = friendly
             if attempt <= retries:
                 _delay = min(2 * attempt, 8)
+                # "Hit max_tokens with NO text" is not transient — it means the
+                # model spent the whole budget before emitting its final answer
+                # (with thinking models like Sonnet 5, reasoning tokens count
+                # against the same cap, so a small cap can be consumed entirely
+                # by thinking). Retrying the identical request only succeeds by
+                # luck (thinking length varies) — double the cap instead so the
+                # retry actually has room for both reasoning AND the answer.
+                if "max_tokens" in str(e).lower() and max_tokens < 8192:
+                    max_tokens = min(max_tokens * 2, 8192)
+                    friendly += f" — raising max_tokens to {max_tokens}"
                 if on_retry: on_retry(f"{friendly} — retrying ({attempt}/{retries})…")
                 _interruptible_sleep(_delay); continue
             raise _classified_error(cat, friendly)
@@ -1055,10 +1110,40 @@ def ai_complete(prompt_text, images=None, max_tokens=4096, timeout=None,
                     _delay = min(5 + 5 * attempt, 45)      # 10,15,…cap 45s
                 else:
                     _delay = min(2 * attempt, 20)
+                if cat in ("rate_limit", "overloaded"):
+                    # Publish the cooldown so concurrent workers wait it out
+                    # too instead of independently rediscovering the limit.
+                    with _RL_GATE_LOCK:
+                        _RL_COOLDOWN_UNTIL = max(_RL_COOLDOWN_UNTIL,
+                                                 time.time() + _delay)
                 if on_retry:
                     on_retry(f"{friendly} — waiting {int(_delay)}s then retry "
                              f"({attempt}/{budget})…")
-                _interruptible_sleep(_delay); continue
+                    # Keep the retry note VISIBLE while waiting: at heartbeat-
+                    # wired call sites the retry note shares its hb_id line
+                    # with the "Still …ing — Ns so far" heartbeat, which fires
+                    # every ~15s from the monitor thread and silently
+                    # OVERWRITES it (confirmed live: 258s of backoff showed
+                    # only the generic heartbeat, reading as a frozen call
+                    # with no retries happening). Re-asserting the note every
+                    # ~5s with a live countdown wins that overwrite race and
+                    # doubles as progress feedback.
+                    _end = time.time() + _delay
+                    while True:
+                        _left = _end - time.time()
+                        if _left <= 0 or _STOP_EVENT.is_set():
+                            break
+                        _interruptible_sleep(min(5, _left))
+                        _left = int(_end - time.time())
+                        if _left > 0 and not _STOP_EVENT.is_set():
+                            try:
+                                on_retry(f"{friendly} — retrying in {_left}s "
+                                         f"({attempt}/{budget})…")
+                            except Exception:
+                                pass
+                else:
+                    _interruptible_sleep(_delay)
+                continue
             raise _classified_error(cat, friendly)
 
 
@@ -1069,6 +1154,13 @@ def ai_complete(prompt_text, images=None, max_tokens=4096, timeout=None,
 # it's worth waiting it out here before giving up on the whole run. Each wait
 # is logged so it reads as "retrying" rather than "stuck".
 _NETWORK_RETRY_WAITS = (20, 40, 80)   # seconds; ~140s of extra patience total
+
+# One consistent activity-log line for every place a fatal provider error now
+# PAUSES the run (instead of killing it) while waiting on the Run screen's
+# Resume/Stop buttons — see run_steps' _gen_and_write wrapper, run_titles'
+# _process_story_paused, and the empty-suite seeding path.
+_PAUSED_ON_ERROR_MSG = ("Paused on provider error — switch the AI provider in "
+                        "Setup, then click Resume; or Stop to end the run.")
 
 
 def _call_with_network_retries(fn, cb, should_stop=None):
@@ -2137,7 +2229,8 @@ def fetch_story_screenshots(story):
     return shots
 
 
-def describe_story_ui(screenshots, story_title="", should_stop=None, on_slow=None):
+def describe_story_ui(screenshots, story_title="", should_stop=None, on_slow=None,
+                      on_retry=None):
     """`on_slow(elapsed_seconds)` — same convention as generate_titles/generate_steps
     — lets the caller log a heartbeat while this (vision, so often slower) call is
     still in flight, instead of the run going silent for however long a slow/
@@ -2160,7 +2253,7 @@ def describe_story_ui(screenshots, story_title="", should_stop=None, on_slow=Non
     try:
         return (_run_stopaware(
             lambda: ai_complete(prompt, images=images, max_tokens=1500,
-                                usage_tag="ui_description"),
+                                usage_tag="ui_description", on_retry=on_retry),
             should_stop=should_stop, on_slow=on_slow) or "").strip()
     except StopRequested:
         raise
@@ -2348,7 +2441,7 @@ def _coerce_step_list(data):
 
 
 def generate_steps(tc_title, acceptance_criteria, ui_description="", log=None,
-                   should_stop=None, on_slow=None):
+                   should_stop=None, on_slow=None, on_retry=None):
     if _is_arabic_out():
         ui_block = f"\n        وصف واجهة المستخدم (مستخلص من الصور):\n        {ui_description}\n" if ui_description else ""
         text = f"""
@@ -2385,6 +2478,24 @@ def generate_steps(tc_title, acceptance_criteria, ui_description="", log=None,
           تنص عليها المعايير فعلاً — لا تخترع نتيجة جديدة.
         - في action وprecondition، لا تذكر إلا شاشات وحقولاً وأزراراً واردة في معايير
           القبول أو وصف الميزة. لا تخترع عناصر واجهة غير مذكورة.
+
+        قاعدة توقيت ظهور رسائل التحقق:
+        - ما لم تنص معايير القبول صراحةً على تحقق فوري أثناء الكتابة أو عند مغادرة
+          الحقل، افترض أن التحقق يحدث عند الضغط على زر الإرسال/الحفظ/الدخول
+          المذكور في المعايير: أدخل القيمة غير الصحيحة، ثم اضغط الزر، وبعدها فقط
+          توقّع ظهور الرسالة. لا تكتب أبداً خطوة تتوقع تحذيراً مباشرةً بعد الكتابة.
+        - في سيناريو الإدخال الصحيح، النتيجة المتوقعة هي النتيجة الإيجابية التي
+          تنص عليها المعايير (رسالة النجاح أو الانتقال للشاشة التالية) — لا تكتب
+          أبداً نفياً بصيغة نص مثل «لا يظهر تحذير»: هذا وصف لسلوك وليس نصاً
+          يظهر على الشاشة، ولا يمكن لأي فحص آلي أو يدوي العثور عليه.
+
+        قاعدة بيئة التشغيل (حالات التوافق):
+        - إذا كان عنوان الحالة يستهدف متصفحاً أو منصة محددة (Chrome أو Firefox أو
+          Safari أو Edge أو iOS أو Android أو الجوال)، فاذكر تلك البيئة في حقل
+          precondition للخطوة الأولى (فتح التطبيق على ذلك المتصفح أو الجهاز)، ثم
+          نفّذ نفس التدفق الأساسي للقصة، واجعل expected يتضمن تطابق السلوك وسلامة
+          العرض في تلك البيئة. لا تخترع سلوكاً خاصاً بالمنصة غير مذكور في معايير
+          القبول.
 
         عنوان حالة الاختبار: {tc_title}
         معايير القبول: {acceptance_criteria}
@@ -2435,6 +2546,27 @@ def generate_steps(tc_title, acceptance_criteria, ui_description="", log=None,
         - In 'action' and 'precondition', only mention screens, fields, and buttons that appear
           in the acceptance criteria or feature description. Do not invent UI elements.
 
+        Validation-timing rule — WHEN the app shows validation messages:
+        - Unless the acceptance criteria EXPLICITLY state live/inline validation
+          (a message while typing, or on leaving the field), assume validation
+          happens ON SUBMIT: enter the invalid value, then click the submit/
+          save/login button the criteria mention, and only THEN expect the
+          message. Never write a step that expects a warning immediately after
+          typing.
+        - For a VALID-input scenario, the expected result is the POSITIVE
+          outcome the criteria state (the success message, or the next screen)
+          — never a negative phrased as text such as "no warning appears": that
+          describes behavior, it is not text rendered on screen, and no
+          automated or manual check can ever find it.
+
+        Runtime-environment rule (compatibility cases):
+        - If the test case title targets a specific browser or platform (Chrome,
+          Firefox, Safari, Edge, iOS, Android, mobile), state that environment in
+          the FIRST step's 'precondition' (open the app on that browser/device),
+          then perform the story's own main flow, and make 'expected' include the
+          behavior and layout matching that environment. Do not invent
+          platform-specific behavior the acceptance criteria never mention.
+
         Test case title: {tc_title}
         Acceptance criteria: {acceptance_criteria}
         Feature description: {FEATURE_DESCRIPTION}{ui_block}
@@ -2456,7 +2588,7 @@ def generate_steps(tc_title, acceptance_criteria, ui_description="", log=None,
             # future caller that wants it, with unchanged behavior for this one.
             data = parse_json_robust(_run_stopaware(
                 lambda: ai_complete(text, max_tokens=4096, want_json=True,
-                                    usage_tag="generate_steps"),
+                                    usage_tag="generate_steps", on_retry=on_retry),
                 should_stop=should_stop, on_slow=on_slow))
             # Programmatic backstop for the grounding rule above: a token-
             # overlap check between the model's own ac_quote and the real
@@ -2494,7 +2626,8 @@ def generate_steps(tc_title, acceptance_criteria, ui_description="", log=None,
     raise RuntimeError(f"Failed after 5 attempts: {last_err}")
 
 
-def evaluate_existing_steps(tc_title, criteria, existing_steps_xml, should_stop=None, on_slow=None):
+def evaluate_existing_steps(tc_title, criteria, existing_steps_xml, should_stop=None,
+                            on_slow=None, on_retry=None):
     """Decide whether a test case's EXISTING steps already adequately cover
     its acceptance criteria, or need regenerating. `should_stop`/`on_slow`
     were added after this call was found to be the single biggest source of
@@ -2542,7 +2675,9 @@ def evaluate_existing_steps(tc_title, criteria, existing_steps_xml, should_stop=
     # is often a one-off formatting slip, not a systemic problem) and avoids
     # falling back on the very first hiccup.
     for attempt in range(2):
-        raw = (_run_stopaware(lambda: ai_complete(prompt, max_tokens=1024, usage_tag="evaluate_existing_steps"),
+        raw = (_run_stopaware(lambda: ai_complete(prompt, max_tokens=1024,
+                                                  usage_tag="evaluate_existing_steps",
+                                                  on_retry=on_retry),
                               should_stop=should_stop, on_slow=on_slow) or "").strip()
         raw = raw.replace("```json", "").replace("```", "").strip()
         try:
@@ -2726,7 +2861,7 @@ def _check_ac_coverage(items, ac_ids, log=None, kind="titles"):
 
 
 def generate_titles(story_title, criteria, existing_titles=None, log=None,
-                    should_stop=None, on_slow=None):
+                    should_stop=None, on_slow=None, on_retry=None):
     # Numbering the acceptance criteria as AC1/AC2/... and requiring the
     # model to tag each title with the AC it tests turns "cover the
     # requirements" (an abstract judgment weak/flash-tier models don't
@@ -2753,7 +2888,8 @@ def generate_titles(story_title, criteria, existing_titles=None, log=None,
           أضف حالات خاطئة/حدّية فقط إذا كان المعيار يذكر قيداً يمكن انتهاكه).
         - كل عنوان يجب أن يستند إلى معيار واحد بالضبط. لا تنشئ عناوين عن
           سلوكيات لم تُذكر في معايير القبول (لا عناوين عامة عن الأداء أو الأمان
-          أو التوافق ما لم يذكرها معيار صراحة).
+          ما لم يذكرها معيار صراحة؛ عناوين التوافق تحكمها قواعد التوافق أدناه
+          حصراً).
         - أرفق مع كل عنوان رقم المعيار الذي يختبره.
 """ if ac_ids else "")
         prompt = f"""
@@ -2774,6 +2910,18 @@ def generate_titles(story_title, criteria, existing_titles=None, log=None,
         - ادمج الحالات المتشابهة في عنوان واحد واضح بدلاً من تكرارها.
         - قبل الإخراج، راجع القائمة واحذف أي عنوان يكرر معنى عنوان آخر.
 {coverage_block}
+        تغطية التوافق (مطلوبة دائماً — بالإضافة إلى ما سبق):
+        - أضف بالضبط 3 عناوين إضافية بوسم "ac":"COMPAT":
+          1) التحقق من أن التدفق الرئيسي للقصة يعمل بشكل متطابق على متصفحات
+             Chrome وFirefox وSafari وEdge.
+          2) التحقق من التدفق الرئيسي وسلامة العرض على iOS (متصفح Safari للجوال).
+          3) التحقق من التدفق الرئيسي وسلامة العرض على Android (متصفح Chrome للجوال).
+        - هذه العناوين تغيّر بيئة التشغيل فقط — التدفق المُختبَر هو نفسه التدفق
+          الأساسي للقصة؛ لا تخترع سلوكاً جديداً غير مذكور في معايير القبول.
+        - اذكر اسم الميزة داخل كل عنوان منها (مثال: التحقق من تسجيل الدخول على
+          متصفحات Chrome وFirefox وSafari وEdge)، ولا تنشئ أي عنوان منها إذا كان
+          مثيله موجوداً بالفعل ضمن الحالات الموجودة.
+
         العنوان: {story_title}
         معايير القبول: {ct}
         {existing_block}
@@ -2797,8 +2945,9 @@ def generate_titles(story_title, criteria, existing_titles=None, log=None,
           a constraint that can be violated).
         - Every title MUST be based on exactly one criterion. Do NOT write
           titles about behaviors the criteria never mention (no generic
-          performance, security, or compatibility titles unless a criterion
-          explicitly mentions them).
+          performance or security titles unless a criterion explicitly
+          mentions them; compatibility titles are governed EXCLUSIVELY by the
+          compatibility rules below).
         - Tag each title with the criterion number it tests.
 """ if ac_ids else "")
         prompt = f"""
@@ -2820,6 +2969,19 @@ def generate_titles(story_title, criteria, existing_titles=None, log=None,
         - Merge similar cases into one clear title instead of repeating them.
         - Before output, review the list and remove any title that repeats another's meaning.
 {coverage_block}
+        Compatibility coverage (ALWAYS required — in addition to the above):
+        - Add EXACTLY 3 extra titles tagged "ac":"COMPAT":
+          1) Verify the story's main flow works identically across the Chrome,
+             Firefox, Safari and Edge browsers.
+          2) Verify the main flow and layout render correctly on iOS (mobile Safari).
+          3) Verify the main flow and layout render correctly on Android (mobile Chrome).
+        - These titles change the RUNTIME ENVIRONMENT only — the flow under
+          test is the story's own main flow; do not invent behavior the
+          acceptance criteria never mention.
+        - Name the feature inside each of these titles (e.g. Verify sign-in
+          works identically across Chrome, Firefox, Safari and Edge), and skip
+          any of them whose equivalent already exists among the existing cases.
+
         Title: {story_title}
         Acceptance criteria: {ct}
         {existing_block}
@@ -2839,7 +3001,7 @@ def generate_titles(story_title, criteria, existing_titles=None, log=None,
             # UI log a heartbeat while a large model is still generating.
             data = parse_json_robust(_run_stopaware(
                 lambda: ai_complete(prompt, max_tokens=4096, want_json=True,
-                                    usage_tag="generate_titles"),
+                                    usage_tag="generate_titles", on_retry=on_retry),
                 should_stop=should_stop, on_slow=on_slow))
             raw_items = data.get("titles") if isinstance(data, dict) else data
             if isinstance(raw_items, list):
@@ -3045,7 +3207,9 @@ def dedupe_existing_suite(project, plan_id, suite_id, cb=None, do_delete=True,
                     "msg": f"Still checking for duplicates with {T_disp(AI_PROVIDER)} "
                            f"({current_model() or 'model'}) — {s}s so far. Large models "
                            f"on free tiers can be slow; the run is not frozen.",
-                    "tone": "dim", "ico": "⏳", "hb_id": f"dedupe:{suite_id}"}))
+                    "tone": "dim", "ico": "⏳", "hb_id": f"dedupe:{suite_id}"}),
+                on_retry=lambda m: cb("log", {"msg": m, "tone": "warn", "ico": "⏳",
+                                              "hb_id": f"dedupe:{suite_id}"}))
             if ai_groups:
                 # Union-find over `singles` indices: the AI can legitimately
                 # return overlapping/chained groups for a tight cluster of
@@ -3229,8 +3393,16 @@ def dedupe_case_list(cases, log=None, should_stop=None, story_title=None):
         singles = [(gk, members[0]) for gk, members in groups.items() if len(members) == 1]
         if len(singles) >= 2:
             items = [{"id": r["id"], "title": r["title"]} for _gk, r in singles]
-            ai_groups = _ai_duplicate_clusters(items, should_stop=should_stop,
-                                               story_title=story_title)
+            # The "— Ns so far…" shape is collapsed IN PLACE by _auto_logmsg's
+            # keyed retry/heartbeat collapse (main.py) — one line per story,
+            # updated with the latest elapsed value, keyed by the message base
+            # (the story-title snippet makes two concurrently-deduping
+            # stories' heartbeats distinct keys instead of fighting over one).
+            ai_groups = _ai_duplicate_clusters(
+                items, should_stop=should_stop, story_title=story_title,
+                on_slow=lambda s: log("  still checking for duplicates (%s) — %ds so far…"
+                                      % ((story_title or "story")[:30], s), "dim"),
+                on_retry=lambda m: log(f"  {m}", "warn"))
             if ai_groups:
                 # Union-find — see dedupe_existing_suite for why: the AI can
                 # return overlapping/chained groups for a tight cluster of
@@ -3412,7 +3584,8 @@ def _log_dedupe_ai_call(kind, story_title, sent_items, raw_text, result):
         pass
 
 
-def _ai_duplicate_clusters(items, should_stop=None, story_title=None, on_slow=None):
+def _ai_duplicate_clusters(items, should_stop=None, story_title=None, on_slow=None,
+                           on_retry=None):
     """items: [{"id":..,"title":..}, ...] — test cases the cheap semantic-key
     check found NO overlap for (each still alone in its own group). Asks the
     AI which of these titles describe the exact same scenario as another one
@@ -3520,6 +3693,9 @@ def _ai_duplicate_clusters(items, should_stop=None, story_title=None, on_slow=No
               القاعدة بصياغة مختلفة).
             - «التحقق من أن حقل المستخدمين إلزامي» مقابل «التحقق من أن الحد الأقصى
               لطول حقل الاسم 100 حرف» ← ليس مكرراً (هدف مختلف وقاعدة مختلفة).
+            - المتصفح/نظام التشغيل/الجهاز جزء من القاعدة: نفس التدفق على Chrome
+              مقابل نفس التدفق على Safari أو iOS أو Android ← بيئتا تشغيل
+              مختلفتان ← ليسا مكررين أبداً؛ أدرج البيئة ضمن "rule" عند استخراجها.
 
             {story_ctx_ar}عناوين حالات الاختبار المرقمة الموجودة في المجموعة:
             {listed}
@@ -3598,6 +3774,9 @@ def _ai_duplicate_clusters(items, should_stop=None, story_title=None, on_slow=No
               (same target, same rule, different wording).
             - "Verify the users field is required" vs "Verify the name field max length
               is 100" → NOT duplicates (different target AND different rule).
+            - The browser/OS/device is PART of the rule: the same flow on Chrome vs the
+              same flow on Safari, iOS or Android → different runtime environments →
+              NEVER duplicates; include the environment in the extracted "rule".
 
             {story_ctx_en}Numbered test-case titles already in the suite:
             {listed}
@@ -3605,7 +3784,8 @@ def _ai_duplicate_clusters(items, should_stop=None, story_title=None, on_slow=No
             Now perform Step 1, Step 2, and Step 3, and return only the JSON object.
             """
         raw = _run_stopaware(lambda: ai_complete(prompt, max_tokens=1536, want_json=True,
-                                                 usage_tag="dedupe_ai_clusters"),
+                                                 usage_tag="dedupe_ai_clusters",
+                                                 on_retry=on_retry),
                              should_stop=should_stop, on_slow=on_slow)
         data = parse_json_robust(raw)
         raw_groups = data.get("groups") if isinstance(data, dict) else None
@@ -3667,7 +3847,7 @@ def _ai_duplicate_clusters(items, should_stop=None, story_title=None, on_slow=No
 
 
 def _dedupe_titles_ai(candidate_titles, existing_titles, story_title, log=None,
-                      should_stop=None, on_slow=None):
+                      should_stop=None, on_slow=None, on_retry=None):
     """Second-pass duplicate check, run AFTER the cheap word-overlap filter
     (_is_near_duplicate). That filter only catches duplicates that share enough
     literal words/hand-mapped synonyms (_AR_SYN) — it has no way to know that,
@@ -3724,6 +3904,10 @@ def _dedupe_titles_ai(candidate_titles, existing_titles, story_title, log=None,
             الخطوة 3 — عند أي شك لا تُدرج الرقم كتكرار؛ تفويت تكرار غير ضار، أما
             حذف حالة فريدة بالخطأ فيفقد تغطية اختبار حقيقية.
 
+            المتصفح/نظام التشغيل/الجهاز جزء من القاعدة: نفس التدفق على Chrome
+            مقابل نفس التدفق على Safari أو iOS أو Android ← بيئتا تشغيل مختلفتان
+            ← ليسا مكررين أبداً؛ أدرج البيئة ضمن "rule" عند استخراجها.
+
             مثال يوضح الخطأ الأكثر شيوعاً: "التحقق أن كلمة المرور تحتوي على رمز
             واحد على الأقل" و"التحقق أن كلمة المرور تحتوي على حرف كبير واحد على
             الأقل" و"التحقق أن كلمة المرور تحتوي على رقم واحد على الأقل" تتشارك
@@ -3767,6 +3951,11 @@ def _dedupe_titles_ai(candidate_titles, existing_titles, story_title, log=None,
             duplicate is harmless; wrongly dropping a unique case loses real
             test coverage.
 
+            The browser/OS/device is PART of the rule: the same flow on Chrome
+            vs the same flow on Safari, iOS or Android → different runtime
+            environments → NEVER duplicates; include the environment in the
+            extracted "rule".
+
             Example of the most common mistake: "Verify the password contains at
             least one symbol", "...at least one uppercase letter", and "...at
             least one digit" share the same field and almost the same sentence,
@@ -3781,7 +3970,8 @@ def _dedupe_titles_ai(candidate_titles, existing_titles, story_title, log=None,
             If there are no duplicates, return "duplicate_numbers": [].
             """
         raw = _run_stopaware(lambda: ai_complete(prompt, max_tokens=1536, want_json=True,
-                                                 usage_tag="dedupe_titles_ai"),
+                                                 usage_tag="dedupe_titles_ai",
+                                                 on_retry=on_retry),
                              should_stop=should_stop, on_slow=on_slow)
         data = parse_json_robust(raw)
         nums = data.get("duplicate_numbers") if isinstance(data, dict) else None
@@ -3841,7 +4031,8 @@ def _dedupe_titles_ai(candidate_titles, existing_titles, story_title, log=None,
 class StopRequested(Exception):
     pass
 
-def run_titles(project, plan_id, story_ids, cb, should_stop=lambda: False):
+def run_titles(project, plan_id, story_ids, cb, should_stop=lambda: False,
+               on_ai_error=None, gate=None):
     wit, test = connect_azure_sdk(project)
     cb("log", {"msg": "Discovering suites for stories…", "tone": "dim"})
     story_suite_map = discover_suites_for_stories(project, plan_id, set(story_ids))
@@ -3927,6 +4118,8 @@ def run_titles(project, plan_id, story_ids, cb, should_stop=lambda: False):
                            f"({current_model() or 'model'}) — {s}s so far. Large models "
                            f"on free tiers can be slow; click Stop to cancel.",
                     "tone": "dim", "ico": "⏳", "hb_id": f"titles:{sid}"}),
+                on_retry=lambda m: cb("log", {"msg": m, "tone": "warn", "ico": "⏳",
+                                              "hb_id": f"titles:{sid}"}),
             ), cb, should_stop=should_stop)
         except StopRequested:
             # Caught explicitly (not the generic except below) — StopRequested
@@ -3993,7 +4186,9 @@ def run_titles(project, plan_id, story_ids, cb, should_stop=lambda: False):
                     "msg": f"Still checking for duplicate titles with {T_disp(AI_PROVIDER)} "
                            f"({current_model() or 'model'}) — {s}s so far. Large models "
                            f"on free tiers can be slow; the run is not frozen.",
-                    "tone": "dim", "ico": "⏳", "hb_id": f"dedupetitles:{sid}"}))
+                    "tone": "dim", "ico": "⏳", "hb_id": f"dedupetitles:{sid}"}),
+                on_retry=lambda m: cb("log", {"msg": m, "tone": "warn", "ico": "⏳",
+                                              "hb_id": f"dedupetitles:{sid}"}))
         except StopRequested:
             return {"sid": sid, "title": title, "suite_id": suite_id, "stopped": True,
                     "total": ps_total, "ok": ps_ok, "skipped": ps_skipped, "err": ps_err, "secs": ps_secs}
@@ -4085,6 +4280,28 @@ def run_titles(project, plan_id, story_ids, cb, should_stop=lambda: False):
                     "total_stories": total_stories, "done": total_created,
                     "skipped": 0, "errors": errors})
 
+    def _process_story_paused(story):
+        """Pause-and-ask wrapper around _process_story — the run_titles twin of
+        run_steps' _gen_and_write wrapper (see its docstring). A story's FATAL
+        provider error (credit/auth/bad_model/not_found/network) blocks on
+        on_ai_error; Resume retries the WHOLE story pipeline — safe, because
+        the only fatal-capable AI call (generate_titles) runs BEFORE any title
+        is created in Azure, and the dedup passes are already non-fatal — and
+        Stop lets the fatal result flow to the drain loop unchanged."""
+        while True:
+            res = _process_story(story)
+            if not res.get("fatal") or on_ai_error is None:
+                return res
+            _friendly = ((res.get("fatal_summary") or "").replace("Stopped — ", "", 1)
+                         or "AI provider error")
+            cb("log", {"msg": _friendly, "tone": "err"})
+            cb("log", {"msg": _PAUSED_ON_ERROR_MSG, "tone": "warn", "ico": "⏸"})
+            if on_ai_error(_friendly) == "retry":
+                cb("log", {"msg": f"Retrying story {res.get('sid')} with "
+                                  f"{T_disp(AI_PROVIDER)}…", "tone": "dim"})
+                continue
+            return res
+
     def _drain_titles(wait_for_all):
         """Harvest completed futures and apply their results on the main
         thread — same rationale (and the same timeout=0-can't-really-wait
@@ -4107,8 +4324,10 @@ def run_titles(project, plan_id, story_ids, cb, should_stop=lambda: False):
         for story in stories:
             if should_stop() or _fatal["hit"]:
                 break
+            if gate and not gate():   # manual Pause point (False = Stop clicked)
+                break
             _drain_titles(wait_for_all=False)
-            fut = _ex.submit(_process_story, story)
+            fut = _ex.submit(_process_story_paused, story)
             _futs[fut] = story
         _drain_titles(wait_for_all=True)
 
@@ -4131,7 +4350,8 @@ def run_titles(project, plan_id, story_ids, cb, should_stop=lambda: False):
 
 
 def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
-              existing_mode="skip", dedupe_existing=True):
+              existing_mode="skip", dedupe_existing=True, on_ai_error=None,
+              gate=None):
     """existing_mode: 'skip' or 'evaluate'. dedupe_existing: remove pre-existing
     duplicate test cases in each suite before processing."""
     # The step-generation loop below runs a small bounded pool of workers so
@@ -4262,28 +4482,52 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
         s_criteria = ctx.get("criteria", "")
         cb("log", {"msg": f"Suite {suite_id} is empty — generating test case titles…",
                    "tone": "dim", "ico": "▸"})
-        try:
-            titles = _call_with_network_retries(lambda: generate_titles(
-                s_title, s_criteria, [],
-                log=lambda m, t="warn": cb("log", {"msg": m, "tone": t}),
-                should_stop=should_stop,
-                on_slow=lambda s: cb("log", {
-                    "msg": f"Still generating titles with {T_disp(AI_PROVIDER)} "
-                           f"({current_model() or 'model'}) — {s}s so far. Large models "
-                           f"on free tiers can be slow; click Stop to cancel.",
-                    "tone": "dim", "ico": "⏳", "hb_id": f"seedtitles:{sid}"}),
-            ), cb, should_stop=should_stop)
-        except StopRequested:
+        # Sentinel loop instead of a bare try: a FATAL provider error here can
+        # now PAUSE via on_ai_error (switch provider + Resume retries this
+        # seeding call; Stop keeps the old end-the-run behavior) instead of
+        # unconditionally killing the whole run.
+        _titles = None
+        while _titles is None:
+            try:
+                _titles = _call_with_network_retries(lambda: generate_titles(
+                    s_title, s_criteria, [],
+                    log=lambda m, t="warn": cb("log", {"msg": m, "tone": t}),
+                    should_stop=should_stop,
+                    on_slow=lambda s: cb("log", {
+                        "msg": f"Still generating titles with {T_disp(AI_PROVIDER)} "
+                               f"({current_model() or 'model'}) — {s}s so far. Large models "
+                               f"on free tiers can be slow; click Stop to cancel.",
+                        "tone": "dim", "ico": "⏳", "hb_id": f"seedtitles:{sid}"}),
+                    on_retry=lambda m: cb("log", {"msg": m, "tone": "warn", "ico": "⏳",
+                                                  "hb_id": f"seedtitles:{sid}"}),
+                ), cb, should_stop=should_stop) or []
+            except StopRequested:
+                _titles = "STOP"
+            except CreditBalanceError:
+                if on_ai_error:
+                    cb("log", {"msg": "Out of AI credits.", "tone": "err"})
+                    cb("log", {"msg": _PAUSED_ON_ERROR_MSG, "tone": "warn", "ico": "⏸"})
+                    if on_ai_error("Out of AI credits — add credits or "
+                                   "switch to another provider") == "retry":
+                        continue
+                cb("done", {"summary": "Stopped — out of AI credits", "reason": "credit"}); return
+            except Exception as e:
+                cat, friendly = classify_ai_error(e)
+                if cat in ("auth", "bad_model", "not_found", "network"):
+                    if on_ai_error:
+                        cb("log", {"msg": friendly, "tone": "err"})
+                        cb("log", {"msg": _PAUSED_ON_ERROR_MSG, "tone": "warn", "ico": "⏸"})
+                        if on_ai_error(friendly) == "retry":
+                            continue
+                    cb("log", {"msg": friendly, "tone": "err"})
+                    cb("done", {"summary": f"Stopped — {friendly}", "reason": cat}); return
+                cb("log", {"msg": f"Title generation failed for story {sid}: {e}", "tone": "err"})
+                _titles = "SKIP"
+        if _titles == "STOP":
             break
-        except CreditBalanceError:
-            cb("done", {"summary": "Stopped — out of AI credits", "reason": "credit"}); return
-        except Exception as e:
-            cat, friendly = classify_ai_error(e)
-            if cat in ("auth", "bad_model", "not_found", "network"):
-                cb("log", {"msg": friendly, "tone": "err"})
-                cb("done", {"summary": f"Stopped — {friendly}", "reason": cat}); return
-            cb("log", {"msg": f"Title generation failed for story {sid}: {e}", "tone": "err"})
+        if _titles == "SKIP":
             continue
+        titles = _titles
 
         # Clears the "Still generating titles…" heartbeat above once the call
         # actually resolves — see the identical fix/comment in run_titles's
@@ -4315,7 +4559,9 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
                     "msg": f"Still checking for duplicate titles with {T_disp(AI_PROVIDER)} "
                            f"({current_model() or 'model'}) — {s}s so far. Large models "
                            f"on free tiers can be slow; the run is not frozen.",
-                    "tone": "dim", "ico": "⏳", "hb_id": f"dedupetitles:{sid}"}))
+                    "tone": "dim", "ico": "⏳", "hb_id": f"dedupetitles:{sid}"}),
+                on_retry=lambda m: cb("log", {"msg": m, "tone": "warn", "ico": "⏳",
+                                              "hb_id": f"dedupetitles:{sid}"}))
         except StopRequested:
             break
         # Clears the "Still checking for duplicate titles…" heartbeat above —
@@ -4437,8 +4683,8 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
                     "done": ok, "skipped": skipped, "errors": err, "created": seeded_total})
         cb("progress", {"pct": pct, "label": f"{pct}% · {done} of {total}"})
 
-    def _gen_and_write(tc_id, tc_title, criteria, ctx, story_id, has_existing,
-                       existing_xml, _tc_start):
+    def _gen_attempt(tc_id, tc_title, criteria, ctx, story_id, has_existing,
+                     existing_xml, _tc_start, seq=""):
         """Runs on a worker thread. Owns the WHOLE post-dedup pipeline for one
         case: the evaluate_existing_steps AI decision when applicable, the
         once-per-story UI-description fetch (lazily, guarded by ctx's own
@@ -4471,7 +4717,7 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
                             "story_id": story_id, "tc_start": _tc_start,
                             "stopped_wip_id": f"eval:{tc_id}"}
                 cb("log", {"msg": tc_title + " — checking if existing steps are adequate…",
-                           "tone": "dim", "id": tc_id, "ar": True, "wip": True,
+                           "tone": "dim", "id": tc_id, "seq": seq, "ar": True, "wip": True,
                            "wip_id": f"eval:{tc_id}"})
                 verdict = evaluate_existing_steps(
                     tc_title, criteria, existing_xml, should_stop=should_stop,
@@ -4480,7 +4726,10 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
                                f"({current_model() or 'model'}) — {s}s so far. Large "
                                f"models on free tiers can be slow; the run is not frozen.",
                         "tone": "dim", "ico": "⏳", "id": tc_id, "indent": True,
-                        "hb_id": f"eval:{tc_id}"}))
+                        "hb_id": f"eval:{tc_id}"}),
+                    on_retry=lambda m: cb("log", {"msg": m, "tone": "warn", "ico": "⏳",
+                                                  "id": tc_id, "indent": True,
+                                                  "hb_id": f"eval:{tc_id}"}))
             except StopRequested:
                 # Must be caught explicitly, same reasoning as the generate-
                 # phase StopRequested handling below: it carries no message
@@ -4532,6 +4781,9 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
                                            f"Vision calls on free-tier providers can be slow.",
                                     "tone": "dim", "ico": "⏳", "indent": True,
                                     "hb_id": f"uidesc:{story_id}"}),
+                                on_retry=lambda m: cb("log", {"msg": m, "tone": "warn",
+                                                              "ico": "⏳", "indent": True,
+                                                              "hb_id": f"uidesc:{story_id}"}),
                             ), cb, should_stop=should_stop)
                         # Clears the heartbeat line above once the call actually
                         # resolves — without this a heartbeat that fired even
@@ -4558,7 +4810,7 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
         ui_desc = ctx.get("ui_desc", "")
 
         cb("log", {"msg": tc_title + " — generating…", "tone": "info",
-                   "id": tc_id, "ar": True, "wip": True, "wip_id": tc_id,
+                   "id": tc_id, "seq": seq, "ar": True, "wip": True, "wip_id": tc_id,
                    "replace_wip": f"eval:{tc_id}"})
         try:
             steps = _call_with_network_retries(
@@ -4571,6 +4823,9 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
                                f"models on free tiers can be slow; the run is not frozen.",
                         "tone": "dim", "ico": "⏳", "id": tc_id, "indent": True,
                         "hb_id": tc_id}),
+                    on_retry=lambda m: cb("log", {"msg": m, "tone": "warn", "ico": "⏳",
+                                                  "id": tc_id, "indent": True,
+                                                  "hb_id": tc_id}),
                 ), cb, should_stop=should_stop)
             # Drop steps with neither action nor expected text — seen live: a
             # technically-valid JSON reply (e.g. {"steps":[{}]}) with empty
@@ -4609,6 +4864,40 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
         except Exception as e:
             return {"ok": False, "error": e, "tc_id": tc_id, "tc_title": tc_title,
                     "story_id": story_id, "tc_start": _tc_start}
+
+    def _gen_and_write(*a):
+        """Pause-and-ask wrapper around _gen_attempt. A FATAL provider error
+        (out of credits / auth / bad model / not found / network) used to STOP
+        the whole run outright ("Out of AI credits — run stopped", reported
+        live with a run at 0/21). With `on_ai_error` wired (main.py's
+        _run_on_ai_error), the run PAUSES instead: the callback blocks on a
+        Condition showing a dialog where the user can switch provider and
+        Resume → this case retries from scratch on the (re-read-per-attempt)
+        provider; Stop → the fatal result flows to _apply_result and ends the
+        run exactly as before. Ordinary per-case errors keep flowing through
+        untouched — the run already continues past those. Concurrent workers
+        hitting errors while paused wait on the same gate and reuse the same
+        decision (same pattern as Automation's _auto_on_ai_error)."""
+        while True:
+            res = _gen_attempt(*a)
+            if on_ai_error is None or res.get("stopped"):
+                return res
+            if res.get("credit"):
+                friendly = "Out of AI credits — add credits or switch to another provider"
+            elif res.get("error") is not None:
+                _cat, friendly = classify_ai_error(res["error"])
+                if _cat not in ("auth", "bad_model", "not_found", "network"):
+                    return res
+            else:
+                return res
+            cb("log", {"msg": friendly, "tone": "err", "id": res.get("tc_id")})
+            cb("log", {"msg": _PAUSED_ON_ERROR_MSG, "tone": "warn", "ico": "⏸"})
+            if on_ai_error(friendly) == "retry":
+                cb("log", {"msg": (res.get("tc_title") or "") +
+                                  f" — retrying with {T_disp(AI_PROVIDER)}…",
+                           "tone": "dim", "id": res.get("tc_id"), "ar": True})
+                continue
+            return res
 
     def _apply_result(res):
         """Main-thread-only: identical bookkeeping to what the old inline
@@ -4736,6 +5025,12 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
                        # belt-and-suspenders so a bug here can't crash the whole run
 
     _user_stopped = False
+    # Dispatch-order case counter — stamped as "seq" onto every per-case log
+    # payload so the Run log shows "#k/N" progress on each case line, same as
+    # the Automation log's "Sequencing case k/N" / "#k/N" convention. Rendered
+    # by main.py's _render_one_log as its own LTR mono chip (like the [id]
+    # chip), so it can't bidi-scramble against an Arabic title.
+    _case_seq = 0
     try:
         for tc, story_id, suite_id in suite_test_cases:
             if _fatal["hit"]:
@@ -4751,7 +5046,12 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
                 # un-started), it just won't be counted in this run's summary.
                 _user_stopped = True
                 break
+            if gate and not gate():   # manual Pause point (False = Stop clicked)
+                _user_stopped = True
+                break
             _tc_start = time.time()
+            _case_seq += 1
+            _seq = "%d/%d" % (_case_seq, total)
             wi = tc.get("workItem", {})
             tc_id = wi.get("id")
             tc_title = wi.get("name") or _title_map.get(tc_id) or "No Title"
@@ -4782,7 +5082,7 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
                 skipped_items.append({"id": tc_id, "title": tc_title,
                                       "reason": "Already had steps", "secs": _el})
                 cb("log", {"msg": tc_title + " — already has steps, skipped", "tone": "skip",
-                           "id": tc_id, "ico": "⏭", "ar": True, "secs": _el,
+                           "id": tc_id, "seq": _seq, "ico": "⏭", "ar": True, "secs": _el,
                            "detail": f"skipped · ⏱ {_fmt_mmss(_el)}"})
                 time_by_story[story_id] = time_by_story.get(story_id, 0.0) + (time.time() - _tc_start)
                 _finish_case(story_id)
@@ -4807,7 +5107,7 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
                 cb("log", {"msg": tc_title + " — kept as the most complete of a duplicate "
                                   "set moments ago, left as-is this run to avoid losing "
                                   "the coverage that made it the keeper",
-                           "tone": "ok", "id": tc_id, "ar": True, "secs": _el,
+                           "tone": "ok", "id": tc_id, "seq": _seq, "ar": True, "secs": _el,
                            "detail": f"dedup keeper — left as-is · ⏱ {_fmt_mmss(_el)}"})
                 time_by_story[story_id] = time_by_story.get(story_id, 0.0) + (time.time() - _tc_start)
                 _finish_case(story_id)
@@ -4830,9 +5130,15 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
             # UI-description fetch, and generate_steps()+write all now run
             # inside _gen_and_write on a worker thread instead.
             _drain(wait_for_all=False)
-            fut = _executor.submit(_gen_and_write, tc_id, tc_title, criteria,
-                                   ctx, story_id, has_existing, existing_xml,
-                                   _tc_start)
+            # The lambda folds this case's "seq" into WHATEVER result dict
+            # _gen_and_write returns (there are ~10 return-shape variants) so
+            # _apply_result can stamp it onto every completion line without
+            # each return literal needing its own edit. Captured via default
+            # arg — a plain closure would late-bind the loop's _seq.
+            fut = _executor.submit(
+                lambda *a, _s=_seq: {**_gen_and_write(*a), "seq": _s},
+                tc_id, tc_title, criteria, ctx, story_id, has_existing,
+                existing_xml, _tc_start, _seq)
             _inflight[fut] = None
 
         # Drain whatever's still in flight before finishing up — skipped on a
@@ -6373,7 +6679,8 @@ _ASSERTION_VERB_WORDS = {"verify", "check", "assert", "expect", "confirm",
 _VALID_ACTION_VERBS = ("navigate", "click", "type", "select", "hover", "wait")
 
 
-def compile_test_case(tc, story=None, log=None, case_type="interaction"):
+def compile_test_case(tc, story=None, log=None, case_type="interaction",
+                      case_label="", meta_out=None):
     """STAGE 1 — turn a test case's raw steps into a normalized, deduplicated list
     of typed INTENTS. The LLM reads the (often messy, Arabic) steps and returns
     JSON; it never sees locators, so it cannot hallucinate them.
@@ -6462,7 +6769,14 @@ def compile_test_case(tc, story=None, log=None, case_type="interaction"):
         "3) CUSTOM DROPDOWN (PrimeNG/Material, not a native <select>) = TWO actions: "
         "click the trigger to open it, then click the option. For the option set "
         'kind="menuitem" and value = its visible text (e.g. English / العربية).\n'
-        '4) EMPTY-FIELD validation (leave a field blank) = a type action with value="".\n\n'
+        '4) EMPTY-FIELD validation (leave a field blank) = a type action with value="".\n'
+        '5) PAGE: also decide WHERE this case runs. "login" ONLY if it tests the '
+        'sign-in page itself (its own fields/buttons/language dropdown) while logged '
+        'OUT. If a precondition says the user is already logged in, or the steps use '
+        'in-app elements (profile avatar, header menus, edit/save icons), it is '
+        '"app" — EVEN IF the title mentions passwords or logout: menu items listed '
+        'in a title (e.g. "تغيير كلمة المرور - تسجيل الخروج") are things shown INSIDE '
+        'the app, not the login form.\n\n'
         f"TEST CASE TITLE: {tc.get('title','')}\n"
         f"ACCEPTANCE CRITERIA: {((story or {}).get('criteria') or '')[:800]}\n"
         f"RAW STEPS (JSON): {json.dumps(raw, ensure_ascii=False)[:5000]}\n\n"
@@ -6471,7 +6785,7 @@ def compile_test_case(tc, story=None, log=None, case_type="interaction"):
         'Steps: {"n":1,"action":"الانترنت متاح"} {"n":2,"action":"افتح صفحة تسجيل الدخول"} '
         '{"n":3,"action":"اضغط زر الدخول"} {"n":4,"action":"اضغط على زر الدخول مرة أخرى"} '
         '{"n":5,"expected":"تظهر رسالة: البريد مطلوب"}\n'
-        'Output: {"intents": [\n'
+        'Output: {"page":"login","intents": [\n'
         '  {"role":"precondition","verb":"","target":"internet available","keywords":[],'
         '"kind":"","value":"","check":"","expected":"","from_steps":[1]},\n'
         '  {"role":"action","verb":"navigate","target":"login page","keywords":['
@@ -6486,16 +6800,30 @@ def compile_test_case(tc, story=None, log=None, case_type="interaction"):
         "]}\n"
         "Note steps 3+4 collapsed into ONE click action (from_steps:[3,4]), and the "
         "precondition has verb=\"\" with no invented click.\n\n"
-        'Return ONLY {"intents":[...]}. Every intent has all 9 fields. No markdown, no explanation.'
+        'Return ONLY {"page":"login|app","intents":[...]}. Every intent has all 9 fields. No markdown, no explanation.'
     )
     try:
+        # Retry lines are indented 2 spaces (aligns them with the "  ⏱ …"
+        # case lines around them instead of sitting flush-left, visually
+        # orphaned) and prefixed with case_label ("#k/N · ") — with 2
+        # concurrent compile workers, an unlabeled "request timed out —
+        # retrying…" line can't be tied back to WHICH case is retrying.
         out = parse_json_robust(ai_complete(prompt, max_tokens=4096, timeout=90,
-                                            on_retry=lambda m: log(m, "dim"),
+                                            on_retry=lambda m: log(
+                                                f"  {case_label}{m}", "dim"),
                                             want_json=True,
                                             usage_tag="automation_compile"))
         # JSON mode forces an object on OpenAI-compatible providers, so unwrap the
         # intents array from whatever key the model used (it may invent one).
         if isinstance(out, dict):
+            # The model's page-context judgment (rule 5 above) — reported via
+            # meta_out (same additive out-param pattern as ai_complete's
+            # usage_out) so the caller can override the title-keyword
+            # heuristic, which misreads titles that merely ENUMERATE menu
+            # items ("… تغيير كلمة المرور - تسجيل الخروج") as login cases.
+            _pg = str(out.get("page") or "").strip().lower()
+            if meta_out is not None and _pg in ("login", "app"):
+                meta_out["page"] = _pg
             out = (out.get("intents") or out.get("items") or out.get("steps")
                    or next((v for v in out.values() if isinstance(v, list)), None)
                    or [])
@@ -6690,7 +7018,8 @@ def _tiebreak_with_ai(intent, shortlist, cb):
     raw = ""
     try:
         raw = ai_complete(prompt, max_tokens=256, timeout=45, want_json=True,
-                          usage_tag="automation_tiebreak")
+                          usage_tag="automation_tiebreak",
+                          on_retry=lambda m: cb(f"    {m}", "dim"))
         data = parse_json_robust(raw)
         if isinstance(data, list) and data:
             data = data[0]
@@ -6810,13 +7139,19 @@ def _match_step_to_element(action, elements, cb):
     )
     try:
         raw = ai_complete(prompt, max_tokens=1024, timeout=60,
-                          usage_tag="automation_match_element")
+                          usage_tag="automation_match_element",
+                          on_retry=lambda m: cb(f"    {m}", "dim"))
         if not (raw or "").strip():
             # reasoning models (e.g. NVIDIA qwen) sometimes spend the whole
-            # budget thinking and return empty — retry once before giving up
+            # budget thinking and return empty — retry once before giving up.
+            # (Largely superseded by ai_complete's own max_tokens-doubling
+            # retry on empty responses, but kept as a final fallback for the
+            # "returned literally whitespace with a normal stop reason" case
+            # that doubling doesn't cover.)
             cb("    matcher returned empty — retrying once…", "dim")
-            raw = ai_complete(prompt, max_tokens=1024, timeout=60,
-                              usage_tag="automation_match_element")
+            raw = ai_complete(prompt, max_tokens=2048, timeout=60,
+                              usage_tag="automation_match_element",
+                              on_retry=lambda m: cb(f"    {m}", "dim"))
         data = parse_json_robust(raw)
         if isinstance(data, list) and data:
             data = data[0]
@@ -8480,28 +8815,30 @@ def validate_and_sequence_suite(stories_payload, log=None, want_ai=True,
         out of order (compile runs concurrently across worker threads), with
         nothing else tying a given title back to which case it belongs to."""
         _ctitle = (tc.get("title", "") or "").strip()
-        # Always log a description line, even when the generated case has no
+        # Always have a description ready, even when the generated case has no
         # title — otherwise the entry renders blank with no way to tell which
         # case it was (previously silently skipped when _ctitle was empty).
         _body = _ctitle[:90] if _ctitle else "(untitled test case)"
-        # RTL/LTR: the "#k/N" tag has to sit on whichever SIDE keeps the
-        # title's own script leading the line — putting it in FRONT of an
-        # Arabic title broke RTL detection (main.py's _auto_log_line only
-        # checks the line's first character) and produced a visually mixed
-        # LTR-tag-then-RTL-text line. For an Arabic title the tag goes at the
-        # end instead, so the Arabic text still opens the line.
-        _is_ar_title = bool(_ctitle) and ("؀" <= _ctitle[0] <= "ۿ")
-        if seq_no:
-            _line = ("  %s · #%d/%d" % (_body, seq_no, seq_total) if _is_ar_title
-                     else "  #%d/%d · %s" % (seq_no, seq_total, _body))
-        else:
-            _line = "  %s" % _body
-        # "case" tone (not "dim") — a distinct accent color so a case's own
-        # progress/title lines read as one visual group, separate from
-        # connection/retry/status noise around them.
-        log(_line, "case")
+        # Logging the title immediately (when a worker STARTS a case) used to
+        # put it on its own line, with the matching "⏱ elapsed" line landing
+        # much later once that case's AI call actually finished — with
+        # _COMPILE_WORKERS running concurrently, those two lines end up pages
+        # apart, interleaved with OTHER cases' title/heartbeat lines, and even
+        # with each self-labeled "#k/N" (previous fix) the overall log reads
+        # as numbers jumping around at random. Merged into ONE line, logged
+        # once, when the case is actually done — see the single log() call at
+        # the bottom of this function.
         _case_start = time.time()   # ⏱ per-case sequencing time, same convention
                                     # as the Run log's create/update timing
+        # Announce the case when a worker ACTUALLY starts it — this line
+        # used to be logged by the submission loop, which submits every case
+        # upfront, so all N "Sequencing case k/N" lines printed instantly in
+        # one burst (confirmed live: 27 lines at once) and told the user
+        # nothing about progress. Logged here, at most _COMPILE_WORKERS of
+        # these appear between completion lines — real liveness.
+        if seq_no:
+            log("Sequencing case %d/%d" % (seq_no, seq_total), "case")
+        _case_label = ("#%d/%d · " % (seq_no, seq_total)) if seq_no else ""
         ctype = _classify_case(tc)
         pctx = _infer_page_context(tc, ctype)
         # bucket + priority
@@ -8519,6 +8856,7 @@ def validate_and_sequence_suite(stories_payload, log=None, want_ai=True,
             bucket = 2
         # compile to intents, pausing (not aborting) on a recoverable AI error
         intents = []
+        _page_meta = {}   # filled by compile_test_case with the AI's own page judgment
         if want_ai:
             while True:
                 if should_stop():
@@ -8532,9 +8870,22 @@ def validate_and_sequence_suite(stories_payload, log=None, want_ai=True,
                     # once when Stop is clicked; the abandoned request finishes
                     # on its own timeout in the background and is harmless since
                     # compiling a case has no side effects.
+                    # on_slow: the LAST silent window in this path. Retries were
+                    # already visible (on_retry), but a long attempt that hasn't
+                    # errored yet — or a backoff wait whose one collapsed line
+                    # sits far above the log's bottom — showed nothing for
+                    # minutes (reported live: "stuck" 5+ min at "Sequencing
+                    # case 49/66"). The "— Ns so far…" shape is folded by
+                    # _auto_logmsg's keyed collapse into the SAME "#k/N" line
+                    # as this case's retry/cooldown notes: one status line per
+                    # case, always current.
                     intents = _run_stopaware(
-                        lambda: compile_test_case(tc, story, log, ctype),
-                        should_stop=should_stop) or []
+                        lambda: compile_test_case(tc, story, log, ctype,
+                                                  case_label=_case_label,
+                                                  meta_out=_page_meta),
+                        should_stop=should_stop,
+                        on_slow=lambda s: log("  %sstill compiling with the AI — %ds so far…"
+                                              % (_case_label, s), "dim")) or []
                     break
                 except StopRequested:
                     return {"abort": True}   # Stop clicked mid-call — abort now,
@@ -8549,29 +8900,66 @@ def validate_and_sequence_suite(stories_payload, log=None, want_ai=True,
                     # coordination is needed for two workers to hit this at once.
                     decision = on_error(friendly_ai_error(e)) if on_error else "stop"
                     if decision == "retry":
-                        log("Retrying compile with the current provider…", "dim")
+                        log(f"  {_case_label}Retrying compile with the current provider…", "dim")
                         continue
                     return {"abort": True}   # user chose Stop (should_stop is now True)
         if not intents:
             intents = _intents_from_raw_steps(tc)
-        # Stamped with the same "#k/N" as the title line, for the same reason:
-        # with _COMPILE_WORKERS running concurrently, a case's heartbeat can
-        # land seconds before OR after an unrelated case's title line — with
-        # nothing tying it to a case number, it's impossible to tell which
-        # case just finished (confirmed live: this line and "#k/N · title"
-        # interleave out of order relative to each other once a few cases hit
-        # provider retries and finish at different speeds).
-        _tag = (" · #%d/%d" % (seq_no, seq_total)) if seq_no else ""
-        log("  ⏱ %s%s" % (_fmt_mmss(time.time() - _case_start), _tag), "case")
+        # AI page-context override. The title-keyword heuristic
+        # (_infer_page_context/_is_negative_login_tc) misreads a title that
+        # merely ENUMERATES menu items ("… تغيير كلمة المرور - تسجيل الخروج")
+        # as a login-page case — confirmed live: the dropdown-content case
+        # landed in the generated Playwright project's logged-out group with
+        # a "user logged in" precondition it could never satisfy. The compile
+        # model reads the WHOLE case (preconditions included) and now returns
+        # its own "page" judgment (prompt rule 5); when it disagrees with the
+        # heuristic, the AI wins — the heuristic remains the fallback whenever
+        # the AI was unavailable (want_ai=False / needs_review). Same
+        # prompt-contract + programmatic-integration philosophy as the dedup
+        # structured-output fix.
+        _ai_page = _page_meta.get("page", "")
+        if _ai_page and _ai_page != pctx:
+            log("  %spage context: AI judged '%s' (title heuristic said '%s') — using the AI's"
+                % (_case_label, _ai_page, pctx), "dim")
+            pctx = _ai_page
+            if pctx == "login":
+                bucket = 0 if ctype == "negative_login" else 1
+            else:
+                bucket = 3
+            positive_login = (pctx == "login" and ctype not in ("negative_login", "presence")
+                              and any(k in low for k in ("نجاح", "صحيح", "الصحيحة", "valid",
+                                                         "success", "successful")))
+            if positive_login:
+                bucket = 2
+        # One line per case: elapsed time + "#k/N" as the META half, the
+        # case's own title as the BODY half, joined with "\x1f" (an invisible
+        # control character, never actually rendered) instead of being
+        # concatenated into one plain string. main.py's _auto_log_line splits
+        # on it and renders the two halves as SEPARATE Text controls — mixing
+        # an LTR tag directly into the same string as an RTL Arabic title hit
+        # Unicode's bidi reordering (confirmed live: "#3/36" rendered back as
+        # "3/36#", scrambled) because Flutter determines paragraph direction
+        # from the first strong-directional character in the WHOLE string,
+        # not a fixed left-to-right rule — two independent Text widgets each
+        # get their own direction resolved from their own content, so neither
+        # can reorder relative to the other.
+        _meta = "  ⏱ %s" % _fmt_mmss(time.time() - _case_start)
+        if seq_no:
+            _meta += " · #%d/%d" % (seq_no, seq_total)
+        log("%s\x1f%s" % (_meta, _body), "case")
         # A case that drives username/password fields belongs on the LOGIN page,
         # not the app page — otherwise it runs logged-in against BASE_URL where
         # those fields don't exist (guaranteed failure). Pull it back to a
         # logged-out login bucket.
-        if bucket == 3:
+        if bucket == 3 and _ai_page != "app":
             # Only pull an app case back to the login page when its TITLE says it's
             # about login. A login PRECONDITION in the steps/intents (present in
             # almost every app case) must NOT drag a real app case onto the login
             # page — that's what made every case land "logged-out".
+            # Skipped entirely when the AI explicitly judged "app" (override
+            # above) — otherwise a title that merely MENTIONS password/logout
+            # words (menu items, "change password" app screens) would drag the
+            # case right back to the login bucket the AI just corrected.
             _blob = _norm(tc.get("title", ""))
             if any(s in _blob for s in ("password", "username", "كلمة المرور",
                                         "كلمه المرور", "تسجيل الدخول",
@@ -8581,24 +8969,37 @@ def validate_and_sequence_suite(stories_payload, log=None, want_ai=True,
         has_app = (bucket == 3)
         n_act = sum(1 for i in intents if i["role"] == "action")
         has_assert = any(i["role"] == "assertion" for i in intents)
+        needs_review = False
         if n_act == 0 and bucket != 2 and not has_assert:
             # A presence case ("verify X exists") is still automatable as a
             # single visibility check — synthesize one rather than drop it.
-            if ctype == "presence":
-                title = tc.get("title", "")
-                intents.append({
-                    "role": "assertion", "verb": "", "target": title,
-                    "keywords": [w for w in re.split(r"\s+", title) if len(w) > 1][:6],
-                    "kind": "any", "value": "", "check": "visible",
-                    "expected": "", "from_steps": []})
-                has_assert = True
-            else:
-                _skip_tag = ("#%d/%d · " % (seq_no, seq_total)) if seq_no else ""
-                log(f"    skipping non-automatable case (no actions): "
-                    f"{_skip_tag}{tc.get('title','')[:40]}", "warn")
-                return {"skip": True, "has_app": has_app, "has_positive_login": positive_login}
+            # A non-presence case landing here means BOTH the AI compiler
+            # AND the raw-steps fallback parser came up empty — usually
+            # because the AI call kept failing (e.g. a persistent provider
+            # rate limit) rather than the case being genuinely
+            # non-automatable. Dropping it silently made real, automatable
+            # cases (confirmed live: ID/email-uniqueness validation cases)
+            # vanish from the output with no trace. Generate the same
+            # best-effort visibility check instead, and flag it distinctly
+            # so it's visible rather than lost.
+            title = tc.get("title", "")
+            intents.append({
+                "role": "assertion", "verb": "", "target": title,
+                "keywords": [w for w in re.split(r"\s+", title) if len(w) > 1][:6],
+                "kind": "any", "value": "", "check": "visible",
+                "expected": "", "from_steps": []})
+            has_assert = True
+            if ctype != "presence":
+                needs_review = True
+                # Same meta/body split as the combined case line above — the
+                # tag mixed into the same string as an Arabic title scrambles
+                # under Unicode bidi reordering.
+                _rev_meta = ("needs review — AI compile unavailable, placeholder check only"
+                             + (" · #%d/%d" % (seq_no, seq_total) if seq_no else ""))
+                log("    %s\x1f%s" % (_rev_meta, title[:40]), "review")
         case_dict = {"tc": tc, "title": tc.get("title", ""), "ctype": ctype,
-                    "page_context": pctx, "bucket": bucket, "intents": intents}
+                    "page_context": pctx, "bucket": bucket, "intents": intents,
+                    "needs_review": needs_review}
         return {"case": case_dict, "case_no": case_no,
                 "has_app": has_app, "has_positive_login": positive_login,
                 "todo_delta": _count_null_seeds(bucket, intents)}
@@ -8633,11 +9034,11 @@ def validate_and_sequence_suite(stories_payload, log=None, want_ai=True,
                     aborted = True
                     break
                 _done += 1
-                # Counter (LTR) and the case title on SEPARATE lines — so an Arabic (RTL)
-                # title renders right-aligned on its own line instead of fighting the
-                # left-to-right "Sequencing case k/N" text. "case" tone (not "dim") so
-                # this and its matching title line read as one visual group.
-                log("Sequencing case %d/%d" % (_done, _total), "case")
+                # The "Sequencing case k/N" announce line moved INTO
+                # _compile_one (logged when a worker actually starts the
+                # case) — logging it here, at submission time, printed all N
+                # lines in one instant burst because this loop submits every
+                # case upfront and lets the 2-worker pool chew through them.
                 # _done is captured NOW (submission order) and threaded through to
                 # _compile_one so its own title log line can stamp the same "k/N"
                 # onto itself. Cases compile concurrently across _COMPILE_WORKERS
@@ -8706,9 +9107,18 @@ def validate_and_sequence_suite(stories_payload, log=None, want_ai=True,
     return out
 
 
-def _seed_locator_for_intent(intent):
+def _seed_locator_for_intent(intent, app_page=False):
     """Best-effort seed Selenium By for an intent, BEFORE any runtime healing.
-    'Stable where known, // TODO only where unknown.' Returns (by, value, known)."""
+    'Stable where known, // TODO only where unknown.' Returns (by, value, known).
+
+    `app_page=True` (a bucket-3 case, running on the app AFTER login) disables
+    the LOGIN-FORM seed rules below: an app-page field whose keywords mention
+    email/username (e.g. the profile-edit email field) used to get the login
+    form's own '#username,input[name=username],input[type=email]' seed — on the
+    wrong page that selector still MATCHES something (the login username box),
+    so the healer trusts it, types into the wrong field, and the test fails
+    with no healing ever attempted. Confirmed live in a generated Playwright
+    project (story 101049's profile email cases)."""
     kws = [k for k in (intent.get("keywords") or []) if str(k).strip()]
     kind = intent.get("kind", "any")
     low = _norm(" ".join(kws) + " " + (intent.get("target", "") or ""))
@@ -8718,6 +9128,10 @@ def _seed_locator_for_intent(intent):
     if "kc-current-locale" in low or ("locale" in low and "dropdown" in low):
         return ("id", "kc-current-locale-link", True)
     if kind == "input" and any(k in low for k in ("username", "user", "email", "اسم المستخدم")):
+        if app_page:
+            if "email" in low or "بريد" in low:
+                return ("cssSelector", "input[type=email]", False)
+            return ("cssSelector", "TODO_RESOLVE_AT_RUNTIME", False)
         return ("cssSelector", "#username,input[name=username],input[type=email]", True)
     if kind == "input" and any(k in low for k in ("password", "كلمة المرور", "كلمة مرور")):
         return ("cssSelector", "#password,input[type=password]", True)
@@ -8745,7 +9159,7 @@ def _count_null_seeds(bucket, intents):
             continue
         if bucket == 2 and role == "action":
             continue
-        _, val, _ = _seed_locator_for_intent(intent)
+        _, val, _ = _seed_locator_for_intent(intent, app_page=(bucket == 3))
         if val != "TODO_RESOLVE_AT_RUNTIME":
             continue
         if role == "assertion":
@@ -9138,6 +9552,19 @@ public final class Healer {
      *  keywords. Used for error/validation/message checks instead of locating an
      *  element (no AI call; tolerant of where the message renders). Polls up to 8s
      *  so async messages have time to appear. Case-insensitive. */
+    /** Arabic-aware normalization for text assertions: strips tashkeel and
+     *  tatweel and folds alef/teh-marbuta/yaa variants, so the app's copy
+     *  and the AI-authored keywords match despite orthography differences
+     *  (e.g. \\u0639\\u0630\\u0631\\u064B\\u0627 vs its undiacritized form). */
+    private static String normText(String s) {
+        if (s == null) return "";
+        return s.toLowerCase()
+                .replaceAll("[\\u064B-\\u0652\\u0670\\u0640]", "")
+                .replaceAll("[\\u0623\\u0625\\u0622]", "\\u0627")
+                .replace("\\u0629", "\\u0647")
+                .replace("\\u0649", "\\u064A");
+    }
+
     public boolean assertTextPresent(String[] keywords) {
         long end = System.currentTimeMillis() + 8000;
         do {
@@ -9145,10 +9572,10 @@ public final class Healer {
             try {
                 Object r = ((JavascriptExecutor) driver).executeScript(
                     "return document.body ? document.body.innerText : '';");
-                txt = r == null ? "" : r.toString().toLowerCase();
+                txt = normText(r == null ? "" : r.toString());
             } catch (Exception ignored) {}
             for (String k : keywords) {
-                if (k != null && !k.isEmpty() && txt.contains(k.toLowerCase())) return true;
+                if (k != null && !k.isEmpty() && txt.contains(normText(k))) return true;
             }
             try { Thread.sleep(300); } catch (InterruptedException e) { break; }
         } while (System.currentTimeMillis() < end);
@@ -9217,11 +9644,23 @@ public abstract class BaseTest {
      *  page. OAuth/OIDC params (code_challenge, nonce, state) are generated per
      *  session, so a frozen LOGIN_URL can go stale — only fall back to it if the
      *  app doesn't redirect to a login form on its own. */
+    /** Force the login page into the generated tests' language: the frozen
+     *  LOGIN_URL can carry a stale ui_locales=… (seen live on the Playwright
+     *  output: ui_locales=en rendered the page in English while every
+     *  expected message was Arabic — behavior passed, language failed). */
+    private static String withUiLocale(String url) {
+        String loc = "__UI_LOCALE__";
+        if (loc.isEmpty() || url == null || !url.startsWith("http")) return url;
+        if (url.matches(".*[?&]ui_locales=.*"))
+            return url.replaceAll("([?&])ui_locales=[^&]*", "$1ui_locales=" + loc);
+        return url + (url.contains("?") ? "&" : "?") + "ui_locales=" + loc;
+    }
+
     protected void openLoginPage() {
         try { driver.manage().deleteAllCookies(); } catch (Exception ignored) {}
         driver.get(Config.BASE_URL);
         if (!loginFieldPresent(4000)) {
-            driver.get(Config.LOGIN_URL);
+            driver.get(withUiLocale(Config.LOGIN_URL));
             loginFieldPresent(4000);
         }
     }
@@ -9261,7 +9700,8 @@ public abstract class BaseTest {
         }
     }
 }
-""".replace("__PKG__", pkg))
+""".replace("__PKG__", pkg)
+       .replace("__UI_LOCALE__", "ar" if _is_arabic_out() else "en"))
 
 
 def _sh_gitignore():
@@ -9334,16 +9774,18 @@ def _java_ident(s, fallback):
     return out[:60]
 
 
-def _emit_intent(lines, key, intent, seed_sink=None):
+def _emit_intent(lines, key, intent, seed_sink=None, app_page=False):
     """Append the Java for one intent to `lines`. When `seed_sink` is provided,
     record {key: {by, value}} for every KEYED step that has a known seed locator,
-    so the project's committed locators.json can be pre-seeded at generation."""
+    so the project's committed locators.json can be pre-seeded at generation.
+    `app_page` — see _seed_locator_for_intent: disables the login-form seed
+    rules for bucket-3 (post-login app page) cases."""
     role = intent.get("role")
     target = intent.get("target", "")
     ij = json.dumps({"target": target, "keywords": intent.get("keywords", []),
                      "kind": intent.get("kind", "any"), "verb": intent.get("verb", "")},
                     ensure_ascii=False)
-    by, val, _known = _seed_locator_for_intent(intent)
+    by, val, _known = _seed_locator_for_intent(intent, app_page=app_page)
     seed = ("null" if val == "TODO_RESOLVE_AT_RUNTIME"
             else 'Healer.toBy("%s", "%s")' % (by, _java_str(val)))
     todo = "  // TODO verify locator (resolved at runtime)" if val == "TODO_RESOLVE_AT_RUNTIME" else ""
@@ -9400,6 +9842,10 @@ def generate_selfhealing_test_class(story, cases, pkg, seed_sink=None):
                  % (pr, _java_str(c.get("title", ""))))
         L.append("    public void %s() {" % mname)
         L.append('        // [%s · %s-page]' % (c["ctype"], c["page_context"]))
+        if c.get("needs_review"):
+            L.append('        // NEEDS REVIEW: AI compile was unavailable for this case '
+                     '(e.g. provider rate limit) — this is a placeholder visibility '
+                     'check only, verify the real steps manually.')
         if bucket < 2:
             L.append("        openLoginPage();")
         elif bucket == 2:
@@ -9412,7 +9858,8 @@ def generate_selfhealing_test_class(story, cases, pkg, seed_sink=None):
         for ii, intent in enumerate(c.get("intents", [])):
             if bucket == 2 and intent.get("role") == "action":
                 continue
-            _emit_intent(L, "%s.%d.%d" % (sid, ci, ii), intent, seed_sink=seed_sink)
+            _emit_intent(L, "%s.%d.%d" % (sid, ci, ii), intent, seed_sink=seed_sink,
+                         app_page=(bucket == 3))
         L.append("    }")
     L.append("}")
     return "\n".join(L) + "\n", cls
@@ -9669,6 +10116,11 @@ def generate_and_push_selfhealing(out_dir, stories_payload, base_url, login=None
         _ai_prov, _ai_base, _ai_model = _healer_ai_meta()
         cfg = {"base_url": base_url,
                "login_url": (login or {}).get("url") or base_url,
+               # Login-page language for the generated auth helpers — must
+               # match the generated tests' expected-message language (the
+               # frozen login URL can carry a stale ui_locales=en; see the
+               # auth.js template comment for the live failure this caused).
+               "ui_locale": ("ar" if _is_arabic_out() else "en"),
                "ai_provider": _ai_prov, "ai_base_url": _ai_base, "ai_model": _ai_model}
         return automation_targets.build(target, out_dir, sequenced, cfg,
                                         _seed_locator_for_intent, _HARVEST_JS,

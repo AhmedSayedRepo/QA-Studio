@@ -321,8 +321,30 @@ def screen(app):
                     ft.Icons.TERMINAL, "No activity yet",
                     "Fill in the site and Git details, then Generate — "
                     "each step shows up here live."), height=320)]
-            app._auto_log_col = ft.Column(controls=log_lines, spacing=3,
-                                          scroll=ft.ScrollMode.AUTO, expand=True)
+            # BACK to ft.ListView — the third and FINAL follow-the-tail
+            # mechanism, after every Column-based approach failed on a real,
+            # confirmed bug on this exact widget combo (scroll + expand, no
+            # fixed height — the shape run.py never has to deal with):
+            #   1. offset-based col.scroll_to(offset=10M) — silently never
+            #      moved this column at all (the original mechanism; the
+            #      first "rail doesn't auto scroll" report was this).
+            #   2. auto_scroll=True on the Column — huge blank dead area
+            #      mid-log, flet-dev/flet#6087 (confirmed live, screenshot).
+            #   3. key-based scroll_to("autolog-tail") — also not honored on
+            #      this pinned Flet build (confirmed live).
+            # ListView's auto_scroll is implemented INSIDE the widget (its own
+            # ScrollController, post-layout), which is why it worked here
+            # historically — the long-ago revert to Column was only to improve
+            # drag-select copy, and a later session established drag-copy was
+            # broken garbage on this panel anyway (lines jammed together, see
+            # the "Log copy" entry) with the "Copy entire log" button as the
+            # sanctioned mechanism. `.controls`/`.update()` API is identical,
+            # so main.py's _auto_logmsg/upd()/_clear_auto_log need no changes.
+            app._auto_log_col = ft.ListView(controls=log_lines, spacing=3,
+                                            expand=True, auto_scroll=True)
+            # Tail key kept — harmless, and lets _auto_log_scroll_end's
+            # key/offset fallbacks keep working as belt-and-suspenders.
+            app._retag_log_tail(app._auto_log_col)
             # Flag set ONLY while the single control is the empty-state
             # placeholder (zero real log lines). _auto_logmsg's upd() (main.py)
             # checks this to know it must REPLACE the controls list rather than

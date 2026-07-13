@@ -215,6 +215,29 @@ def screen(app):
         stop = (stop_btn if _stopping
                 else ft.Container(stop_btn, border_radius=T.R,
                                   shadow=_btn_shadow(T.RED, 0.55)))
+        # Pause/Resume — twin of Automation's. Pause lets in-flight cases
+        # finish, then holds before the next item (switch the AI provider in
+        # Setup meanwhile); a fatal provider error auto-pauses the run and
+        # flips this button to Resume (see main.py's _run_on_ai_error).
+        _paused = bool(getattr(app, "_run_paused", False))
+        pause_btn = ft.FilledButton(
+            content=ft.Row([ft.Icon(ft.Icons.PLAY_ARROW if _paused else ft.Icons.PAUSE,
+                                    size=14, color="#FFFFFF"),
+                            ft.Text("Resume" if _paused else "Pause", size=13,
+                                    color="#FFFFFF", weight=ft.FontWeight.BOLD)],
+                           spacing=8, tight=True),
+            height=40, on_click=lambda e: app._toggle_run_pause(),
+            disabled=_stopping,
+            style=ft.ButtonStyle(bgcolor=(T.GREEN if _paused else T.AMBER),
+                                 color="#FFFFFF", elevation=0,
+                                 shape=ft.RoundedRectangleBorder(radius=T.R),
+                                 padding=ft.Padding.symmetric(horizontal=16, vertical=0)))
+        pause = (pause_btn if _stopping
+                 else ft.Container(pause_btn, border_radius=T.R,
+                                   shadow=_btn_shadow(T.GREEN if _paused else T.AMBER, 0.45)))
+        actions = ft.Row([pause, stop], spacing=10, tight=True)
         sub = f"live — story {s['stories_done']} of {s['total_stories']}" if s['total_stories'] else "live"
-        return app.shell("Run", sub, body, stop)
+        if _paused:
+            sub += " — paused"
+        return app.shell("Run", sub, body, actions)
 
