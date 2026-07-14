@@ -96,6 +96,37 @@ def do_update(app):
         app.ui_safe(finish)
     app._bg(work)
 
+def _update_error_hint(msg):
+    """Pick a hint that actually matches the failure, instead of always
+    blaming a missing .exe asset — that message only applies to the frozen
+    .exe update path (_apply_update_exe), but most installs run the source/
+    zip updater (_apply_update_zip), which fails for very different reasons
+    (no internet, DNS/proxy/firewall blocking api.github.com, GitHub itself
+    being unreachable, a bad checksum, etc). Showing the exe hint for a
+    plain connection error tells the user to do something (attach a release
+    asset) that has nothing to do with their actual problem."""
+    low = (msg or "").lower()
+    if "no .exe attached" in low or "exe attached" in low:
+        return ("If a new .exe isn't attached to the latest GitHub release, "
+                "the app can't app-update — attach it as a release asset and "
+                "try again.")
+    if any(s in low for s in (
+            "max retries exceeded", "connectionerror", "connection error",
+            "couldn't reach github", "couldn't resolve the update branch",
+            "name or service not known", "timed out", "timeout",
+            "failed to establish a new connection", "getaddrinfo")):
+        return ("This looks like a network problem reaching GitHub (no "
+                "internet, or a firewall/proxy/VPN blocking api.github.com) "
+                "rather than an issue with the release itself. Check your "
+                "connection and try again.")
+    if "checksum" in low:
+        return ("The downloaded update failed its integrity check and was "
+                "rejected for safety. Try again, or download the latest "
+                "release manually from GitHub.")
+    return ("If this keeps happening, download the latest release manually "
+            "from the GitHub releases page.")
+
+
 def show_update_error(app, msg):
     dlg = ft.AlertDialog(
         modal=True,
@@ -106,9 +137,7 @@ def show_update_error(app, msg):
             ft.Column([
                 ft.Text(msg, size=12.5, color=T.INK, selectable=True),
                 ft.Container(height=6),
-                ft.Text("If a new .exe isn't attached to the latest GitHub "
-                        "release, the app can't app-update — attach it as a "
-                        "release asset and try again.",
+                ft.Text(_update_error_hint(msg),
                         size=11.5, color=T.INK_3, weight=ft.FontWeight.W_500),
             ], spacing=2, tight=True), width=460),
         actions=[green_btn("OK", on_click=lambda e: app._close_dialog())],
