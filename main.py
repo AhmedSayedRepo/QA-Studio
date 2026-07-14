@@ -1225,24 +1225,103 @@ class QAStudio:
 
     def _load_links(self):
         import os, json
+        custom = []
         try:
             p = self._links_path()
             if os.path.exists(p):
                 with open(p, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 if isinstance(data, list):
-                    return [x for x in data if isinstance(x, dict) and x.get("url")]
+                    custom = [x for x in data if isinstance(x, dict) and x.get("url")
+                              and not x.get("static")]
         except Exception:
             pass
-        return []
+        # Built-in links (e.g. the QA Studio site itself) are injected here rather
+        # than stored in the per-user file above, so every signed-in user sees them
+        # without having to add them manually. There's no shared backend for this
+        # screen (links are per-user/per-device, see _links_path), so an admin
+        # hiding/editing one of these only affects their own account — same scope
+        # as everything else on this screen. Regular users just see them read-only.
+        state = self._load_static_links_state()
+        hidden = set(state.get("hidden") or [])
+        edits = state.get("edits") or {}
+        statics = []
+        for base in useful_links.STATIC_LINKS:
+            if base["id"] in hidden:
+                continue
+            item = dict(base)
+            item.update(edits.get(base["id"], {}))
+            item["static"] = True
+            statics.append(item)
+        return statics + custom
 
     def _save_links(self):
         import json
         try:
+            data = [x for x in (self._links or []) if not x.get("static")]
             with open(self._links_path(), "w", encoding="utf-8") as f:
-                json.dump(self._links, f)
+                json.dump(data, f)
         except Exception:
             pass
+
+    def _static_links_state_path(self):
+        import os, re
+        d = os.path.join(os.path.expanduser("~"), ".qa_tool")
+        try:
+            os.makedirs(d, exist_ok=True)
+        except Exception:
+            pass
+        try:
+            uid = (getattr(self, "user", None) or {}).get("id")
+        except Exception:
+            uid = None
+        safe = re.sub(r"[^A-Za-z0-9._-]", "_", str(uid))[:80] if uid else "local"
+        return os.path.join(d, f"static_links_{safe}.json")
+
+    def _load_static_links_state(self):
+        import os, json
+        try:
+            p = self._static_links_state_path()
+            if os.path.exists(p):
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    return {"hidden": list(data.get("hidden") or []),
+                            "edits": dict(data.get("edits") or {})}
+        except Exception:
+            pass
+        return {"hidden": [], "edits": {}}
+
+    def _save_static_links_state(self, state):
+        import json
+        try:
+            with open(self._static_links_state_path(), "w", encoding="utf-8") as f:
+                json.dump({"hidden": list(state.get("hidden") or []),
+                           "edits": dict(state.get("edits") or {})}, f)
+        except Exception:
+            pass
+
+    def _hide_static_link(self, link_id):
+        """Admin-only: remove a built-in link from Useful Links (this account only —
+        see _load_links's note on why there's no shared/global removal)."""
+        state = self._load_static_links_state()
+        hidden = set(state.get("hidden") or [])
+        hidden.add(link_id)
+        state["hidden"] = list(hidden)
+        self._save_static_links_state(state)
+        self._links = [x for x in self._links if x.get("id") != link_id]
+
+    def _update_static_link(self, link_id, name, url):
+        """Admin-only: rename/re-point a built-in link (this account only)."""
+        state = self._load_static_links_state()
+        edits = state.get("edits") or {}
+        edits[link_id] = {"name": name, "url": url}
+        state["edits"] = edits
+        self._save_static_links_state(state)
+        for x in self._links:
+            if x.get("id") == link_id:
+                x["name"] = name
+                x["url"] = url
 
     def useful_links_screen(self):
         return useful_links.screen(self)

@@ -143,7 +143,22 @@ def login_gate(app):
                 setattr(app, key, p)
             except Exception:
                 p = None
-        _cover = getattr(getattr(ft, "ImageFit", None), "COVER", None)
+        # BUG FIX (root cause of the persistent black gutters, found via a
+        # fresh second-opinion review): this Flet build (0.85.3, the 1.0
+        # architecture line) renamed `ft.ImageFit` to `ft.BoxFit` — `ft.ImageFit`
+        # doesn't exist at all here (getattr silently returns None). So `_cover`
+        # was ALWAYS None, every fit=COVER attempt below was skipped, and the
+        # bare no-fit DecorationImage fallback was used instead — which Flutter
+        # defaults to BoxFit.scaleDown (contain, never upscale) when fit is
+        # None. That shrank the square 1080x1080 photos to match the window's
+        # HEIGHT only, letterboxing the sides — exactly the gutters reported.
+        # (The prior width/height and Stack-pinning fixes were both correct
+        # changes but attacked the wrong layer: the box was always full-size —
+        # provable because the gutters were the Container's own bgcolor
+        # showing through — it was only the image's OWN paint-fit that was
+        # silently falling back to scaleDown.)
+        _fit_enum = getattr(ft, "BoxFit", None) or getattr(ft, "ImageFit", None)
+        _cover = getattr(_fit_enum, "COVER", None)
         # HIGH filter quality → the 2752x1536 / 2048x1142 photo is resampled with
         # good interpolation when it's scaled to fill a high-DPI (Retina/4K) window,
         # so it stays crisp instead of looking soft/low-res. Guarded: not every Flet
@@ -154,11 +169,36 @@ def login_gate(app):
         # to fill a Stack on this Flet build (leaves gutters), which is the
         # bug that left gray/dark bands around the photo.
         _base = "#05060F" if dark else T.BG
+        # BUG FIX (black gutters left/right, esp. with a square-ish source image):
+        # `Container(expand=True, image=DecorationImage(fit=COVER))` leaves
+        # DecorationImage's own cover math to run against whatever box
+        # `expand=True` resolves to inside the Stack — on this Flet build that
+        # isn't always a definite size by the time the fit is computed, so
+        # COVER silently fell back to the image's native aspect (letterboxed,
+        # centered) instead of actually cropping to fill. Passing explicit
+        # width/height (the real window size, read fresh every render) gives
+        # the DecorationImage a concrete box to cover, so it fills edge-to-edge
+        # regardless of the source image's aspect ratio. `expand=True` is kept
+        # too so it still stretches correctly on window resizes between
+        # renders (the explicit W/H is a same-render safety net, not instead of).
+        try:
+            W = int(app.page.width or 0) or 1440
+            H = int(app.page.height or 0) or 900
+        except Exception:
+            W, H = 1440, 900
         if p and hasattr(ft, "DecorationImage"):
+            # Hardening: every attempt now carries SOME fit value, even the
+            # last-resort one. A bare no-fit DecorationImage silently degrades
+            # to Flutter's BoxFit.scaleDown (letterboxed) instead of raising —
+            # that's exactly how the gutter bug above went undetected through
+            # two prior fix attempts. "cover" as a plain string is a last-ditch
+            # guess for a Flet build where neither BoxFit nor ImageFit exists.
             for _kw in ([dict(src=p, fit=_cover, filter_quality=_fq)] if (_cover and _fq) else []) \
-                       + ([dict(src=p, fit=_cover)] if _cover else []) + [dict(src=p)]:
+                       + ([dict(src=p, fit=_cover)] if _cover else []) \
+                       + [dict(src=p, fit="cover")]:
                 try:
-                    return ft.Container(expand=True, image=ft.DecorationImage(**_kw), bgcolor=_base)
+                    return ft.Container(expand=True, width=W, height=H,
+                                        image=ft.DecorationImage(**_kw), bgcolor=_base)
                 except Exception:
                     continue
         if p:
@@ -475,7 +515,19 @@ def login_gate(app):
     # "shell" showing through) and leaves room to shift for the parallax.
     # scale 1.3 => 15% overhang on every side, so the parallax shift (max ~3.5%)
     # can never expose an edge/gap. animate kept short so it tracks the cursor.
-    bg_layer = ft.Container(bg, expand=True, scale=1.3, offset=ft.Offset(0, 0),
+    #
+    # BUG FIX (black gutters left/right persisted even after giving _bg()'s
+    # DecorationImage container explicit width/height): `expand=True` on a
+    # Stack CHILD isn't the same as Flutter's Positioned.fill() — on this
+    # Flet build it doesn't reliably give this Container a tight/bound size,
+    # so it (and the DecorationImage inside it) sized itself to the image's
+    # own aspect instead of the Stack's actual bounds, no matter what fit or
+    # width/height the inner Image was given. Pinning all four edges
+    # (left/top/right/bottom=0) is Flet's actual "fill the Stack" idiom —
+    # it maps straight to Positioned.fill(), which forces a real tight
+    # constraint down through the whole child tree.
+    bg_layer = ft.Container(bg, left=0, top=0, right=0, bottom=0,
+                            scale=1.3, offset=ft.Offset(0, 0),
                             animate_offset=120, animate_scale=120)
 
     try:

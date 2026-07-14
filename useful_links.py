@@ -6,18 +6,38 @@ app.shell, app._toast, ...) are read straight off it.
 """
 import flet as ft
 import theme as T
-from ui import card, field_label, green_btn, hover_field
+from ui import card, field_label, green_btn, ghost_btn, hover_field, badge
+
+# Built-in links shown to every signed-in user, regardless of their own saved
+# links (main.py._load_links injects these — see its docstring). Only an
+# admin can edit or remove one (main.py._hide_static_link / _update_static_link);
+# everyone else sees it read-only, same idea as any other admin-managed setting.
+STATIC_LINKS = [
+    {"id": "qa_studio_site", "name": "QA Studio",
+     "url": "https://ahmedsayedrepo.github.io/QA-Studio/"},
+]
 
 
 def screen(app):
         if not hasattr(app, "_links"):
             app._links = app._load_links()
 
+        is_admin = app._is_admin()
+        edit_id = getattr(app, "_link_edit_id", None) if is_admin else None
+        editing = None
+        if edit_id:
+            editing = next((l for l in app._links if l.get("id") == edit_id), None)
+            if not editing:
+                edit_id = None
+                app._link_edit_id = None
+
         name_field = ft.TextField(
+            value=(editing.get("name", "") if editing else ""),
             hint_text="e.g. Azure DevOps", text_size=14, border_color=T.BORDER,
             focused_border_color=T.VIOLET, border_radius=T.R, bgcolor=T.CARD_2,
             content_padding=ft.Padding.symmetric(vertical=11, horizontal=13))
         url_field = ft.TextField(
+            value=(editing.get("url", "") if editing else ""),
             hint_text="https://dev.azure.com/your-org", text_size=14,
             border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
             bgcolor=T.CARD_2, expand=True,
@@ -30,10 +50,24 @@ def screen(app):
             if not u.lower().startswith(("http://", "https://")):
                 u = "https://" + u
             nm = (name_field.value or "").strip() or u
-            app._links.append({"name": nm, "url": u})
-            app._save_links()
+            if editing:
+                app._update_static_link(editing["id"], nm, u)
+                app._link_edit_id = None
+            else:
+                app._links.append({"name": nm, "url": u})
+                app._save_links()
             app.render()
         url_field.on_submit = _add
+
+        def _cancel_edit(e=None):
+            app._link_edit_id = None
+            app.render()
+
+        def _edit_static(link_id):
+            def _e(e):
+                app._link_edit_id = link_id
+                app.render()
+            return _e
 
         def _open(u):
             def _o(e):
@@ -46,10 +80,22 @@ def screen(app):
         def _del(idx):
             def _d(e):
                 try:
-                    app._links.pop(idx)
+                    link = app._links[idx]
                 except Exception:
-                    pass
-                app._save_links(); app.render()
+                    link = None
+                if link and link.get("static"):
+                    if not is_admin:
+                        return
+                    app._hide_static_link(link.get("id"))
+                    if app._link_edit_id == link.get("id"):
+                        app._link_edit_id = None
+                else:
+                    try:
+                        app._links.pop(idx)
+                    except Exception:
+                        pass
+                    app._save_links()
+                app.render()
             return _d
 
         def _open_btn(u):
@@ -60,24 +106,32 @@ def screen(app):
                     shape=ft.RoundedRectangleBorder(radius=T.R),
                     padding=ft.Padding.symmetric(horizontal=16, vertical=0)))
 
+        form_row = [
+            ft.Column([field_label("App name"),
+                       ft.Container(hover_field(name_field), width=230,
+                                    padding=ft.Padding.only(top=4))],
+                      spacing=0, tight=True),
+            ft.Column([field_label("URL"),
+                       ft.Container(hover_field(url_field), padding=ft.Padding.only(top=4))],
+                      spacing=0, expand=True),
+        ]
+        if editing:
+            form_row.append(ghost_btn("Cancel", on_click=_cancel_edit, height=44))
+        form_row.append(green_btn("Save changes" if editing else "Add link",
+                                   icon=ft.Icons.CHECK if editing else ft.Icons.ADD,
+                                   on_click=_add, height=44))
+
         add_card = card(ft.Column([
             ft.Row([
-                ft.Container(ft.Icon(ft.Icons.ADD, size=16, color=T.VIOLET), width=30,
+                ft.Container(ft.Icon(ft.Icons.EDIT if editing else ft.Icons.ADD,
+                                     size=16, color=T.VIOLET), width=30,
                              height=30, bgcolor=T.VIOLET_SOFT, border_radius=9,
                              alignment=ft.Alignment.CENTER),
-                ft.Text("Add a link", size=16, weight=ft.FontWeight.BOLD, color=T.INK),
+                ft.Text("Edit link" if editing else "Add a link", size=16,
+                        weight=ft.FontWeight.BOLD, color=T.INK),
             ], spacing=11),
             ft.Container(height=16),
-            ft.Row([
-                ft.Column([field_label("App name"),
-                           ft.Container(hover_field(name_field), width=230,
-                                        padding=ft.Padding.only(top=4))],
-                          spacing=0, tight=True),
-                ft.Column([field_label("URL"),
-                           ft.Container(hover_field(url_field), padding=ft.Padding.only(top=4))],
-                          spacing=0, expand=True),
-                green_btn("Add link", icon=ft.Icons.ADD, on_click=_add, height=44),
-            ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.END),
+            ft.Row(form_row, spacing=12, vertical_alignment=ft.CrossAxisAlignment.END),
         ], spacing=0))
 
         palette = ["#4d5ad6", "#0f9586", "#7c45d4", "#C2860C", "#1C80E0", "#E0474D"]
@@ -86,6 +140,27 @@ def screen(app):
             nm = (l.get("name") or l.get("url") or "?")
             init = nm.strip()[:1].upper() if nm.strip() else "?"
             col = palette[sum(ord(c) for c in nm) % len(palette)]
+            is_static = bool(l.get("static"))
+
+            name_row = [ft.Text(nm, size=14.5, weight=ft.FontWeight.BOLD, color=T.INK,
+                                 no_wrap=True)]
+            if is_static:
+                name_row.append(badge("Official", kind="violet"))
+
+            trailing = [_open_btn(l.get("url", ""))]
+            # A static (built-in) link is read-only for everyone except admins —
+            # regular Members/Viewers just get the Open button, no edit/delete.
+            if not is_static or is_admin:
+                if is_static:
+                    trailing.append(ft.IconButton(
+                        ft.Icons.EDIT_OUTLINED, icon_size=18, icon_color=T.INK_3,
+                        tooltip="Edit", on_click=_edit_static(l.get("id")),
+                        style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8))))
+                trailing.append(ft.IconButton(
+                    ft.Icons.DELETE_OUTLINE, icon_size=18, icon_color=T.INK_3,
+                    tooltip="Remove", on_click=_del(i),
+                    style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8))))
+
             rows.append(ft.Container(
                 ft.Row([
                     ft.Container(ft.Text(init, size=15, weight=ft.FontWeight.BOLD,
@@ -93,16 +168,12 @@ def screen(app):
                                  bgcolor=col, border_radius=11,
                                  alignment=ft.Alignment.CENTER),
                     ft.Column([
-                        ft.Text(nm, size=14.5, weight=ft.FontWeight.BOLD, color=T.INK,
-                                no_wrap=True),
+                        ft.Row(name_row, spacing=8,
+                               vertical_alignment=ft.CrossAxisAlignment.CENTER),
                         ft.Text(l.get("url", ""), size=12.5, color=T.INK_2,
                                 font_family=T.F_MONO, no_wrap=True),
                     ], spacing=1, tight=True, expand=True),
-                    _open_btn(l.get("url", "")),
-                    ft.IconButton(ft.Icons.DELETE_OUTLINE, icon_size=18,
-                                  icon_color=T.INK_3, tooltip="Remove", on_click=_del(i),
-                                  style=ft.ButtonStyle(
-                                      shape=ft.RoundedRectangleBorder(radius=8))),
+                    *trailing,
                 ], spacing=14, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                 padding=ft.Padding.symmetric(vertical=12, horizontal=16),
                 bgcolor=T.CARD, border=ft.Border.all(1, T.BORDER), border_radius=14))

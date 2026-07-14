@@ -279,7 +279,11 @@ def logo_img(size=38, fallback_icon=None, fallback_color="#FFFFFF"):
             except Exception:
                 img = None
         if img is not None:
-            _fit = getattr(ft, "ImageFit", None)
+            # ft.ImageFit was renamed ft.BoxFit in newer Flet (0.85.x+) — on
+            # those builds getattr(ft, "ImageFit", None) is silently None, so
+            # this always skipped and the logo never got an explicit fit (see
+            # the same root cause fixed in login.py's login backdrop).
+            _fit = getattr(ft, "BoxFit", None) or getattr(ft, "ImageFit", None)
             if _fit is not None and hasattr(_fit, "CONTAIN"):
                 try:
                     img.fit = _fit.CONTAIN
