@@ -101,7 +101,7 @@ def open_onboarding(app):
         height=380,
         animate_opacity=ft.Animation(260, ft.AnimationCurve.EASE_OUT),
         animate_offset=ft.Animation(260, ft.AnimationCurve.EASE_OUT),
-        clip_behavior=ft.ClipBehavior.HARD_EDGE, border_radius=T.R_LG)
+        clip_behavior=ft.ClipBehavior.HARD_EDGE, border_radius=T.R_DLG)
     dots = ft.Row([], spacing=6)
     back_holder = ft.Container()
     next_holder = ft.Container()
@@ -131,7 +131,11 @@ def open_onboarding(app):
                    spacing=14, vertical_alignment=ft.CrossAxisAlignment.CENTER),
             gradient=grad(hg),
             padding=ft.Padding.symmetric(vertical=22, horizontal=22),
-            border_radius=ft.BorderRadius.only(top_left=T.R_LG, top_right=T.R_LG))
+            # Matches the dialog panel's OWN corner radius (T.R_DLG, set
+            # centrally in dialogs.show_dialog) so this gradient header's top
+            # corners align seamlessly with the dialog's outer edge instead of
+            # leaving a visible seam/notch.
+            border_radius=ft.BorderRadius.only(top_left=T.R_DLG, top_right=T.R_DLG))
         content = ft.Container(
             build(), padding=ft.Padding.only(left=22, right=22, top=18, bottom=8))
         body.content = ft.Column([header, content], spacing=0,
@@ -349,14 +353,12 @@ def open_create_plan(app):
 
     dlg = ft.AlertDialog(
         modal=True,
-        bgcolor=T.CARD,
-        shape=ft.RoundedRectangleBorder(radius=T.R_LG),
         title=ft.Row([
             ft.Container(ft.Icon(ft.Icons.ADD, size=18, color=T.GREEN),
                          width=34, height=34, bgcolor=T.GREEN_SOFT, border_radius=9,
                          alignment=ft.Alignment.CENTER),
             ft.Column([
-                ft.Text("Create test plan", size=15, weight=ft.FontWeight.BOLD, color=T.INK),
+                ft.Text("Create test plan", size=16, weight=ft.FontWeight.W_800, color=T.INK),
                 ft.Text("Created under the selected iteration in this project.",
                         size=11, color=T.INK_2, weight=ft.FontWeight.W_500),
             ], spacing=1, expand=True),
@@ -525,10 +527,12 @@ def open_sprint_summary(app):
 
     dlg = ft.AlertDialog(
         modal=True,
-        title=ft.Row([ft.Container(logo_img(24, ft.Icons.SUMMARIZE_OUTLINED, T.VIOLET_INK),
-                                   width=24, height=24, alignment=ft.Alignment.CENTER),
-                      ft.Text("Sprint Summary", weight=ft.FontWeight.BOLD, size=16)],
-                     spacing=9, tight=True),
+        title=ft.Row([ft.Container(logo_img(20, ft.Icons.SUMMARIZE_OUTLINED, T.VIOLET_INK),
+                                   width=34, height=34, bgcolor=T.VIOLET_SOFT,
+                                   border_radius=9, alignment=ft.Alignment.CENTER),
+                      ft.Text("Sprint Summary", weight=ft.FontWeight.W_800, size=16,
+                              color=T.INK)],
+                     spacing=10, tight=True),
         content=ft.Container(
             ft.Column([ft.Container(body_col, expand=True), email_bar],
                       spacing=4, tight=False),
@@ -773,15 +777,16 @@ def open_existing_steps_modal(app, have, total, on_choice):
         modal=True,
         content=ft.Container(width=496, content=ft.Column([
             ft.Row([
-                ft.Container(ft.Icon(ft.Icons.WARNING_AMBER_ROUNDED, size=20, color=T.AMBER),
-                             width=38, height=38, bgcolor=T.AMBER_SOFT, border_radius=11,
+                ft.Container(ft.Icon(ft.Icons.WARNING_AMBER_ROUNDED, size=18, color=T.AMBER),
+                             width=34, height=34, bgcolor=T.AMBER_SOFT, border_radius=9,
                              alignment=ft.Alignment.CENTER),
                 ft.Column([
-                    ft.Text("Some test cases already have steps", size=15, weight=ft.FontWeight.BOLD, color=T.INK),
+                    ft.Text("Some test cases already have steps", size=16,
+                            weight=ft.FontWeight.W_800, color=T.INK),
                     ft.Text(f"{have} of {total} test cases in this plan already contain steps. Choose how to handle them.",
-                            size=12, color=T.INK_2, weight=ft.FontWeight.W_500),
+                            size=13, color=T.INK_2, weight=ft.FontWeight.W_500),
                 ], spacing=1, expand=True),
-            ], spacing=11),
+            ], spacing=10),
             ft.Container(height=14),
             body,
         ], spacing=0, tight=True)),

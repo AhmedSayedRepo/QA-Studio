@@ -40,6 +40,27 @@ def show_dialog(app, dlg):
                                   spacing=10, tight=True)]
     except Exception:
         pass
+    # Refined popup chrome — ONE consistent look for every AlertDialog in the
+    # app (14 call sites across 8 files previously each set their own bgcolor/
+    # shape/padding ad hoc, some not at all, so panels drifted: different
+    # corner radii, no border on some, default Material grey scrim behind
+    # others). Applying it here means every dialog gets it automatically,
+    # with no per-call-site upkeep. Individual dialogs keep full control over
+    # their OWN title/content/icon colors — this only normalizes the outer
+    # card (surface, border, corner radius, shadow, backdrop scrim, spacing).
+    try:
+        dlg.bgcolor = T.CARD
+        dlg.shape = ft.RoundedRectangleBorder(
+            radius=T.R_DLG, side=ft.BorderSide(1, T.BORDER))
+        dlg.elevation = 0
+        dlg.shadow_color = ft.Colors.with_opacity(0.4, "#05060F")
+        dlg.surface_tint_color = ft.Colors.TRANSPARENT
+        dlg.barrier_color = ft.Colors.with_opacity(0.55, "#05060F")
+        dlg.title_padding = ft.Padding.only(left=26, right=26, top=24, bottom=6)
+        dlg.content_padding = ft.Padding.symmetric(horizontal=26, vertical=6)
+        dlg.actions_padding = ft.Padding.only(left=26, right=26, top=16, bottom=22)
+    except Exception:
+        pass
     # Flet 0.85 uses page.show_dialog(); 0.24-0.79 uses page.open(); older sets page.dialog
     if hasattr(app.page, "show_dialog"):
         app.page.show_dialog(dlg)
@@ -116,10 +137,10 @@ def confirm(app, title, message, on_yes, yes_label="Remove", danger=True,
         dlg = ft.AlertDialog(
             modal=True,
             title=ft.Row([ft.Icon(icon, size=20, color=(T.RED if danger else T.VIOLET)),
-                          ft.Text(title, size=15, weight=ft.FontWeight.BOLD,
+                          ft.Text(title, size=16, weight=ft.FontWeight.W_800,
                                   color=T.INK)], spacing=9),
             content=ft.Container(width=380, content=ft.Text(
-                message, size=12.5, color=T.INK_2, weight=ft.FontWeight.W_500)),
+                message, size=13, color=T.INK_2, weight=ft.FontWeight.W_500)),
             actions=[
                 ghost_btn("Cancel", on_click=lambda e: app._close_dialog()),
                 _yes_btn(yes_label, on_click=lambda e: (app._close_dialog(),

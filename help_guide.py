@@ -9,6 +9,7 @@ search + selection with in-place control updates (no full re-render).
 """
 import flet as ft
 import theme as T
+from ui import ghost_btn
 
 
 # Each feature: key, icon, title, one-line blurb, `details` (fuller prose
@@ -416,24 +417,14 @@ def show(app, initial=None):
         width=880, height=560)
 
     dlg = ft.AlertDialog(
-        modal=True, bgcolor=T.CARD,
-        shape=ft.RoundedRectangleBorder(radius=T.R_LG),
+        modal=True,
         title=ft.Row([
             ft.Container(ft.Icon(ft.Icons.MENU_BOOK_OUTLINED, size=18, color=T.VIOLET_INK),
                          width=34, height=34, bgcolor=T.VIOLET_SOFT, border_radius=9,
                          alignment=ft.Alignment.CENTER),
-            ft.Text("Feature guide", size=15, weight=ft.FontWeight.BOLD, color=T.INK, expand=True),
+            ft.Text("Feature guide", size=16, weight=ft.FontWeight.W_800, color=T.INK, expand=True),
         ], spacing=10),
         content=body,
-        actions=[_close_btn(app)],
+        actions=[ghost_btn("Close", on_click=lambda e: app._close_dialog())],
         actions_alignment=ft.MainAxisAlignment.END)
     app._show_dialog(dlg)
-
-
-def _close_btn(app):
-    return ft.Container(
-        ft.Text("Close", size=13, weight=ft.FontWeight.BOLD, color="#FFFFFF"),
-        on_click=lambda e: app._close_dialog(),
-        bgcolor=T.VIOLET, border_radius=T.R, height=40,
-        padding=ft.Padding.symmetric(horizontal=22, vertical=0),
-        alignment=ft.Alignment.CENTER, ink=True)

@@ -167,17 +167,18 @@ def confirm_close(app):
     dlg = ft.AlertDialog(
         modal=True,
         title=ft.Row([
-            ft.Icon(ft.Icons.WARNING_AMBER_ROUNDED, size=20, color=T.AMBER),
-            ft.Text("Close QA Studio?", size=15, weight=ft.FontWeight.BOLD, color=T.INK),
-        ], spacing=9),
+            ft.Container(ft.Icon(ft.Icons.WARNING_AMBER_ROUNDED, size=18, color=T.AMBER),
+                         width=34, height=34, bgcolor=T.AMBER_SOFT, border_radius=9,
+                         alignment=ft.Alignment.CENTER),
+            ft.Text("Close QA Studio?", size=16, weight=ft.FontWeight.W_800, color=T.INK),
+        ], spacing=10),
         content=ft.Container(width=380, content=ft.Text(
             "If a run is in progress it will stop after the current test case. "
             "Any unfinished test cases won't be processed. Close anyway?",
-            size=12.5, color=T.INK_2, weight=ft.FontWeight.W_500)),
+            size=13, color=T.INK_2, weight=ft.FontWeight.W_500)),
         actions=[
             ghost_btn("Keep working", on_click=lambda e: app._close_dialog()),
             danger_btn("Stop & close", icon=ft.Icons.STOP, on_click=do_close),
         ],
-        actions_alignment=ft.MainAxisAlignment.END,
-        shape=ft.RoundedRectangleBorder(radius=T.R_LG))
+        actions_alignment=ft.MainAxisAlignment.END)
     app._sh

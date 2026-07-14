@@ -100,18 +100,17 @@ def show_idle_warning(app):
     app._idle_warn_txt = ft.Text(warn_msg(app._idle_left),
                                  size=15, weight=ft.FontWeight.BOLD, color=T.VIOLET_INK)
     dlg = ft.AlertDialog(
-        modal=True, bgcolor=T.CARD,
-        shape=ft.RoundedRectangleBorder(radius=T.R_LG),
+        modal=True,
         title=ft.Row([
             ft.Container(ft.Icon(ft.Icons.TIMER_OUTLINED, size=18, color=T.VIOLET_INK),
                          width=34, height=34, bgcolor=T.VIOLET_SOFT, border_radius=9,
                          alignment=ft.Alignment.CENTER),
-            ft.Text("Are you still there?", size=15, weight=ft.FontWeight.BOLD,
+            ft.Text("Are you still there?", size=16, weight=ft.FontWeight.W_800,
                     color=T.INK, expand=True),
         ], spacing=10),
         content=ft.Container(width=380, content=ft.Column([
             ft.Text("You've been inactive. For your security you'll be signed out "
-                    "automatically.", size=12.5, color=T.INK_2, weight=ft.FontWeight.W_500),
+                    "automatically.", size=13, color=T.INK_2, weight=ft.FontWeight.W_500),
             ft.Container(height=8),
             app._idle_warn_txt,
         ], tight=True, spacing=2)),

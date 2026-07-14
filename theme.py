@@ -84,6 +84,12 @@ R_WIN = 16
 R_LG  = 14
 R     = 10
 R_SM  = 7
+# Popups (AlertDialog) get their own, slightly larger radius — set centrally in
+# dialogs.show_dialog() for every modal in the app. Exposed here so any dialog
+# CONTENT that needs to match the outer panel's corners exactly (e.g. a
+# gradient header whose top corners must align with the dialog's own top
+# corners) references the same number instead of a hardcoded duplicate.
+R_DLG = 20
 
 # ── Fonts (loaded in main via fonts=) ─────────────────────────────────────────
 F_UI   = "Manrope"

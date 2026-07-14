@@ -130,12 +130,15 @@ def _update_error_hint(msg):
 def show_update_error(app, msg):
     dlg = ft.AlertDialog(
         modal=True,
-        title=ft.Row([ft.Icon(ft.Icons.ERROR_OUTLINE, color=T.RED, size=20),
-                      ft.Text("Update failed", weight=ft.FontWeight.BOLD, size=16)],
-                     spacing=8, tight=True),
+        title=ft.Row([
+            ft.Container(ft.Icon(ft.Icons.ERROR_OUTLINE, size=18, color=T.RED),
+                         width=34, height=34, bgcolor=T.RED_SOFT, border_radius=9,
+                         alignment=ft.Alignment.CENTER),
+            ft.Text("Update failed", size=16, weight=ft.FontWeight.W_800, color=T.INK),
+        ], spacing=10, tight=True),
         content=ft.Container(
             ft.Column([
-                ft.Text(msg, size=12.5, color=T.INK, selectable=True),
+                ft.Text(msg, size=13, color=T.INK, selectable=True),
                 ft.Container(height=6),
                 ft.Text(_update_error_hint(msg),
                         size=11.5, color=T.INK_3, weight=ft.FontWeight.W_500),
@@ -147,27 +150,27 @@ def show_update_error(app, msg):
 def show_restart_dialog(app, msg):
     dlg = ft.AlertDialog(
         modal=True,
-        title=ft.Row([ft.Icon(ft.Icons.CHECK_CIRCLE, color=T.GREEN, size=22),
-                      ft.Text("Update complete", weight=ft.FontWeight.BOLD, size=17,
-                              color=T.INK)],
-                     spacing=10, tight=True),
+        title=ft.Row([
+            ft.Container(ft.Icon(ft.Icons.CHECK_CIRCLE, size=18, color=T.GREEN),
+                         width=34, height=34, bgcolor=T.GREEN_SOFT, border_radius=9,
+                         alignment=ft.Alignment.CENTER),
+            ft.Text("Update complete", size=16, weight=ft.FontWeight.W_800, color=T.INK),
+        ], spacing=10, tight=True),
         content=ft.Container(
             ft.Column([
                 ft.Text("QA Studio has been updated to the latest version.",
-                        size=13.5, color=T.INK, weight=ft.FontWeight.BOLD),
+                        size=13, color=T.INK, weight=ft.FontWeight.W_700),
                 ft.Container(height=6),
                 ft.Text("It will restart to finish updating — closing and reopening "
                         "on the new version automatically.",
-                        size=12.5, color=T.INK_2, weight=ft.FontWeight.W_500),
-                ft.Container(height=22),
-                ft.Row([
-                    ghost_btn("Later", on_click=lambda e: app._close_dialog()),
-                    green_btn("Restart now", icon=ft.Icons.RESTART_ALT,
-                              on_click=lambda e: app._restart_app(), height=46),
-                ], spacing=10, alignment=ft.MainAxisAlignment.END,
-                   vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                        size=13, color=T.INK_2, weight=ft.FontWeight.W_500),
             ], spacing=2, tight=True),
             width=430),
+        actions=[
+            ghost_btn("Later", on_click=lambda e: app._close_dialog()),
+            green_btn("Restart now", icon=ft.Icons.RESTART_ALT,
+                      on_click=lambda e: app._restart_app(), height=46),
+        ],
         actions_alignment=ft.MainAxisAlignment.END,
     )
     app._show_dialog(dlg)

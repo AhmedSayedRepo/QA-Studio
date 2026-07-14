@@ -1876,15 +1876,18 @@ class QAStudio:
             self._close_dialog()
         dlg = ft.AlertDialog(
             modal=True,
-            title=ft.Row([ft.Icon(ft.Icons.WARNING_AMBER, color=T.AMBER, size=20),
-                          ft.Text(f"A {_what} is in progress", weight=ft.FontWeight.BOLD, size=16)],
-                         spacing=8, tight=True),
+            title=ft.Row([
+                ft.Container(ft.Icon(ft.Icons.WARNING_AMBER_ROUNDED, size=18, color=T.AMBER),
+                             width=34, height=34, bgcolor=T.AMBER_SOFT, border_radius=9,
+                             alignment=ft.Alignment.CENTER),
+                ft.Text(f"A {_what} is in progress", weight=ft.FontWeight.W_800,
+                        size=16, color=T.INK),
+            ], spacing=10, tight=True),
             content=ft.Container(
                 ft.Text(f"Closing now will stop the current {_what}. Quit anyway?",
                         size=13, color=T.INK_2, weight=ft.FontWeight.W_500), width=380),
-            actions=[ft.TextButton("Quit", on_click=do_quit,
-                                    style=ft.ButtonStyle(color=T.RED)),
-                     green_btn("Keep running", on_click=keep)],
+            actions=[ghost_btn("Keep running", on_click=keep),
+                     danger_btn("Quit", icon=ft.Icons.CLOSE, on_click=do_quit)],
             actions_alignment=ft.MainAxisAlignment.END)
         self._show_dialog(dlg)
 
@@ -2172,13 +2175,12 @@ class QAStudio:
             ], spacing=9, vertical_alignment=ft.CrossAxisAlignment.START))
         url = h.get("url")
         dlg = ft.AlertDialog(
-            modal=True, bgcolor=T.CARD,
-            shape=ft.RoundedRectangleBorder(radius=T.R_LG),
+            modal=True,
             title=ft.Row([
                 ft.Container(ft.Icon(ft.Icons.HELP_OUTLINE, size=18, color=T.VIOLET_INK),
                              width=34, height=34, bgcolor=T.VIOLET_SOFT, border_radius=9,
                              alignment=ft.Alignment.CENTER),
-                ft.Text(h["title"], size=15, weight=ft.FontWeight.BOLD, color=T.INK, expand=True),
+                ft.Text(h["title"], size=16, weight=ft.FontWeight.W_800, color=T.INK, expand=True),
             ], spacing=10),
             content=ft.Container(width=460, content=ft.Column(
                 step_rows + ([
@@ -5593,18 +5595,20 @@ class QAStudio:
                "with AI (this REPLACES their current methods)?")
         dlg = ft.AlertDialog(
             modal=True,
-            title=ft.Row([ft.Icon(ft.Icons.HISTORY, size=20, color=T.VIOLET),
-                          ft.Text("Existing tests found", size=15,
-                                  weight=ft.FontWeight.BOLD, color=T.INK)], spacing=9),
+            title=ft.Row([
+                ft.Container(ft.Icon(ft.Icons.HISTORY, size=18, color=T.VIOLET),
+                             width=34, height=34, bgcolor=T.VIOLET_SOFT, border_radius=9,
+                             alignment=ft.Alignment.CENTER),
+                ft.Text("Existing tests found", size=16,
+                        weight=ft.FontWeight.W_800, color=T.INK)], spacing=10),
             content=ft.Container(width=430, content=ft.Text(
-                msg, size=12.5, color=T.INK_2, weight=ft.FontWeight.W_500)),
+                msg, size=13, color=T.INK_2, weight=ft.FontWeight.W_500)),
             actions=[
                 ghost_btn("Cancel", on_click=lambda e: (on_choice("cancel"), self._close_dialog())),
                 green_btn("Keep & add new", on_click=lambda e: (on_choice("keep"), self._close_dialog())),
                 danger_btn("Re-evaluate with AI", on_click=lambda e: (on_choice("reeval"), self._close_dialog())),
             ],
-            actions_alignment=ft.MainAxisAlignment.END,
-            shape=ft.RoundedRectangleBorder(radius=T.R_LG))
+            actions_alignment=ft.MainAxisAlignment.END)
         self._show_dialog(dlg)
 
     def _start_automation(self):
