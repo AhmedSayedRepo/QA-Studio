@@ -74,6 +74,13 @@ FEATURES = [
          "The RECENT ACTIVITY log has Copy and Clear buttons pinned next to its "
          "title, same as Automation's Activity log — copy the whole log to your "
          "clipboard, or clear it, without losing your place elsewhere on screen.",
+         "Before a Steps run starts, if any selected story's suite already has test "
+         "cases with steps written, a prompt asks whether to Skip them (leave "
+         "existing steps untouched, only fill in what's missing) or Evaluate with "
+         "AI (re-check existing steps against the acceptance criteria and rewrite "
+         "any that are incomplete). If that check itself can't be completed (e.g. "
+         "a connection hiccup), the run continues automatically in Skip mode and "
+         "a warning explains why the prompt didn't appear, instead of failing silently.",
      ],
      "points": [
          "Titles: writes NEW test-case titles per story, skipping duplicates in the suite.",
@@ -81,6 +88,8 @@ FEATURES = [
          "Two-pass de-dup (quick check + AI review) also cleans up duplicates already in the suite.",
          "Live elapsed / ETA / log, with a Stop button that keeps whatever was saved.",
          "Copy / Clear buttons on the activity log, same as Automation.",
+         "Steps runs: a Skip vs Evaluate-with-AI prompt appears when a suite already "
+         "has steps written.",
      ]},
     {"key": "report", "icon": ft.Icons.DESCRIPTION_OUTLINED, "title": "Report",
      "blurb": "The results of the last run: how many were created, skipped or "
@@ -240,11 +249,20 @@ FEATURES = [
          "Useful Links is a small personal launcher: add any URL with a friendly "
          "name and open it in one click. Links open in your browser, brought in "
          "front of the app, and are saved privately to your account on this device.",
+         "Every account also sees an \"Official\" QA Studio link at the top of the "
+         "list — a shared entry pinned by the app itself so the project's site is "
+         "always one click away, even on a brand-new account with no saved links yet. "
+         "Everyone can open it; only Admins can edit its name/URL or remove it (via "
+         "the same Edit/Delete icons your own custom links use). Removing it only "
+         "hides it for that admin's own account — there's no shared/server list "
+         "behind Useful Links, so it doesn't affect what other users see.",
      ],
      "points": [
          "Add any URL with a friendly name.",
          "Links open in your browser, in front of the app.",
          "Your links are private to your account.",
+         "An \"Official\" QA Studio link is pinned for everyone; only Admins can "
+         "edit or delete it.",
      ]},
     {"key": "users", "icon": ft.Icons.PEOPLE_OUTLINE, "title": "Users",
      "blurb": "Admins manage who can access QA Studio and what each person can do.",

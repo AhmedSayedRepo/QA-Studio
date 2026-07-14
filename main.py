@@ -4131,10 +4131,30 @@ class QAStudio:
                         self._err(f"These stories aren't in plan #{self.plan_id}: {ids}. "
                                   f"Remove them or switch to the plan that contains them.")
                     return
+                # BUG FIX: this used to swallow ANY count_existing_steps failure into
+                # a bare `have, total = 0, 0`, which then hit the `total == 0` branch
+                # below — the SAME code path used for "no test cases yet, no prompt
+                # needed". That made a genuine failure (Azure hiccup, a bug in
+                # discover_suites_for_stories, etc.) look IDENTICAL to the normal
+                # no-op case: the run just launched straight in "skip" mode with no
+                # popup, no toast, nothing — exactly what would be reported as "the
+                # evaluation modal didn't pop up", with no clue it was actually an
+                # error being eaten silently. Now a real failure here gets its own
+                # visible warning before falling back to the same safe "skip" default
+                # (still fail-open — a working run beats a hard stop over a
+                # best-effort precheck — but the user now knows why they didn't see
+                # the Skip/Evaluate choice).
                 try:
                     have, total = E.count_existing_steps(self.project, self.plan_id, self.story_ids)
-                except Exception:
-                    have, total = 0, 0
+                except Exception as ex:
+                    self._unbusy()
+                    self._snack(
+                        f"Couldn't check for existing test case steps ({str(ex)[:100]}) — "
+                        f"continuing without the Skip/Evaluate prompt. Existing steps "
+                        f"will be left untouched.", T.AMBER, ft.Icons.WARNING_AMBER_ROUNDED)
+                    self.existing_mode = "skip"
+                    self._launch_run("skip")
+                    return
                 self._unbusy()
                 if total == 0:
                     # No test cases yet — the Steps run will generate titles first,
@@ -4143,9 +4163,12 @@ class QAStudio:
                     self._launch_run("skip")
                     return
                 if have > 0:
-                    # some cases already have steps → ask Skip vs Evaluate
-                    self._open_existing_steps_modal(have, total,
-                        on_choice=lambda mode: self._launch_run(mode))
+                    # some cases already have steps → ask Skip vs Evaluate. Wrapped in
+                    # ui_safe (this whole precheck runs on a background thread via
+                    # self._bg above) to match the same dialog-from-a-worker-thread
+                    # pattern used everywhere else in the app (e.g. _ask_reeval).
+                    self.ui_safe(lambda: self._open_existing_steps_modal(
+                        have, total, on_choice=lambda mode: self._launch_run(mode)))
                 else:
                     # cases exist but none have steps → just generate, no prompt
                     self.existing_mode = "skip"
