@@ -1,15 +1,18 @@
-"""ai_usage_screen.py — Admin-only "AI Usage" report screen for QA Studio.
+"""ai_usage_screen.py — "AI Usage" report screen for QA Studio.
 
-Whole-organization AI usage — calls, EXACT token counts (read straight from
-each provider's own response, never estimated), and an approximate cost —
-grouped by date / user / provider / model. Sourced from the 'ai-usage'
-Supabase Edge Function via engine.usage_report_all_users(); see
-ADMIN_USERS_SETUP.md §6 to deploy it.
+Every signed-in user can open this screen and see AI usage — calls, EXACT
+token counts (read straight from each provider's own response, never
+estimated), and an approximate cost — grouped by date / provider / model
+(and, for Admins, also by user). Sourced from the 'ai-usage' Supabase Edge
+Function via engine.usage_report_all_users(); see ADMIN_USERS_SETUP.md §6 to
+deploy it.
 
-SECURITY: this screen is gated here (nav.ai_usage / act.view_usage, and a
-hard auth.is_admin() check) purely for UI consistency — the real boundary is
-server-side, in the Edge Function's own hard Admin role check, which runs
-regardless of what this client sends. See supabase/functions/ai-usage.
+SCOPE: a Member/Viewer sees only their OWN usage; an Admin sees every signed-
+in user's usage. Both cases call the exact same function/endpoint — the
+scope is decided server-side, in the Edge Function, from the caller's own
+verified role (never from anything this client sends). This screen just
+adapts its labeling (and hides the redundant User column for a non-admin,
+since every row is already theirs). See supabase/functions/ai-usage.
 """
 import os
 import re
@@ -234,7 +237,7 @@ def _filtered_rows_and_totals(app, report):
     return filtered, totals, unpriced, providers
 
 
-def _report_body(app):
+def _report_body(app, is_admin):
     report = app._usage_report
     rows, t, unpriced, providers = _filtered_rows_and_totals(app, report)
 
@@ -271,27 +274,41 @@ def _report_body(app):
         padding=ft.Padding.symmetric(vertical=8, horizontal=12))
         if unpriced else ft.Container(height=0))
 
-    _cols = [("Date", 178), ("User", 190), ("Provider", 96), ("Model", 160),
-             ("Module", 150), ("Calls", 52), ("Input", 76), ("Output", 76), ("Cost", 76)]
+    # (name, width, right_aligned, mono, row-value-getter). The User column
+    # only makes sense for an Admin's whole-org view — for a non-admin every
+    # row is already their own, so it's just dropped rather than shown
+    # repeating the same email down the whole table.
+    _cols = [("Date", 178, False, True, lambda r: r.get("date_range", r["date"]))]
+    if is_admin:
+        _cols.append(("User", 190, False, False, lambda r: r["user"]))
+    _cols += [
+        ("Provider", 96, False, False, lambda r: r["provider"]),
+        ("Model", 160, False, True, lambda r: r["model"]),
+        ("Module", 150, False, False, lambda r: r.get("module") or "Other"),
+        ("Calls", 52, True, True, lambda r: str(r["calls"])),
+        ("Input", 76, True, True, lambda r: str(r["input_tokens"])),
+        ("Output", 76, True, True, lambda r: str(r["output_tokens"])),
+        ("Cost", 76, True, True,
+         lambda r: (f'${r["cost_usd"]:.4f}' if r["cost_usd"] is not None else "—")),
+    ]
     header_row = ft.Row([
         ft.Text(name, size=10, weight=ft.FontWeight.BOLD, color=T.INK_3, width=w,
-               text_align=(ft.TextAlign.LEFT if i < 5 else ft.TextAlign.RIGHT))
-        for i, (name, w) in enumerate(_cols)
+               text_align=(ft.TextAlign.RIGHT if right else ft.TextAlign.LEFT))
+        for (name, w, right, mono, _get) in _cols
     ], spacing=8)
 
     def _row(i, r):
-        cost = f'${r["cost_usd"]:.4f}' if r["cost_usd"] is not None else "—"
-        vals = [r.get("date_range", r["date"]), r["user"], r["provider"], r["model"], r.get("module") or "Other",
-                str(r["calls"]), str(r["input_tokens"]), str(r["output_tokens"]), cost]
+        is_cost_row_ok = r["cost_usd"] is not None
         cells = []
-        for j, ((_, w), v) in enumerate(zip(_cols, vals)):
-            mono = j in (0, 3, 5, 6, 7, 8)
+        for name, w, right, mono, get in _cols:
+            v = get(r)
+            is_cost = (name == "Cost")
             cells.append(ft.Text(
                 v, size=11.5,
-                weight=(ft.FontWeight.BOLD if j == 8 else ft.FontWeight.W_500),
-                color=(T.GREEN if j == 8 and r["cost_usd"] is not None else T.INK),
+                weight=(ft.FontWeight.BOLD if is_cost else ft.FontWeight.W_500),
+                color=(T.GREEN if is_cost and is_cost_row_ok else T.INK),
                 font_family=(T.F_MONO if mono else None), width=w,
-                text_align=(ft.TextAlign.LEFT if j < 5 else ft.TextAlign.RIGHT),
+                text_align=(ft.TextAlign.RIGHT if right else ft.TextAlign.LEFT),
                 no_wrap=True, overflow=ft.TextOverflow.ELLIPSIS, tooltip=v))
         return ft.Container(
             ft.Row(cells, spacing=8),
@@ -365,36 +382,25 @@ def _report_body(app):
 def screen(app):
     _init(app)
     me = getattr(app, "user", None)
-    sub = "Whole-organization AI usage & cost (admin)"
+    is_admin = auth.configured() and auth.is_admin(me)
+    sub = ("Whole-organization AI usage & cost (admin)" if is_admin
+           else "Your AI usage & cost")
 
-    # Hard gate — see the module docstring: this is a UI-consistency check,
-    # not the real security boundary (that lives in the Edge Function).
     # NOTE: body is wrapped in a bare ft.Column([...card...]) rather than
     # returning the card() Container directly — shell()'s _install_top_gap
     # only inserts its header→content spacer into a Column (or a Row of
     # Columns), never into a bare Container. Passing the card straight
     # through left it flush against the header with no gap, its top edge
     # visually cut off. See screen()'s main body below for the same fix.
-    if auth.configured() and not auth.is_admin(me):
-        body = ft.Column([card(ft.Column([
-            ft.Row([ft.Icon(ft.Icons.LOCK_OUTLINE, color=T.INK_3, size=20),
-                    ft.Text("Admins only", size=16, weight=ft.FontWeight.W_800, color=T.INK)],
-                   spacing=10),
-            ft.Container(height=6),
-            ft.Text("This report is available to administrators.", size=12.5,
-                    color=T.INK_3, no_wrap=False),
-        ], spacing=2))], spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
-        return app.shell("AI Usage", sub, body)
-
     if not auth.configured():
         body = ft.Column([card(ft.Column([
             ft.Row([ft.Icon(ft.Icons.INFO_OUTLINE, color=T.INK_3, size=20),
                     ft.Text("Multi-user accounts aren't set up", size=16,
                             weight=ft.FontWeight.W_800, color=T.INK)], spacing=10),
             ft.Container(height=6),
-            ft.Text("This report aggregates AI usage across every signed-in user, so it "
-                    "only applies when Supabase sign-in is configured. Your own usage is "
-                    "still tracked locally on this machine regardless.", size=12.5,
+            ft.Text("Per-user reporting (and an admin's whole-org view) needs Supabase "
+                    "sign-in configured. Your own usage is still tracked locally on this "
+                    "machine regardless.", size=12.5,
                     color=T.INK_3, no_wrap=False),
         ], spacing=2))], spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
         return app.shell("AI Usage", sub, body)
@@ -445,7 +451,7 @@ def screen(app):
                    spacing=8),
             padding=ft.Padding.symmetric(vertical=14)))
     elif app._usage_report:
-        controls.append(_report_body(app))
+        controls.append(_report_body(app, is_admin))
 
     # Scroll lives on the OUTER column, with the card as a naturally-sized
     # child inside it — same shape as setup.py's `left` column (cards stacked

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>QA Studio — AI test cases for Azure DevOps</title>
-<meta name="description" content="QA Studio generates Azure DevOps test-case titles or full steps, in English or Arabic. Download the installer for Windows.">
+<meta name="description" content="QA Studio generates Azure DevOps test-case titles or full steps in English or Arabic, plans regression &amp; sprint coverage, and drives self-healing test automation. Local-first, bring-your-own AI key. Download the installer for Windows.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -48,9 +48,11 @@
 
   /* hero */
   header{padding:78px 0 40px;text-align:center;position:relative;}
+  .pillrow{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-bottom:26px;}
   .pill{display:inline-flex;align-items:center;gap:8px;padding:7px 14px;border-radius:999px;
     background:var(--card);border:1px solid var(--border);font-size:12.5px;color:var(--ink2);
-    font-weight:600;margin-bottom:26px;}
+    font-weight:600;}
+  .pillrow .pill{margin-bottom:0;}
   .dot{width:7px;height:7px;border-radius:9px;background:var(--cyan);box-shadow:0 0 10px var(--cyan);}
   h1{font-size:clamp(34px,6vw,60px);line-height:1.04;font-weight:800;letter-spacing:-1.4px;margin:0 0 20px;}
   .sub{max-width:640px;margin:0 auto 34px;font-size:clamp(15px,2.2vw,18px);line-height:1.6;color:var(--ink2);}
@@ -63,6 +65,14 @@
   .btn-ghost{color:var(--ink);background:var(--card);border:1px solid var(--border);font-weight:600;}
   .btn-ghost:hover{border-color:rgba(124,140,255,.34);}
   .cta-note{margin-top:14px;font-size:12.5px;color:var(--ink3);}
+
+  .preview{position:relative;margin:44px auto 0;max-width:860px;border-radius:18px;overflow:visible;}
+  .preview svg{display:block;width:100%;height:auto;border-radius:18px;
+    box-shadow:0 30px 70px -30px rgba(0,0,0,.65);}
+  .preview-badge{position:absolute;top:-14px;right:26px;background:linear-gradient(100deg,var(--cyan),var(--violet));
+    color:#04121A;font-weight:800;font-size:12px;padding:8px 14px;border-radius:999px;
+    box-shadow:0 10px 24px -8px rgba(18,181,206,.55);white-space:nowrap;}
+  @media(max-width:640px){.preview-badge{position:static;display:inline-block;margin-top:14px;}}
 
   .ps{margin:30px auto 0;max-width:680px;}
   .ps .lbl{font-size:11px;letter-spacing:1.6px;color:var(--ink3);font-weight:700;margin-bottom:9px;}
@@ -88,6 +98,7 @@
   .step p{margin:0;font-size:13.5px;line-height:1.55;color:var(--ink2);}
 
   .feat{display:grid;grid-template-columns:repeat(2,1fr);gap:18px;}
+  .feat3{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;}
   .card{background:var(--card);border:1px solid var(--border);border-radius:18px;padding:24px;
     backdrop-filter:blur(10px);transition:.2s;}
   .card:hover{border-color:rgba(124,140,255,.3);transform:translateY(-2px);}
@@ -102,6 +113,16 @@
   .note b{color:#fff;}
   .note p{margin:0;font-size:13.5px;line-height:1.6;color:var(--ink2);}
 
+  .faq{max-width:760px;margin:0 auto;display:flex;flex-direction:column;gap:12px;}
+  .faq details{background:var(--card);border:1px solid var(--border);border-radius:14px;
+    padding:2px 22px;backdrop-filter:blur(10px);}
+  .faq summary{cursor:pointer;padding:17px 0;font-weight:700;font-size:14.5px;color:var(--ink);
+    list-style:none;display:flex;justify-content:space-between;align-items:center;gap:14px;}
+  .faq summary::-webkit-details-marker{display:none;}
+  .faq summary::after{content:'+';font-size:20px;line-height:1;color:var(--ink3);font-weight:400;flex:none;}
+  .faq details[open] summary::after{content:'–';}
+  .faq p{margin:0 0 19px;font-size:13.5px;line-height:1.6;color:var(--ink2);}
+
   .final{text-align:center;background:
     radial-gradient(600px 300px at 50% 0%,rgba(18,181,206,.14),transparent 70%);
     border:1px solid var(--border);border-radius:24px;padding:52px 24px;margin:20px 0;}
@@ -109,7 +130,7 @@
 
   footer{border-top:1px solid var(--border);padding:26px 0;text-align:center;color:var(--ink3);font-size:12.5px;}
 
-  @media(max-width:760px){.steps,.feat{grid-template-columns:1fr;}h1{letter-spacing:-.8px;}}
+  @media(max-width:760px){.steps,.feat,.feat3{grid-template-columns:1fr;}h1{letter-spacing:-.8px;}}
 </style>
 </head>
 <body>
@@ -118,19 +139,22 @@
 <nav><div class="nav-in">
   <div class="brand">
     <img src="https://ahmedsayedrepo.github.io/QA-Studio/qa-logo.png" alt="QA Studio">
-    <div><b>QA Studio</b> &nbsp;<span>v2.8.1</span></div>
+    <div><b>QA Studio</b> &nbsp;<span id="vernav">v2.8.1</span></div>
   </div>
-  <a class="nlink" href="https://github.com/AhmedSayedRepo/QA-Studio/releases">Releases &amp; changelog ↗</a>
+  <a class="nlink" href="https://github.com/AhmedSayedRepo/QA-Studio" target="_blank" rel="noopener">⭐ Star on GitHub</a>
 </div></nav>
 
 <header><div class="wrap">
-  <div class="pill"><span class="dot"></span> Windows desktop app · v2.8.1</div>
+  <div class="pillrow">
+    <div class="pill"><span class="dot"></span> Windows desktop app · <span id="ver">v2.8.1</span></div>
+    <div class="pill">🔒 Local-first — keys never leave your device</div>
+  </div>
   <h1>AI test cases for<br><span class="grad">Azure DevOps</span>, in minutes</h1>
-  <p class="sub">QA Studio reads your sprint &amp; stories and generates test-case titles or full steps —
-    in English or Arabic — straight into your test plans. One clean <b>Setup → Run → Report</b> flow.</p>
+  <p class="sub">QA Studio reads your sprints &amp; stories, generates test-case titles or full steps in
+    English or Arabic, plans your regression &amp; sprint coverage, and drives self-healing test
+    automation — one Windows app, your own AI key.</p>
   <div class="cta">
     <a class="btn btn-primary" href="https://github.com/AhmedSayedRepo/QA-Studio/releases/latest/download/install.bat">↓ Download installer</a>
-    <a class="btn btn-ghost" href="https://github.com/AhmedSayedRepo/QA-Studio/releases">View all releases</a>
   </div>
   <div class="cta-note"><code>install.bat</code> · ~50 KB · sets up everything automatically</div>
 
@@ -140,6 +164,84 @@
       <code id="ps">powershell -c "irm https://github.com/AhmedSayedRepo/QA-Studio/releases/latest/download/install.bat -OutFile $env:TEMP\install.bat; &amp; $env:TEMP\install.bat"</code>
       <button class="copy" onclick="navigator.clipboard.writeText(document.getElementById('ps').innerText);this.innerText='Copied'">Copy</button>
     </div>
+  </div>
+
+  <div class="preview">
+    <div class="preview-badge">✨ 18 of 24 cases generated · 42s</div>
+    <svg viewBox="0 0 900 460" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="QA Studio Run screen preview">
+      <rect x="0" y="0" width="900" height="460" rx="18" fill="#0B0F1F" stroke="rgba(124,140,255,.18)"/>
+      <rect x="0" y="0" width="900" height="42" rx="18" fill="#0D1326"/>
+      <rect x="0" y="24" width="900" height="18" fill="#0D1326"/>
+      <circle cx="24" cy="21" r="6" fill="#FF5F57"/>
+      <circle cx="44" cy="21" r="6" fill="#FEBC2E"/>
+      <circle cx="64" cy="21" r="6" fill="#28C840"/>
+      <text x="450" y="26" text-anchor="middle" font-family="Plus Jakarta Sans,sans-serif" font-size="12.5" font-weight="600" fill="#7E89AE">QA Studio — Run</text>
+
+      <rect x="0" y="42" width="176" height="418" fill="#080B16"/>
+      <!-- nav items -->
+      <g font-family="Plus Jakarta Sans,sans-serif">
+        <circle cx="32" cy="78" r="5" fill="#4A5580"/>
+        <rect x="48" y="74" width="80" height="8" rx="4" fill="#2A3358"/>
+        <rect x="16" y="102" width="144" height="30" rx="10" fill="rgba(124,108,246,.16)" stroke="rgba(124,108,246,.45)"/>
+        <circle cx="32" cy="117" r="5" fill="#12B5CE"/>
+        <rect x="48" y="113" width="70" height="8" rx="4" fill="url(#navgrad)"/>
+        <circle cx="32" cy="156" r="5" fill="#4A5580"/>
+        <rect x="48" y="152" width="94" height="8" rx="4" fill="#2A3358"/>
+        <circle cx="32" cy="195" r="5" fill="#4A5580"/>
+        <rect x="48" y="191" width="76" height="8" rx="4" fill="#2A3358"/>
+        <circle cx="32" cy="234" r="5" fill="#4A5580"/>
+        <rect x="48" y="230" width="88" height="8" rx="4" fill="#2A3358"/>
+        <circle cx="32" cy="273" r="5" fill="#4A5580"/>
+        <rect x="48" y="269" width="64" height="8" rx="4" fill="#2A3358"/>
+      </g>
+
+      <defs>
+        <linearGradient id="navgrad" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0" stop-color="#12B5CE"/><stop offset="1" stop-color="#7C6CF6"/>
+        </linearGradient>
+        <linearGradient id="bargrad" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0" stop-color="#12B5CE"/><stop offset="1" stop-color="#7C6CF6"/>
+        </linearGradient>
+      </defs>
+
+      <!-- main panel -->
+      <text x="200" y="80" font-family="Plus Jakarta Sans,sans-serif" font-size="20" font-weight="800" fill="#EAF0FF">Run</text>
+      <rect x="742" y="60" width="118" height="26" rx="13" fill="rgba(18,181,206,.14)" stroke="rgba(18,181,206,.4)"/>
+      <text x="801" y="77" text-anchor="middle" font-family="Plus Jakarta Sans,sans-serif" font-size="11" font-weight="700" fill="#BFE9F2">Generating…</text>
+
+      <!-- case row 1 (done) -->
+      <rect x="200" y="106" width="660" height="62" rx="12" fill="rgba(255,255,255,.03)" stroke="rgba(124,140,255,.12)"/>
+      <circle cx="226" cy="137" r="11" fill="#28C840"/>
+      <path d="M221 137l4 4 8-9" stroke="#08130A" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="250" y="130" font-family="Plus Jakarta Sans,sans-serif" font-size="13" font-weight="600" fill="#EAF0FF">Login with valid credentials</text>
+      <text x="250" y="147" font-family="Plus Jakarta Sans,sans-serif" font-size="11" fill="#7E89AE">6 steps · English</text>
+
+      <!-- case row 2 (done) -->
+      <rect x="200" y="180" width="660" height="62" rx="12" fill="rgba(255,255,255,.03)" stroke="rgba(124,140,255,.12)"/>
+      <circle cx="226" cy="211" r="11" fill="#28C840"/>
+      <path d="M221 211l4 4 8-9" stroke="#08130A" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="250" y="204" font-family="Plus Jakarta Sans,sans-serif" font-size="13" font-weight="600" fill="#EAF0FF">إعادة تعيين كلمة المرور عبر البريد</text>
+      <text x="250" y="221" font-family="Plus Jakarta Sans,sans-serif" font-size="11" fill="#7E89AE">4 steps · Arabic</text>
+
+      <!-- case row 3 (done) -->
+      <rect x="200" y="254" width="660" height="62" rx="12" fill="rgba(255,255,255,.03)" stroke="rgba(124,140,255,.12)"/>
+      <circle cx="226" cy="285" r="11" fill="#28C840"/>
+      <path d="M221 285l4 4 8-9" stroke="#08130A" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="250" y="278" font-family="Plus Jakarta Sans,sans-serif" font-size="13" font-weight="600" fill="#EAF0FF">Session expires after 30 min idle</text>
+      <text x="250" y="295" font-family="Plus Jakarta Sans,sans-serif" font-size="11" fill="#7E89AE">5 steps · English</text>
+
+      <!-- case row 4 (in progress) -->
+      <rect x="200" y="328" width="660" height="62" rx="12" fill="rgba(255,255,255,.03)" stroke="rgba(18,181,206,.3)"/>
+      <circle cx="226" cy="359" r="11" fill="none" stroke="#12B5CE" stroke-width="2.4" stroke-dasharray="18 40"/>
+      <text x="250" y="352" font-family="Plus Jakarta Sans,sans-serif" font-size="13" font-weight="600" fill="#AEB9D9">Generating steps…</text>
+      <rect x="250" y="362" width="220" height="8" rx="4" fill="#1b2140"/>
+      <rect x="250" y="362" width="140" height="8" rx="4" fill="url(#bargrad)"/>
+
+      <!-- overall progress -->
+      <text x="200" y="416" font-family="Plus Jakarta Sans,sans-serif" font-size="11" font-weight="600" fill="#7E89AE">18 / 24 cases generated</text>
+      <rect x="200" y="424" width="660" height="8" rx="4" fill="#1b2140"/>
+      <rect x="200" y="424" width="495" height="8" rx="4" fill="url(#bargrad)"/>
+    </svg>
   </div>
 </div></header>
 
@@ -162,12 +264,34 @@
   <div class="feat">
     <div class="card"><div class="ic">📝</div><h3>Titles or full steps</h3>
       <p>Generate concise test-case titles, or complete step-by-step cases — your choice per run.</p></div>
+    <div class="card"><div class="ic">🧪</div><h3>Self-healing test automation</h3>
+      <p>A live browser explorer captures real locators and generates Selenium, Playwright &amp; Cypress
+        suites that re-find elements when the UI shifts — with cross-browser and iOS/Android coverage.</p></div>
+    <div class="card"><div class="ic">📊</div><h3>Regression &amp; Sprint Planning</h3>
+      <p>Weighted effort estimates balanced across your team, editable plan tables, and email-ready
+        reports exported to Word, Excel, PDF or JSON.</p></div>
     <div class="card"><div class="ic">🌐</div><h3>English &amp; Arabic</h3>
       <p>Produce test content in either language with a single toggle in Setup.</p></div>
     <div class="card"><div class="ic">🔄</div><h3>Writes back to Azure DevOps</h3>
       <p>Pulls your projects, test plans &amp; stories and pushes generated cases straight into them.</p></div>
     <div class="card"><div class="ic">✦</div><h3>Your choice of model</h3>
       <p>Anthropic, OpenAI, Gemini, NVIDIA, Azure OpenAI, DeepSeek, Qwen or Ollama — bring your own key.</p></div>
+  </div>
+</div></section>
+
+<section style="padding-top:8px"><div class="wrap">
+  <div class="eyebrow">BUILT FOR TEAMS</div>
+  <h2>Not just a solo tool</h2>
+  <div class="feat3">
+    <div class="card"><div class="ic">🔒</div><h3>Local-first &amp; private</h3>
+      <p>Azure DevOps and AI credentials are encrypted on your own device (Windows DPAPI) and never
+        uploaded anywhere but the services you connect — no telemetry, no third-party servers.</p></div>
+    <div class="card"><div class="ic">👥</div><h3>Role-based access</h3>
+      <p>Admin, Member &amp; Viewer roles with permissions enforced server-side — share it across a whole
+        QA team, not just one seat.</p></div>
+    <div class="card"><div class="ic">💳</div><h3>Full AI cost transparency</h3>
+      <p>Every AI call's exact token usage is logged automatically. Everyone sees their own spend; Admins
+        can also pull a whole-org report by date, user, provider &amp; model.</p></div>
   </div>
 </div></section>
 
@@ -181,16 +305,72 @@
   </div>
 </div></section>
 
+<section style="padding-top:8px"><div class="wrap">
+  <div class="eyebrow">FAQ</div>
+  <h2>Good to know before you install</h2>
+  <div class="faq">
+    <details open>
+      <summary>Which AI providers are supported?</summary>
+      <p>Anthropic, OpenAI, Azure OpenAI, Google Gemini, NVIDIA, DeepSeek, Qwen, or Ollama for a fully
+        local model — add a key for any one of them in Setup.</p>
+    </details>
+    <details>
+      <summary>Is QA Studio only for Windows?</summary>
+      <p>Yes, today it's a Windows 10/11 desktop app. <code>install.bat</code> installs Python
+        automatically if it isn't already on your machine.</p>
+    </details>
+    <details>
+      <summary>Where do my Azure DevOps and AI credentials live?</summary>
+      <p>Locally on your device only, encrypted with Windows DPAPI. They're only ever sent to the Azure
+        DevOps org and AI provider you explicitly connect — nothing is uploaded anywhere else.</p>
+    </details>
+    <details>
+      <summary>Can my whole QA team use it, not just me?</summary>
+      <p>Yes — sign in with role-based accounts (Admin, Member, Viewer), each with permissions enforced
+        server-side, not just hidden in the UI.</p>
+    </details>
+    <details>
+      <summary>Does it cost anything beyond my AI provider?</summary>
+      <p>No subscription — you bring your own AI key and pay that provider directly. QA Studio tracks the
+        exact token usage of every call so you always know what you're spending.</p>
+    </details>
+  </div>
+</div></section>
+
 <section><div class="wrap">
   <div class="final">
     <h2>Ready to generate your first test plan?</h2>
     <div class="cta">
       <a class="btn btn-primary" href="https://github.com/AhmedSayedRepo/QA-Studio/releases/latest/download/install.bat">↓ Download installer</a>
-      <a class="btn btn-ghost" href="https://github.com/AhmedSayedRepo/QA-Studio/releases">View all releases</a>
     </div>
   </div>
 </div></section>
 
-<footer>QA Studio · v2.8.1 · Windows 10/11 · Python auto-installed · keys stay on your device</footer>
+<footer>QA Studio · <span id="verfoot">v2.8.1</span> · Windows 10/11 · Python auto-installed · keys stay on your device</footer>
+
+<script>
+  // Keep the displayed version in sync with the latest GitHub release — the
+  // download links already point at /releases/latest/, so only these labels
+  // need updating. Ported from the previous index.html so this page doesn't
+  // go stale the moment a new version ships. Fails silently (kept text) if
+  // the API call doesn't succeed — never blocks the page.
+  (function(){
+    try{
+      fetch('https://api.github.com/repos/AhmedSayedRepo/QA-Studio/releases/latest',
+            {headers:{'Accept':'application/vnd.github+json'}})
+        .then(function(r){return r.ok?r.json():null;})
+        .then(function(d){
+          if(!d||!d.tag_name)return;
+          var v=d.tag_name;
+          if(v.charAt(0)!=='v'&&/^\d/.test(v))v='v'+v;
+          ['ver','verfoot','vernav'].forEach(function(id){
+            var el=document.getElementById(id);
+            if(el)el.textContent=v;
+          });
+        })
+        .catch(function(){});
+    }catch(e){}
+  })();
+</script>
 </body>
 </html>

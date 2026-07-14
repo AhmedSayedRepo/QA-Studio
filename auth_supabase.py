@@ -82,19 +82,22 @@ CATALOG = [
     ("act.settings",      "Change settings",          "act"),
     ("nav.users",         "Users (admin)",            "nav"),
     ("act.manage_users",  "Manage users & roles",     "act"),
-    ("nav.ai_usage",      "AI Usage (admin)",         "nav"),
-    ("act.view_usage",    "View AI usage report (admin)", "act"),
+    ("nav.ai_usage",      "AI Usage",                 "nav"),
+    ("act.view_usage",    "View ALL users' AI usage (admin)", "act"),
 ]
 ALL_KEYS = [k for k, _, _ in CATALOG]
 NAV_KEYS = [k for k, _, kind in CATALOG if kind == "nav"]
 ACT_KEYS = [k for k, _, kind in CATALOG if kind == "act"]
 
-# nav.ai_usage / act.view_usage are held out of the Member preset (same as
-# nav.users / act.manage_users) — this report exposes every user's activity,
-# not just the signed-in user's own, so it defaults to Admin-only. The Edge
-# Function's own hard role check (see supabase/functions/ai-usage) is the real
-# security boundary; these presets just keep the nav/UI consistent with that.
-_NAV_NO_USERS = [k for k in NAV_KEYS if k not in ("nav.users", "nav.ai_usage")]
+# nav.ai_usage is open to every role (Member/Viewer included) — everyone can
+# view their OWN AI usage; only nav.users (account/role management) stays
+# Admin-only. act.view_usage is a separate, narrower capability: it's what
+# lets someone see EVERY signed-in user's activity, not just their own, so
+# it's held out of the Member/Viewer presets the same way act.manage_users
+# is. The real security boundary for "everyone's usage" is server-side — the
+# Edge Function's own hard Admin-role check (see supabase/functions/ai-usage)
+# — this preset just keeps the nav/UI consistent with that.
+_NAV_NO_USERS = [k for k in NAV_KEYS if k not in ("nav.users",)]
 _ACT_NO_MANAGE = [k for k in ACT_KEYS if k not in ("act.manage_users", "act.view_usage")]
 
 # Role presets (the starting point; admins can customise per user afterwards).
@@ -634,9 +637,11 @@ def admin_set_org_email(sender, sender_name, app_password):
 # Same server-side-privileged pattern as org-settings/admin-users. Every
 # signed-in user may log THEIR OWN calls (the function derives user_id/email
 # from the caller's verified JWT — never from the request body, so a call
-# can't be logged under someone else's identity). Only an Admin may read the
-# cross-user report; that check is enforced server-side (hard role check, not
-# just a capability toggle) — see the security notes in
+# can't be logged under someone else's identity). Every signed-in user may
+# also READ usage — but the function scopes what comes back by the caller's
+# own role (hard check, not a capability toggle): an Admin gets rows across
+# every user, anyone else gets ONLY their own rows, filtered server-side by
+# their verified user_id — see the security notes in
 # supabase/functions/ai-usage/index.ts.
 def log_ai_usage(provider, model, input_tokens, output_tokens, tag=None):
     """Best-effort: upload one AI call's exact usage to the shared ai-usage
@@ -666,14 +671,19 @@ def log_ai_usage(provider, model, input_tokens, output_tokens, tag=None):
 
 
 def admin_get_ai_usage(start_date=None, end_date=None):
-    """Admin-only: fetch raw per-call usage rows across ALL users, optionally
-    bounded to [start_date, end_date] ('YYYY-MM-DD' strings, inclusive).
-    Returns (ok, rows_or_message). Each row is
+    """Any signed-in user: fetch raw per-call usage rows, optionally bounded
+    to [start_date, end_date] ('YYYY-MM-DD' strings, inclusive). SCOPE is
+    decided server-side by the caller's role — an Admin gets rows across
+    ALL users; anyone else gets only their OWN rows (the function filters by
+    their verified user_id, never by anything this client sends, so there's
+    no way to request someone else's data). Returns (ok, rows_or_message).
+    Each row is
     {created_at, user_email, provider, model, input_tokens, output_tokens, tag}
     — cost isn't included (computed locally from engine.PRICING so a price
-    change never needs a redeploy). A non-Admin caller gets a clean, friendly
-    'Admins only' message; the actual enforcement happens server-side
-    regardless of what this client sends."""
+    change never needs a redeploy). The 'Admins only' message below is now
+    only reachable for the (separate) whole-org case if the server ever
+    rejects it outright; ordinary non-admin reads succeed with their own
+    rows instead."""
     if not configured():
         return False, "Auth is not configured."
     tok = access_token()

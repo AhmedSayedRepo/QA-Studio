@@ -11,14 +11,19 @@
 //           someone else's identity, and a compromised/forged body can at
 //           worst pollute that same user's own usage numbers.
 //
-//   GET   — Admin-only. Returns raw per-call rows across ALL users for an
-//           optional [start, end] date range, so an admin can build a report
-//           for the whole org. This is deliberately a HARD role check
-//           (caller's app_metadata.role === 'Admin'), not a capability toggle
-//           like 'act.export' — this endpoint exposes every user's activity,
-//           which is materially more sensitive than the shared settings
-//           org-settings gates, so it gets the strictest check available
-//           (mirrors org-settings' POST, which is also Admin-only).
+//   GET   — Any signed-in user. Returns raw per-call rows for an optional
+//           [start, end] date range. SCOPE depends on the caller's role,
+//           decided here server-side from the caller's own verified JWT —
+//           never from anything the client sends:
+//             • Admin (app_metadata.role === 'Admin'): rows across ALL
+//               users, so an admin can build a report for the whole org.
+//             • Everyone else: rows are hard-filtered to the caller's OWN
+//               user_id — a Member/Viewer can see their own usage, but can
+//               never read another user's activity through this endpoint,
+//               no matter what query params they pass. This is still a HARD
+//               role check for the "see everyone" case (not a capability
+//               toggle like 'act.export') — that view is materially more
+//               sensitive than the shared settings org-settings gates.
 //           Cost is intentionally NOT computed here: token counts are exact
 //           (read straight from each provider's response by the desktop
 //           client before logging), but price tables change over time and
@@ -112,11 +117,12 @@ Deno.serve(async (req: Request) => {
     }
 
     if (req.method === "GET") {
-      // SECURITY: hard Admin-only check — see header notes.
+      // SECURITY: role decides SCOPE, not access — see header notes. Every
+      // signed-in user gets a 200 here; a non-Admin's query is additionally
+      // constrained to their own user_id below, so there's no request shape
+      // that leaks another user's rows to a non-Admin caller.
       const callerRole = (who.user.app_metadata as Record<string, unknown>)?.role;
-      if (callerRole !== "Admin") {
-        return json({ error: "You don't have permission to view this report." }, 403);
-      }
+      const isAdmin = callerRole === "Admin";
 
       const q = new URL(req.url).searchParams;
       const start = q.get("start"); // 'YYYY-MM-DD', inclusive
@@ -127,12 +133,22 @@ Deno.serve(async (req: Request) => {
         .select("created_at, user_email, provider, model, input_tokens, output_tokens, tag")
         .order("created_at", { ascending: true })
         .limit(MAX_ROWS);
+      if (!isAdmin) {
+        // Hard filter to the CALLER'S OWN verified id — not anything from
+        // the request — so a Member/Viewer can only ever get their own rows
+        // back, regardless of what query params they send.
+        query = query.eq("user_id", who.user.id);
+      }
       if (start) query = query.gte("created_at", `${start}T00:00:00Z`);
       if (end) query = query.lte("created_at", `${end}T23:59:59.999Z`);
 
       const { data, error } = await query;
       if (error) return json({ error: error.message }, 500);
-      return json({ rows: data ?? [], truncated: (data ?? []).length >= MAX_ROWS });
+      return json({
+        rows: data ?? [],
+        truncated: (data ?? []).length >= MAX_ROWS,
+        scope: isAdmin ? "all" : "own",
+      });
     }
 
     return json({ error: "Method not allowed." }, 405);

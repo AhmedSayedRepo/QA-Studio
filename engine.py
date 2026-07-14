@@ -6006,15 +6006,20 @@ def build_sprint_summary_email(data):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  AI USAGE REPORT (admin-only, whole org — see auth_supabase.admin_get_ai_usage)
+#  AI USAGE REPORT (per-user, or whole-org for Admins — see
+#  auth_supabase.admin_get_ai_usage)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def usage_report_all_users(start_date=None, end_date=None):
-    """Admin-only: build the whole-org AI usage report for an optional
-    [start_date, end_date] ('YYYY-MM-DD' strings, inclusive; None = no bound).
-    Returns (ok, report_or_message) — ok is False with a friendly message for
-    every failure mode (not configured, not signed in, not an Admin, offline,
-    function not deployed), never a raise.
+    """Build an AI usage report for an optional [start_date, end_date]
+    ('YYYY-MM-DD' strings, inclusive; None = no bound). Despite the name
+    (kept for backward compatibility — this is the one function every caller
+    already uses), the SCOPE is decided server-side by the caller's role, not
+    by this function: a non-Admin gets a report of only their OWN usage; an
+    Admin gets one across every signed-in user. Returns (ok,
+    report_or_message) — ok is False with a friendly message for every
+    failure mode (not configured, not signed in, offline, function not
+    deployed), never a raise.
 
     report = {
       "start", "end", "generated",

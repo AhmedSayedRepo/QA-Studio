@@ -4,173 +4,356 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>QA Studio — AI test cases for Azure DevOps</title>
-<meta name="description" content="QA Studio generates Azure DevOps test-case titles or full steps, in English or Arabic. Download the installer for Windows.">
+<meta name="description" content="QA Studio generates Azure DevOps test-case titles or full steps in English or Arabic, plans regression &amp; sprint coverage, and drives self-healing test automation. Local-first, bring-your-own AI key. Download the installer for Windows.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
+  :root{
+    --bg:#080B16; --bg2:#0B1022; --ink:#EAF0FF; --ink2:#AEB9D9; --ink3:#7E89AE;
+    --cyan:#12B5CE; --cyan2:#0E9CC0; --violet:#7C6CF6; --violet2:#5A45D6;
+    --card:rgba(20,27,50,.55); --border:rgba(124,140,255,.14);
+  }
   *{box-sizing:border-box;}
   html,body{margin:0;padding:0;}
-  body{font-family:'Plus Jakarta Sans',system-ui,-apple-system,Segoe UI,sans-serif;background:#f5f7fc;color:#181A24;-webkit-font-smoothing:antialiased;}
+  body{font-family:'Plus Jakarta Sans',system-ui,-apple-system,Segoe UI,sans-serif;
+    background:var(--bg);color:var(--ink);-webkit-font-smoothing:antialiased;overflow-x:hidden;}
   code,.mono{font-family:'JetBrains Mono',ui-monospace,monospace;}
-  a{text-decoration:none;}
-  ::selection{background:#6A33A8;color:#fff;}
-  @keyframes sweep{to{transform:rotate(360deg);}}
-  .wrap{max-width:1000px;margin:0 auto;padding:0 24px;}
+  a{text-decoration:none;color:inherit;}
+  ::selection{background:rgba(124,108,246,.4);color:#fff;}
+  .wrap{max-width:1040px;margin:0 auto;padding:0 24px;}
+  .grad{background:linear-gradient(100deg,var(--cyan) 0%,var(--violet) 100%);
+    -webkit-background-clip:text;background-clip:text;color:transparent;}
+
+  /* ambient background */
+  .bg-glow{position:fixed;inset:0;z-index:-1;overflow:hidden;background:
+    radial-gradient(1100px 620px at 78% -8%,rgba(18,181,206,.16),transparent 60%),
+    radial-gradient(900px 560px at 12% 8%,rgba(124,108,246,.15),transparent 60%),
+    linear-gradient(180deg,var(--bg) 0%,var(--bg2) 100%);}
+  .bg-grid{position:fixed;inset:0;z-index:-1;opacity:.35;
+    background-image:linear-gradient(rgba(124,140,255,.05) 1px,transparent 1px),
+      linear-gradient(90deg,rgba(124,140,255,.05) 1px,transparent 1px);
+    background-size:44px 44px;mask-image:radial-gradient(circle at 50% 12%,#000,transparent 72%);}
+
+  /* nav */
+  nav{position:sticky;top:0;z-index:20;backdrop-filter:blur(14px);
+    background:rgba(8,11,22,.55);border-bottom:1px solid var(--border);}
+  .nav-in{max-width:1040px;margin:0 auto;padding:14px 24px;display:flex;align-items:center;justify-content:space-between;}
+  .brand{display:flex;align-items:center;gap:11px;}
+  .brand img{width:34px;height:34px;border-radius:9px;}
+  .brand b{font-weight:800;font-size:16px;letter-spacing:-.2px;}
+  .brand span{font-size:11px;color:var(--ink3);font-family:'JetBrains Mono',monospace;}
+  .nlink{color:var(--ink2);font-size:13.5px;font-weight:600;transition:.15s;}
+  .nlink:hover{color:#fff;}
 
   /* hero */
-  .hero{position:relative;overflow:hidden;background:#0e1226;background-image:linear-gradient(135deg,#10172e 0%,#1b2150 42%,#3a2a73 100%);color:#fff;padding:30px 0 84px;}
-  .nav{max-width:1000px;margin:0 auto;padding:0 24px;display:flex;align-items:center;justify-content:space-between;position:relative;z-index:3;}
-  .brand{display:flex;align-items:center;gap:12px;}
-  .mark{width:40px;height:40px;object-fit:contain;display:block;}
-  .brand b{font-weight:800;font-size:17px;letter-spacing:-.2px;}
-  .navlink{color:#b9c1e6;font-size:13.5px;font-weight:600;transition:color .15s;}
-  .navlink:hover{color:#fff;}
-  .radar{position:absolute;right:-60px;top:40px;width:420px;height:420px;opacity:.5;pointer-events:none;}
-  .radar span{position:absolute;border-radius:50%;border:1px solid rgba(124,140,255,.2);}
-  .radar .r1{inset:0;} .radar .r2{inset:60px;} .radar .r3{inset:120px;}
-  .radar .sw{position:absolute;inset:0;border-radius:50%;border:0;background:conic-gradient(from 0deg,rgba(124,140,255,.28),transparent 32%);animation:sweep 5s linear infinite;}
-  .herobody{max-width:760px;margin:54px auto 0;padding:0 24px;position:relative;z-index:2;text-align:center;}
-  .pill{display:inline-flex;align-items:center;gap:8px;padding:7px 14px;border-radius:999px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);font-size:12.5px;font-weight:600;color:#c9d0f0;}
-  .dot{width:7px;height:7px;border-radius:50%;background:#42c98a;display:inline-block;}
-  h1{margin:22px 0 0;font-size:52px;line-height:1.05;font-weight:800;letter-spacing:-1.6px;}
-  .sub{margin:20px auto 0;max-width:560px;font-size:18px;line-height:1.55;color:#c3cbe8;font-weight:500;}
-  .dlrow{margin-top:38px;display:flex;flex-direction:column;align-items:center;gap:16px;}
-  .dlbtn{display:inline-flex;align-items:center;gap:13px;padding:18px 34px;border-radius:15px;background:linear-gradient(135deg,#4f6bf6,#6A33A8);color:#fff;font-weight:700;font-size:18px;box-shadow:0 12px 30px rgba(58,87,214,.45);transition:transform .18s,box-shadow .18s;}
-  .dlbtn:hover{transform:translateY(-2px);box-shadow:0 18px 40px rgba(58,87,214,.5);}
-  .dlbtn:active{transform:translateY(0);}
-  .dlmeta{display:flex;align-items:center;gap:10px;font-size:13px;color:#9aa3cc;font-weight:500;flex-wrap:wrap;justify-content:center;}
-  .chip{background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12);padding:5px 11px;border-radius:8px;color:#dfe4f7;font-size:12.5px;}
-  .cli{margin:30px auto 0;max-width:620px;text-align:left;}
-  .clihint{font-size:12px;color:#8d96bf;font-weight:600;margin-bottom:8px;text-align:center;}
-  .clibox{display:flex;align-items:center;gap:10px;background:rgba(7,10,24,.55);border:1px solid rgba(124,140,255,.22);border-radius:12px;padding:13px 14px;}
-  .clibox code{flex:1;font-size:12.5px;color:#cfe0ff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-  .copy{flex:none;cursor:pointer;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.06);color:#dfe4f7;font-weight:700;font-size:12.5px;padding:7px 13px;border-radius:9px;font-family:'Plus Jakarta Sans',sans-serif;}
+  header{padding:78px 0 40px;text-align:center;position:relative;}
+  .pillrow{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-bottom:26px;}
+  .pill{display:inline-flex;align-items:center;gap:8px;padding:7px 14px;border-radius:999px;
+    background:var(--card);border:1px solid var(--border);font-size:12.5px;color:var(--ink2);
+    font-weight:600;}
+  .pillrow .pill{margin-bottom:0;}
+  .dot{width:7px;height:7px;border-radius:9px;background:var(--cyan);box-shadow:0 0 10px var(--cyan);}
+  h1{font-size:clamp(34px,6vw,60px);line-height:1.04;font-weight:800;letter-spacing:-1.4px;margin:0 0 20px;}
+  .sub{max-width:640px;margin:0 auto 34px;font-size:clamp(15px,2.2vw,18px);line-height:1.6;color:var(--ink2);}
+  .cta{display:flex;gap:14px;justify-content:center;flex-wrap:wrap;align-items:center;}
+  .btn{display:inline-flex;align-items:center;gap:10px;font-weight:700;font-size:15px;
+    padding:15px 26px;border-radius:14px;transition:transform .12s,box-shadow .2s;}
+  .btn-primary{color:#04121A;background:linear-gradient(100deg,var(--cyan),var(--cyan2));
+    box-shadow:0 12px 34px -10px rgba(18,181,206,.6);}
+  .btn-primary:hover{transform:translateY(-2px);box-shadow:0 18px 42px -10px rgba(18,181,206,.75);}
+  .btn-ghost{color:var(--ink);background:var(--card);border:1px solid var(--border);font-weight:600;}
+  .btn-ghost:hover{border-color:rgba(124,140,255,.34);}
+  .cta-note{margin-top:14px;font-size:12.5px;color:var(--ink3);}
+
+  .preview{position:relative;margin:44px auto 0;max-width:860px;border-radius:18px;overflow:visible;}
+  .preview svg{display:block;width:100%;height:auto;border-radius:18px;
+    box-shadow:0 30px 70px -30px rgba(0,0,0,.65);}
+  .preview-badge{position:absolute;top:-14px;right:26px;background:linear-gradient(100deg,var(--cyan),var(--violet));
+    color:#04121A;font-weight:800;font-size:12px;padding:8px 14px;border-radius:999px;
+    box-shadow:0 10px 24px -8px rgba(18,181,206,.55);white-space:nowrap;}
+  @media(max-width:640px){.preview-badge{position:static;display:inline-block;margin-top:14px;}}
+
+  .ps{margin:30px auto 0;max-width:680px;}
+  .ps .lbl{font-size:11px;letter-spacing:1.6px;color:var(--ink3);font-weight:700;margin-bottom:9px;}
+  .ps-box{display:flex;align-items:center;gap:12px;background:rgba(6,9,18,.7);border:1px solid var(--border);
+    border-radius:12px;padding:13px 15px;text-align:left;}
+  .ps-box code{font-size:12.5px;color:#BFE9F2;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;}
+  .copy{cursor:pointer;font-size:12px;font-weight:700;color:var(--cyan);white-space:nowrap;
+    padding:5px 10px;border:1px solid var(--border);border-radius:8px;background:transparent;}
+  .copy:hover{background:rgba(18,181,206,.1);}
 
   /* sections */
-  section.block{padding:64px 0 8px;}
-  .eyebrow{font-size:12.5px;letter-spacing:1.4px;text-transform:uppercase;color:#6A33A8;font-weight:700;}
-  h2{margin:8px 0 0;font-size:30px;font-weight:800;letter-spacing:-.8px;}
-  .center{text-align:center;margin-bottom:38px;}
-  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;}
-  .grid2{display:grid;grid-template-columns:repeat(2,1fr);gap:16px;}
-  .card{background:#fff;border:1px solid #e6eaf3;border-radius:18px;padding:26px 24px;transition:border-color .15s;}
-  .card:hover{border-color:#cdd5f5;}
-  .num{width:42px;height:42px;border-radius:12px;background:#E7ECFF;color:#3A57D6;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:17px;}
-  .num.g{background:#E5F6EC;color:#1F9D57;}
-  .card h3{margin:18px 0 7px;font-size:17px;font-weight:700;}
-  .card p{margin:0;font-size:14px;line-height:1.55;color:#6E7180;}
-  .feat{background:#fff;border:1px solid #e6eaf3;border-radius:16px;padding:22px 24px;transition:border-color .15s;}
-  .feat:hover{border-color:#cdd5f5;}
-  .feat h3{margin:0 0 6px;font-size:15.5px;font-weight:700;}
-  .feat p{margin:0;font-size:13.5px;line-height:1.5;color:#6E7180;}
-  .accent{color:#3A57D6;}
+  section{padding:56px 0;}
+  .eyebrow{text-align:center;font-size:11.5px;letter-spacing:2px;font-weight:700;color:var(--cyan2);margin-bottom:10px;}
+  h2{text-align:center;font-size:clamp(24px,3.6vw,34px);font-weight:800;letter-spacing:-.8px;margin:0 0 40px;}
 
-  .note{display:flex;gap:16px;align-items:flex-start;background:#fbf7ee;border:1px solid #efe2c6;border-radius:16px;padding:20px 22px;margin:8px 0 0;}
-  .note .ic{flex:none;width:34px;height:34px;border-radius:10px;background:#FAF1DD;color:#C2860C;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:800;}
-  .note p{margin:0;font-size:13.5px;line-height:1.6;color:#7a6a45;}
-  .note strong{color:#5e5232;}
+  .steps{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;}
+  .step{background:var(--card);border:1px solid var(--border);border-radius:18px;padding:26px 22px;
+    backdrop-filter:blur(10px);position:relative;}
+  .step .n{width:34px;height:34px;border-radius:10px;display:flex;align-items:center;justify-content:center;
+    font-weight:800;font-size:15px;color:#04121A;background:linear-gradient(100deg,var(--cyan),var(--violet));margin-bottom:15px;}
+  .step h3{margin:0 0 8px;font-size:16.5px;font-weight:700;}
+  .step h3 code{font-size:14px;color:var(--cyan);background:rgba(18,181,206,.1);padding:2px 7px;border-radius:6px;}
+  .step p{margin:0;font-size:13.5px;line-height:1.55;color:var(--ink2);}
 
-  .final{background:#0e1226;background-image:linear-gradient(135deg,#10172e,#2a2055);color:#fff;padding:56px 0;margin-top:64px;}
-  .final h2{font-size:28px;letter-spacing:-.6px;}
-  .ctas{margin-top:26px;display:flex;flex-wrap:wrap;gap:14px;justify-content:center;}
-  .ghost{display:inline-flex;align-items:center;gap:9px;padding:15px 24px;border-radius:13px;border:1px solid rgba(255,255,255,.2);color:#dfe4f7;font-weight:600;font-size:16px;transition:background .15s;}
-  .ghost:hover{background:rgba(255,255,255,.08);}
-  .foot{margin-top:40px;padding-top:22px;border-top:1px solid rgba(255,255,255,.1);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;font-size:12.5px;color:#8d96bf;}
+  .feat{display:grid;grid-template-columns:repeat(2,1fr);gap:18px;}
+  .feat3{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:18px;padding:24px;
+    backdrop-filter:blur(10px);transition:.2s;}
+  .card:hover{border-color:rgba(124,140,255,.3);transform:translateY(-2px);}
+  .card .ic{width:44px;height:44px;border-radius:12px;display:flex;align-items:center;justify-content:center;
+    font-size:22px;background:rgba(18,181,206,.12);border:1px solid var(--border);margin-bottom:14px;}
+  .card h3{margin:0 0 7px;font-size:16.5px;font-weight:700;}
+  .card p{margin:0;font-size:13.5px;line-height:1.55;color:var(--ink2);}
 
-  @media(max-width:760px){
-    h1{font-size:38px;letter-spacing:-1px;}
-    .grid3,.grid2{grid-template-columns:1fr;}
-    .radar{display:none;}
-  }
+  .note{max-width:820px;margin:0 auto;background:rgba(124,108,246,.08);border:1px solid rgba(124,108,246,.25);
+    border-radius:16px;padding:22px 24px;display:flex;gap:14px;}
+  .note .ic{font-size:20px;}
+  .note b{color:#fff;}
+  .note p{margin:0;font-size:13.5px;line-height:1.6;color:var(--ink2);}
+
+  .faq{max-width:760px;margin:0 auto;display:flex;flex-direction:column;gap:12px;}
+  .faq details{background:var(--card);border:1px solid var(--border);border-radius:14px;
+    padding:2px 22px;backdrop-filter:blur(10px);}
+  .faq summary{cursor:pointer;padding:17px 0;font-weight:700;font-size:14.5px;color:var(--ink);
+    list-style:none;display:flex;justify-content:space-between;align-items:center;gap:14px;}
+  .faq summary::-webkit-details-marker{display:none;}
+  .faq summary::after{content:'+';font-size:20px;line-height:1;color:var(--ink3);font-weight:400;flex:none;}
+  .faq details[open] summary::after{content:'–';}
+  .faq p{margin:0 0 19px;font-size:13.5px;line-height:1.6;color:var(--ink2);}
+
+  .final{text-align:center;background:
+    radial-gradient(600px 300px at 50% 0%,rgba(18,181,206,.14),transparent 70%);
+    border:1px solid var(--border);border-radius:24px;padding:52px 24px;margin:20px 0;}
+  .final h2{margin-bottom:24px;}
+
+  footer{border-top:1px solid var(--border);padding:26px 0;text-align:center;color:var(--ink3);font-size:12.5px;}
+
+  @media(max-width:760px){.steps,.feat,.feat3{grid-template-columns:1fr;}h1{letter-spacing:-.8px;}}
 </style>
 </head>
 <body>
+<div class="bg-glow"></div><div class="bg-grid"></div>
 
-  <header class="hero">
-    <nav class="nav">
-      <div class="brand"><img class="mark" src="qa-logo.png" alt="QA Studio logo" width="40" height="40"><b>QA Studio</b></div>
-      <a class="navlink" href="https://github.com/AhmedSayedRepo/QA-Studio/releases" target="_blank" rel="noopener">Releases &amp; changelog &#8599;</a>
-    </nav>
+<nav><div class="nav-in">
+  <div class="brand">
+    <img src="https://ahmedsayedrepo.github.io/QA-Studio/qa-logo.png" alt="QA Studio">
+    <div><b>QA Studio</b> &nbsp;<span id="vernav">v2.8.1</span></div>
+  </div>
+  <a class="nlink" href="https://github.com/AhmedSayedRepo/QA-Studio" target="_blank" rel="noopener">⭐ Star on GitHub</a>
+</div></nav>
 
-    <div class="radar"><span class="r1"></span><span class="r2"></span><span class="r3"></span><span class="sw"></span></div>
+<header><div class="wrap">
+  <div class="pillrow">
+    <div class="pill"><span class="dot"></span> Windows desktop app · <span id="ver">v2.8.1</span></div>
+    <div class="pill">🔒 Local-first — keys never leave your device</div>
+  </div>
+  <h1>AI test cases for<br><span class="grad">Azure DevOps</span>, in minutes</h1>
+  <p class="sub">QA Studio reads your sprints &amp; stories, generates test-case titles or full steps in
+    English or Arabic, plans your regression &amp; sprint coverage, and drives self-healing test
+    automation — one Windows app, your own AI key.</p>
+  <div class="cta">
+    <a class="btn btn-primary" href="https://github.com/AhmedSayedRepo/QA-Studio/releases/latest/download/install.bat">↓ Download installer</a>
+  </div>
+  <div class="cta-note"><code>install.bat</code> · ~50 KB · sets up everything automatically</div>
 
-    <div class="herobody">
-      <span class="pill"><span class="dot"></span> Windows desktop app &middot; version <span id="ver">v2.3.4</span></span>
-      <h1>AI test cases for<br>Azure DevOps, in minutes</h1>
-      <p class="sub">QA Studio reads your sprint &amp; stories and generates test-case titles or full steps — in English or Arabic — straight into your test plans. One clean Setup &rarr; Run &rarr; Report flow.</p>
-
-      <div class="dlrow">
-        <a class="dlbtn" id="dl" href="https://github.com/AhmedSayedRepo/QA-Studio/releases/latest/download/install.bat">
-          <span>&#8595;</span> Download installer
-        </a>
-        <div class="dlmeta"><span class="chip mono">install.bat</span><span>&middot; ~50 KB &middot; sets up everything automatically</span></div>
-      </div>
-
-      <div class="cli">
-        <div class="clihint">— or paste this in PowerShell —</div>
-        <div class="clibox">
-          <code id="cmd">powershell -c "irm https://github.com/AhmedSayedRepo/QA-Studio/releases/latest/download/install.bat -OutFile $env:TEMP\install.bat; &amp; $env:TEMP\install.bat"</code>
-          <button class="copy" id="copy" type="button">Copy</button>
-        </div>
-      </div>
+  <div class="ps">
+    <div class="lbl">— OR PASTE THIS IN POWERSHELL —</div>
+    <div class="ps-box">
+      <code id="ps">powershell -c "irm https://github.com/AhmedSayedRepo/QA-Studio/releases/latest/download/install.bat -OutFile $env:TEMP\install.bat; &amp; $env:TEMP\install.bat"</code>
+      <button class="copy" onclick="navigator.clipboard.writeText(document.getElementById('ps').innerText);this.innerText='Copied'">Copy</button>
     </div>
-  </header>
+  </div>
 
-  <section class="block wrap">
-    <div class="center">
-      <div class="eyebrow">Get started</div>
-      <h2>Up and running in about a minute</h2>
-    </div>
-    <div class="grid3">
-      <div class="card"><div class="num">1</div><h3>Download <code class="accent">install.bat</code></h3><p>One small file — no ZIP to unzip, nothing to configure.</p></div>
-      <div class="card"><div class="num">2</div><h3>Double-click it</h3><p>It installs Python if needed, pulls the app, adds dependencies, and drops a Desktop icon.</p></div>
-      <div class="card"><div class="num g">3</div><h3>Open QA Studio</h3><p>Launch from the new Desktop icon, add your keys in Setup, and run.</p></div>
-    </div>
-  </section>
+  <div class="preview">
+    <div class="preview-badge">✨ 18 of 24 cases generated · 42s</div>
+    <svg viewBox="0 0 900 460" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="QA Studio Run screen preview">
+      <rect x="0" y="0" width="900" height="460" rx="18" fill="#0B0F1F" stroke="rgba(124,140,255,.18)"/>
+      <rect x="0" y="0" width="900" height="42" rx="18" fill="#0D1326"/>
+      <rect x="0" y="24" width="900" height="18" fill="#0D1326"/>
+      <circle cx="24" cy="21" r="6" fill="#FF5F57"/>
+      <circle cx="44" cy="21" r="6" fill="#FEBC2E"/>
+      <circle cx="64" cy="21" r="6" fill="#28C840"/>
+      <text x="450" y="26" text-anchor="middle" font-family="Plus Jakarta Sans,sans-serif" font-size="12.5" font-weight="600" fill="#7E89AE">QA Studio — Run</text>
 
-  <section class="wrap" style="padding:48px 24px;">
-    <div class="grid2">
-      <div class="feat"><h3>Titles or full steps</h3><p>Generate concise test-case titles, or complete step-by-step cases — your choice per run.</p></div>
-      <div class="feat"><h3>English &amp; Arabic</h3><p>Produce test content in either language with a single toggle in Setup.</p></div>
-      <div class="feat"><h3>Writes back to Azure DevOps</h3><p>Pulls your projects, test plans &amp; stories and pushes generated cases straight into them.</p></div>
-      <div class="feat"><h3>Your choice of model</h3><p>Anthropic, OpenAI, Gemini, NVIDIA, Azure OpenAI or Ollama — bring your own key.</p></div>
-    </div>
-  </section>
+      <rect x="0" y="42" width="176" height="418" fill="#080B16"/>
+      <!-- nav items -->
+      <g font-family="Plus Jakarta Sans,sans-serif">
+        <circle cx="32" cy="78" r="5" fill="#4A5580"/>
+        <rect x="48" y="74" width="80" height="8" rx="4" fill="#2A3358"/>
+        <rect x="16" y="102" width="144" height="30" rx="10" fill="rgba(124,108,246,.16)" stroke="rgba(124,108,246,.45)"/>
+        <circle cx="32" cy="117" r="5" fill="#12B5CE"/>
+        <rect x="48" y="113" width="70" height="8" rx="4" fill="url(#navgrad)"/>
+        <circle cx="32" cy="156" r="5" fill="#4A5580"/>
+        <rect x="48" y="152" width="94" height="8" rx="4" fill="#2A3358"/>
+        <circle cx="32" cy="195" r="5" fill="#4A5580"/>
+        <rect x="48" y="191" width="76" height="8" rx="4" fill="#2A3358"/>
+        <circle cx="32" cy="234" r="5" fill="#4A5580"/>
+        <rect x="48" y="230" width="88" height="8" rx="4" fill="#2A3358"/>
+        <circle cx="32" cy="273" r="5" fill="#4A5580"/>
+        <rect x="48" y="269" width="64" height="8" rx="4" fill="#2A3358"/>
+      </g>
 
-  <section class="wrap" style="padding:8px 24px 0;">
-    <div class="note">
-      <div class="ic">!</div>
-      <p><strong>A couple of things to know.</strong> Windows may show a blue &ldquo;Windows protected your PC&rdquo; notice for the <code>.bat</code> — click <strong>More info &rarr; Run anyway</strong>. If it says Python was just installed, close the window and run <code>install.bat</code> once more. Your API keys &amp; Azure PAT are stored <strong>locally only</strong> and never uploaded.</p>
-    </div>
-  </section>
+      <defs>
+        <linearGradient id="navgrad" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0" stop-color="#12B5CE"/><stop offset="1" stop-color="#7C6CF6"/>
+        </linearGradient>
+        <linearGradient id="bargrad" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0" stop-color="#12B5CE"/><stop offset="1" stop-color="#7C6CF6"/>
+        </linearGradient>
+      </defs>
 
-  <section class="final">
-    <div class="wrap" style="max-width:760px;text-align:center;">
-      <h2>Ready to generate your first test plan?</h2>
-      <div class="ctas">
-        <a class="dlbtn" href="https://github.com/AhmedSayedRepo/QA-Studio/releases/latest/download/install.bat" style="padding:15px 28px;font-size:16px;">&#8595; Download installer</a>
-        <a class="ghost" href="https://github.com/AhmedSayedRepo/QA-Studio/releases" target="_blank" rel="noopener">View all releases</a>
-      </div>
-      <div class="foot"><span style="font-weight:600;">QA Studio &middot; <span id="verfoot">v2.3.4</span></span><span>Windows 10/11 &middot; Python auto-installed &middot; keys stay on your device</span></div>
+      <!-- main panel -->
+      <text x="200" y="80" font-family="Plus Jakarta Sans,sans-serif" font-size="20" font-weight="800" fill="#EAF0FF">Run</text>
+      <rect x="742" y="60" width="118" height="26" rx="13" fill="rgba(18,181,206,.14)" stroke="rgba(18,181,206,.4)"/>
+      <text x="801" y="77" text-anchor="middle" font-family="Plus Jakarta Sans,sans-serif" font-size="11" font-weight="700" fill="#BFE9F2">Generating…</text>
+
+      <!-- case row 1 (done) -->
+      <rect x="200" y="106" width="660" height="62" rx="12" fill="rgba(255,255,255,.03)" stroke="rgba(124,140,255,.12)"/>
+      <circle cx="226" cy="137" r="11" fill="#28C840"/>
+      <path d="M221 137l4 4 8-9" stroke="#08130A" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="250" y="130" font-family="Plus Jakarta Sans,sans-serif" font-size="13" font-weight="600" fill="#EAF0FF">Login with valid credentials</text>
+      <text x="250" y="147" font-family="Plus Jakarta Sans,sans-serif" font-size="11" fill="#7E89AE">6 steps · English</text>
+
+      <!-- case row 2 (done) -->
+      <rect x="200" y="180" width="660" height="62" rx="12" fill="rgba(255,255,255,.03)" stroke="rgba(124,140,255,.12)"/>
+      <circle cx="226" cy="211" r="11" fill="#28C840"/>
+      <path d="M221 211l4 4 8-9" stroke="#08130A" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="250" y="204" font-family="Plus Jakarta Sans,sans-serif" font-size="13" font-weight="600" fill="#EAF0FF">إعادة تعيين كلمة المرور عبر البريد</text>
+      <text x="250" y="221" font-family="Plus Jakarta Sans,sans-serif" font-size="11" fill="#7E89AE">4 steps · Arabic</text>
+
+      <!-- case row 3 (done) -->
+      <rect x="200" y="254" width="660" height="62" rx="12" fill="rgba(255,255,255,.03)" stroke="rgba(124,140,255,.12)"/>
+      <circle cx="226" cy="285" r="11" fill="#28C840"/>
+      <path d="M221 285l4 4 8-9" stroke="#08130A" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="250" y="278" font-family="Plus Jakarta Sans,sans-serif" font-size="13" font-weight="600" fill="#EAF0FF">Session expires after 30 min idle</text>
+      <text x="250" y="295" font-family="Plus Jakarta Sans,sans-serif" font-size="11" fill="#7E89AE">5 steps · English</text>
+
+      <!-- case row 4 (in progress) -->
+      <rect x="200" y="328" width="660" height="62" rx="12" fill="rgba(255,255,255,.03)" stroke="rgba(18,181,206,.3)"/>
+      <circle cx="226" cy="359" r="11" fill="none" stroke="#12B5CE" stroke-width="2.4" stroke-dasharray="18 40"/>
+      <text x="250" y="352" font-family="Plus Jakarta Sans,sans-serif" font-size="13" font-weight="600" fill="#AEB9D9">Generating steps…</text>
+      <rect x="250" y="362" width="220" height="8" rx="4" fill="#1b2140"/>
+      <rect x="250" y="362" width="140" height="8" rx="4" fill="url(#bargrad)"/>
+
+      <!-- overall progress -->
+      <text x="200" y="416" font-family="Plus Jakarta Sans,sans-serif" font-size="11" font-weight="600" fill="#7E89AE">18 / 24 cases generated</text>
+      <rect x="200" y="424" width="660" height="8" rx="4" fill="#1b2140"/>
+      <rect x="200" y="424" width="495" height="8" rx="4" fill="url(#bargrad)"/>
+    </svg>
+  </div>
+</div></header>
+
+<section><div class="wrap">
+  <div class="eyebrow">GET STARTED</div>
+  <h2>Up and running in about a minute</h2>
+  <div class="steps">
+    <div class="step"><div class="n">1</div><h3>Download <code>install.bat</code></h3>
+      <p>One small file — no ZIP to unzip, nothing to configure.</p></div>
+    <div class="step"><div class="n">2</div><h3>Double-click it</h3>
+      <p>It installs Python if needed, pulls the app, adds dependencies, and drops a Desktop icon.</p></div>
+    <div class="step"><div class="n">3</div><h3>Open QA Studio</h3>
+      <p>Launch from the new Desktop icon, add your keys in Setup, and run.</p></div>
+  </div>
+</div></section>
+
+<section style="padding-top:8px"><div class="wrap">
+  <div class="eyebrow">WHAT IT DOES</div>
+  <h2>Built for the Azure DevOps test workflow</h2>
+  <div class="feat">
+    <div class="card"><div class="ic">📝</div><h3>Titles or full steps</h3>
+      <p>Generate concise test-case titles, or complete step-by-step cases — your choice per run.</p></div>
+    <div class="card"><div class="ic">🧪</div><h3>Self-healing test automation</h3>
+      <p>A live browser explorer captures real locators and generates Selenium, Playwright &amp; Cypress
+        suites that re-find elements when the UI shifts — with cross-browser and iOS/Android coverage.</p></div>
+    <div class="card"><div class="ic">📊</div><h3>Regression &amp; Sprint Planning</h3>
+      <p>Weighted effort estimates balanced across your team, editable plan tables, and email-ready
+        reports exported to Word, Excel, PDF or JSON.</p></div>
+    <div class="card"><div class="ic">🌐</div><h3>English &amp; Arabic</h3>
+      <p>Produce test content in either language with a single toggle in Setup.</p></div>
+    <div class="card"><div class="ic">🔄</div><h3>Writes back to Azure DevOps</h3>
+      <p>Pulls your projects, test plans &amp; stories and pushes generated cases straight into them.</p></div>
+    <div class="card"><div class="ic">✦</div><h3>Your choice of model</h3>
+      <p>Anthropic, OpenAI, Gemini, NVIDIA, Azure OpenAI, DeepSeek, Qwen or Ollama — bring your own key.</p></div>
+  </div>
+</div></section>
+
+<section style="padding-top:8px"><div class="wrap">
+  <div class="eyebrow">BUILT FOR TEAMS</div>
+  <h2>Not just a solo tool</h2>
+  <div class="feat3">
+    <div class="card"><div class="ic">🔒</div><h3>Local-first &amp; private</h3>
+      <p>Azure DevOps and AI credentials are encrypted on your own device (Windows DPAPI) and never
+        uploaded anywhere but the services you connect — no telemetry, no third-party servers.</p></div>
+    <div class="card"><div class="ic">👥</div><h3>Role-based access</h3>
+      <p>Admin, Member &amp; Viewer roles with permissions enforced server-side — share it across a whole
+        QA team, not just one seat.</p></div>
+    <div class="card"><div class="ic">💳</div><h3>Full AI cost transparency</h3>
+      <p>Every AI call's exact token usage is logged automatically. Everyone sees their own spend; Admins
+        can also pull a whole-org report by date, user, provider &amp; model.</p></div>
+  </div>
+</div></section>
+
+<section style="padding-top:8px"><div class="wrap">
+  <div class="note">
+    <div class="ic">🛡️</div>
+    <p><b>A couple of things to know.</b> Windows may show a blue "Windows protected your PC" notice for the
+      <code>.bat</code> — click <b>More info → Run anyway</b>. If it says Python was just installed, close the
+      window and run <code>install.bat</code> once more. Your API keys &amp; Azure PAT are stored
+      <b>locally only</b> and never uploaded.</p>
+  </div>
+</div></section>
+
+<section style="padding-top:8px"><div class="wrap">
+  <div class="eyebrow">FAQ</div>
+  <h2>Good to know before you install</h2>
+  <div class="faq">
+    <details open>
+      <summary>Which AI providers are supported?</summary>
+      <p>Anthropic, OpenAI, Azure OpenAI, Google Gemini, NVIDIA, DeepSeek, Qwen, or Ollama for a fully
+        local model — add a key for any one of them in Setup.</p>
+    </details>
+    <details>
+      <summary>Is QA Studio only for Windows?</summary>
+      <p>Yes, today it's a Windows 10/11 desktop app. <code>install.bat</code> installs Python
+        automatically if it isn't already on your machine.</p>
+    </details>
+    <details>
+      <summary>Where do my Azure DevOps and AI credentials live?</summary>
+      <p>Locally on your device only, encrypted with Windows DPAPI. They're only ever sent to the Azure
+        DevOps org and AI provider you explicitly connect — nothing is uploaded anywhere else.</p>
+    </details>
+    <details>
+      <summary>Can my whole QA team use it, not just me?</summary>
+      <p>Yes — sign in with role-based accounts (Admin, Member, Viewer), each with permissions enforced
+        server-side, not just hidden in the UI.</p>
+    </details>
+    <details>
+      <summary>Does it cost anything beyond my AI provider?</summary>
+      <p>No subscription — you bring your own AI key and pay that provider directly. QA Studio tracks the
+        exact token usage of every call so you always know what you're spending.</p>
+    </details>
+  </div>
+</div></section>
+
+<section><div class="wrap">
+  <div class="final">
+    <h2>Ready to generate your first test plan?</h2>
+    <div class="cta">
+      <a class="btn btn-primary" href="https://github.com/AhmedSayedRepo/QA-Studio/releases/latest/download/install.bat">↓ Download installer</a>
     </div>
-  </section>
+  </div>
+</div></section>
+
+<footer>QA Studio · <span id="verfoot">v2.8.1</span> · Windows 10/11 · Python auto-installed · keys stay on your device</footer>
 
 <script>
-  (function(){
-    var b=document.getElementById('copy');
-    if(!b)return;
-    b.addEventListener('click',function(){
-      var t=document.getElementById('cmd').textContent;
-      navigator.clipboard.writeText(t).then(function(){
-        b.textContent='Copied \u2713';
-        setTimeout(function(){b.textContent='Copy';},1800);
-      });
-    });
-  })();
-
-  // Keep the displayed version in sync with the latest GitHub release.
-  // Download links already use /releases/latest/, so only the labels need updating.
+  // Keep the displayed version in sync with the latest GitHub release — the
+  // download links already point at /releases/latest/, so only these labels
+  // need updating. Ported from the previous index.html so this page doesn't
+  // go stale the moment a new version ships. Fails silently (kept text) if
+  // the API call doesn't succeed — never blocks the page.
   (function(){
     try{
       fetch('https://api.github.com/repos/AhmedSayedRepo/QA-Studio/releases/latest',
@@ -180,9 +363,10 @@
           if(!d||!d.tag_name)return;
           var v=d.tag_name;
           if(v.charAt(0)!=='v'&&/^\d/.test(v))v='v'+v;
-          var a=document.getElementById('ver'),b=document.getElementById('verfoot');
-          if(a)a.textContent=v;
-          if(b)b.textContent=v;
+          ['ver','verfoot','vernav'].forEach(function(id){
+            var el=document.getElementById(id);
+            if(el)el.textContent=v;
+          });
         })
         .catch(function(){});
     }catch(e){}

@@ -214,8 +214,10 @@ class QAStudio:
             T.NAV.append({"id": "users", "label": "Users",
                           "icon": "GROUP", "ix": "U"})
 
-        # AI Usage tab (admin-only; rail() hides it for non-admins — same
-        # mechanism as Users above, via _screen_nav_cap + can()).
+        # AI Usage tab — visible to every signed-in user (nav.ai_usage is in
+        # every role preset): a Member/Viewer sees their OWN usage, an Admin
+        # sees everyone's. Only the "see everyone" scope is admin-gated
+        # (server-side, in the ai-usage Edge Function), not the tab itself.
         if not any(n.get("id") == "ai_usage" for n in T.NAV):
             T.NAV.append({"id": "ai_usage", "label": "AI Usage",
                           "icon": "QUERY_STATS", "ix": "AI"})
@@ -421,12 +423,18 @@ class QAStudio:
 
     def _screen_action_cap(self, screen):
         """Capability needed to ACT on a screen (None = the screen has no actions).
-        Drives the per-screen read-only state."""
+        Drives the per-screen read-only state.
+
+        ai_usage is deliberately NOT mapped here (unlike users → act.manage_users):
+        act.view_usage means "can see EVERYONE's usage", which is a narrower thing
+        than "can use the AI Usage screen at all" — every signed-in user can view
+        and export/email their OWN usage report, so this falls through to the
+        generic no-action-cap rule below (read-only only for a true Viewer with
+        zero act.* capabilities, same as Useful Links)."""
         return {"setup": "act.connect", "run": "act.run", "report": "act.export",
                 "regression": "act.regression", "testplan": "act.sprint",
                 "titles": "act.sprint_report", "automation": "act.automation",
-                "settings": "act.settings", "users": "act.manage_users",
-                "ai_usage": "act.view_usage"}.get(screen)
+                "settings": "act.settings", "users": "act.manage_users"}.get(screen)
 
     def _first_allowed_screen(self):
         for n in T.NAV:

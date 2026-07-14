@@ -150,25 +150,31 @@ and Gmail App Password once; every other signed-in user with export permission
 (Admin or Member) picks it up automatically on their next sign-in. Viewers
 never receive it, from either the app or the server.
 
-# 6. The `ai-usage` function (whole-org AI usage report)
+# 6. The `ai-usage` function (per-user usage, whole-org report for Admins)
 
 Every AI call QA Studio makes is logged with its EXACT token usage (read
 straight from the provider's own response, never estimated) to a local
 per-user file on that machine, and — when Supabase sign-in is configured —
-also mirrored to this table so an **Admin** can pull a report across every
-signed-in user, not just their own machine. Cost is deliberately **not**
-computed server-side: the desktop app applies its own price table
-(`engine.PRICING`) to the exact token counts, so a price change never needs a
-redeploy.
+also mirrored to this table so it's visible from any machine that user signs
+into, and so an **Admin** can pull a report across every signed-in user, not
+just their own. Cost is deliberately **not** computed server-side: the
+desktop app applies its own price table (`engine.PRICING`) to the exact token
+counts, so a price change never needs a redeploy.
 
-**Security model:** unlike `org-settings` (capability-gated: Admin or Member
-can read it), reading usage across ALL users is a **hard Admin-only** check in
-the function itself — this data is materially more sensitive (it's every
-user's activity, not a shared setting), so it doesn't get the same
-capability-toggle treatment. Writing (logging your own call) is open to any
-signed-in user, but the function derives `user_id`/`user_email` from the
-caller's own verified token — never from the request body — so nobody can log
-a call under someone else's identity.
+**Security model:** every signed-in user can read usage through this
+function, but the SCOPE is decided server-side by their role — never by
+anything the desktop app sends:
+- A **Member or Viewer** gets rows filtered to their own verified `user_id`
+  only — they can see their own AI Usage tab, but can't read anyone else's
+  activity through this endpoint no matter what they send.
+- An **Admin** gets rows across every user (a **hard role check**, not a
+  capability toggle like `org-settings`' read gate — this data is materially
+  more sensitive than a shared setting).
+
+Writing (logging your own call) is open to any signed-in user, but the
+function derives `user_id`/`user_email` from the caller's own verified token
+— never from the request body — so nobody can log a call under someone
+else's identity.
 
 ## 6.1 Create the table (SQL editor, once)
 
@@ -203,9 +209,15 @@ alter table public.ai_usage_events enable row level security;
 ## 6.3 Use it
 
 Every signed-in user's AI calls are logged automatically in the background —
-nothing to configure per user. An Admin opens the **AI Usage** tab (visible
-only to Admins), picks a date range, and generates a report grouped by
-date/user/provider/model with an estimated cost, exportable as JSON/Excel/
-Word/PDF or emailed directly from the app. Non-admins never see this tab, and
-even a non-admin calling the endpoint directly gets a 403 — the check is
-server-side, not just a hidden button.
+nothing to configure per user. Every signed-in user (Admin, Member, or
+Viewer) sees an **AI Usage** tab, picks a date range, and generates a report
+grouped by date/provider/model with an estimated cost, exportable as
+JSON/Excel/Word/PDF or emailed directly from the app:
+- A **Member or Viewer** sees only their own usage (no User column — every
+  row is already theirs).
+- An **Admin** sees the whole-org report — every signed-in user's usage,
+  grouped by date/user/provider/model — same as before.
+
+The scope is enforced server-side (not just a hidden button or a different
+client query): a non-admin calling the endpoint directly still only ever gets
+their own rows back, no matter what they send.
