@@ -5,6 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>QA Studio — AI test cases for Azure DevOps</title>
 <meta name="description" content="QA Studio generates Azure DevOps test-case titles or full steps in English or Arabic, plans regression &amp; sprint coverage, and drives self-healing test automation. Local-first, bring-your-own AI key. Download the installer for Windows.">
+<link rel="icon" type="image/png" href="qa-logo.png">
+<link rel="icon" type="image/png" sizes="16x16" href="preview_16.png">
+<link rel="icon" type="image/png" sizes="32x32" href="preview_32.png">
+<link rel="icon" type="image/png" sizes="48x48" href="preview_48.png">
+<link rel="apple-touch-icon" href="qa-logo.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -45,6 +50,22 @@
   .brand span{font-size:11px;color:var(--ink3);font-family:'JetBrains Mono',monospace;}
   .nlink{color:var(--ink2);font-size:13.5px;font-weight:600;transition:.15s;}
   .nlink:hover{color:#fff;}
+
+  /* email-confirmation banner (shown when Supabase redirects here after a
+     user clicks the confirm-your-email / confirm-new-email link) */
+  .confirm-banner{max-height:0;overflow:hidden;transition:max-height .35s ease;
+    background:rgba(40,200,64,.1);border-bottom:1px solid rgba(40,200,64,.28);}
+  .confirm-banner.show{max-height:120px;}
+  .confirm-banner.warn{background:rgba(254,188,46,.1);border-bottom-color:rgba(254,188,46,.3);}
+  .confirm-banner-in{display:flex;align-items:center;gap:12px;padding-top:13px;padding-bottom:13px;
+    font-size:13.5px;font-weight:600;color:var(--ink);}
+  .confirm-ic{flex:none;font-size:16px;line-height:1;}
+  .confirm-msg{flex:1;line-height:1.5;}
+  .confirm-msg a{color:var(--cyan);text-decoration:underline;font-weight:700;}
+  .confirm-close{flex:none;background:transparent;border:0;color:var(--ink3);cursor:pointer;
+    font-size:13px;padding:6px 9px;border-radius:8px;line-height:1;}
+  .confirm-close:hover{color:var(--ink);background:rgba(255,255,255,.08);}
+  @media(max-width:520px){.confirm-banner-in{align-items:flex-start;}.confirm-msg{font-size:12.5px;}}
 
   /* hero */
   header{padding:78px 0 40px;text-align:center;position:relative;}
@@ -143,6 +164,14 @@
   </div>
   <a class="nlink" href="https://github.com/AhmedSayedRepo/QA-Studio" target="_blank" rel="noopener">⭐ Star on GitHub</a>
 </div></nav>
+
+<div class="confirm-banner" id="confirm-banner" role="status" aria-live="polite">
+  <div class="confirm-banner-in wrap">
+    <span class="confirm-ic" id="confirm-banner-ic">✅</span>
+    <span class="confirm-msg" id="confirm-banner-text"></span>
+    <button class="confirm-close" id="confirm-banner-close" type="button" aria-label="Dismiss">✕</button>
+  </div>
+</div>
 
 <header><div class="wrap">
   <div class="pillrow">
@@ -349,6 +378,80 @@
 <footer>QA Studio · <span id="verfoot">v2.8.1</span> · Windows 10/11 · Python auto-installed · keys stay on your device</footer>
 
 <script>
+  // Supabase email-confirmation redirect handling. When someone clicks the
+  // "confirm your email" (or "confirm new email") link in the Supabase auth
+  // email, GoTrue verifies it server-side and redirects the browser back to
+  // this page (the project's configured Site URL) with either a hash
+  // fragment (#access_token=...&type=signup&...) or query params
+  // (?type=signup, or ?error=...&error_description=... if the link expired
+  // or was already used). This page has no backend of its own — sign-in
+  // itself always happens in the QA Studio desktop app — so all this does
+  // is notice why the visitor landed here and tell them what to do next.
+  (function(){
+    function parseParams(str){
+      var out={};
+      (str || '').replace(/^[#?]/, '').split('&').forEach(function(pair){
+        if(!pair)return;
+        var i=pair.indexOf('=');
+        var k=decodeURIComponent(i<0?pair:pair.slice(0,i));
+        var v=decodeURIComponent((i<0?'':pair.slice(i+1)).replace(/\+/g,' '));
+        out[k]=v;
+      });
+      return out;
+    }
+
+    var hash=parseParams(location.hash);
+    var query=parseParams(location.search);
+    var type=hash.type||query.type;
+    var error=hash.error||query.error;
+    var errorDesc=hash.error_description||query.error_description;
+    var hasToken=!!(hash.access_token||query.access_token);
+
+    var banner=document.getElementById('confirm-banner');
+    var icEl=document.getElementById('confirm-banner-ic');
+    var textEl=document.getElementById('confirm-banner-text');
+    var closeBtn=document.getElementById('confirm-banner-close');
+    if(!banner||!textEl){return;}
+
+    var downloadLink=' <a href="https://github.com/AhmedSayedRepo/QA-Studio/releases/latest/download/install.bat">' +
+                      "Don't have it installed yet?</a>";
+
+    function show(html, icon, warn){
+      textEl.innerHTML=html;
+      if(icEl)icEl.textContent=icon;
+      banner.classList.toggle('warn', !!warn);
+      banner.classList.add('show');
+    }
+
+    if(error){
+      var friendly=(errorDesc||'').replace(/\+/g,' ') ||
+                   'That confirmation link has expired or was already used.';
+      show(friendly + ' Try signing in from QA Studio, or request a new confirmation ' +
+           'email from the sign-up screen.', '⚠️', true);
+    } else if(type==='signup'){
+      show('Email confirmed! You’re all set — open QA Studio and sign in with ' +
+           'your email and password.' + downloadLink, '✅', false);
+    } else if(type==='email_change'){
+      show('Your new email address is confirmed. Sign in to QA Studio to continue.', '✅', false);
+    } else if(type||hasToken){
+      show('All set — you can sign in to QA Studio now.', '✅', false);
+    }
+
+    if(closeBtn){
+      closeBtn.addEventListener('click', function(){
+        banner.classList.remove('show');
+      });
+    }
+
+    // Scrub tokens/params from the visible, bookmarkable URL once handled —
+    // an access/refresh token sitting in the address bar (or browser
+    // history) is exactly the kind of thing this app's local-first, nothing-
+    // uploaded-that-doesn't-need-to-be philosophy tries to avoid.
+    if(type||error||hasToken){
+      try{ history.replaceState(null, '', location.pathname); }catch(e){}
+    }
+  })();
+
   // Keep the displayed version in sync with the latest GitHub release — the
   // download links already point at /releases/latest/, so only these labels
   // need updating. Ported from the previous index.html so this page doesn't
