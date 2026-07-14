@@ -41,11 +41,20 @@ if errorlevel 1 (
 gh auth status >nul 2>&1
 if errorlevel 1 (
   echo.
-  echo [ABORT] gh is installed but not signed in - nothing has been changed yet.
-  echo         Run:   gh auth login
-  echo         Then re-run this script.
-  pause
-  exit /b 1
+  echo [info] gh is installed but not signed in - launching gh auth login...
+  echo        Follow the prompts ^(pick GitHub.com, HTTPS, and "Login with a
+  echo        web browser" when asked^) to finish signing in.
+  echo.
+  gh auth login
+  echo.
+  gh auth status >nul 2>&1
+  if errorlevel 1 (
+    echo.
+    echo [ABORT] Still not signed in - nothing has been changed yet.
+    echo         Re-run this script once gh auth login has completed.
+    pause
+    exit /b 1
+  )
 )
 echo [OK] GitHub CLI is installed and authenticated.
 echo.
