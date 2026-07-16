@@ -26,6 +26,7 @@ import store
 import engine as E
 import regression
 import sprint_titles
+import task_manager
 import auth_supabase as auth
 import users_screen
 import ai_usage_screen
@@ -203,6 +204,15 @@ class QAStudio:
                        len(T.NAV) - 1)
             T.NAV.insert(_si + 1, {"id": "titles", "label": "Sprint Report",
                                    "icon": "SUMMARIZE", "ix": "SR"})
+
+        # Task Manager tab (after Sprint Report) — per-user task workload
+        # report (Original Estimate / Completed Work, scoped to a sprint) +
+        # bulk "create a child task under each selected story" tool.
+        if not any(n.get("id") == "task_manager" for n in T.NAV):
+            _tmi = next((i for i, n in enumerate(T.NAV) if n.get("id") == "titles"),
+                       len(T.NAV) - 1)
+            T.NAV.insert(_tmi + 1, {"id": "task_manager", "label": "Task Manager",
+                                    "icon": "TASK_ALT", "ix": "TM"})
 
         # Useful Links tab (last in the rail)
         if not any(n.get("id") == "links" for n in T.NAV):
@@ -418,6 +428,7 @@ class QAStudio:
         return {"setup": "nav.setup", "run": "nav.run", "report": "nav.report",
                 "regression": "nav.regression", "testplan": "nav.sprint_plan",
                 "titles": "nav.sprint_report", "automation": "nav.automation",
+                "task_manager": "nav.task_manager",
                 "links": "nav.links", "settings": "nav.settings",
                 "users": "nav.users", "ai_usage": "nav.ai_usage"}.get(screen)
 
@@ -434,6 +445,7 @@ class QAStudio:
         return {"setup": "act.connect", "run": "act.run", "report": "act.export",
                 "regression": "act.regression", "testplan": "act.sprint",
                 "titles": "act.sprint_report", "automation": "act.automation",
+                "task_manager": "act.task_manager",
                 "settings": "act.settings", "users": "act.manage_users"}.get(screen)
 
     def _first_allowed_screen(self):
@@ -520,6 +532,23 @@ class QAStudio:
         try:
             if hasattr(self, "_links"):
                 del self._links       # links are per-user too — reload for this user
+        except Exception:
+            pass
+        # Task Manager (_tm_*) is per-user too — never let one signed-in user's
+        # sprint/date-range pick, "Assigned to" selection, chosen stories, or
+        # last-run report leak to the next account signed into the same running
+        # app instance (seen live: a Viewer signing in after an Admin saw the
+        # Admin's own selections still sitting in Section 2). task_manager.py's
+        # _init(app) only ever seeds each _tm_* attribute ONCE per attribute
+        # (`if not hasattr(app, k)`) — by design, so normal in-session use (toggling
+        # scope mode, picking dates, switching sprints) never gets wiped — so
+        # deleting them here, at the one place a real account switch is known to
+        # be happening, is what makes the NEXT screen(app) call reseed fresh
+        # defaults. Deleting rather than re-listing task_manager._init's defaults
+        # here avoids the two copies drifting out of sync over time.
+        try:
+            for _k in [k for k in vars(self) if k.startswith("_tm_")]:
+                delattr(self, _k)
         except Exception:
             pass
         try:
@@ -721,6 +750,7 @@ class QAStudio:
                          or (n["id"] == "regression")
                          or (n["id"] == "testplan")
                          or (n["id"] == "titles")
+                         or (n["id"] == "task_manager")
                          or (n["id"] == "links")
                          or (n["id"] == "users")
                          or (n["id"] == "ai_usage")
@@ -1590,6 +1620,8 @@ class QAStudio:
                 view = regression.test_plan_screen(self)
             elif self.active == "titles":
                 view = sprint_titles.screen(self)
+            elif self.active == "task_manager":
+                view = task_manager.screen(self)
             elif self.active == "users":
                 view = users_screen.screen(self)
             elif self.active == "ai_usage":
@@ -1703,6 +1735,24 @@ class QAStudio:
         # Command palette: Ctrl/⌘-K opens a quick-switcher; Esc closes it.
         try:
             self.page.on_keyboard_event = self._on_key
+        except Exception:
+            pass
+        # Client-side (Flutter) render errors were previously INVISIBLE: a
+        # widget subtree that fails to build on the Dart side just paints a
+        # flat grey placeholder with nothing surfacing back to Python, so a
+        # bug like that could only ever be diagnosed by guessing. Flet
+        # forwards unhandled client-side exceptions via page.on_error — wire
+        # it to the same local diagnostics log render() already uses, so the
+        # NEXT time a screen renders as an unstyled grey box, the real
+        # Flutter-side exception (not just "no Python exception") is on disk.
+        try:
+            def _on_page_error(e):
+                try:
+                    import diag_log
+                    diag_log.log("flutter_client_error", Exception(str(getattr(e, "data", e))))
+                except Exception:
+                    pass
+            self.page.on_error = _on_page_error
         except Exception:
             pass
         # Give Windows a distinct app identity BEFORE the window shows, so the
@@ -2979,7 +3029,12 @@ class QAStudio:
                     ss = []
                 self._setup_stories = ss
                 self._setup_stories_loading = False
-                self.ui_safe(self.render)
+                # Patches just the story picker in place — see
+                # _sync_setup_story_cell (defined later this same
+                # _task_card() call, so it's already set by the time this
+                # background fetch can possibly complete). Falls back to a
+                # full render on the off chance it isn't set yet.
+                self.ui_safe(getattr(self, "_sync_setup_story_cell", self.render))
             threading.Thread(target=_load_ss, daemon=True).start()
 
         _inv0 = getattr(self, "_invalid", set())
@@ -2993,16 +3048,26 @@ class QAStudio:
             content_padding=ft.Padding.symmetric(vertical=12, horizontal=8), text_size=13, filled=True,
             bgcolor=T.CARD, expand=True)
 
+        # Matches Task Manager's searchable pickers (report_user_dd/ct_user_dd
+        # in task_manager.py) exactly — same searchable_dropdown() helper,
+        # same UN-filled styling. Those two are the proven-working type-to-
+        # filter instances in this app; this one previously also passed
+        # filled=True + bgcolor=T.CARD, which neither of them do. Filled mode
+        # pairs a Material "filled" background with the internal editable
+        # filter field in a way that's inconsistent with how the other two
+        # actually render/behave, so it's dropped here to match rather than
+        # to guess at a middle ground.
         _plan_tip = next((f"[{p['id']}] {p['name']}" for p in self._plans if p["id"] == self.plan_id), None)
         self.plan_dd = searchable_dropdown(
-            value=(str(self.plan_id) if self.plan_id else None), hint_text="Select test plan",
+            value=(str(self.plan_id) if self.plan_id else None),
+            hint_text="Type to search a test plan…",
             options=[ft.DropdownOption(key=str(p["id"]), text=f"[{p['id']}] {p['name']}") for p in self._plans],
             on_select=self._on_plan_change,
             tooltip=_plan_tip,
             border_color=(T.RED if "plan" in _inv0 else T.BORDER),
             focused_border_color=T.VIOLET, border_radius=T.R,
-            content_padding=ft.Padding.symmetric(vertical=12, horizontal=8), text_size=13, filled=True,
-            bgcolor=T.CARD, expand=True)
+            content_padding=ft.Padding.symmetric(vertical=12, horizontal=8),
+            text_size=13, expand=True)
 
         self.plan_id_field = ft.TextField(
             value=(str(self.plan_id) if self.plan_id else ""), read_only=True,
@@ -3166,7 +3231,6 @@ class QAStudio:
             except Exception:
                 pass
 
-        _ss = self._setup_stories or []
         _build_chips()
 
         # Searchable MULTISELECT of the plan's stories (same component as the
@@ -3190,9 +3254,16 @@ class QAStudio:
             _clear_story_invalid()
 
         def _all_setup_stories(checked):
+            # Reads self._setup_stories fresh (not the outer `_ss` snapshot)
+            # since this closure now outlives a single _task_card() build —
+            # _sync_setup_story_cell() rebuilds the picker in place once new
+            # stories load, without re-running _task_card() (and therefore
+            # without re-defining this closure with a fresh `_ss`). Reading
+            # live state here is what keeps "select all" correct once that
+            # no longer happens automatically.
             if checked:
                 have = set(self.story_ids)
-                for s in _ss:
+                for s in (self._setup_stories or []):
                     if s["id"] not in have:
                         self.story_ids.append(s["id"])
             else:
@@ -3211,25 +3282,53 @@ class QAStudio:
         def _open_setup_stories():
             self._setup_story_open = not self._setup_story_open
 
-        # Always displayed; disabled (greyed, unopenable) until a plan is picked
-        # and its stories load. Placeholder reflects the current state.
-        _ph = ("Select stories" if _ss
-               else ("Loading stories…" if (self.plan_id and self._setup_stories_loading)
-                     else ("No stories in this plan" if self.plan_id
-                           else "Select a test plan first")))
-        story_picker = regression._checkbox_multiselect(
-            [(str(s["id"]), f"[{s['id']}] {(s['title'] or '')[:60]}") for s in _ss],
-            [str(s) for s in self.story_ids],
-            _toggle_setup_story, _all_setup_stories,
-            is_open=self._setup_story_open, on_open=_open_setup_stories,
-            placeholder=_ph, height=260, empty="No stories found in this plan.",
-            page=self.page, app=self, sync_key="setup_stories",
-            disabled=not _ss)
+        # Dynamic cell for the story multiselect (same pattern as Task
+        # Manager's _report_dynamic_cell/_ct_dynamic_cell): a STABLE Container
+        # whose .content gets swapped + .update()-ed directly, instead of the
+        # picker being rebuilt only as a side effect of a full self.render().
+        # This is what _load_setup_stories_inplace() now calls into once a
+        # plan's stories finish loading, rather than falling back to
+        # self.render() — which used to tear down and rebuild the ENTIRE
+        # scroll column just to populate this one control, forcing a second,
+        # timing-dependent scroll-restore race on top of the editable
+        # dropdown's own focus-scroll (see _on_plan_change's _scroll_keep
+        # comment). Removing that full render doesn't touch the dropdown's
+        # own focus-scroll behavior, but it removes the SECOND, compounding
+        # jump this one screen — uniquely among this app's pickers — used to
+        # add on top of it.
+        def _build_story_picker():
+            _ss = self._setup_stories or []
+            _ph = ("Select stories" if _ss
+                   else ("Loading stories…" if (self.plan_id and self._setup_stories_loading)
+                         else ("No stories in this plan" if self.plan_id
+                               else "Select a test plan first")))
+            return regression._checkbox_multiselect(
+                [(str(s["id"]), f"[{s['id']}] {(s['title'] or '')[:60]}") for s in _ss],
+                [str(s) for s in self.story_ids],
+                _toggle_setup_story, _all_setup_stories,
+                is_open=self._setup_story_open, on_open=_open_setup_stories,
+                placeholder=_ph, height=260, empty="No stories found in this plan.",
+                page=self.page, app=self, sync_key="setup_stories",
+                disabled=not _ss)
+
+        self._setup_story_cell = ft.Container(_build_story_picker())
+
+        def _sync_setup_story_cell():
+            # Falls back to a full render only if this cell was somehow
+            # unmounted (e.g. the user navigated off Setup before the story
+            # fetch finished) — same defensive shape as this session's
+            # Task Manager epoch-guard fix for stale/orphaned cell refs.
+            try:
+                self._setup_story_cell.content = _build_story_picker()
+                self._setup_story_cell.update()
+            except Exception:
+                self.render()
+        self._sync_setup_story_cell = _sync_setup_story_cell
 
         # The manual "paste IDs" input was removed; self.story_field is kept alive
         # (unrendered) so the legacy add/remove/commit handlers stay valid.
         story_box = ft.Column([
-            story_picker,
+            self._setup_story_cell,
             self._chip_wrap], spacing=0, tight=True)
 
         self.email_picker = regression.email_recipient_picker(
@@ -3428,9 +3527,20 @@ class QAStudio:
 
     def _load_setup_stories_inplace(self):
         """Load the selected plan's stories (from its requirement suites), then
-        re-render once so the searchable story multiselect fills and enables.
-        Plan-change is a single deliberate event, so one render is fine (the
-        scroll snaps back via _on_plan_change's delayed restore)."""
+        patch just the story multiselect in place via _sync_setup_story_cell
+        — NOT a full self.render(). This used to call self.render() here
+        ("plan-change is a single deliberate event, so one render is fine"),
+        but that was the actual cause of the persistent scroll jump on plan
+        selection, not Flet's editable-dropdown focus-scroll itself: a full
+        render tears down and rebuilds the ENTIRE scroll column from scratch
+        (see main.py's render()/_restore_scroll comments), which then raced
+        against _on_plan_change's own manual scroll-restore timers rather
+        than cooperating with them. Every OTHER control this same plan-change
+        flow touches (plan_id_field, the Open/Summary buttons, the THIS RUN
+        panel) already patches in place for exactly this reason — this was
+        the one piece still falling back to a full render, and it was the
+        slow, async-timing-dependent one, which is exactly why it was the
+        visible source of the jump."""
         if not (self.connected and self.project and self.plan_id):
             return
         self._setup_stories = None
@@ -3452,7 +3562,7 @@ class QAStudio:
                 return
             self._setup_stories = ss
             self._setup_stories_loading = False
-            self.ui_safe(self.render)
+            self.ui_safe(getattr(self, "_sync_setup_story_cell", self.render))
         self._bg(work)
 
     def _fetch_estimate(self):
@@ -3584,6 +3694,16 @@ class QAStudio:
                 self._run_start_btn(_run_busy),
             ], spacing=0, expand=True), expand=True)
         else:
+            # Stored as an instance ref (same idiom as self._est_num/_est_sub
+            # above, and self._sum_stories/_sum_plan) so _connect()'s
+            # background worker can update JUST this status line while an
+            # attempt is in flight — via self._connect_status_text.value = …
+            # + .update() — instead of calling self.render(), which tears
+            # down and rebuilds this entire screen from scratch just to swap
+            # one line of text. Only meaningful while _connecting is True,
+            # since that's the only time this control is actually mounted.
+            self._connect_status_text = ft.Text(self._connect_status, size=12,
+                                                color=T.INK_2, weight=ft.FontWeight.BOLD)
             return card(ft.Column([
                 ft.Text("STEP 1 · CONNECT", size=11, weight=ft.FontWeight.BOLD, color=T.VIOLET_INK),
                 ft.Container(height=13),
@@ -3606,8 +3726,7 @@ class QAStudio:
                 *([ ft.Container(
                         ft.Row([
                             ft.ProgressRing(width=16, height=16, stroke_width=2, color=T.VIOLET),
-                            ft.Text(self._connect_status, size=12, color=T.INK_2,
-                                    weight=ft.FontWeight.BOLD),
+                            self._connect_status_text,
                         ], spacing=10),
                         padding=ft.Padding.symmetric(vertical=10, horizontal=0),
                     )] if self._connecting else []),
@@ -3698,8 +3817,7 @@ class QAStudio:
                 # 1) Validate the AI provider key first (cheap ping)
                 if not alive():
                     return
-                self._connect_status = "Checking AI provider key…"
-                self._safe_render()
+                self._set_connect_status("Checking AI provider key…")
                 kok, kmsg = E.validate_api_key()
                 if not alive():
                     return            # provider switched / re-connected mid-ping
@@ -3738,8 +3856,7 @@ class QAStudio:
                 # 2) Validate the Azure PAT
                 if not alive():
                     return
-                self._connect_status = "Validating PAT & loading projects…"
-                self._safe_render()
+                self._set_connect_status("Validating PAT & loading projects…")
                 ok, msg = E.validate_pat(pat)
                 if not alive():
                     return
@@ -3882,6 +3999,60 @@ class QAStudio:
         except Exception:
             pass
 
+    def _scroll_to_key(self, key, delays=(0, 0.35)):
+        """Restore scroll by KEY instead of raw pixel offset — the reliable
+        Flet mechanism confirmed live elsewhere in this file
+        (_auto_log_scroll_end: "offset-based scroll_to was observed live NOT
+        moving this column even as lines appended"). _restore_scroll() (used
+        automatically after every render) only ever does offset-based
+        restoration, which is a real gap: an offset is an absolute pixel
+        position, so if the content's total height changes between the
+        capture and the restore — e.g. a result table swapping for a
+        skeleton and back, a completely different height each time — landing
+        on the same NUMBER doesn't mean landing on the same semantic spot.
+        A caller that tagged a stable anchor control with `key=` (one that
+        survives across rebuilds unchanged, e.g. a Container that wraps a
+        Generate button) can call this instead/in addition to relying on the
+        generic offset-based restore, to actually return to that anchor
+        regardless of how much the surrounding content grew or shrank.
+        Retries across the given delays since the tagged control may not be
+        laid out yet immediately after a full render."""
+        def _do():
+            col = getattr(self, "_left_scroll", None)
+            if col is None:
+                regression._perf_log(f"_scroll_to_key({key}): no _left_scroll set")
+                return
+            try:
+                col.scroll_to(key=key, duration=0)
+                regression._perf_log(f"_scroll_to_key({key}): scroll_to() called, "
+                                     f"col={type(col).__name__} id={id(col)}")
+            except Exception as ex:
+                regression._perf_log(f"_scroll_to_key({key}): scroll_to() RAISED: {ex}")
+                return
+            try:
+                self.page.update()
+            except Exception:
+                pass
+
+        def _run():
+            ru = getattr(self.page, "run_thread", None)
+            if callable(ru):
+                try:
+                    ru(_do)
+                    return
+                except Exception:
+                    pass
+            _do()
+
+        for d in delays:
+            if d <= 0:
+                _run()
+            else:
+                try:
+                    threading.Timer(d, _run).start()
+                except Exception:
+                    _run()
+
     def _close_dropdowns(self, e=None):
         # Click-away: close every open dropdown in-place via the registry.
         # Each _checkbox_multiselect that is currently mounted registers a
@@ -3910,6 +4081,31 @@ class QAStudio:
         # panels closed the render can't jump an open list.
         if changed:
             self._flush_deferred_render()
+
+    def _set_connect_status(self, msg):
+        """Update the Connect flow's one-line status ("Checking AI provider
+        key…", "Validating PAT…") WITHOUT a full self.render() — see the
+        comment on self._connect_status_text in _setup_right(). A full
+        render() tears down and rebuilds the whole Setup screen just to swap
+        one line of text, which is disproportionate for something this
+        session's Task Manager work already established a lighter pattern
+        for (targeted control updates instead of full re-renders). Falls
+        back to _safe_render() only if the control ref is somehow missing —
+        shouldn't happen in practice, since render() always runs once with
+        _connecting=True (which is what creates this ref) before _connect()'s
+        background worker ever calls this."""
+        self._connect_status = msg
+        txt = getattr(self, "_connect_status_text", None)
+        if txt is None:
+            self._safe_render()
+            return
+        def _upd():
+            try:
+                txt.value = msg
+                txt.update()
+            except Exception:
+                self._safe_render()
+        self.ui_safe(_upd)
 
     def _safe_render(self):
         """Render and force the update onto Flet's event loop."""

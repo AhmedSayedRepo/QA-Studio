@@ -187,12 +187,14 @@ def login_gate(app):
         except Exception:
             W, H = 1440, 900
         if p and hasattr(ft, "DecorationImage"):
-            # Hardening: every attempt now carries SOME fit value, even the
-            # last-resort one. A bare no-fit DecorationImage silently degrades
-            # to Flutter's BoxFit.scaleDown (letterboxed) instead of raising —
-            # that's exactly how the gutter bug above went undetected through
-            # two prior fix attempts. "cover" as a plain string is a last-ditch
-            # guess for a Flet build where neither BoxFit nor ImageFit exists.
+            # REVERTED (2026-07-14): tried a blurred-cover + sharp-contain layered
+            # composite here to avoid cover's crop-zoom on the square artwork —
+            # live screenshots showed it looking WORSE (visible padding/gaps
+            # around a squarer-looking image, plus a seam bug on top of that).
+            # Back to plain single-layer COVER — it crops more of the top/bottom
+            # of the square composition than an exact-aspect image would, but it
+            # fills edge-to-edge cleanly with no seams and no gaps, which reads
+            # better than either problem the composite introduced.
             for _kw in ([dict(src=p, fit=_cover, filter_quality=_fq)] if (_cover and _fq) else []) \
                        + ([dict(src=p, fit=_cover)] if _cover else []) \
                        + [dict(src=p, fit="cover")]:

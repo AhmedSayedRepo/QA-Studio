@@ -527,16 +527,16 @@ def open_sprint_summary(app):
 
     dlg = ft.AlertDialog(
         modal=True,
-        title=ft.Row([ft.Container(logo_img(20, ft.Icons.SUMMARIZE_OUTLINED, T.VIOLET_INK),
-                                   width=34, height=34, bgcolor=T.VIOLET_SOFT,
-                                   border_radius=9, alignment=ft.Alignment.CENTER),
+        title=ft.Row([ft.Container(logo_img(28, ft.Icons.SUMMARIZE_OUTLINED, T.VIOLET_INK),
+                                   width=46, height=46, bgcolor=T.VIOLET_SOFT,
+                                   border_radius=12, alignment=ft.Alignment.CENTER),
                       ft.Text("Sprint Summary", weight=ft.FontWeight.W_800, size=16,
                               color=T.INK)],
                      spacing=10, tight=True),
         content=ft.Container(
             ft.Column([ft.Container(body_col, expand=True), email_bar],
                       spacing=4, tight=False),
-            width=560, height=540),
+            width=820, height=580),
         actions=[close_btn],
         actions_alignment=ft.MainAxisAlignment.END,
     )
@@ -547,10 +547,21 @@ def open_sprint_summary(app):
             data = E.sprint_summary(app.project, app.plan_id)
         except Exception as ex:
             app._sum_loading = False
+            # Capture the message NOW, not inside show_err(). `except X as ex`
+            # is implicitly `del`-ed by Python the instant this except suite
+            # finishes (to avoid a traceback/frame reference cycle) — and
+            # app.ui_safe() dispatches via page.run_thread(), which SCHEDULES
+            # show_err() to run later on the page thread rather than calling
+            # it inline. So by the time show_err() actually ran, `ex` was
+            # already gone, and referencing it as a free variable crashed
+            # with "NameError: cannot access free variable 'ex'" — a real,
+            # deterministic crash confirmed from a live `python main.py` run,
+            # not a network/message-content issue at all.
+            err_msg = str(ex)[:160]
             def show_err():
                 body_col.controls = [ft.Row([
                     ft.Icon(ft.Icons.ERROR_OUTLINE, color=T.RED, size=20),
-                    ft.Text(f"Could not load summary: {str(ex)[:160]}",
+                    ft.Text(f"Could not load summary: {err_msg}",
                             size=12.5, color=T.RED, weight=ft.FontWeight.W_500, expand=True)],
                     spacing=8)]
                 try: body_col.update()
@@ -634,20 +645,36 @@ def open_sprint_summary(app):
             _sorted_states = sorted(by_state.items(), key=lambda x: -x[1])
             _state_color = {st: _PALETTE_FG[i % len(_PALETTE_FG)]
                             for i, (st, _c) in enumerate(_sorted_states)}
-            def _status_card(label, count, fg):
+            # Card width is computed from how many status cards there are so
+            # they all fit across one row of the (now-820px-wide) dialog
+            # instead of truncating each label to "Product O…" — the full
+            # status name wraps onto 2 lines instead. Cards shrink toward
+            # _MIN_W as more statuses appear; if there are still too many to
+            # fit even at the floor width (a LOT of distinct states), the
+            # Row's wrap=True is the fallback so they flow onto a second row
+            # rather than overflowing the dialog horizontally.
+            _MIN_W, _MAX_W = 92, 150
+            _n_cards = len(_sorted_states)
+            _card_w = _MAX_W
+            if _n_cards:
+                _avail = 760  # dialog content width (820) minus outer padding
+                _raw = (_avail - (10 * (_n_cards - 1))) / _n_cards
+                _card_w = max(_MIN_W, min(_MAX_W, _raw))
+            def _status_card(label, count, fg, width):
                 return ft.Container(
                     ft.Column([
                         ft.Text(str(count), size=22, weight=ft.FontWeight.BOLD, color=fg),
                         ft.Text(label, size=11, weight=ft.FontWeight.BOLD, color=T.INK_2,
-                                max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                                max_lines=2, overflow=ft.TextOverflow.ELLIPSIS,
+                                text_align=ft.TextAlign.CENTER),
                     ], spacing=1, horizontal_alignment=ft.CrossAxisAlignment.CENTER, tight=True),
                     bgcolor=ft.Colors.with_opacity(0.14, fg), border_radius=T.R,
                     border=ft.Border.all(1, ft.Colors.with_opacity(0.30, fg)),
-                    padding=ft.Padding.symmetric(vertical=12, horizontal=14),
-                    width=104, tooltip=f"{label}: {count}")
+                    padding=ft.Padding.symmetric(vertical=12, horizontal=10),
+                    width=width, tooltip=f"{label}: {count}")
             state_cards = []
             for st, cnt in _sorted_states:
-                state_cards.append(_status_card(st, cnt, _state_color[st]))
+                state_cards.append(_status_card(st, cnt, _state_color[st], _card_w))
             status_row = ft.Row(state_cards, wrap=True, spacing=10, run_spacing=10) \
                 if state_cards else ft.Text("No stories in this sprint.",
                                             size=12, color=T.INK_3, weight=ft.FontWeight.W_500)
@@ -666,6 +693,25 @@ def open_sprint_summary(app):
             # the rest of the row is inert. Rows are zebra-striped and carry
             # an inline delete button, both copied from Sprint Plan's table
             # so the two screens match.
+            # Column widths shared between the header row and every story row
+            # so labels line up with the cells underneath (badge()/Text() are
+            # both auto-width, so without a fixed Container around each one
+            # the header wouldn't actually align with anything below it).
+            _COL_ASSIGNED, _COL_TC, _COL_STATE, _COL_DEL = 118, 54, 110, 34
+            table_header = ft.Row([
+                ft.Text("STORY", size=10, weight=ft.FontWeight.BOLD, color=T.INK_3,
+                        expand=True),
+                ft.Container(ft.Text("ASSIGNED", size=10, weight=ft.FontWeight.BOLD,
+                                     color=T.INK_3), width=_COL_ASSIGNED),
+                ft.Container(ft.Text("TC", size=10, weight=ft.FontWeight.BOLD,
+                                     color=T.INK_3, text_align=ft.TextAlign.CENTER),
+                             width=_COL_TC, alignment=ft.Alignment.CENTER),
+                ft.Container(ft.Text("STATUS", size=10, weight=ft.FontWeight.BOLD,
+                                     color=T.INK_3, text_align=ft.TextAlign.CENTER),
+                             width=_COL_STATE, alignment=ft.Alignment.CENTER),
+                ft.Container(width=_COL_DEL),
+            ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+
             story_rows = []
             for i, s in enumerate(data["stories"]):
                 rtl = any('\u0600' <= c <= '\u06ff' for c in s["title"])
@@ -675,11 +721,23 @@ def open_sprint_summary(app):
                              font_family=T.F_MONO),
                     ft.Icon(ft.Icons.OPEN_IN_NEW, size=11, color=T.VIOLET_INK),
                 ], spacing=3, tight=True, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+                assigned_name = s.get("assigned_to") or "Unassigned"
+                assigned_cell = ft.Container(
+                    ft.Row([
+                        ft.Icon(ft.Icons.PERSON_OUTLINE, size=13,
+                                color=(T.INK_3 if assigned_name == "Unassigned" else T.INK_2)),
+                        ft.Text(assigned_name, size=11.5,
+                               weight=ft.FontWeight.W_600,
+                               color=(T.INK_3 if assigned_name == "Unassigned" else T.INK),
+                               max_lines=1, overflow=ft.TextOverflow.ELLIPSIS,
+                               tooltip=assigned_name),
+                    ], spacing=4, tight=True, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    width=_COL_ASSIGNED)
                 del_btn = ft.IconButton(
                     icon=ft.Icons.DELETE_OUTLINE, icon_size=18, icon_color=T.RED,
                     tooltip="Remove from this summary",
                     on_click=_delete_story(s["id"]),
-                    width=34, height=34,
+                    width=_COL_DEL, height=34,
                     style=ft.ButtonStyle(padding=ft.Padding.all(0),
                                          shape=ft.RoundedRectangleBorder(radius=8)))
                 story_rows.append(ft.Container(
@@ -692,8 +750,11 @@ def open_sprint_summary(app):
                                     max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
                             id_link,
                         ], spacing=2, expand=True),
-                        badge(f"{s['test_cases']} TC", "grey"),
-                        badge(s["state"], _state_kind(s["state"])),
+                        assigned_cell,
+                        ft.Container(badge(f"{s['test_cases']} TC", "grey"),
+                                    width=_COL_TC, alignment=ft.Alignment.CENTER),
+                        ft.Container(badge(s["state"], _state_kind(s["state"])),
+                                    width=_COL_STATE, alignment=ft.Alignment.CENTER),
                         del_btn,
                     ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                     padding=ft.Padding.symmetric(vertical=6, horizontal=12),
@@ -714,10 +775,16 @@ def open_sprint_summary(app):
                 status_row,
                 ft.Container(height=6),
                 ft.Text("STORIES", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
-                ft.Container(ft.Column(story_rows, spacing=0, scroll=ft.ScrollMode.AUTO),
+                ft.Container(ft.Column([
+                                ft.Container(table_header,
+                                            padding=ft.Padding.symmetric(vertical=6, horizontal=12),
+                                            bgcolor=T.CARD_2,
+                                            border=ft.Border.only(bottom=ft.BorderSide(1, T.BORDER))),
+                                ft.Column(story_rows, spacing=0, scroll=ft.ScrollMode.AUTO,
+                                         height=240),
+                             ], spacing=0, tight=True),
                              bgcolor=T.CARD, border=ft.Border.all(1, T.BORDER),
-                             border_radius=T.R, padding=ft.Padding.symmetric(vertical=2, horizontal=4),
-                             height=240),
+                             border_radius=T.R, padding=ft.Padding.symmetric(vertical=2, horizontal=4)),
             ]
             email_bar.visible = True
             try:

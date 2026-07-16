@@ -71,26 +71,47 @@ def _digits_only():
 
 def _keep_scroll(app, off):
     """Re-assert a scroll offset after an in-place table rebuild so collapse /
-    pagination doesn't jump when the visible content height changes."""
+    pagination doesn't jump when the visible content height changes.
+
+    Unlike the old Generate-button bug (see DEV_ROADMAP cont'd #21), this
+    capture-then-reapply is safe from the "transient shrink clobbers
+    app._scroll_offset" trap: `off` is captured by the caller BEFORE the
+    rebuild and closed over here, not re-read from app._scroll_offset on each
+    retry, so even if an in-between clamp fires on_scroll and overwrites the
+    live value, every shot below still re-asserts the ORIGINAL correct one.
+
+    The retry window itself needed widening, though: qa_perf_installed.log
+    shows `table.flet_update` alone taking up to ~550 ms on a large plan
+    (414+ stories), while the old shots stopped at 160 ms — the last retry
+    could fire before Flutter had even finished laying out the new rows,
+    so a big page-flip/collapse on a large plan could still show a residual
+    jump. Extended to 0.5 s with a perf-logged last attempt so this is
+    verifiable next time instead of assumed."""
     if not off:
         return
     col = getattr(app, "_left_scroll", None)
     if col is None:
         return
 
-    def _do():
+    def _do(final=False):
         try:
             col.scroll_to(offset=off, duration=0)
-        except Exception:
-            pass
+            if final:
+                _perf_log(f"_keep_scroll: final restore to offset={off} applied")
+        except Exception as ex:
+            if final:
+                _perf_log(f"_keep_scroll: final restore RAISED: {ex}")
     try:
         app.ui_safe(_do)
     except Exception:
         pass
-    # a couple of delayed shots in case the layout settles a frame later
-    for _d in (0.05, 0.16):
+    # Delayed shots so the reassert survives a layout that settles a frame
+    # (or several) later — widened past the worst observed table.flet_update
+    # cost (~550 ms) rather than the old 160 ms ceiling.
+    for _d in (0.05, 0.16, 0.5):
+        _final = (_d == 0.5)
         try:
-            threading.Timer(_d, lambda: app.ui_safe(_do)).start()
+            threading.Timer(_d, lambda f=_final: app.ui_safe(lambda: _do(f))).start()
         except Exception:
             pass
 
@@ -852,7 +873,17 @@ def _plan_html(d):
     (the app's actual cyan/teal accent — see theme.py's VIOLET/VIOLET_INK/VIOLET_SOFT),
     so all three report emails read as one consistent brand. The external-sender
     warning some inboxes show is injected by the mail server, not here.
+
+    Every free-text field below (story/feature title, assignee name, plan
+    name) is passed through html.escape() before being dropped into this
+    f-string HTML — those come from Azure DevOps work items or resource
+    names, which anyone with edit access to the project could set to
+    anything, including literal HTML/script markup, not from a fixed set
+    this app controls. Same convention engine.py's own report emails already
+    use throughout (build_report_email, build_sprint_summary_email,
+    build_ai_usage_email).
     """
+    import html as _html
     PAPER="#E9E8EE"; CARD="#FFFFFF"; TINT="#FAFAFC"
     INK="#1B1A22"; INK2="#6B6975"; INK3="#9C9AA6"
     LINE="#E8E7EE"; LINE2="#F1F0F5"
@@ -895,13 +926,13 @@ def _plan_html(d):
     def _story_html_row(r):
         bg, fg, lab = _email_pri(r["priority"])
         init, acol = _av(r.get("assignee", ""))
-        who = (r.get("assignee") or "").strip()
+        who = _html.escape((r.get("assignee") or "").strip())
         asg = (
             f"<table role='presentation' cellpadding='0' cellspacing='0'><tr>"
             f"<td width='24' style='vertical-align:middle'>"
             f"<div style='width:24px;height:24px;line-height:24px;border-radius:50%;"
             f"background:{acol};color:#fff;text-align:center;font-size:10px;font-weight:700;"
-            f"font-family:Segoe UI,Arial,sans-serif'>{init}</div></td>"
+            f"font-family:Segoe UI,Arial,sans-serif'>{_html.escape(str(init))}</div></td>"
             f"<td style='padding-left:9px;font-size:13px;font-weight:600;color:{INK2};"
             f"white-space:nowrap;vertical-align:middle'>{who or '—'}</td></tr></table>")
         cases_cell = (
@@ -914,7 +945,7 @@ def _plan_html(d):
             f"<a href='{_wi_url(d['project'], r['id'])}' "
             f"style='color:{VIOLET_INK};text-decoration:none'>{r['id']}</a></td>"
             f"<td style='padding:12px 8px;font-size:13.5px;font-weight:600;color:{INK}'>"
-            f"{(r['title'] or '—')}</td>"
+            f"{_html.escape(r['title']) if r['title'] else '—'}</td>"
             f"<td style='padding:12px 8px;text-align:center'>"
             f"<span style='font-family:{MONO};font-size:11px;font-weight:700;"
             f"padding:3px 8px;border-radius:6px;background:{bg};color:{fg}'>{lab}</span></td>"
@@ -942,13 +973,13 @@ def _plan_html(d):
     for (_fid_h, _fname_h), _fstories_h in _feat_grps_h.items():
         if _shown_h >= _STORY_CAP_H:
             break
-        _fid_label_h = f"[{_fid_h}]  " if _fid_h else ""
+        _fid_label_h = f"[{_html.escape(str(_fid_h))}]  " if _fid_h else ""
         srows.append(
             f"<tr style='background:{VIOLET_SOFT};border-top:2px solid {VIOLET}'>"
             f"<td colspan='{_html_ncols + 2}' style='padding:7px 14px;font-size:10.5px;"
             f"font-weight:700;color:{VIOLET_INK};letter-spacing:.4px;"
             f"text-transform:uppercase'>"
-            f"Feature: {_fid_label_h}{_fname_h}</td></tr>")
+            f"Feature: {_fid_label_h}{_html.escape(str(_fname_h))}</td></tr>")
         for r in _fstories_h:
             if _shown_h >= _STORY_CAP_H:
                 break
@@ -987,10 +1018,10 @@ def _plan_html(d):
                 f"<td width='22' style='vertical-align:middle'>"
                 f"<div style='width:22px;height:22px;line-height:22px;border-radius:6px;"
                 f"background:{acol};color:#fff;text-align:center;font-size:10px;"
-                f"font-weight:700;font-family:Segoe UI,Arial,sans-serif'>{init}</div></td>"
+                f"font-weight:700;font-family:Segoe UI,Arial,sans-serif'>{_html.escape(str(init))}</div></td>"
                 f"<td style='padding-left:9px;font-size:13px;font-weight:700;color:{INK};"
                 f"vertical-align:middle'>"
-                f"{w['name']}</td></tr></table></td>"
+                f"{_html.escape(str(w['name']))}</td></tr></table></td>"
                 f"<td style='padding:7px 14px'>"
                 f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0' "
                 f"style='background:{LINE2};border-radius:99px'><tr>"
@@ -1011,8 +1042,8 @@ def _plan_html(d):
             f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0' "
             f"style='margin-top:14px'>" + "".join(wrows) + "</table></td></tr>")
 
-    scope = d["plan_name"] or d["project"]
-    kind = d.get("report_title", "Regression Test Plan")
+    scope = _html.escape(str(d["plan_name"] or d["project"]))
+    kind = _html.escape(str(d.get("report_title", "Regression Test Plan")))
 
     # masthead — same layout as the run report / sprint summary emails
     masthead = (
@@ -1889,15 +1920,29 @@ def _sprint_num(text):
     return re.sub(r"\s+", " ", m.group(0)).strip() if m else ""
 
 
-def _repaint_unless_open(app, open_attr):
+def _repaint_unless_open(app, open_attr, sync_attr=None):
     """Repaint the screen — but if the named dropdown is OPEN, DEFER the render.
     A full render rebuilds the open multiselect panel and snaps its list back to
     the top (the 'scroll up on tick' bug). The picker's close (field-click OR
-    click-away) flushes the pending render via app._flush_deferred_render()."""
+    click-away) flushes the pending render via app._flush_deferred_render().
+
+    sync_attr (optional): name of an app-level in-place sync callable (the same
+    dynamic-cell pattern used for Setup's story picker — see DEV_ROADMAP
+    cont'd #22/#23). When present and callable, prefer it over a full render:
+    a background story-load finishing is a narrow content change, not a
+    reason to rebuild the whole screen (cards, table, KPIs, everything). Falls
+    back to a full render if the in-place sync isn't available or raises."""
     if getattr(app, open_attr, False):
         app._deferred_render = True
-    else:
-        app.ui_safe(app.render)
+        return
+    _sync = getattr(app, sync_attr, None) if sync_attr else None
+    if callable(_sync):
+        try:
+            app.ui_safe(_sync)
+            return
+        except Exception:
+            pass
+    app.ui_safe(app.render)
 
 
 def _reload_plan_stories(app):
@@ -1914,10 +1959,10 @@ def _reload_plan_stories(app):
     if not plans:
         app._reg_plan_stories = []
         app._reg_stories_loading = False
-        _repaint_unless_open(app, "_reg_plan_open")
+        _repaint_unless_open(app, "_reg_plan_open", "_sync_reg_story_cell")
         return
     app._reg_stories_loading = True
-    _repaint_unless_open(app, "_reg_plan_open")
+    _repaint_unless_open(app, "_reg_plan_open", "_sync_reg_story_cell")
 
     def _work():
         import concurrent.futures as _cf_reload
@@ -1983,7 +2028,7 @@ def _reload_plan_stories(app):
             return
         app._reg_plan_stories = agg
         app._reg_stories_loading = False
-        _repaint_unless_open(app, "_reg_plan_open")
+        _repaint_unless_open(app, "_reg_plan_open", "_sync_reg_story_cell")
     threading.Thread(target=_work, daemon=True).start()
 
 
@@ -4168,12 +4213,46 @@ def screen(app):
         app._reg_story_invalid = False
         app._reg_count_invalid = False
         app._reg_res_invalid = False
-        calc_note_wrap.visible = False
-        # Re-render once so the previous plan table is immediately replaced by the
-        # progress spinner + loading skeleton (the button also flips to "Generating…"
-        # and the table is rebuilt from scratch when _work completes below).
-        # build_rows runs off the UI thread, so this single repaint stays snappy.
-        app.render()
+        # In-place busy-flip — deliberately NOT a full app.render(). Two earlier
+        # fixes for the scroll-jump on this button (an extra scroll-retry, then
+        # a key-based scroll_to anchor) both failed; qa_perf_installed.log
+        # finally showed why. A full render() here used to briefly SHRINK the
+        # page to the tiny spinner/skeleton placeholder, and that transient
+        # shrink clamps the scroll position, which fires on_scroll and
+        # overwrites app._scroll_offset with the smaller clamped value. When
+        # the real (tall) table then rendered at completion, _restore_scroll()
+        # faithfully restored that now-wrong smaller offset — a real,
+        # reproducible jump every time. (The key-based anchor never had a
+        # chance either: the log shows Flet 0.85.3's ScrollableControl
+        # .scroll_to() raises "got an unexpected keyword argument 'key'" —
+        # every _scroll_to_key call was a silent no-op.)
+        # Fix: never shrink the page on click. Leave the previous table
+        # exactly where it is, just flip the button/note/spinner in place —
+        # app._scroll_offset is never touched, so nothing to restore later.
+        try:
+            calc_btn.opacity = 0.45
+            calc_btn.shadow = None
+            calc_btn.on_click = None
+            calc_btn.content.controls[-1].value = "Generating…"
+            calc_btn.update()
+        except Exception:
+            pass
+        try:
+            regen_btn.disabled = True
+            regen_btn.on_click = None
+            regen_btn.update()
+        except Exception:
+            pass
+        try:
+            calc_note_wrap.visible = False
+            calc_note_wrap.update()
+        except Exception:
+            pass
+        try:
+            gen_spinner.visible = True
+            gen_spinner.update()
+        except Exception:
+            pass
 
         def _work():
             def _progress(done, total):
@@ -4202,6 +4281,14 @@ def screen(app):
             # background completion forces a heavy render of whatever screen the
             # user navigated to (reads as a freeze).
             if getattr(app, "active", None) == "regression":
+                # Single full render to build the fresh results table. No
+                # extra scroll-restore call needed anymore: the busy-flip
+                # above no longer shrinks the page (see the comment at the
+                # top of _calculate), so app._scroll_offset was never
+                # clobbered by a transient clamp. The existing offset-based
+                # _restore_scroll() — already invoked automatically at the
+                # end of every render() — lands back in the right place on
+                # its own.
                 app.ui_safe(app.render)
         threading.Thread(target=_work, daemon=True).start()
 
@@ -4471,12 +4558,18 @@ def screen(app):
             padding=ft.Padding.symmetric(vertical=12, horizontal=12),
             bgcolor=T.CARD, border=ft.Border.all(1, T.BORDER), border_radius=T.R)
 
-    if app._reg_stories_loading:
-        story_picker = _loading_field("Loading stories…")
-    elif not _have_plans:
-        story_picker = _disabled_field("Select a test plan first")
-    else:
-        story_picker = _checkbox_multiselect(
+    # Dynamic cell (same pattern as Setup's story picker — DEV_ROADMAP cont'd
+    # #22/#23): a stable Container whose .content gets swapped + .update()-ed
+    # directly, so _reload_plan_stories' background completion can reflect
+    # "stories loaded" without a full app.render() rebuilding cards 2/3, the
+    # table, KPIs, etc. just to show a story count. Re-reads app state fresh
+    # every call — no stale closures.
+    def _build_reg_story_picker():
+        if app._reg_stories_loading:
+            return _loading_field("Loading stories…")
+        if not bool(app._reg_plans_selected):
+            return _disabled_field("Select a test plan first")
+        return _checkbox_multiselect(
             [(str(s["id"]),
               (f"[{s['sprint']}] " if s.get("sprint") else "")
               + f"[{s['id']}] {(s['title'] or '')[:60]}")
@@ -4487,6 +4580,17 @@ def screen(app):
             empty="No stories in the selected plan(s).",
             page=app.page, app=app, sync_key="reg_stories",
             invalid=getattr(app, "_reg_story_invalid", False))
+
+    _reg_story_cell = ft.Container(_build_reg_story_picker())
+    story_picker = _reg_story_cell   # unchanged downstream — still embedded as before
+
+    def _sync_reg_story_cell():
+        try:
+            _reg_story_cell.content = _build_reg_story_picker()
+            _reg_story_cell.update()
+        except Exception:
+            app.render()
+    app._sync_reg_story_cell = _sync_reg_story_cell
 
     def _chip(label, on_close):
         return ft.Container(
@@ -4973,7 +5077,12 @@ def screen(app):
     calc_btn = primary_btn("Generating…" if app._reg_busy else "Generate Regression Plan",
                            icon=ft.Icons.CALCULATE, on_click=_calculate,
                            disabled=app._reg_busy or not app._reg_selected)
-    _calc_btn_cell[0] = calc_btn   # store ref so _calculate can mutate it
+    _calc_btn_cell[0] = calc_btn   # store ref so _calculate can mutate it in place
+    # (No more key= scroll anchor here — Flet 0.85.3's ScrollableControl
+    # .scroll_to() doesn't accept a key= argument at all, confirmed live via
+    # qa_perf_installed.log. _calculate() no longer needs to anchor scroll
+    # restoration to this button because it no longer triggers a page-shrinking
+    # render in the first place.)
 
     gen_spinner = ft.Container(
         ft.Row([ft.ProgressRing(width=18, height=18, stroke_width=2.5, color=T.VIOLET),

@@ -1444,6 +1444,13 @@ def fetch_projects(pat=None):
     return sorted([p["name"] for p in data.get("value", [])])
 
 def fetch_iterations(project, pat=None):
+    """Each returned dict now also carries `start_date`/`finish_date`
+    ("YYYY-MM-DD", or "" if that iteration has no dates configured in Azure
+    DevOps) — the classification-node API already returns these under
+    `attributes.startDate`/`finishDate` per node, just previously discarded
+    here. Added so Task Manager can prorate its 170h/month workload
+    benchmark against a SPRINT's own real date span, the same way it already
+    does for an explicit Date range."""
     url = (f"https://dev.azure.com/{AZURE_ORG}/{project}"
            f"/_apis/wit/classificationnodes/iterations?$depth=10&api-version=7.0")
     data = _azure_get(url, pat)
@@ -1451,13 +1458,17 @@ def fetch_iterations(project, pat=None):
     def _walk(node, prefix):
         name = node.get("name", "")
         path = (prefix + "\\" + name) if prefix else name
-        out.append({"name": name, "path": path, "id": node.get("identifier", "")})
+        attrs = node.get("attributes") or {}
+        out.append({"name": name, "path": path, "id": node.get("identifier", ""),
+                    "start_date": (attrs.get("startDate") or "")[:10],
+                    "finish_date": (attrs.get("finishDate") or "")[:10]})
         for ch in node.get("children", []) or []:
             _walk(ch, path)
     for child in data.get("children", []) or []:
         _walk(child, project)
     if not out:
-        out.append({"name": project, "path": project, "id": data.get("identifier", "")})
+        out.append({"name": project, "path": project, "id": data.get("identifier", ""),
+                    "start_date": "", "finish_date": ""})
     return out
 
 def _wiql_str(value):
@@ -1670,6 +1681,32 @@ def sprint_report_data(project, iteration_path, pat=None):
 
 
 def sprint_summary(project, plan_id, pat=None):
+    """Public entry point — thin wrapper around _sprint_summary_impl().
+
+    Reported bug: the Sprint Summary modal showed a bare, useless
+    "Could not load summary: None" error with zero diagnostic value. That
+    exact text comes from `str(ex)` being literally the string "None" —
+    which happens when something deep in the pipeline raises, e.g.,
+    `KeyError(None)` (a plain dict's `__str__`/`BaseException.__str__`
+    renders a single `None` arg as the 4-character word "None", not an
+    empty string). Nothing in this function's own body constructs an
+    exception with a None argument, and every raw call it doesn't wrap
+    itself already goes through `_azure_get` (which always raises with a
+    real message) or is guarded by its own try/except — so the exact
+    original raise site couldn't be pinned down without a live repro.
+    Rather than leave that dead end in place, this wrapper guarantees NO
+    caller can ever see a bare/None-ish message again: any exception from
+    _sprint_summary_impl is re-raised with a real message, falling back to
+    the exception's type name when the message itself is empty or "None"."""
+    try:
+        return _sprint_summary_impl(project, plan_id, pat)
+    except Exception as ex:
+        msg = str(ex).strip()
+        if not msg or msg.lower() == "none":
+            msg = f"{type(ex).__name__} — no further detail was available from Azure DevOps."
+        raise RuntimeError(msg) from ex
+
+def _sprint_summary_impl(project, plan_id, pat=None):
     """Build a status summary for the sprint behind a test plan.
 
     Reads the plan's iteration, finds every User Story in that iteration, tallies
@@ -1679,7 +1716,7 @@ def sprint_summary(project, plan_id, pat=None):
           "plan_name": str, "iteration": str,
           "total_stories": int,
           "by_state": {state: count, ...},
-          "stories": [{"id","title","state","test_cases"}, ...],
+          "stories": [{"id","title","state","test_cases","assigned_to"}, ...],
           "total_test_cases": int,
         }
     """
@@ -1691,6 +1728,15 @@ def sprint_summary(project, plan_id, pat=None):
     iteration = plan.get("iteration") or ""
 
     # 2) all User Stories in that iteration (id + title + state)
+    #
+    # "Assigned to Tester" here means the same custom picklist field the
+    # Sprint Plan screen's "Assign to Testers" button writes (see
+    # assign_testers() below) — a QA ownership field, distinct from
+    # System.AssignedTo (the dev/PM assignee). Its reference name isn't
+    # fixed (it's a Custom.* field that varies per project's process
+    # template), so it has to be resolved by label first, same as
+    # assign_testers() does.
+    tester_field_ref = resolve_field_ref(project, "Assigned To Tester", pat)
     stories = []
     if iteration:
         safe = _wiql_str(iteration)
@@ -1700,18 +1746,38 @@ def sprint_summary(project, plan_id, pat=None):
         url = f"https://dev.azure.com/{AZURE_ORG}/{project}/_apis/wit/wiql?api-version=7.0"
         r = requests.post(url, json=wiql, auth=("", pat), timeout=30)
         ids = [w["id"] for w in r.json().get("workItems", [])] if r.status_code == 200 else []
+        _fields = "System.Id,System.Title,System.State"
+        if tester_field_ref:
+            _fields += f",{tester_field_ref}"
         for i in range(0, len(ids), 200):
             batch = ids[i:i+200]
             burl = (f"https://dev.azure.com/{AZURE_ORG}/{project}/_apis/wit/workitems"
                     f"?ids={','.join(map(str,batch))}"
-                    f"&fields=System.Id,System.Title,System.State&api-version=7.0")
+                    f"&fields={_fields}"
+                    f"&api-version=7.0")
             br = requests.get(burl, auth=("", pat), timeout=30)
             if br.status_code == 200:
                 for w in br.json().get("value", []):
                     f = w.get("fields", {})
+                    # Assigned To Tester is USUALLY a plain picklist string
+                    # (see tester_allowed_values()'s allowedValues) — but it
+                    # turns out some projects' process templates define it as
+                    # an IDENTITY field instead (an Azure AD user picker, same
+                    # shape as System.AssignedTo: {"displayName":...,
+                    # "uniqueName":...}), confirmed live — treating it as a
+                    # bare string crashed with "'dict' object has no
+                    # attribute 'strip'" the moment a story actually had one
+                    # assigned. Handle both shapes rather than assuming one.
+                    _tv = f.get(tester_field_ref) if tester_field_ref else None
+                    if isinstance(_tv, dict):
+                        tester_name = (_tv.get("displayName") or "").strip()
+                    else:
+                        tester_name = (str(_tv).strip() if _tv else "")
+                    tester_name = tester_name or "Unassigned"
                     stories.append({"id": w["id"],
                                     "title": f.get("System.Title", ""),
-                                    "state": f.get("System.State", "Unknown")})
+                                    "state": f.get("System.State", "Unknown"),
+                                    "assigned_to": tester_name})
 
     # 3) test-case counts per story (via that story's suite in the plan)
     story_ids = [s["id"] for s in stories]
@@ -2067,6 +2133,186 @@ def fetch_project_members(project, pat=None, force=False):
     result = sorted(out.values(), key=lambda r: r["name"].lower())
     _project_members_cache[project] = result
     return result
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  TASK MANAGER — per-user task workload report (Original Estimate / Completed
+#  Work, scoped to a sprint/iteration, matching the app's existing convention
+#  of iteration-based scoping rather than raw date ranges — see Sprint Report /
+#  Sprint Plan) + bulk "create a child Task under each selected story" tool.
+# ═══════════════════════════════════════════════════════════════════════════════
+def fetch_user_task_stats(project, iteration_path=None, assignee=None,
+                          start_date=None, end_date=None, pat=None):
+    """Every 'Task' work item assigned to `assignee` (an email — matched as a
+    substring of the AssignedTo field, case-insensitive, since the plain
+    (non-$expand) work-items endpoint returns AssignedTo as a "Display Name
+    <email>" string rather than a structured identity object), scoped EITHER
+    by `iteration_path` (a sprint, the original behavior) OR — when no sprint
+    is given — by a [start_date, end_date] calendar range (both "YYYY-MM-DD"
+    strings), matched against the task's [System.ChangedDate]. The Task
+    Manager screen's Calculate now accepts either a sprint or a date range;
+    this mirrors that at the query level rather than forcing iteration-only
+    scoping. `iteration_path` takes precedence if both happen to be passed.
+    Returns:
+        {"iteration": str, "date_range": str, "assignee": str,
+         "tasks": [{"id","title","state","parent_id","parent_title",
+                    "original_estimate","completed_work"}, ...],
+         "total_original_estimate": float, "total_completed_work": float,
+         "count": int}
+    Best-effort: any failed call yields an empty result rather than raising —
+    same fail-soft convention as sprint_report_data."""
+    pat = pat or AZURE_PAT
+    if iteration_path:
+        safe = _wiql_str(iteration_path)
+        where = f"[System.IterationPath] = '{safe}'"
+        date_range_label = ""
+    else:
+        from datetime import date as _date, timedelta as _timedelta
+        # Half-open range [start, end+1) on ChangedDate so the END day is
+        # covered in full rather than cut off at its midnight instant.
+        try:
+            end_next = (_date.fromisoformat(end_date) + _timedelta(days=1)).isoformat()
+        except Exception:
+            end_next = end_date
+        where = (f"[System.ChangedDate] >= '{_wiql_str(start_date)}' AND "
+                 f"[System.ChangedDate] < '{_wiql_str(end_next)}'")
+        date_range_label = f"{start_date} – {end_date}"
+    wiql = {"query": ("SELECT [System.Id] FROM WorkItems WHERE "
+                      "[System.WorkItemType] = 'Task' AND "
+                      f"{where} ORDER BY [System.Id]")}
+    url = f"https://dev.azure.com/{AZURE_ORG}/{project}/_apis/wit/wiql?api-version=7.0"
+    try:
+        r = _az_session().post(url, json=wiql, auth=("", pat), timeout=30)
+        ids = [w["id"] for w in r.json().get("workItems", [])] if r.status_code == 200 else []
+    except Exception:
+        ids = []
+    if not ids:
+        return {"iteration": iteration_path or "", "date_range": date_range_label,
+                "assignee": assignee, "tasks": [],
+                "total_original_estimate": 0.0, "total_completed_work": 0.0, "count": 0}
+
+    fields = ("System.Id,System.Title,System.State,System.AssignedTo,System.Parent,"
+              "Microsoft.VSTS.Scheduling.OriginalEstimate,"
+              "Microsoft.VSTS.Scheduling.CompletedWork")
+    raw = []
+    for i in range(0, len(ids), 200):
+        b = ids[i:i + 200]
+        burl = (f"https://dev.azure.com/{AZURE_ORG}/{project}/_apis/wit/workitems"
+               f"?ids={','.join(map(str, b))}&fields={fields}&api-version=7.0")
+        try:
+            br = _az_session().get(burl, auth=("", pat), timeout=30)
+            if br.status_code == 200:
+                raw += br.json().get("value", [])
+        except Exception:
+            pass
+
+    needle = (assignee or "").strip().lower()
+    matched = []
+    for w in raw:
+        f = w.get("fields", {})
+        assigned = str(f.get("System.AssignedTo", "") or "")
+        if needle and needle not in assigned.lower():
+            continue
+        matched.append(w)
+
+    # Resolve each matched task's parent story title (one extra batch fetch).
+    parent_ids = sorted({f["fields"].get("System.Parent") for f in
+                         [w for w in matched] if w.get("fields", {}).get("System.Parent")})
+    parent_titles = {}
+    for i in range(0, len(parent_ids), 200):
+        b = parent_ids[i:i + 200]
+        purl = (f"https://dev.azure.com/{AZURE_ORG}/{project}/_apis/wit/workitems"
+               f"?ids={','.join(map(str, b))}&fields=System.Id,System.Title&api-version=7.0")
+        try:
+            pr = _az_session().get(purl, auth=("", pat), timeout=30)
+            if pr.status_code == 200:
+                for pw in pr.json().get("value", []):
+                    parent_titles[pw["id"]] = pw.get("fields", {}).get("System.Title", "")
+        except Exception:
+            pass
+
+    tasks, tot_est, tot_comp = [], 0.0, 0.0
+    for w in matched:
+        f = w.get("fields", {})
+        est = float(f.get("Microsoft.VSTS.Scheduling.OriginalEstimate") or 0)
+        comp = float(f.get("Microsoft.VSTS.Scheduling.CompletedWork") or 0)
+        pid = f.get("System.Parent")
+        tasks.append({"id": w["id"], "title": f.get("System.Title", ""),
+                      "state": f.get("System.State", "Unknown"),
+                      "parent_id": pid, "parent_title": parent_titles.get(pid, ""),
+                      "original_estimate": est, "completed_work": comp})
+        tot_est += est
+        tot_comp += comp
+    tasks.sort(key=lambda t: t["id"])
+    return {"iteration": iteration_path or "", "date_range": date_range_label,
+            "assignee": assignee, "tasks": tasks,
+            "total_original_estimate": tot_est, "total_completed_work": tot_comp,
+            "count": len(tasks)}
+
+
+def create_child_tasks(project, items, pat=None, cb=None):
+    """Create one 'Task' work item per entry, as a CHILD of the given story,
+    assigned to the given person. items = [{"story_id": int, "title": str,
+    "assigned_to": str, "due_date": "YYYY-MM-DD" (optional),
+    "original_estimate": str/float (optional), "completed_work": str/float
+    (optional)}, ...] (assigned_to is an email, matched the same way
+    assign_tester's identity fields are — Azure resolves a bare email fine).
+    Numeric fields are best-effort parsed — an unparsable/blank value is
+    simply omitted rather than failing the whole item, since some projects'
+    process rules only require Due Date, not the estimate fields (seen live:
+    "TF401320: Rule Error for field Due Date. Error code: Required,
+    InvalidEmpty" when Due Date was omitted entirely).
+    Returns {"ok": int, "created": [{"story_id","task_id","title"}, ...],
+    "errors": [str, ...]}. Best-effort per item: one failure doesn't stop the
+    rest, same convention as assign_testers."""
+    from azure.devops.v7_0.work_item_tracking.models import JsonPatchOperation
+    pat = pat or AZURE_PAT
+    cb = cb or (lambda *a, **k: None)
+    if _wit_client is None:
+        connect_azure_sdk(project)
+    ok, created, errors = 0, [], []
+    for it in items:
+        sid = it.get("story_id")
+        title = (it.get("title") or "").strip()
+        assignee = (it.get("assigned_to") or "").strip()
+        due = (it.get("due_date") or "").strip()
+        if not sid or not title:
+            errors.append(f"Story {sid}: missing title — skipped.")
+            continue
+        patch = [JsonPatchOperation(op="add", path="/fields/System.Title", value=title)]
+        if assignee:
+            patch.append(JsonPatchOperation(op="add", path="/fields/System.AssignedTo",
+                                            value=assignee))
+        if due:
+            # Azure's work-item date fields want a full ISO datetime, not a
+            # bare date — a plain "YYYY-MM-DD" is silently rejected by some
+            # process templates' validators.
+            patch.append(JsonPatchOperation(
+                op="add", path="/fields/Microsoft.VSTS.Scheduling.DueDate",
+                value=f"{due}T00:00:00Z"))
+        for field_ref, key in (("Microsoft.VSTS.Scheduling.OriginalEstimate", "original_estimate"),
+                              ("Microsoft.VSTS.Scheduling.CompletedWork", "completed_work")):
+            raw = it.get(key)
+            try:
+                val = float(raw) if raw not in (None, "") else None
+            except (TypeError, ValueError):
+                val = None
+            if val is not None:
+                patch.append(JsonPatchOperation(op="add", path=f"/fields/{field_ref}", value=val))
+        patch.append(JsonPatchOperation(op="add", path="/relations/-", value={
+            "rel": "System.LinkTypes.Hierarchy-Reverse",
+            "url": f"https://dev.azure.com/{AZURE_ORG}/{project}/_apis/wit/workItems/{sid}"}))
+        try:
+            wi = _wit_client.create_work_item(patch, project=project, type="Task")
+            ok += 1
+            created.append({"story_id": sid, "task_id": wi.id, "title": title})
+            cb(f"Created task #{wi.id} \"{title}\" under story {sid}"
+              + (f" → {assignee}" if assignee else ""), "ok")
+        except Exception as e:
+            msg = str(e)[:160]
+            errors.append(f"Story {sid} (\"{title[:40]}\"): {msg}")
+            cb(f"Story {sid}: failed — {msg}", "error")
+    return {"ok": ok, "created": created, "errors": errors}
 
 
 def discover_suites_for_stories(project, plan_id, story_ids, create_missing=True):

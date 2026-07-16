@@ -75,6 +75,8 @@ CATALOG = [
     ("act.sprint",        "Generate sprint plan",     "act"),
     ("nav.sprint_report", "Sprint Report",            "nav"),
     ("act.sprint_report", "Generate sprint report",   "act"),
+    ("nav.task_manager",  "Task Manager",             "nav"),
+    ("act.task_manager",  "Use Task Manager",         "act"),
     ("nav.automation",    "Automation",               "nav"),
     ("act.automation",    "Run automation",           "act"),
     ("nav.links",         "Useful Links",             "nav"),

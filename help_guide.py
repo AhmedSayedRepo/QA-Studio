@@ -161,6 +161,45 @@ FEATURES = [
          "Arabic or English output, with correct RTL layout for Arabic.",
          "Export or email the finished report.",
      ]},
+    {"key": "task_manager", "icon": ft.Icons.TASK_ALT, "title": "Task Manager",
+     "blurb": "Per-person task workload reports (by sprint or date range) and bulk "
+              "child-task creation for one or more stories.",
+     "details": [
+         "Task Manager has two tools sharing one sprint picker: a per-person task "
+         "workload report, and bulk creation of child Tasks under selected User "
+         "Stories.",
+         "The workload report is scoped by either a Sprint or a Date range — pick "
+         "one with the toggle at the top of the report card, pick who it's for, "
+         "then Calculate. It totals every 'Task' work item's Original Estimate and "
+         "Completed Work for that person over the chosen period, with a per-task "
+         "breakdown table and a completion-percentage bar.",
+         "The finished report exports to Excel, PDF or JSON, or emails using the "
+         "same report design as Regression Plan / Sprint Plan's emails — with the "
+         "assignee shown by their display name (e.g. \"Ahmed Sayed\"), never their "
+         "raw email, in the report itself, every export, and the email subject/"
+         "filename.",
+         "Bulk child-task creation selects one or more User Stories from the same "
+         "sprint, then lets you add a batch of up to 10 tasks per story (title, due "
+         "date, original estimate, completed work), all assigned to one chosen "
+         "person and created in a single run.",
+         "The Sprint field is fully disabled while the toggle is set to Date range. "
+         "Since bulk child-task creation always needs a sprint (dates have no "
+         "equivalent notion of \"which stories\"), the whole 'Create child tasks' "
+         "section shows as locked — \"Pick a sprint to load stories\" — whenever "
+         "Date range is active; switch the toggle back to Sprint to unlock it.",
+     ],
+     "points": [
+         "Toggle between a Sprint or a Date range to scope the workload report; "
+         "Calculate totals Original Estimate & Completed Work for the chosen person.",
+         "Per-task breakdown table, completion bar, and export to Excel / PDF / "
+         "JSON, or email.",
+         "Reports, exports and emails show the assignee's display name, not their "
+         "raw email address.",
+         "Bulk-create child Tasks (up to 10 per story) under one or more selected "
+         "User Stories, all assigned to one person in one run.",
+         "The Sprint field disables while Date range mode is active — switch back "
+         "to Sprint to change it.",
+     ]},
     {"key": "automation", "icon": ft.Icons.CODE, "title": "Automation",
      "blurb": "Turns your Azure test cases into a ready-to-run, self-healing UI "
               "test project — Selenium, Playwright, or Cypress — and pushes it to Git.",

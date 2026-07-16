@@ -141,7 +141,7 @@ def _email(app):
     return _do
 
 
-def _date_field(app, label, value_str, on_pick):
+def _date_field(app, label, value_str, on_pick, disabled=False):
     """Click-to-open calendar field backed by ft.DatePicker (Flet's native
     date overlay) — replaces a raw 'YYYY-MM-DD' text box so the date can't be
     mistyped, and keeps the label as a plain caption ABOVE the box instead of
@@ -149,20 +149,27 @@ def _date_field(app, label, value_str, on_pick):
     getting visually clipped at the top of the old text fields (dense=True
     leaves too little clearance above the box for the label to float into);
     a plain caption above sidesteps that entirely rather than just papering
-    over the clipping with more padding."""
+    over the clipping with more padding.
+    `disabled=True` (used for a readonly Viewer) mutes the box and stops it
+    from opening the picker at all — same pattern as task_manager.py's own
+    _date_field, including skipping the GestureDetector wrapper entirely
+    rather than passing it a no-op tap handler (Flet's GestureDetector raises
+    at render time if it ends up with zero event handlers wired)."""
     try:
         val = date.fromisoformat(value_str) if value_str else _utc_today()
     except Exception:
         val = _utc_today()
 
+    ink = T.INK_3 if disabled else T.INK
     value_text = ft.Text(value_str or "Pick a date", size=12.5, weight=ft.FontWeight.W_600,
-                         color=T.INK, font_family=T.F_MONO)
+                         color=ink, font_family=T.F_MONO)
     box = ft.Container(
         ft.Row([ft.Icon(ft.Icons.CALENDAR_MONTH_OUTLINED, size=15, color=T.INK_3),
                 value_text], spacing=8),
         width=160, height=40, padding=ft.Padding.symmetric(horizontal=12),
         alignment=ft.Alignment.CENTER_LEFT,
-        border=ft.Border.all(1, T.BORDER), border_radius=T.R, bgcolor=T.CARD_2)
+        border=ft.Border.all(1, T.BORDER), border_radius=T.R,
+        bgcolor=(T.BORDER_2 if disabled else T.CARD_2), opacity=(0.55 if disabled else 1.0))
 
     def _changed(e):
         d = e.control.value
@@ -205,7 +212,7 @@ def _date_field(app, label, value_str, on_pick):
         except Exception:
             pass
 
-    clickable = ft.GestureDetector(content=box, on_tap=_open)
+    clickable = box if disabled else ft.GestureDetector(content=box, on_tap=_open)
     return ft.Column([
         ft.Text(label, size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
         clickable,
@@ -340,14 +347,34 @@ def _report_body(app, is_admin):
         bgcolor=T.CARD, border=ft.Border.all(1, T.BORDER), border_radius=T.R,
         clip_behavior=ft.ClipBehavior.HARD_EDGE)
 
+    # A true Viewer (zero act.* capabilities — see main.py's
+    # _screen_action_cap docstring for why ai_usage has no action cap of its
+    # own and falls through to this same generic rule as Useful Links) can
+    # see this report but not produce artifacts from it, or touch anything
+    # that looks editable — same dim+disable treatment every other screen's
+    # action buttons get for app.readonly (e.g. regression.py's Calculate
+    # button, task_manager.py's Calculate / Create child tasks). The date
+    # pickers and Generate/Reset are gated the same way, in screen() below
+    # (not here — they're built before this report even exists).
+    _ro = getattr(app, "readonly", False)
+
+    def _export_btn(label, icon, fmt):
+        b = ghost_btn(label, icon=icon, on_click=(None if _ro else _export(app, fmt)))
+        if _ro:
+            b.opacity = 0.45
+        return b
+
     export_row = ft.Row([
-        ghost_btn("JSON", icon=ft.Icons.CODE, on_click=_export(app, "json")),
-        ghost_btn("Excel", icon=ft.Icons.GRID_ON, on_click=_export(app, "xlsx")),
-        ghost_btn("Word", icon=ft.Icons.DESCRIPTION, on_click=_export(app, "docx")),
-        ghost_btn("PDF", icon=ft.Icons.PICTURE_AS_PDF, on_click=_export(app, "pdf")),
+        _export_btn("JSON", ft.Icons.CODE, "json"),
+        _export_btn("Excel", ft.Icons.GRID_ON, "xlsx"),
+        _export_btn("Word", ft.Icons.DESCRIPTION, "docx"),
+        _export_btn("PDF", ft.Icons.PICTURE_AS_PDF, "pdf"),
     ], spacing=8, wrap=True)
 
-    email_btn = green_btn("Email report", icon=ft.Icons.MAIL_OUTLINED, on_click=_email(app))
+    email_btn = green_btn("Email report", icon=ft.Icons.MAIL_OUTLINED,
+                          on_click=(None if _ro else _email(app)))
+    if _ro:
+        email_btn.opacity = 0.45
     email_picker = email_recipient_picker(
         app, "_usage_email_to", is_open_key="_usage_email_open",
         sync_key="usage_emails", trailing=email_btn)
@@ -427,12 +454,21 @@ def screen(app):
         app._usage_provider_filter = "All"
         _load(app)
 
-    start_field = _date_field(app, "Start date", app._usage_start, _set_start)
-    end_field = _date_field(app, "End date", app._usage_end, _set_end)
+    # A true Viewer (readonly — see _report_body's own note on why ai_usage
+    # has no dedicated action cap) gets an inert screen top to bottom: the
+    # date pickers, Generate, and Reset are disabled here alongside Export/
+    # Email in _report_body, rather than just leaving the pickers clickable
+    # and only blocking the buttons — a control that LOOKS editable but
+    # quietly does nothing (or nothing worth doing, since Generate would
+    # just re-fetch the same read-only view) isn't actually "view only".
+    _ro = getattr(app, "readonly", False)
+
+    start_field = _date_field(app, "Start date", app._usage_start, _set_start, disabled=_ro)
+    end_field = _date_field(app, "End date", app._usage_end, _set_end, disabled=_ro)
     gen_btn = primary_btn("Generate", icon=ft.Icons.QUERY_STATS,
-                          on_click=_generate, disabled=app._usage_loading)
+                          on_click=_generate, disabled=(app._usage_loading or _ro))
     reset_btn = ghost_btn("Reset", icon=ft.Icons.RESTART_ALT,
-                          on_click=_reset, disabled=app._usage_loading)
+                          on_click=_reset, disabled=(app._usage_loading or _ro))
 
     controls = [
         ft.Row([start_field, end_field, gen_btn, reset_btn], spacing=10,
