@@ -1,0 +1,49 @@
+# Remote-run executor — runs ONE queued remote_runs row (Supabase) with the
+# same engine the desktop app uses. Dispatched by the app (or manually) via
+# the GitHub API / gh CLI:
+#
+#   gh workflow run remote-run.yml -f run_id=<uuid>
+#
+# See REMOTE_RUNS.md for the required repository secrets and setup steps.
+name: Remote Run
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "remote_runs.id (uuid) to execute"
+        required: true
+        type: string
+
+# One job per run id; never cancel an in-flight run by re-dispatching it.
+concurrency:
+  group: remote-run-${{ github.event.inputs.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  execute:
+    runs-on: ubuntu-latest
+    # Hard ceiling well above any sane run; a stuck provider can't burn the
+    # whole month's minutes. (Billed minutes = actual wall clock, not this.)
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install --quiet requests
+
+      - name: Execute run
+        env:
+          RUN_ID: ${{ github.event.inputs.run_id }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          AZURE_ORG: ${{ secrets.AZURE_ORG }}
+          AZURE_PAT: ${{ secrets.AZURE_PAT }}
+          QA_AI_PROVIDER: ${{ secrets.QA_AI_PROVIDER }}
+          QA_AI_API_KEY: ${{ secrets.QA_AI_API_KEY }}
+          QA_AI_MODEL: ${{ secrets.QA_AI_MODEL }}
+        run: python run_worker.py

@@ -102,7 +102,8 @@ def _export(app, fmt):
                 path = _EXPORTERS[fmt](report)
                 app.ui_safe(lambda p=path: app._toast(f"Saved {fmt.upper()}: {p}"))
                 try:
-                    os.startfile(os.path.dirname(path))
+                    import platform_caps as _pc
+                    _pc.open_folder(os.path.dirname(path))   # Windows-only; safe no-op elsewhere
                 except Exception:
                     pass
             except Exception as ex:

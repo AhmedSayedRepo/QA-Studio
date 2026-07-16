@@ -4031,23 +4031,23 @@ class QAStudio:
             pass
 
     def _scroll_to_key(self, key, delays=(0, 0.35)):
-        """Restore scroll by KEY instead of raw pixel offset — the reliable
-        Flet mechanism confirmed live elsewhere in this file
-        (_auto_log_scroll_end: "offset-based scroll_to was observed live NOT
-        moving this column even as lines appended"). _restore_scroll() (used
-        automatically after every render) only ever does offset-based
-        restoration, which is a real gap: an offset is an absolute pixel
-        position, so if the content's total height changes between the
-        capture and the restore — e.g. a result table swapping for a
-        skeleton and back, a completely different height each time — landing
-        on the same NUMBER doesn't mean landing on the same semantic spot.
-        A caller that tagged a stable anchor control with `key=` (one that
-        survives across rebuilds unchanged, e.g. a Container that wraps a
-        Generate button) can call this instead/in addition to relying on the
-        generic offset-based restore, to actually return to that anchor
-        regardless of how much the surrounding content grew or shrank.
-        Retries across the given delays since the tagged control may not be
-        laid out yet immediately after a full render."""
+        """Restore scroll by KEY instead of raw pixel offset.
+
+        NOTE: no active caller right now (its previous caller — the
+        Generate-button anchor in regression.py — was removed in favor of
+        never shrinking the page on click; see that file's comment).
+
+        Calls scroll_to(key=...) bare/unawaited, same as every other
+        scroll_to() call site in this file — deliberately NOT "fixed" to
+        actually execute. A session this same day tried making scroll_to()
+        actually run (via page.run_task): it fixed nothing (Flet 0.85.3's
+        real param is scroll_key, not key, so this call raises TypeError
+        either way) and separately caused real visual corruption — black
+        screen flashes and a chrome-less native placeholder — on ANY screen
+        with back-to-back renders (confirmed live: AI Usage's load-then-
+        loaded pair, disconnect+navigate), because a scheduled scroll_to RPC
+        could race a newer render's page.controls.clear()/add() and target
+        an already-replaced control. Reverted app-wide. Leave this bare."""
         def _do():
             col = getattr(self, "_left_scroll", None)
             if col is None:
@@ -5250,11 +5250,20 @@ class QAStudio:
         # here (e.g. the control isn't laid out yet on the very first call)
         # just means the log doesn't auto-follow that one time, not a crash.
         def _go():
-            # key-based scroll first — the reliable Flet mechanism (the tail
-            # row is tagged "autolog-tail" by _retag_log_tail below; offset-
-            # based scroll_to was observed live NOT moving this column even
-            # as lines appended). The offset call stays as a fallback for any
-            # moment where the tag isn't present (e.g. mid-rebuild).
+            # Both calls run bare/unawaited and are silent no-ops by design
+            # — see _scroll_to_key's docstring for why (making scroll_to()
+            # actually execute was tried and reverted: it raced newer
+            # renders and caused visible client-side corruption). The real
+            # reason this log auto-follows in practice is automation.py
+            # building app._auto_log_col as an ft.ListView(auto_scroll=True)
+            # — a declarative attribute handled inside the widget itself,
+            # not an RPC call — which doesn't depend on scroll_to() at all
+            # (see automation.py's numbered comment: offset/auto_scroll-on-
+            # Column/key-based scroll_to were all tried and failed before
+            # that). These two calls stay as harmless (inert) belt-and-
+            # suspenders; key-based first (the tail row is tagged
+            # "autolog-tail" by _retag_log_tail below), offset as a fallback
+            # for when the tag isn't present (e.g. mid-rebuild).
             try:
                 col.scroll_to(key="autolog-tail", duration=100)
             except Exception:
@@ -5618,6 +5627,11 @@ class QAStudio:
             # _win_clipboard_set's docstring for the full explanation. This
             # direct ctypes write has no such issue.
             try:
+                if not platform_caps.is_windows():
+                    # ctypes/user32 clipboard is Windows-only (mobile Phase 0):
+                    # route non-Windows straight to the readable error path
+                    # instead of an AttributeError from a missing windll.
+                    raise RuntimeError("direct clipboard write is Windows-only")
                 self._win_clipboard_set(text)
                 self._toast(ok_msg)
             except Exception as ex2:

@@ -813,7 +813,8 @@ def _tm_export_row(app, res):
                             shutil.move(path, dest)
                         path = dest
                     try:
-                        os.startfile(os.path.dirname(path))
+                        import platform_caps as _pc
+                        _pc.open_folder(os.path.dirname(path))   # Windows-only; safe no-op elsewhere
                     except Exception:
                         pass
                     _notify("ok", f"Saved: {path}")

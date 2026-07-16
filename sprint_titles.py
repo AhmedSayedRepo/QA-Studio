@@ -920,7 +920,8 @@ def screen(app):
                     p = _export_docx(app)
                     app.ui_safe(lambda: app._toast(f"Saved Word document: {p}"))
                     try:
-                        os.startfile(os.path.dirname(p))
+                        import platform_caps as _pc
+                        _pc.open_folder(os.path.dirname(p))   # Windows-only; safe no-op elsewhere
                     except Exception:
                         pass
                 except ImportError:

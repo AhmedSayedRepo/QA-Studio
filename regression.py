@@ -1657,7 +1657,8 @@ def _export_row(app, set_status=None):
                             shutil.move(path, dest)
                         path = dest
                     try:
-                        os.startfile(os.path.dirname(path))
+                        import platform_caps as _pc
+                        _pc.open_folder(os.path.dirname(path))   # Windows-only; safe no-op elsewhere
                     except Exception:
                         pass
                     _notify("ok", f"Saved: {path}")
@@ -4587,7 +4588,8 @@ def screen(app):
                 return None
         app._reg_export_msg = ("ok", f"Saved {fmt.upper()}: {path}")
         try:
-            os.startfile(os.path.dirname(path))
+            import platform_caps as _pc
+            _pc.open_folder(os.path.dirname(path))   # Windows-only; safe no-op elsewhere
         except Exception:
             pass
         return path
@@ -5478,11 +5480,17 @@ def screen(app):
                            icon=ft.Icons.CALCULATE, on_click=_calculate,
                            disabled=app._reg_busy or not app._reg_selected)
     _calc_btn_cell[0] = calc_btn   # store ref so _calculate can mutate it in place
-    # (No more key= scroll anchor here — Flet 0.85.3's ScrollableControl
-    # .scroll_to() doesn't accept a key= argument at all, confirmed live via
-    # qa_perf_installed.log. _calculate() no longer needs to anchor scroll
-    # restoration to this button because it no longer triggers a page-shrinking
-    # render in the first place.)
+    # (No more key= scroll anchor here. Flet 0.85.3's ScrollableControl.
+    # scroll_to() DOES support key-based targeting — the param is just named
+    # `scroll_key`, not `key` (confirmed by reading the pinned wheel's source
+    # directly); `key=` raised the TypeError seen live. Moot either way for
+    # this button: _calculate() no longer needs to anchor scroll restoration
+    # here because it no longer triggers a page-shrinking render in the
+    # first place. Every scroll_to() call site in this app is deliberately
+    # left unawaited/inert — a same-day attempt to make them actually
+    # execute (via page.run_task) caused real client-side render corruption
+    # on any screen with back-to-back renders and was reverted app-wide;
+    # see main.py's _scroll_to_key docstring.)
 
     gen_spinner = ft.Container(
         ft.Row([ft.ProgressRing(width=18, height=18, stroke_width=2.5, color=T.VIOLET),
