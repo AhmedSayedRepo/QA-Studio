@@ -1193,6 +1193,39 @@ def screen(app):
 
         res = app._tm_report_result
         if res and res.get("count", 0) > 0:
+            def _recalc_totals():
+                # Recomputed from the LOCAL task list, not re-fetched from
+                # Azure — mirrors the Sprint Summary modal's own inline
+                # _delete_story (modals.py): every downstream reader of `res`
+                # (the KPI tiles below, the 170h/month benchmark, and every
+                # export/email builder — they all just call res.get(...) at
+                # click-time) sees the updated numbers for free once these
+                # three keys are mutated in place, no separate "recalc" logic
+                # needed anywhere else.
+                ts = res["tasks"]
+                res["count"] = len(ts)
+                res["total_original_estimate"] = sum(t.get("original_estimate", 0) for t in ts)
+                res["total_completed_work"] = sum(t.get("completed_work", 0) for t in ts)
+
+            def _delete_task(tid):
+                def _do():
+                    res["tasks"] = [t for t in res["tasks"] if t["id"] != tid]
+                    _recalc_totals()
+                    app.render()
+                    try:
+                        app._toast(f"Removed task {tid} from this report.")
+                    except Exception:
+                        pass
+                def _d(e):
+                    if _ro:
+                        return app._toast("Read-only — your role can't modify the report.")
+                    app._confirm(
+                        "Remove task?",
+                        f"Remove task {tid} from this report and recalculate the "
+                        "totals? This doesn't change anything in Azure DevOps.",
+                        _do, yes_label="Remove")
+                return _d
+
             rows = [ft.Container(
                 ft.Row([
                     R._id_link(app, t["id"], tooltip=f"Open task {t['id']} in Azure DevOps",
@@ -1207,6 +1240,13 @@ def screen(app):
                            text_align=ft.TextAlign.RIGHT),
                     ft.Text(f"{t['completed_work']:g}", size=12.5, color=T.INK, width=90,
                            text_align=ft.TextAlign.RIGHT),
+                    ft.IconButton(
+                        icon=ft.Icons.DELETE_OUTLINE, icon_size=18, icon_color=T.RED,
+                        tooltip="Remove from this report", disabled=_ro,
+                        on_click=_delete_task(t["id"]),
+                        width=34, height=34,
+                        style=ft.ButtonStyle(padding=ft.Padding.all(0),
+                                             shape=ft.RoundedRectangleBorder(radius=8))),
                 ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                 padding=ft.Padding.symmetric(vertical=9, horizontal=12),
                 bgcolor=(T.CARD if i % 2 == 0 else T.CARD_2),
@@ -1222,6 +1262,7 @@ def screen(app):
                            width=90, text_align=ft.TextAlign.RIGHT),
                     ft.Text("COMPLETED", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_2,
                            width=90, text_align=ft.TextAlign.RIGHT),
+                    ft.Container(width=34),
                 ], spacing=10),
                 padding=ft.Padding.symmetric(vertical=11, horizontal=12),
                 bgcolor=T.CARD_2, border=ft.Border.only(bottom=ft.BorderSide(1, T.BORDER)))

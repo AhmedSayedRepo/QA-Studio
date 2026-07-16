@@ -74,6 +74,14 @@ from ui import (
 class QAStudio:
     def __init__(self, page: ft.Page):
         self.page = page
+        # Serializes the actual page-mutation step (controls.clear/add/update)
+        # across threads — see _render_body()'s critical section and
+        # ui_safe()'s docstring. Deliberately does NOT wrap view construction
+        # (regression.screen(self) etc., the genuinely slow ~0.5-1.6s+ part) —
+        # only the brief clear/add/update calls need to be serialized, so two
+        # renders can still BUILD their control trees fully in parallel and
+        # only briefly wait on each other at the actual hand-off to Flet.
+        self._render_lock = threading.Lock()
         self.creds = store.load()
         self._migrate_key_slots()      # legacy per-provider keys → per-model slots
         # Restore the last-selected AI provider so it persists across app restarts.
@@ -164,12 +172,13 @@ class QAStudio:
         self._auto_target = self.creds.get("auto_target", "") or "selenium"
         self._auto_log = []
         # Serializes the Activity-log column catch-up in _auto_logmsg's upd() below.
-        # Each _auto_logmsg call hands its UI update to ui_safe(), which (via Flet's
-        # page.run_thread) starts a NEW thread per call — with NO guarantee those
-        # threads run in the order they were started. Without this lock, two upd()
-        # calls can race (both read the same "have" before either appends), or run
-        # out of order and scramble what's on screen even though self._auto_log
-        # itself stays correctly ordered. See _auto_logmsg for the fix.
+        # HISTORY: ui_safe() used to dispatch via Flet's page.run_thread — a NEW
+        # executor thread per call, with NO ordering guarantee — and this lock was
+        # the band-aid for the resulting races (two upd() calls reading the same
+        # "have", or appending out of order). ui_safe() now serializes everything
+        # FIFO on the session event loop (see its docstring), which fixes the same
+        # class of bug globally; the lock stays as a harmless defensive layer for
+        # the run_thread/direct-call fallback paths.
         self._auto_log_ui_lock = threading.Lock()
         self._auto_running = False
         self._auto_stop = False
@@ -1570,6 +1579,24 @@ class QAStudio:
         self._maybe_check_update_on_nav()
 
     def render(self):
+        """Entry point for every screen (re)render.
+
+        NOTE: an earlier version of this method auto-detected Regression Plan
+        renders and transparently ran them through a "busy overlay, then real
+        render" two-phase dance whenever a plan existed (_reg_selected_rows
+        truthy). That was too broad: PLENTY of fast, everyday actions on that
+        screen also call plain app.render() while a plan exists (opening the
+        email recipient dropdown, closing a picker, etc. — anything that
+        didn't get converted to an in-place dynamic-cell update), and routing
+        ALL of them through the overlay's extra render + background-thread
+        round trip made those instant actions feel delayed/broken instead of
+        fixing anything. That auto-detection was removed. The overlay
+        mechanism itself (_reg_render_with_overlay in regression.py) is still
+        used, but now only at the ONE call site that's genuinely slow — the
+        Generate button's completion callback — not for every render()."""
+        self._render_body()
+
+    def _render_body(self):
         import time as _pt
         _r0 = _pt.perf_counter()
         self._last_activity = _pt.time()   # any re-render counts as user activity
@@ -1644,31 +1671,39 @@ class QAStudio:
                                           expand=True)
             except Exception:
                 pass
-            self.page.controls.clear()
-            banner = None
-            try:
-                banner = self._update_banner()
-            except Exception:
-                banner = None
-            if banner is not None:
-                # Float the update card OVER the app (top-centre) as an overlay, so it
-                # never reserves a strip, leaves no gap, and clears the window controls.
-                _root = ft.Stack([
-                    ft.Container(view, expand=True),
-                    ft.Container(banner, top=14, left=0, right=0,
-                                 alignment=ft.Alignment.TOP_CENTER),
-                ], expand=True)
-            else:
-                _root = view
-            try:
-                _root = self._with_window_chrome(_root)
-            except Exception:
-                pass
-            self.page.add(_root)
             _build_ms = (_pt.perf_counter() - _r0) * 1000
-            _u0 = _pt.perf_counter()
-            self.page.update()
-            _upd_ms = (_pt.perf_counter() - _u0) * 1000
+            # Only the actual hand-off to Flet (clear/add/update) is
+            # serialized — see ui_safe()'s docstring for the race this
+            # guards against (interleaved patches silently corrupting the
+            # client's widget tree, which is what made collapse/page-flip/the
+            # email dropdown paint nothing afterward even though the Python
+            # side "succeeded"). Everything expensive above this (building
+            # `view`) already happened OUTSIDE the lock.
+            with self._render_lock:
+                self.page.controls.clear()
+                banner = None
+                try:
+                    banner = self._update_banner()
+                except Exception:
+                    banner = None
+                if banner is not None:
+                    # Float the update card OVER the app (top-centre) as an overlay, so it
+                    # never reserves a strip, leaves no gap, and clears the window controls.
+                    _root = ft.Stack([
+                        ft.Container(view, expand=True),
+                        ft.Container(banner, top=14, left=0, right=0,
+                                     alignment=ft.Alignment.TOP_CENTER),
+                    ], expand=True)
+                else:
+                    _root = view
+                try:
+                    _root = self._with_window_chrome(_root)
+                except Exception:
+                    pass
+                self.page.add(_root)
+                _u0 = _pt.perf_counter()
+                self.page.update()
+                _upd_ms = (_pt.perf_counter() - _u0) * 1000
             regression._perf_log(
                 f"render[{self.active}]: build {_build_ms:.0f} ms + "
                 f"page.update {_upd_ms:.0f} ms = {_build_ms + _upd_ms:.0f} ms")
@@ -3513,15 +3548,14 @@ class QAStudio:
                         col.scroll_to(offset=_scroll_keep, duration=0)
                     except Exception:
                         pass
-            ru = getattr(self.page, "run_thread", None)
+            # Serialized on the session loop — see ui_safe's docstring.
             try:
-                ru(_keep) if callable(ru) else _keep()
+                self.ui_safe(_keep)
             except Exception:
                 pass
             for _d in (0.15, 0.35, 0.6):
                 try:
-                    threading.Timer(
-                        _d, lambda: (ru(_keep) if callable(ru) else _keep())).start()
+                    threading.Timer(_d, lambda: self.ui_safe(_keep)).start()
                 except Exception:
                     pass
 
@@ -3979,14 +4013,11 @@ class QAStudio:
                 pass
 
         def _run():
-            ru = getattr(self.page, "run_thread", None)
-            if callable(ru):
-                try:
-                    ru(_do)
-                    return
-                except Exception:
-                    pass
-            _do()
+            # Serialize on the session loop (see ui_safe): this fires a whole-
+            # page update right after every render — off-loop it raced the
+            # user's first clicks (collapse/page-flip) and could desync the
+            # client tree, making those clicks paint nothing.
+            self.ui_safe(_do)
 
         # Fire immediately, then one late shot to catch slow layouts. (Was 5
         # shots firing a full page.update() each — that thrashed the event loop
@@ -4035,14 +4066,8 @@ class QAStudio:
                 pass
 
         def _run():
-            ru = getattr(self.page, "run_thread", None)
-            if callable(ru):
-                try:
-                    ru(_do)
-                    return
-                except Exception:
-                    pass
-            _do()
+            # Serialized on the session loop — see ui_safe's docstring.
+            self.ui_safe(_do)
 
         for d in delays:
             if d <= 0:
@@ -4108,21 +4133,15 @@ class QAStudio:
         self.ui_safe(_upd)
 
     def _safe_render(self):
-        """Render and force the update onto Flet's event loop."""
-        try:
-            self.render()
-        except Exception:
-            try:
-                self.page.update()
-            except Exception:
-                pass
-        # Force a second update via the page loop (works around focus-repaint bug)
-        try:
-            ru = getattr(self.page, "run_thread", None)
-            if callable(ru):
-                ru(lambda: self.page.update())
-        except Exception:
-            pass
+        """Render from a background worker, serialized on Flet's event loop.
+
+        Used to render inline on the CALLING thread and then push an extra
+        page.update() through run_thread to work around the focus-repaint
+        bug. That inline render was itself an unserialized patch source
+        (see ui_safe's docstring — concurrent diffs desync the client
+        tree), so route the whole render through ui_safe instead; running
+        on the session loop also makes the extra repaint kick unnecessary."""
+        self.ui_safe(self.render)
 
     def _load_plans(self):
         if not self.project:
@@ -4169,7 +4188,35 @@ class QAStudio:
         return modals.open_sprint_summary(self)
 
     def ui_safe(self, fn):
-        """Run a UI mutation on the page thread; fall back to direct call."""
+        """Run a UI mutation on a background thread (page.run_thread), not
+        on Flet's own asyncio event loop.
+
+        This went through two iterations. Originally: page.run_thread(),
+        which runs each callback on its own executor thread — concurrently
+        and in NO guaranteed order. Flet 0.85's patch engine
+        (Session.patch_control → ObjectPatch.from_diff) has no locking, so
+        two overlapping full-page renders could interleave their diffs and
+        leave the client's widget tree corrupted — after which every SMALL
+        in-place update (collapse/page-flip's _refresh_table, opening the
+        email recipient picker, …) would patch against ids/paths the client
+        no longer had and silently paint nothing.
+
+        That was then "fixed" by routing everything through page.run_task()
+        instead — a coroutine on Flet's own asyncio loop — which does
+        serialize things, but at a real cost: fn() here is often
+        self.render(), and Regression Plan's render can take 0.5–3s+ of pure
+        synchronous Python (building a 400+-story table). Run THAT on the
+        event loop itself and it blocks the loop entirely for that whole
+        stretch — Flet can't flush ANY pending message during that window,
+        including an already-queued "loading" overlay update, which is why
+        the overlay stopped visibly appearing at all once this ran.
+
+        The actual fix for the original corruption bug is the App-level
+        `self._render_lock` now held around ONLY the real page-mutation step
+        in _render_body() (controls.clear/add/update) — see its comment
+        there. That serializes the part that actually needs it without
+        forcing heavy control-tree construction onto the event loop, so
+        ui_safe goes back to a real background thread here."""
         try:
             ru = getattr(self.page, "run_thread", None)
             if callable(ru):
@@ -4690,12 +4737,9 @@ class QAStudio:
                     self.page.update()
             except Exception:
                 pass
-        _apply()
-        try:
-            ru = getattr(self.page, "run_thread", None)
-            if callable(ru): ru(_apply)
-        except Exception:
-            pass
+        # Single serialized dispatch (see ui_safe): the old inline call +
+        # run_thread duplicate ran the same whole-page update on two threads.
+        self.ui_safe(_apply)
 
     @staticmethod
     def _fmt_dur(secs):
@@ -4918,13 +4962,13 @@ class QAStudio:
                 self.page.update()
             except Exception:
                 pass
-        _apply()
-        # Force onto the event loop to defeat the focus-repaint bug
-        try:
-            ru = getattr(self.page, "run_thread", None)
-            if callable(ru): ru(_apply)
-        except Exception:
-            pass
+        # Single serialized dispatch (see ui_safe): the old inline call +
+        # run_thread duplicate ("to defeat the focus-repaint bug") ran this
+        # same whole-page update on two threads at once — the lock above kept
+        # the log list consistent, but the two page.update() diffs could still
+        # interleave with each other and with event-handler updates. On the
+        # session loop, updates repaint normally and run one at a time.
+        self.ui_safe(_apply)
 
     # ═══════════════════════════════════════════════════════════════════════════
     #  REPORT SCREEN
@@ -5543,27 +5587,23 @@ class QAStudio:
         detail = (str(ex1) or str(ex2) or "").strip()
         return detail[:100] if detail else "an unknown error"
 
-    def _copy_log_text(self, lines):
-        """Shared clipboard-copy logic for the Run and Automation activity logs
-        (kept in one place so both stay in sync). Tries Flet's own
+    def _copy_text_to_clipboard(self, text, ok_msg="Copied to clipboard."):
+        """Shared clipboard-copy logic — the actual copy-with-fallback
+        mechanism behind _copy_log_text below, pulled out on its own so ANY
+        screen can reuse the same robust behavior on an already-formatted
+        string (not just newline-joined log lines, which get blank-line
+        stripping that would ruin deliberate spacing elsewhere — see
+        sprint_titles.py's report Copy button). Tries Flet's own
         page.set_clipboard() first, falls back to a direct Windows clipboard
         write (_win_clipboard_set) if that fails, and only shows a red error
         toast — with a readable, classified reason, not a raw exception dump —
         if BOTH paths fail."""
-        # "\x1f" is the invisible meta/body separator in Automation "case"
-        # lines (see engine.py's _compile_one) — it renders as two separate
-        # Text controls on screen, but copied raw it disappears entirely,
-        # jamming the halves together ("#2/36التحقق…"). Swap it for a real
-        # space in the copied text. Run-log lines never contain it — no-op.
-        lines = [(l or "").replace("\x1f", " ") for l in lines if (l or "").strip()]
-        if not lines:
+        if not (text or "").strip():
             self._toast("Nothing to copy yet.")
             return
-        text = "\n".join(lines)
-        n = len(lines)
         try:
             self.page.set_clipboard(text)
-            self._toast(f"Log copied to clipboard ({n} line{'s' if n != 1 else ''}).")
+            self._toast(ok_msg)
             return
         except Exception as ex1:
             # Fall back to setting the OS clipboard directly (see
@@ -5579,13 +5619,30 @@ class QAStudio:
             # direct ctypes write has no such issue.
             try:
                 self._win_clipboard_set(text)
-                self._toast(f"Log copied to clipboard ({n} line{'s' if n != 1 else ''}).")
+                self._toast(ok_msg)
             except Exception as ex2:
                 # A readable, one-sentence reason instead of a raw exception dump —
                 # and via _err (red), not _toast (always green): a failure toast
                 # rendering as a green success checkmark was its own bug.
                 reason = self._clip_fail_reason(ex1, ex2)
-                self._err(f"Couldn't copy the log — {reason}.")
+                self._err(f"Couldn't copy — {reason}.")
+
+    def _copy_log_text(self, lines):
+        """Shared clipboard-copy logic for the Run and Automation activity logs
+        (kept in one place so both stay in sync) — builds the joined text and
+        delegates the actual copy-with-fallback to _copy_text_to_clipboard."""
+        # "\x1f" is the invisible meta/body separator in Automation "case"
+        # lines (see engine.py's _compile_one) — it renders as two separate
+        # Text controls on screen, but copied raw it disappears entirely,
+        # jamming the halves together ("#2/36التحقق…"). Swap it for a real
+        # space in the copied text. Run-log lines never contain it — no-op.
+        lines = [(l or "").replace("\x1f", " ") for l in lines if (l or "").strip()]
+        if not lines:
+            self._toast("Nothing to copy yet.")
+            return
+        n = len(lines)
+        self._copy_text_to_clipboard(
+            "\n".join(lines), f"Log copied to clipboard ({n} line{'s' if n != 1 else ''}).")
 
     def _copy_auto_log(self, e=None):
         self._copy_log_text([ln.get("msg", "") for ln in getattr(self, "_auto_log", [])])

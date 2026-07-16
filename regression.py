@@ -55,6 +55,7 @@ from ui import hover_field
 AVG_MINUTES_PER_CASE = 8          # manual execution time per existing test case
 DEFAULT_PRIORITY     = 3          # used when a story has no ADO priority set
 PRIORITY_BOOST = {1: 1.30, 2: 1.15, 3: 1.00, 4: 0.90}
+WORK_DAY_HOURS = 8                # hours/day used to convert estimated effort to days
 _PRI_FULL = {1: "P1 (highest)", 2: "P2", 3: "P3", 4: "P4 (lowest)"}
 
 
@@ -713,8 +714,18 @@ def build_rows(app, selected, progress=None):
     ids = [int(s["id"]) for s in selected]
     with _perf(f"build_rows.fetch_meta ({len(ids)} stories)"):
         meta = _fetch_meta(app, ids)
-    with _perf(f"build_rows.count_cases ({len(selected)} stories)"):
-        counts = _count_cases(app, selected, progress=progress)
+    if getattr(app, "_reg_effort_mode", True):
+        with _perf(f"build_rows.count_cases ({len(selected)} stories)"):
+            counts = _count_cases(app, selected, progress=progress)
+    else:
+        # Effort mode OFF (Section 3 toggle): skip the expensive per-suite
+        # test-case counting entirely — normally the single slowest part of
+        # Generate (qa_perf_installed.log shows it costing 3–11+ s on
+        # 400+-story plans). Every row's hours end up 0, and
+        # assign_resources() already has a built-in "0-hour -> spread evenly
+        # by headcount" branch, so distribution falls back to a plain even
+        # split automatically with no other change needed.
+        counts = {int(s["id"]): 0 for s in selected}
     _cache_save(app)   # persist freshly-fetched counts/meta/features for next launch
     story_features = getattr(app, "_reg_story_features", {})
     feat_cache = getattr(app, "_reg_feature_name_cache", {}) or {}
@@ -800,6 +811,12 @@ def plan_payload(app):
     total_cases = sum(r["cases"] for r in rows)
     total_hours = round(sum(r["hours"] for r in rows), 2)
     per_person = round(total_hours / count, 2) if count else total_hours
+    # Section 3 toggle: when effort mode is off, hours are always 0 (build_rows
+    # skipped case-counting), so "days" would be a meaningless 0.0 for every
+    # story — leave both at 0 rather than implying a real (empty) estimate.
+    effort_on = getattr(app, "_reg_effort_mode", True)
+    total_days = round(total_hours / WORK_DAY_HOURS, 2) if effort_on else 0.0
+    per_person_days = round(per_person / WORK_DAY_HOURS, 2) if effort_on else 0.0
     workload = []
     if names:
         cnt = {n: 0 for n in names}
@@ -810,15 +827,19 @@ def plan_payload(app):
                 cnt[a] += 1
                 ccases[a] += r["cases"]
         workload = [{"name": n, "stories": cnt[n], "cases": ccases[n],
-                     "hours": round(load.get(n, 0.0), 2)} for n in names]
+                     "hours": round(load.get(n, 0.0), 2),
+                     "days": (round(load.get(n, 0.0) / WORK_DAY_HOURS, 2)
+                              if effort_on else 0.0)} for n in names]
     plans = list(app._reg_plans_selected or [])
     # Show only the sprint number ("Sprint 22") in exports/email instead of the
     # full ADO test-plan name ("<Project>_Sprint 22"). Fall back to the full name
-    # if a plan has no recognizable sprint number.
-    plan_names = ", ".join(_sprint_num(p.get("name", "")) or p.get("name", "")
-                           for p in plans) \
-        or (_sprint_num(getattr(app, "plan_name", "") or "")
-            or (getattr(app, "plan_name", "") or ""))
+    # if a plan has no recognizable sprint number. Multiple sprints compress to
+    # a range ("Sprint 1 to Sprint 4") via _sprint_range_label() instead of
+    # listing every one out.
+    plan_names = _sprint_range_label(
+        [_sprint_num(p.get("name", "")) or p.get("name", "") for p in plans]
+    ) or (_sprint_num(getattr(app, "plan_name", "") or "")
+          or (getattr(app, "plan_name", "") or ""))
     plan_ids = ", ".join(str(p["id"]) for p in plans)
     return {"generated": datetime.now().strftime("%Y-%m-%d %H:%M"),
             "project": app.project, "plan_id": plan_ids,
@@ -828,7 +849,9 @@ def plan_payload(app):
             "priority_boost": PRIORITY_BOOST, "resources_count": count,
             "resource_names": names, "stories": rows, "workload": workload,
             "total_stories": len(rows), "total_cases": total_cases,
-            "total_hours": total_hours, "hours_per_person": per_person}
+            "total_hours": total_hours, "hours_per_person": per_person,
+            "effort_mode": effort_on,
+            "total_days": total_days, "hours_per_person_days": per_person_days}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -905,19 +928,33 @@ def _plan_html(d):
     # Sprint Plan estimates from an hours range (no existing test cases), so the
     # test-case metric is hidden whenever the plan has zero cases.
     show_cases = (d.get("total_cases") or 0) > 0
-    metrics_data = [("Stories", d["total_stories"], INK)]
+    # Regression Plan's Section 3 toggle can skip effort entirely; Sprint Plan
+    # always has it on (see _cp_payload). Off: a dash reads clearer than a
+    # misleading "0h". On: days ride along as a small caption under the hours
+    # — same "label over value, sub under value" idiom as the in-app KPI tiles
+    # (_kpi_tile's sub= param), instead of cramming "12.3h · 1.5d" onto one line.
+    effort_on = d.get("effort_mode", True)
+    metrics_data = [("Stories", d["total_stories"], INK, None)]
     if show_cases:
-        metrics_data.append(("Test cases", d["total_cases"], INK))
-    metrics_data.append(("Total effort", f"{d['total_hours']}h", VIOLET_INK))
-    metrics_data.append(("Per person", f"{d['hours_per_person']}h", GREEN))
+        metrics_data.append(("Test cases", d["total_cases"], INK, None))
+    if effort_on:
+        metrics_data.append(("Total effort", f"{d['total_hours']}h", VIOLET_INK,
+                            f"&#8776; {d.get('total_days', 0)}&nbsp;workdays"))
+        metrics_data.append(("Per person", f"{d['hours_per_person']}h", GREEN,
+                            f"&#8776; {d.get('hours_per_person_days', 0)}&nbsp;workdays"))
+    else:
+        metrics_data.append(("Total effort", "—", VIOLET_INK, None))
+        metrics_data.append(("Per person", "—", GREEN, None))
     mcells = ""
-    for i, (k, v, col) in enumerate(metrics_data):
+    for i, (k, v, col, sub) in enumerate(metrics_data):
         bl = "" if i == 0 else f"border-left:1px solid {LINE2};"
+        sub_html = (f"<div style='font-size:10px;font-weight:600;color:{INK3};"
+                   f"margin-top:4px'>{sub}</div>" if sub else "")
         mcells += (f"<td width='1' style='{bl}padding:13px 6px 14px;text-align:center;vertical-align:top'>"
                    f"<div style='font-size:9.5px;font-weight:700;letter-spacing:1px;color:{INK3};"
                    f"text-transform:uppercase'>{k}</div>"
                    f"<div style='font-family:{MONO};font-size:22px;font-weight:700;color:{col};"
-                   f"margin-top:6px;line-height:1'>{v}</div></td>")
+                   f"margin-top:6px;line-height:1'>{v}</div>{sub_html}</td>")
     kpis = (f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0' "
             f"style='border:1px solid {LINE};border-radius:12px;table-layout:fixed'>"
             f"<tr>{mcells}</tr></table>")
@@ -1008,10 +1045,24 @@ def _plan_html(d):
     wl = d.get("workload", [])
     if wl:
         maxw = max((w["hours"] for w in wl), default=0) or 1
+        max_cnt = max((w["stories"] for w in wl), default=0) or 1
         wrows = []
         for w in wl:
             init, acol = _av(w["name"])
-            pct = max(4, int(round(w["hours"] / maxw * 100)))
+            # Bar visualizes hours share when effort's on, story-count share
+            # when it's off — same switch the in-app workload cards make.
+            pct = max(4, int(round((
+                (w["hours"] / maxw) if effort_on else (w["stories"] / max_cnt)
+            ) * 100)))
+            if effort_on:
+                hrs_html = (
+                    f"<span style='font-family:{MONO};font-size:14px;font-weight:700;"
+                    f"color:{INK};padding-left:8px'>{w['hours']} h</span>"
+                    f"<span style='font-family:{MONO};font-size:10.5px;font-weight:600;"
+                    f"color:{INK3};padding-left:5px'>&middot; {w.get('days', 0)}d</span>")
+            else:
+                hrs_html = (f"<span style='font-family:{MONO};font-size:14px;"
+                           f"font-weight:700;color:{INK3};padding-left:8px'>&mdash;</span>")
             wrows.append(
                 f"<tr><td width='118' style='padding:7px 0'>"
                 f"<table role='presentation' cellpadding='0' cellspacing='0'><tr>"
@@ -1028,17 +1079,19 @@ def _plan_html(d):
                 f"<td height='8' style='background:{acol};border-radius:99px;width:{pct}%;"
                 f"font-size:0;line-height:0'>&nbsp;</td>"
                 f"<td style='font-size:0;line-height:0'>&nbsp;</td></tr></table></td>"
-                f"<td width='118' align='right' style='padding:7px 0;white-space:nowrap'>"
+                f"<td width='150' align='right' style='padding:7px 0;white-space:nowrap'>"
                 f"<span style='font-size:11.5px;color:{INK3}'>{w['stories']} stories</span>"
-                f"<span style='font-family:{MONO};font-size:14px;font-weight:700;"
-                f"color:{INK};padding-left:8px'>{w['hours']} h</span></td></tr>")
+                + hrs_html + "</td></tr>")
+        _wl_pill = (f"&#8776; {d['hours_per_person']} h &middot; "
+                   f"{d.get('hours_per_person_days', 0)}d / person" if effort_on
+                   else "Split evenly by story count")
         wl_block = (
             f"<tr><td style='padding:26px 32px;border-top:1px solid {LINE}'>"
             f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0'><tr>"
             f"<td>{_sec_head(GREEN, 'Resource workload', len(wl))}</td>"
             f"<td align='right'><span style='font-size:11.5px;font-weight:700;color:{GREEN};"
             f"background:{GREEN_SOFT};padding:5px 11px;border-radius:999px'>"
-            f"&#8776; {d['hours_per_person']} h / person</span></td></tr></table>"
+            f"{_wl_pill}</span></td></tr></table>"
             f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0' "
             f"style='margin-top:14px'>" + "".join(wrows) + "</table></td></tr>")
 
@@ -1068,7 +1121,9 @@ def _plan_html(d):
     footer_note = (
         f"Estimates use {d['avg_minutes_per_case']}&nbsp;min / test case weighted by Azure "
         f"DevOps priority." if show_cases else
-        "Effort is estimated per story and balanced across the team.")
+        "Effort is estimated per story and balanced across the team." if effort_on else
+        "Effort wasn't calculated for this plan — stories are split evenly by "
+        "count across the team.")
     footer = (
         f"<table role='presentation' cellpadding='0' cellspacing='0'><tr>"
         f"<td valign='middle' style='padding-right:9px'>{E._logo_tag(20)}</td>"
@@ -1108,10 +1163,27 @@ def _out_dir():
 
 def _stamp(app):
     if getattr(app, "_reg_mode", "existing") == "create":
+        # Sprint Plan's _cp_sprint_name already goes through _sprint_range_label()
+        # (see _after_sprint_change()) — nothing more to do for this branch.
         base = getattr(app, "_cp_sprint_name", "") or "sprint"
     else:
-        base = ((getattr(app, "plan_name", "") or "")
-                or (", ".join(p["name"] for p in (app._reg_plans_selected or [])) or "plan"))
+        # Was `app.plan_name` — always just the FIRST selected plan's raw name
+        # (e.g. "ChambersAdmin_EServices_Sprint_1"), so a multi-sprint export's
+        # filename only ever showed the first sprint even though every OTHER
+        # output (email, in-app KPI strip) already compresses the full
+        # selection into "Sprint 1 to Sprint 22" via _sprint_range_label().
+        # Recover the shared project/team prefix from the first plan's name by
+        # stripping its trailing "Sprint N" segment, then re-append the
+        # compressed range so the filename matches every other output.
+        _plans = app._reg_plans_selected or []
+        _first_name = (_plans[0]["name"] if _plans else "") or (getattr(app, "plan_name", "") or "")
+        _prefix = re.sub(r"[_\s]*[Ss]print[_\s]*\d+\s*$", "", _first_name).strip("_ ") or _first_name
+        _range = _sprint_range_label([
+            (_sprint_num(p.get("name") or p.get("sprint") or "") or (p.get("name") or "").strip())
+            for p in _plans
+        ])
+        base = (f"{_prefix}_{_range}" if (_prefix and _range and _prefix != _range)
+                else (_range or _prefix or "plan"))
     base = re.sub(r"[^A-Za-z0-9_-]+", "_", base).strip("_") or "plan"
     prefix = "SprintPlan" if getattr(app, "_reg_mode", "existing") == "create" else "RegressionPlan"
     return f"{prefix}_{base}_{datetime.now():%Y%m%d-%H%M}"
@@ -1773,7 +1845,10 @@ def _bar(frac, color=T.VIOLET, h=7):
                         border_radius=4, height=h, clip_behavior=ft.ClipBehavior.HARD_EDGE)
 
 
-def _kpi_tile(label, value, accent=None):
+def _kpi_tile(label, value, accent=None, sub=None):
+    """sub: optional small caption under the main value (e.g. "≈ 12.3 workdays")
+    — kept as a separate line rather than crammed onto the value itself, which
+    is what made hours+days ("591.46 h · 73.93d") wrap awkwardly mid-number."""
     accent = accent if accent is not None else T.INK   # call-time (theme-aware)
     try:
         from main import grad_text
@@ -1783,11 +1858,11 @@ def _kpi_tile(label, value, accent=None):
     except Exception:
         _num = ft.Text(value, size=23, weight=ft.FontWeight.BOLD, color=accent,
                        font_family=T.F_MONO)
+    _col = [ft.Text(label, size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3), _num]
+    if sub:
+        _col.append(ft.Text(sub, size=11, weight=ft.FontWeight.W_500, color=T.INK_3))
     return ft.Container(
-        ft.Column([
-            ft.Text(label, size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
-            _num,
-        ], spacing=4),
+        ft.Column(_col, spacing=4),
         expand=True, padding=14, bgcolor=T.CARD,
         border_radius=T.R, border=ft.Border.all(1, T.BORDER_2),
         shadow=ft.BoxShadow(blur_radius=16, spread_radius=-10, offset=ft.Offset(0, 6),
@@ -1869,6 +1944,7 @@ def _init(app):
     for k, v in (("_reg_plans_selected", []), ("_reg_plan_stories", []),
                  ("_reg_stories_loading", False), ("_reg_selected", []),
                  ("_reg_plan_open", False), ("_reg_story_open", False),
+                 ("_reg_effort_mode", True),
                  ("_cp_sprint_open", False),
                  ("_reg_selected_rows", []), ("_reg_res_names", []),
                  ("_reg_res_count", None), ("_reg_busy", False),
@@ -1918,6 +1994,35 @@ def _sprint_num(text):
     """Pull a clean 'Sprint N' out of an iteration path or plan name; '' if none."""
     m = re.search(r"[Ss]print\s*\d+", text or "")
     return re.sub(r"\s+", " ", m.group(0)).strip() if m else ""
+
+
+def _sprint_range_label(labels):
+    """Compact multi-sprint label for the email report and every export
+    (xlsx/docx/pdf/json all consume plan_payload()'s "plan_name" field, so
+    fixing it here is enough for all of them at once): "Sprint 1 to Sprint 4"
+    instead of listing every one out ("Sprint 1, Sprint 2, Sprint 3, Sprint 4").
+    Only labels that actually parse as "Sprint N" get compressed into the
+    range; anything else (a custom, non-numbered plan name) is left alone and
+    appended as-is, comma-separated, since there's no sensible range for it."""
+    uniq = list(dict.fromkeys(l for l in labels if l))   # de-dup, keep order
+    if not uniq:
+        return ""
+    if len(uniq) == 1:
+        return uniq[0]
+    numbered, other = [], []
+    for lbl in uniq:
+        m = re.search(r"\d+", lbl)
+        if m and re.search(r"[Ss]print", lbl):
+            numbered.append((int(m.group(0)), lbl))
+        else:
+            other.append(lbl)
+    parts = []
+    if numbered:
+        numbered.sort(key=lambda t: t[0])
+        parts.append(numbered[0][1] if len(numbered) == 1
+                     else f"{numbered[0][1]} to {numbered[-1][1]}")
+    parts.extend(other)
+    return ", ".join(parts)
 
 
 def _repaint_unless_open(app, open_attr, sync_attr=None):
@@ -3179,6 +3284,12 @@ def _cp_payload(app):
     total_hours = round(sum(r["hours"] for r in rows), 2)
     count = len(names) or 1
     per_person = round(total_hours / count, 2)
+    # Sprint Plan always estimates effort (no Section 3-style toggle here —
+    # that's Regression Plan only) so this is always "on"; added purely for
+    # parity with plan_payload()'s shape, since _plan_html() and the
+    # exporters now read total_days/hours_per_person_days/per-resource days.
+    total_days = round(total_hours / WORK_DAY_HOURS, 2)
+    per_person_days = round(per_person / WORK_DAY_HOURS, 2)
     workload = []
     if names:
         st = {n: 0 for n in names}
@@ -3189,16 +3300,20 @@ def _cp_payload(app):
                 st[a] += 1
                 hr[a] += r["hours"]
         workload = [{"name": n, "stories": st[n], "cases": 0,
-                     "hours": round(hr[n], 2)} for n in names]
+                     "hours": round(hr[n], 2),
+                     "days": round(hr[n] / WORK_DAY_HOURS, 2)} for n in names]
     return {"generated": datetime.now().strftime("%Y-%m-%d %H:%M"),
             "project": app.project, "plan_id": "",
-            "plan_name": app._cp_sprint_name or ", ".join(app._cp_sprint_paths or []),
+            "plan_name": (app._cp_sprint_name
+                         or _sprint_range_label(app._cp_sprint_paths or [])),
             "report_title": "Sprint Plan", "mode": "create",
             "plans": [], "avg_minutes_per_case": 0,
             "priority_boost": {}, "resources_count": len(names),
             "resource_names": names, "stories": rows, "workload": workload,
             "total_stories": len(rows), "total_cases": 0,
-            "total_hours": total_hours, "hours_per_person": per_person}
+            "total_hours": total_hours, "hours_per_person": per_person,
+            "effort_mode": True,
+            "total_days": total_days, "hours_per_person_days": per_person_days}
 
 
 def _mode_toggle(app):
@@ -3253,7 +3368,10 @@ def _create_screen(app):
         return names
 
     def _after_sprint_change():
-        app._cp_sprint_name = ", ".join(_sprint_names())
+        # Compact range ("Sprint 1 to Sprint 4") instead of listing every
+        # selected sprint — see _sprint_range_label(); this feeds the email
+        # and every exporter via _cp_payload()'s plan_name field.
+        app._cp_sprint_name = _sprint_range_label(_sprint_names())
         app._cp_calculated = False
         app._cp_calc_msg = None
         app._cp_sprint_invalid = False
@@ -3504,12 +3622,31 @@ def _create_screen(app):
         try: cp_calc_note_wrap.update()
         except Exception: pass
 
-        # Flip to busy and re-render once so the previous sprint table is replaced
-        # immediately by the spinner + skeleton. results is gated off while busy, so
-        # this repaint is light; _do() then runs the estimate/assign and the final
-        # render (deferred via ui_safe) swaps in the fresh table.
+        # In-place busy-flip — deliberately NOT a full app.render(). This used to
+        # re-render immediately so the previous sprint table was replaced by the
+        # spinner + skeleton, but that's the exact bug found and fixed on the
+        # Regression Plan's Generate button (see DEV_ROADMAP cont'd #21): a full
+        # render here briefly SHRINKS the page, which clamps the scroll position
+        # and overwrites app._scroll_offset with the smaller clamped value — so
+        # when the real table renders at completion, the restore lands in the
+        # wrong place. Same button, same table-replaced-by-skeleton pattern, same
+        # bug. Fix: never shrink the page on click — leave the previous table
+        # exactly where it is, just flip the button + spinner in place.
         app._cp_busy = True
-        app.render()
+        try:
+            calc_btn.opacity = 0.45
+            calc_btn.shadow = None
+            calc_btn.on_click = None
+            calc_btn.content.controls[-1].value = "Generating…"
+            calc_btn.update()
+        except Exception:
+            pass
+        try:
+            cp_spinner.visible = True
+            cp_spinner.content.controls[-1].value = "Generating sprint plan…"
+            cp_spinner.update()
+        except Exception:
+            pass
 
         def _do():
             with _perf(f"cp.generate_render ({len(app._cp_rows)} stories)"):
@@ -3517,7 +3654,12 @@ def _create_screen(app):
                 app._cp_calculated = True
                 app._cp_busy = False
                 if getattr(app, "active", None) == "testplan":
-                    app.render()   # result table must appear — full render here
+                    # Still one full render to build the results table (unavoidable
+                    # — it only exists in the tree once calculated). No corruption
+                    # risk anymore: the busy-flip above never touched
+                    # app._scroll_offset, so the automatic offset-based
+                    # _restore_scroll() lands in the right place on its own.
+                    app.render()
         app.ui_safe(_do)
 
     calc_btn = primary_btn("Generating…" if app._cp_busy else "Generate Sprint Plan",
@@ -3950,7 +4092,91 @@ def _flush_toasts(app):
             pass
 
 
+def _reg_busy_overlay(app):
+    """Fast-to-build placeholder shown by screen() while main.py's render()
+    does its two-phase "spinner now, real rebuild in the background" dance
+    (see App.render()'s docstring).
+
+    MUST go through app.shell() with the same title/sub/badge as the real
+    screen below — an earlier version returned a bare, unwrapped Container
+    and skipped shell() entirely, which is what builds the left nav rail +
+    header (see App.shell()). That stripped the whole chrome away, so instead
+    of a loading state inside the normal page, it showed as a blank/dark
+    full-window overlay with nothing but the spinner floating in it.
+
+    Deliberately has no picker/table/buttons/right-action of its own, so
+    there's nothing to click inside the body until the real content lands —
+    that's the "disable actions until this completes" half of the fix (the
+    nav rail itself intentionally stays usable, same as the real screen's
+    read-only mode); the animated ProgressRing is the other half."""
+    spinner_card = ft.Container(
+        ft.Column([
+            ft.ProgressRing(width=42, height=42, stroke_width=3.5, color=T.VIOLET),
+            ft.Container(height=18),
+            ft.Text("Updating your regression plan…", size=14.5,
+                    weight=ft.FontWeight.BOLD, color=T.INK),
+            ft.Container(height=4),
+            ft.Text("Just a moment — this won't take long.",
+                    size=12, color=T.INK_3),
+        ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+           alignment=ft.MainAxisAlignment.CENTER, tight=True),
+        alignment=ft.Alignment.CENTER, expand=True, padding=40)
+    # Top-level body is an ft.Column (matching the real screen's own
+    # `body = ft.Column(body_children, ..., expand=True)` below) rather than a
+    # bare Container — shell()'s _install_top_gap()/_find_scroller() only
+    # recognize an ft.Column at this position, so anything else silently
+    # skips the header-gap spacer it inserts on every other screen.
+    body = ft.Column([spinner_card], spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
+    return app.shell("Regression Plan",
+                      "Build a regression plan from your test plans & their stories",
+                      body, badge="STEP R")
+
+
+def _reg_render_with_overlay(app):
+    """Two-phase render for the ONE spot on Regression Plan that's genuinely
+    slow: the Generate button's completion callback, which builds a fresh
+    results table + KPI strip + workload cards for a 400+-story plan
+    (0.5–3s+ depending on machine/cache state — see
+    qa_perf_installed.log's "render[regression]: build 1600 ms" lines).
+
+    Deliberately NOT hooked into app.render() generically (an earlier
+    version did that, gated on _reg_selected_rows being truthy) — that also
+    caught fast, everyday actions that happen to call app.render() while a
+    plan already exists (opening the email recipient dropdown, closing a
+    picker, etc.), forcing them through this same overlay + background-
+    thread round trip and making them feel delayed/broken instead of fixing
+    anything. Call this explicitly only where the render is actually slow.
+
+    Must run the FIRST (fast) render via ui_safe — this is invoked from the
+    Generate background worker thread, not the page thread."""
+    def _show_overlay_then_real():
+        import time as _pt
+        app._reg_screen_busy = True
+        _t0 = _pt.perf_counter()
+        app.render()
+        _perf_log(f"overlay: busy render dispatched+returned in "
+                  f"{(_pt.perf_counter() - _t0) * 1000:.0f} ms")
+
+        def _work():
+            # Sleep briefly so the overlay's own page.update() has a real
+            # chance to reach the client and paint BEFORE the real render's
+            # page.update() follows — without this, a fast real render
+            # (cached row controls from an earlier Generate this session can
+            # make the "slow" table build finish in well under 300 ms) can
+            # follow so closely behind that the two updates land almost
+            # back-to-back and the overlay frame never gets painted at all.
+            _pt.sleep(0.5)
+            app._reg_screen_busy = False
+            _perf_log("overlay: switching to real render now")
+            app.ui_safe(app.render)
+        app._bg(_work)
+    app.ui_safe(_show_overlay_then_real)
+
+
 def screen(app):
+    if getattr(app, "_reg_screen_busy", False):
+        _perf_log("screen(): _reg_screen_busy=True -> returning busy overlay")
+        return _reg_busy_overlay(app)
     _init(app)
     _flush_toasts(app)
     from main import (card, sec_head, field_label, green_btn, ghost_btn,
@@ -4213,6 +4439,28 @@ def screen(app):
         app._reg_story_invalid = False
         app._reg_count_invalid = False
         app._reg_res_invalid = False
+        # Collapse the story picker if it's still open — selection is done once
+        # Generate is clicked. _checkbox_multiselect's own comment documents why
+        # this matters: it eagerly materializes ONE CONTROL-SET PER OPTION while
+        # its panel is open (441 checkbox rows here), and visible=is_open only
+        # HIDES that subtree — it stays mounted in the page tree either way.
+        # That's what's behind "first click after the table draws takes 3-4s,
+        # then it's fast": every update/redraw after the table appears (Prev/
+        # Next, collapsing a feature, even switching screens) has to have the
+        # client (Flutter) reconcile around that huge hidden subtree until it's
+        # painted once — a cost the Python-side _perf() timers can't see at all,
+        # since they only measure the server-side call, not client paint time.
+        # Collapsing it now, before results even exist, keeps it out of the
+        # tree entirely (lazy-build skips it while closed) instead of letting it
+        # sit there dragging down every later interaction.
+        if app._reg_story_open:
+            app._reg_story_open = False
+            _sync_sp = getattr(app, "_sync_reg_story_cell", None)
+            if callable(_sync_sp):
+                try:
+                    _sync_sp()
+                except Exception:
+                    pass
         # In-place busy-flip — deliberately NOT a full app.render(). Two earlier
         # fixes for the scroll-jump on this button (an extra scroll-retry, then
         # a key-based scroll_to anchor) both failed; qa_perf_installed.log
@@ -4281,15 +4529,16 @@ def screen(app):
             # background completion forces a heavy render of whatever screen the
             # user navigated to (reads as a freeze).
             if getattr(app, "active", None) == "regression":
-                # Single full render to build the fresh results table. No
-                # extra scroll-restore call needed anymore: the busy-flip
-                # above no longer shrinks the page (see the comment at the
-                # top of _calculate), so app._scroll_offset was never
-                # clobbered by a transient clamp. The existing offset-based
-                # _restore_scroll() — already invoked automatically at the
-                # end of every render() — lands back in the right place on
-                # its own.
-                app.ui_safe(app.render)
+                # This is THE genuinely slow render (fresh results table +
+                # KPI + workload for 400+ stories, 0.5-3s+ depending on
+                # machine/cache — see qa_perf_installed.log). No extra
+                # scroll-restore call needed: the busy-flip above no longer
+                # shrinks the page (see the comment at the top of
+                # _calculate), so app._scroll_offset was never clobbered by a
+                # transient clamp. The existing offset-based _restore_scroll()
+                # — invoked automatically at the end of every render() —
+                # lands back in the right place on its own.
+                _reg_render_with_overlay(app)
         threading.Thread(target=_work, daemon=True).start()
 
     def _regenerate(e):
@@ -4414,11 +4663,18 @@ def screen(app):
             try:
                 d = plan_payload(app)
                 # The mail report shows only the sprint number, not the long
-                # "<Project>_Sprint N" test-plan name.
-                trimmed = ", ".join(
+                # "<Project>_Sprint N" test-plan name. This was previously a
+                # plain ", ".join(...) — which silently UNDID plan_payload()'s
+                # _sprint_range_label() compression right before the subject/
+                # body were built, so a multi-sprint plan's email still listed
+                # every sprint ("Sprint 1, Sprint 2, ... Sprint 22") even
+                # though the fix was already in plan_payload(). Routed through
+                # _sprint_range_label() here too so the email actually gets
+                # "Sprint 1 to Sprint 22".
+                trimmed = _sprint_range_label([
                     (_sprint_num(p.get("name") or p.get("sprint") or "")
                      or (p.get("name") or "").strip())
-                    for p in (app._reg_plans_selected or [])).strip(", ")
+                    for p in (app._reg_plans_selected or [])])
                 if trimmed:
                     d["plan_name"] = trimmed
                 # Auto-attach the Excel plan (primary) alongside the Word doc.
@@ -4759,31 +5015,136 @@ def screen(app):
     ], spacing=0))
 
     # ── Card 3: effort model ──
-    card3 = card(ft.Column([
-        sec_head("3", "How effort is estimated"),
-        ft.Container(height=10),
-        ft.Container(
+    # Section 3 toggle: checked (default) computes hours/days from each story's
+    # existing test cases and balances resources by effort — same behavior as
+    # before this toggle existed. Unchecked skips the test-case counting
+    # entirely (the single slowest part of Generate on a large plan — see
+    # build_rows() below and DEV_ROADMAP) and just splits stories evenly by
+    # count. assign_resources() already has a "0-hour -> spread by headcount"
+    # branch, so no separate distribution code path was needed.
+    # Dynamic cell (same pattern as the Setup/Regression story pickers — see
+    # DEV_ROADMAP cont'd #22/#23): a stable Container whose .content gets
+    # swapped + .update()-ed directly, so flipping this switch doesn't need a
+    # full app.render(). That matters here specifically because a full render
+    # is exactly the Generate-button bug class (cont'd #21): this toggle
+    # changes card3's own height a LOT (the "on" body has the formula pills +
+    # priority-weight row + example; "off" is one short note), and a full
+    # render's resulting shrink/grow clamps the scroll position and corrupts
+    # app._scroll_offset before the restore runs — the toggle would jump the
+    # scroll for the exact same underlying reason Generate used to.
+    def _build_card3_body():
+        # Same info-box style as Sprint Plan's "Estimates are complexity-based"
+        # card (violet-soft background, thin violet border, AUTO_GRAPH icon) —
+        # the Switch is the one interactive addition, since this box doubles
+        # as the toggle itself.
+        effort_header = ft.Container(
             ft.Row([
-                _pill("test cases", T.INK_2, T.CARD_2),
-                ft.Text("×", size=14, color=T.INK_3, weight=ft.FontWeight.BOLD),
-                _pill(f"{AVG_MINUTES_PER_CASE} min", T.INK_2, T.CARD_2),
-                ft.Text("×", size=14, color=T.INK_3, weight=ft.FontWeight.BOLD),
-                _pill("priority weight", T.VIOLET_INK, T.VIOLET_SOFT),
-                ft.Text("=", size=14, color=T.INK_3, weight=ft.FontWeight.BOLD),
-                _pill("estimated hours", T.GREEN, T.GREEN_SOFT),
-            ], spacing=8, wrap=True), padding=ft.Padding.only(bottom=12)),
-        ft.Text("Priority weight (from each story's Azure DevOps priority):",
-                size=12, color=T.INK_2, weight=ft.FontWeight.W_500),
-        ft.Container(height=8),
-        ft.Row([_pill("P1 ×1.30", T.RED, T.RED_SOFT),
-                _pill("P2 ×1.15", T.AMBER, T.AMBER_SOFT),
-                _pill("P3 ×1.00", T.INK_2, T.CARD_2),
-                _pill("P4 ×0.90", T.GREEN, T.GREEN_SOFT)], spacing=8, wrap=True),
-        ft.Container(height=10),
-        ft.Text(f"Example: a P1 story with 33 cases  →  33 × {AVG_MINUTES_PER_CASE} "
-                f"min × 1.30 ≈ 5.7 h", size=11.5, color=T.INK_3,
-                weight=ft.FontWeight.W_500),
-    ], spacing=0))
+                ft.Switch(value=app._reg_effort_mode, active_color=T.VIOLET,
+                         on_change=_toggle_effort_mode,
+                         disabled=getattr(app, "readonly", False)),
+                ft.Icon(ft.Icons.AUTO_GRAPH, size=16, color=T.VIOLET_INK),
+                ft.Column([
+                    ft.Text("Calculate effort hours", size=11.5,
+                            weight=ft.FontWeight.BOLD, color=T.VIOLET_INK),
+                    _txt(
+                        "On: counts each story's existing test cases and "
+                        f"estimates hours and days (1 workday = "
+                        f"{WORK_DAY_HOURS}h), then balances resources by "
+                        "effort. Off: skips counting test cases (faster — no "
+                        "extra Azure DevOps calls) and just splits stories "
+                        "evenly by number across the resources you add below.",
+                        color=T.INK_2, size=11.5, no_wrap=False),
+                ], spacing=2, tight=True, expand=True),
+            ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.START),
+            expand=True, padding=12,
+            bgcolor=getattr(T, "VIOLET_SOFT", T.CARD_2), border_radius=T.R,
+            border=ft.Border.all(1, "#D9D2FF"))
+
+        if app._reg_effort_mode:
+            return [
+                effort_header,
+                ft.Container(height=14),
+                ft.Container(
+                    ft.Row([
+                        _pill("test cases", T.INK_2, T.CARD_2),
+                        ft.Text("×", size=14, color=T.INK_3, weight=ft.FontWeight.BOLD),
+                        _pill(f"{AVG_MINUTES_PER_CASE} min", T.INK_2, T.CARD_2),
+                        ft.Text("×", size=14, color=T.INK_3, weight=ft.FontWeight.BOLD),
+                        _pill("priority weight", T.VIOLET_INK, T.VIOLET_SOFT),
+                        ft.Text("=", size=14, color=T.INK_3, weight=ft.FontWeight.BOLD),
+                        _pill("estimated hours", T.GREEN, T.GREEN_SOFT),
+                    ], spacing=8, wrap=True), padding=ft.Padding.only(bottom=12)),
+                ft.Text("Priority weight (from each story's Azure DevOps priority):",
+                        size=12, color=T.INK_2, weight=ft.FontWeight.W_500),
+                ft.Container(height=8),
+                ft.Row([_pill("P1 ×1.30", T.RED, T.RED_SOFT),
+                        _pill("P2 ×1.15", T.AMBER, T.AMBER_SOFT),
+                        _pill("P3 ×1.00", T.INK_2, T.CARD_2),
+                        _pill("P4 ×0.90", T.GREEN, T.GREEN_SOFT)], spacing=8, wrap=True),
+                ft.Container(height=10),
+                ft.Text(f"Example: a P1 story with 33 cases  →  33 × "
+                        f"{AVG_MINUTES_PER_CASE} min × 1.30 ≈ 5.7 h ≈ "
+                        f"{round(5.7 / WORK_DAY_HOURS, 2)} d (1 workday = "
+                        f"{WORK_DAY_HOURS}h).", size=11.5, color=T.INK_3,
+                        weight=ft.FontWeight.W_500),
+            ]
+        return [
+            effort_header,
+            ft.Container(height=14),
+            ft.Container(
+                ft.Row([ft.Icon(ft.Icons.INFO_OUTLINE, size=15, color=T.INK_3),
+                        ft.Text("Effort hours won't be calculated — test cases "
+                                "won't be counted, and stories will be split "
+                                "evenly by number across the resources you add "
+                                "below.", size=12, color=T.INK_2,
+                                weight=ft.FontWeight.W_500, expand=True)],
+                       spacing=8),
+                padding=10, bgcolor=T.CARD_2, border_radius=T.R),
+        ]
+
+    # NOTE on ordering: _build_card3_body() references _toggle_effort_mode
+    # (for the Switch's on_change), and _build_card3_body() gets CALLED
+    # immediately below to construct _reg_card3_cell's initial content — so
+    # _toggle_effort_mode must be a bound name in this scope BEFORE that first
+    # call, not merely defined somewhere later in the function. (Referencing
+    # a not-yet-executed def is fine for callbacks that only fire on a later
+    # click, like calc_btn elsewhere in this file — it's only a problem when
+    # the closure is invoked immediately, as it is here.) Hence this def comes
+    # before _reg_card3_cell is built, even though _sync_card3_cell (which it
+    # calls) is defined after — that's fine, since _toggle_effort_mode itself
+    # is never invoked until the user actually flips the switch.
+    def _toggle_effort_mode(e):
+        if getattr(app, "readonly", False):
+            return app._toast("Read-only — your role can’t change this.")
+        app._reg_effort_mode = bool(e.control.value)
+        # An existing plan reflects the OLD mode's hours/distribution — clear
+        # it so the user regenerates under the new mode instead of seeing
+        # numbers that no longer match the toggle. That does need a full
+        # render (the whole results section appears/disappears — a genuinely
+        # structural change, same as _clear_stories() elsewhere in this file).
+        # With no existing plan (the common case — deciding the mode BEFORE
+        # Generate), only this card's own body changed, so stay in place.
+        had_results = bool(app._reg_selected_rows)
+        if had_results:
+            app._reg_selected_rows = []
+            app._reg_calc_msg = ("Effort mode changed — click Generate again to "
+                                 "rebuild the plan.")
+            app.render()
+        else:
+            _sync_card3_cell()
+
+    _reg_card3_cell = ft.Container(ft.Column(_build_card3_body(), spacing=0))
+
+    def _sync_card3_cell():
+        try:
+            _reg_card3_cell.content = ft.Column(_build_card3_body(), spacing=0)
+            _reg_card3_cell.update()
+        except Exception:
+            app.render()
+
+    card3 = card(ft.Column(
+        [sec_head("3", "How effort is estimated"), ft.Container(height=10),
+         _reg_card3_cell], spacing=0))
 
     # ── results ──
     results = None
@@ -4810,6 +5171,7 @@ def screen(app):
             border=ft.Border.only(bottom=ft.BorderSide(1, T.BORDER)))
 
         maxh_story = max((x["hours"] for x in d["stories"]), default=0) or 1
+        _eff = d.get("effort_mode", True)   # Section 3 toggle — see plan_payload()
 
         # Memoize rows by story id so collapse / page-flip reuse built controls.
         _reg_row_cache = {}
@@ -4821,10 +5183,17 @@ def screen(app):
                                _txt(asg, color=T.INK, weight=ft.FontWeight.W_500)],
                               spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER)
                        if asg else _txt("—", color=T.INK_3))
-            hours_ctl = ft.Row([
-                ft.Container(_bar(s["hours"] / maxh_story), width=70),
-                _txt(str(s["hours"]), color=T.INK, weight=ft.FontWeight.BOLD),
-            ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+            if _eff:
+                hours_ctl = ft.Row([
+                    ft.Container(_bar(s["hours"] / maxh_story), width=70),
+                    _txt(str(s["hours"]), color=T.INK, weight=ft.FontWeight.BOLD),
+                ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+                cases_ctl = _txt(str(s["cases"]), color=T.INK_2)
+            else:
+                # Effort mode off — cases weren't counted and hours are always
+                # 0, so a dash reads clearer than a misleading "0".
+                hours_ctl = _txt("—", color=T.INK_3)
+                cases_ctl = _txt("—", color=T.INK_3)
             return ft.Container(
                 ft.Row([
                     _cell(34, ft.IconButton(
@@ -4839,7 +5208,7 @@ def screen(app):
                           expand=True),
                     _cell(84, _state_pill(s["state"])),
                     _cell(44, _pri_pill(s["priority"])),
-                    _cell(52, _txt(str(s["cases"]), color=T.INK_2)),
+                    _cell(52, cases_ctl),
                     _cell(128, hours_ctl),
                     _cell(140, asg_ctl),
                 ], spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER),
@@ -4941,32 +5310,68 @@ def screen(app):
             border=ft.Border.all(1, T.BORDER), border_radius=T.R,
             clip_behavior=ft.ClipBehavior.HARD_EDGE)
 
-        kpi_strip = ft.Row([
-            _kpi_tile("STORIES", str(d["total_stories"])),
-            _kpi_tile("TEST CASES", str(d["total_cases"])),
-            _kpi_tile("TOTAL EFFORT", f"{d['total_hours']} h", T.VIOLET),
-            _kpi_tile("PER PERSON", f"{d['hours_per_person']} h", T.GREEN),
-        ], spacing=10)
+        def _kpi_tiles_for(dd):
+            # Section 3 toggle: with effort mode off, cases weren't counted and
+            # hours are always 0 — a dash reads clearer than misleading zeros.
+            # With it on, days show as a small caption under the hours (via
+            # _kpi_tile's sub= param) instead of crammed onto the same line —
+            # "591.46 h · 73.93d" was wrapping mid-number and looked cramped.
+            _e = dd.get("effort_mode", True)
+            cases_val = str(dd["total_cases"]) if _e else "—"
+            effort_val = f"{dd['total_hours']} h" if _e else "—"
+            effort_sub = f"≈ {dd['total_days']} workdays" if _e else None
+            person_val = f"{dd['hours_per_person']} h" if _e else "—"
+            person_sub = f"≈ {dd['hours_per_person_days']} workdays" if _e else None
+            return [
+                _kpi_tile("STORIES", str(dd["total_stories"])),
+                _kpi_tile("TEST CASES", cases_val),
+                _kpi_tile("TOTAL EFFORT", effort_val, T.VIOLET, sub=effort_sub),
+                _kpi_tile("PER PERSON", person_val, T.GREEN, sub=person_sub),
+            ]
+
+        kpi_strip = ft.Row(_kpi_tiles_for(d), spacing=10)
 
         def _mk_workload(_d):
             if not _d["workload"]:
                 return None
+            _e = _d.get("effort_mode", True)
             maxw = max((w["hours"] for w in _d["workload"]), default=0) or 1
-            cards_wl = [ft.Container(ft.Column([
-                ft.Row([_avatar(w["name"], 32),
-                        ft.Column([_txt(w["name"], color=T.INK, weight=ft.FontWeight.BOLD,
-                                        size=14),
-                                   _txt(f"{w['stories']} stories · {w.get('cases', 0)} cases",
-                                        color=T.INK_3, size=11)],
-                                  spacing=1, tight=True, expand=True),
-                        _txt(f"{w['hours']} h", color=T.INK, weight=ft.FontWeight.BOLD,
-                             size=16, font_family=T.F_MONO, no_wrap=True)],
-                       spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                ft.Container(height=12),
-                _bar(w["hours"] / maxw, T.VIOLET, 8),
-            ], spacing=0), width=300, padding=14, bgcolor=T.CARD,
-                border=ft.Border.all(1, T.BORDER_2), border_radius=T.R)
-                for w in _d["workload"]]
+            max_cnt = max((w["stories"] for w in _d["workload"]), default=0) or 1
+
+            def _stat(label, value, color):
+                return ft.Column([
+                    ft.Text(label, size=9.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
+                    ft.Text(value, size=16, weight=ft.FontWeight.BOLD, color=color,
+                           font_family=T.F_MONO, no_wrap=True),
+                ], spacing=1, tight=True)
+
+            cards_wl = []
+            for w in _d["workload"]:
+                subtitle = (f"{w['stories']} stories · {w.get('cases', 0)} cases"
+                           if _e else f"{w['stories']} stories")
+                # Name row stands alone (no competing text squeezed beside it —
+                # that's what made the avatar/name and hours/days wrap unevenly
+                # against each other). Hours/days get their own labeled row
+                # below instead of being crammed onto one mono-spaced line.
+                stats = (ft.Row([_stat("EFFORT", f"{w['hours']} h", T.INK),
+                                 _stat("DAYS", f"{w.get('days', 0)} d", T.VIOLET_INK)],
+                                spacing=24)
+                        if _e else
+                        ft.Text("—", size=14, weight=ft.FontWeight.BOLD, color=T.INK_3))
+                cards_wl.append(ft.Container(ft.Column([
+                    ft.Row([_avatar(w["name"], 34),
+                            ft.Column([_txt(w["name"], color=T.INK,
+                                           weight=ft.FontWeight.BOLD, size=14),
+                                      _txt(subtitle, color=T.INK_3, size=11)],
+                                     spacing=1, tight=True, expand=True)],
+                           spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    ft.Container(height=14),
+                    stats,
+                    ft.Container(height=12),
+                    _bar((w["hours"] / maxw) if _e else (w["stories"] / max_cnt),
+                         T.VIOLET, 8),
+                ], spacing=0), width=320, padding=16, bgcolor=T.CARD,
+                    border=ft.Border.all(1, T.BORDER_2), border_radius=T.R))
             return ft.Column([
                 ft.Container(height=16),
                 ft.Text("RESOURCE WORKLOAD", size=10.5, weight=ft.FontWeight.BOLD,
@@ -4986,12 +5391,7 @@ def screen(app):
             nonlocal d
             d = plan_payload(app)
             _refresh_table()
-            kpi_strip.controls = [
-                _kpi_tile("STORIES", str(d["total_stories"])),
-                _kpi_tile("TEST CASES", str(d["total_cases"])),
-                _kpi_tile("TOTAL EFFORT", f"{d['total_hours']} h", T.VIOLET),
-                _kpi_tile("PER PERSON", f"{d['hours_per_person']} h", T.GREEN),
-            ]
+            kpi_strip.controls = _kpi_tiles_for(d)
             kpi_strip.update()
             workload_holder.content = _mk_workload(d)
             workload_holder.update()

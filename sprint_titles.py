@@ -83,6 +83,32 @@ def _sprint_num(text):
     return re.sub(r"\s+", " ", m.group(0)).strip() if m else ""
 
 
+def _sprint_range_label(labels):
+    """Compact multi-sprint header, mirroring regression.py's _sprint_range_label:
+    "Sprint 1 to Sprint 4" instead of listing every one out. Only labels that
+    parse as "Sprint N" get compressed; anything else is left alone and appended
+    comma-separated."""
+    uniq = list(dict.fromkeys(l for l in labels if l))
+    if not uniq:
+        return ""
+    if len(uniq) == 1:
+        return uniq[0]
+    numbered, other = [], []
+    for lbl in uniq:
+        m = re.search(r"\d+", lbl)
+        if m and re.search(r"[Ss]print", lbl):
+            numbered.append((int(m.group(0)), lbl))
+        else:
+            other.append(lbl)
+    parts = []
+    if numbered:
+        numbered.sort(key=lambda t: t[0])
+        parts.append(numbered[0][1] if len(numbered) == 1
+                     else f"{numbered[0][1]} to {numbered[-1][1]}")
+    parts.extend(other)
+    return ", ".join(parts)
+
+
 def _sort_key(it):
     m = re.search(r"\d+", _sprint_num(it.get("name", "")) or _sprint_num(it.get("path", "")))
     return int(m.group(0)) if m else -1
@@ -262,7 +288,7 @@ def _generate(app):
             from collections import Counter
             reg = sum(1 for b in bugs if "regression" in (b.get("tags", "") or "").lower())
             app._st_report = {
-                "sprint_name": ", ".join(names),
+                "sprint_name": _sprint_range_label(names),
                 "date": datetime.now().strftime("%d-%m-%Y"),
                 "lang": lang,
                 "completed": completed, "carried": carried,
@@ -765,18 +791,28 @@ def screen(app):
                 bgcolor=(T.CARD_2 if stripe else ft.Colors.TRANSPARENT))
 
         def _epic_head(text_val, accent):
+            # Soft tinted chip instead of a plain underline — matches the
+            # rounded-badge idiom used throughout the redesigned plan email
+            # (cont'd #29) rather than a bare border, which read as an
+            # afterthought next to the accent-bar section headers below.
             return ft.Container(
                 _drow([R._txt(text_val, color=accent, weight=ft.FontWeight.W_800,
-                              size=12.5, text_align=_ral)], alignment=_main),
-                padding=ft.Padding.only(top=12, bottom=2, left=4, right=4),
-                border=ft.Border(bottom=ft.BorderSide(1, ft.Colors.with_opacity(0.25, accent))),
-                margin=ft.Margin.only(bottom=4))
+                              size=12, text_align=_ral)], alignment=_main),
+                padding=ft.Padding.symmetric(vertical=6, horizontal=10),
+                bgcolor=ft.Colors.with_opacity(0.10, accent),
+                border_radius=999,
+                margin=ft.Margin.only(top=14, bottom=6))
+
+        _sec_icon = {T.GREEN: ft.Icons.CHECK_CIRCLE_ROUNDED,
+                     T.AMBER: ft.Icons.SCHEDULE_ROUNDED}
 
         def _sec(label, rows, accent, soft):
             header = ft.Container(
                 _drow([
-                    ft.Container(width=4, height=18, bgcolor=accent, border_radius=2),
+                    ft.Icon(_sec_icon.get(accent, ft.Icons.LABEL_ROUNDED),
+                            color=accent, size=17),
                     R._txt(label, color=T.INK, weight=ft.FontWeight.W_900, size=14),
+                    ft.Container(expand=True),
                     ft.Container(R._txt(f"{len(rows)}", size=11, weight=ft.FontWeight.W_800,
                                         color=accent),
                                  padding=ft.Padding.symmetric(vertical=2, horizontal=9),
@@ -784,8 +820,9 @@ def screen(app):
                                  border_radius=999),
                 ], spacing=10, alignment=_main,
                    vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                padding=ft.Padding.symmetric(vertical=10, horizontal=12),
-                bgcolor=soft, border_radius=T.R_SM)
+                padding=ft.Padding.symmetric(vertical=11, horizontal=13),
+                bgcolor=soft, border_radius=T.R_SM,
+                border=ft.Border.all(1, ft.Colors.with_opacity(0.35, accent)))
             if not rows:
                 body = [ft.Container(R._txt(L["none"], color=T.INK_3, size=12.5),
                                      padding=ft.Padding.symmetric(vertical=9, horizontal=12))]
@@ -804,42 +841,48 @@ def screen(app):
             return ft.Column([header, ft.Container(height=8),
                               ft.Column(body, spacing=2)], spacing=0)
 
-        def _stat(label, val, accent, soft):
-            return ft.Container(
-                ft.Column([
-                    R._txt(str(val), color=accent, weight=ft.FontWeight.W_900, size=24,
-                           text_align=ft.TextAlign.CENTER),
-                    R._txt(label, color=T.INK_2, size=11.5, no_wrap=False,
-                           text_align=ft.TextAlign.CENTER),
-                ], spacing=2, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
-                expand=True, padding=ft.Padding.symmetric(vertical=14, horizontal=8),
-                bgcolor=soft, border_radius=T.R, border=ft.Border.all(1, T.BORDER))
+        # Same tile the Regression/Sprint Plan KPI strip uses (R._kpi_tile) —
+        # gradient mono numbers on a shadowed card, instead of this screen's
+        # own flatter, unshadowed `_stat` tile — so all three "plan" screens
+        # share one visual language for a labeled headline number.
+        bug_stats = _drow([
+            R._kpi_tile(L["total_bugs"].upper(), str(r["total_bugs"]), T.VIOLET_INK),
+            R._kpi_tile(L["regression_bugs"].upper(), str(r["regression_bugs"]), T.RED),
+            R._kpi_tile(L["sprint_bugs"].upper(), str(r["sprint_bugs"]), T.AMBER),
+        ], spacing=10)
+
+        def _state_pair(st):
+            s = (st or "").lower()
+            if s in _DONE:
+                return T.GREEN, T.GREEN_SOFT
+            if s in ("active", "in progress", "committed", "doing"):
+                return T.VIOLET_INK, T.VIOLET_SOFT
+            if s in ("new", "to do", "proposed", "open"):
+                return T.AMBER, T.AMBER_SOFT
+            return T.INK_2, T.CARD_2
 
         def _status_chip(st, n):
+            fg, bg = _state_pair(st)
             return ft.Container(
-                _drow([R._txt(str(st), color=T.INK_2, size=12),
-                       ft.Container(R._txt(str(n), color=T.INK, size=12,
+                _drow([ft.Container(width=7, height=7, border_radius=999, bgcolor=fg),
+                       R._txt(str(st), color=T.INK_2, size=12),
+                       ft.Container(R._txt(str(n), color=fg, size=12,
                                            weight=ft.FontWeight.W_800),
                                     padding=ft.Padding.symmetric(vertical=1, horizontal=7),
-                                    bgcolor=ft.Colors.with_opacity(0.10, T.VIOLET),
+                                    bgcolor=ft.Colors.with_opacity(0.14, fg),
                                     border_radius=999)],
                       spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                 padding=ft.Padding.symmetric(vertical=6, horizontal=10),
-                bgcolor=T.CARD_2, border_radius=999, border=ft.Border.all(1, T.BORDER))
+                bgcolor=bg, border_radius=999, border=ft.Border.all(1, T.BORDER))
 
-        bug_stats = _drow([
-            _stat(L["total_bugs"], r["total_bugs"], T.VIOLET_INK, T.VIOLET_SOFT),
-            _stat(L["regression_bugs"], r["regression_bugs"], T.RED, T.RED_SOFT),
-            _stat(L["sprint_bugs"], r["sprint_bugs"], T.AMBER, T.AMBER_SOFT),
-        ], spacing=10)
         status_items = [_status_chip(st, n)
                         for st, n in (r.get("bug_by_state") or {}).items()]
         bug_section = ft.Column([
-            _drow([ft.Container(width=4, height=18, bgcolor=T.VIOLET, border_radius=2),
+            _drow([ft.Icon(ft.Icons.BUG_REPORT_ROUNDED, color=T.VIOLET, size=17),
                    R._txt(L["bugs"], color=T.INK, weight=ft.FontWeight.W_900, size=14)],
                   spacing=10, alignment=_main,
                   vertical_alignment=ft.CrossAxisAlignment.CENTER),
-            ft.Container(height=12), bug_stats, ft.Container(height=14),
+            ft.Container(height=12), bug_stats, ft.Container(height=16),
             R._txt(L["by_status"], color=T.INK_3, size=11, weight=ft.FontWeight.BOLD,
                    text_align=_ral),
             ft.Container(height=8),
@@ -849,6 +892,18 @@ def screen(app):
         ], spacing=0, horizontal_alignment=_cross)
 
         def _copy(e):
+            # Same shared clipboard-with-fallback mechanism the Run/Automation
+            # logs use (main.py's _copy_text_to_clipboard): tries
+            # page.set_clipboard() first, then falls back to a direct Windows
+            # clipboard write if that silently fails (a real, documented Flet
+            # IPC limitation), and only shows a red error toast if BOTH paths
+            # fail. The previous bare try/except here swallowed set_clipboard's
+            # failure with a plain `pass` — so on machines where the IPC path
+            # fails, the "Report copied" toast never even fired and there was
+            # no fallback, which is why Copy looked like it did nothing.
+            # (Uses the raw-text variant, not _copy_log_text, since that one
+            # strips blank lines — which here are the deliberate spacers
+            # between sections, not log noise.)
             lines = [f"{L['title']} — {L['sprint']} {r['sprint_name']} ({r['date']})", ""]
             for label, rows in ((L["completed"], r["completed"]), (L["carried"], r["carried"])):
                 lines.append(f"{label} ({len(rows)}):")
@@ -857,11 +912,7 @@ def screen(app):
             lines += [f"{L['bugs']}: {L['total_bugs']} {r['total_bugs']} · "
                       f"{L['regression_bugs']} {r['regression_bugs']} · "
                       f"{L['sprint_bugs']} {r['sprint_bugs']}"]
-            try:
-                app.page.set_clipboard("\n".join(lines))
-                app._toast("Report copied to clipboard.")
-            except Exception:
-                pass
+            app._copy_text_to_clipboard("\n".join(lines), "Report copied to clipboard.")
 
         def _download(e):
             def _w():
@@ -878,23 +929,39 @@ def screen(app):
                     app.ui_safe(lambda e=ex: app._err(f"Export failed: {ex}"))
             app._bg(_w)
 
+        # "Hero" treatment matching the plan email's masthead (cont'd #29) —
+        # a small violet-soft eyebrow pill above the title instead of the
+        # title sitting flatly next to the icon with nothing to anchor it,
+        # plus a shadowed gradient icon so this reads as the report's
+        # headline rather than just another list item.
         title_band = ft.Container(
             _drow([
-                ft.Container(ft.Icon(ft.Icons.SUMMARIZE, color=ft.Colors.WHITE, size=20),
-                             width=40, height=40, alignment=ft.Alignment.CENTER,
-                             border_radius=T.R_SM,
+                ft.Container(ft.Icon(ft.Icons.SUMMARIZE_ROUNDED, color=ft.Colors.WHITE, size=22),
+                             width=46, height=46, alignment=ft.Alignment.CENTER,
+                             border_radius=T.R,
                              gradient=ft.LinearGradient(
                                  begin=ft.Alignment.TOP_LEFT, end=ft.Alignment.BOTTOM_RIGHT,
-                                 colors=[T.VIOLET, T.VIOLET_H])),
+                                 colors=[T.VIOLET, T.VIOLET_H]),
+                             shadow=ft.BoxShadow(blur_radius=14, spread_radius=-6,
+                                                 offset=ft.Offset(0, 5),
+                                                 color=ft.Colors.with_opacity(0.35, T.VIOLET))),
                 ft.Column([
-                    R._txt(L["title"], color=T.INK, weight=ft.FontWeight.W_900, size=16,
+                    ft.Container(
+                        R._txt(("سبرنت مغلق" if lang == "ar" else "SPRINT SNAPSHOT"),
+                               color=T.VIOLET_INK, size=10, weight=ft.FontWeight.W_800,
+                               text_align=_ral),
+                        padding=ft.Padding.symmetric(vertical=2, horizontal=9),
+                        bgcolor=T.VIOLET_SOFT, border_radius=999),
+                    ft.Container(height=4),
+                    R._txt(L["title"], color=T.INK, weight=ft.FontWeight.W_900, size=17,
                            text_align=_ral),
                     R._txt(f"{L['sprint']} {r['sprint_name']}  ·  {r['date']}  ·  "
                            f"{r['total_stories']} {L['stories']}",
-                           color=T.INK_3, size=12, weight=ft.FontWeight.BOLD, text_align=_ral),
-                ], spacing=3, expand=True, horizontal_alignment=_cross),
+                           color=T.INK_3, size=12, weight=ft.FontWeight.BOLD,
+                           font_family=T.F_MONO, text_align=_ral),
+                ], spacing=0, expand=True, horizontal_alignment=_cross),
             ], spacing=14, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-            padding=14, bgcolor=T.CARD_2, border_radius=T.R,
+            padding=16, bgcolor=T.CARD_2, border_radius=T.R,
             border=ft.Border.all(1, T.BORDER))
 
         def _panel(child):

@@ -79,758 +79,614 @@
 08:15:54  render[automation]: build 181 ms + page.update 20 ms = 201 ms
 08:21:38  render[setup]: build 54 ms + page.update 7 ms = 62 ms
 08:21:38  render[setup]: build 66 ms + page.update 12 ms = 78 ms
-19:36:21  render[setup]: build 64 ms + page.update 4 ms = 67 ms
-19:36:27  render[setup]: build 42 ms + page.update 8 ms = 50 ms
-19:36:28  render[setup]: build 39 ms + page.update 8 ms = 47 ms
-20:46:24  render[setup]: build 18 ms + page.update 4 ms = 22 ms
-21:31:49  render[setup]: build 18 ms + page.update 4 ms = 22 ms
-21:32:04  render[setup]: build 109 ms + page.update 6 ms = 115 ms
-21:32:12  render[setup]: build 26 ms + page.update 4 ms = 30 ms
-21:32:44  render[setup]: build 27 ms + page.update 5 ms = 32 ms
-21:34:44  render[setup]: build 17 ms + page.update 4 ms = 20 ms
-21:34:47  render[setup]: build 14 ms + page.update 2 ms = 16 ms
-21:35:12  render[setup]: build 30 ms + page.update 4 ms = 34 ms
-21:49:17  render[setup]: build 18 ms + page.update 4 ms = 21 ms
-21:49:30  render[setup]: build 49 ms + page.update 9 ms = 58 ms
-21:49:35  render[setup]: build 26 ms + page.update 7 ms = 34 ms
-21:59:45  render[setup]: build 103 ms + page.update 4 ms = 107 ms
-22:00:08  render[setup]: build 53 ms + page.update 9 ms = 62 ms
-22:00:57  render[setup]: build 40 ms + page.update 8 ms = 48 ms
-22:02:09  render[setup]: build 23 ms + page.update 5 ms = 28 ms
-22:02:13  render[setup]: build 16 ms + page.update 1 ms = 18 ms
-22:02:34  render[setup]: build 38 ms + page.update 8 ms = 46 ms
-08:28:22  render[setup]: build 93 ms + page.update 19 ms = 112 ms
-08:28:31  render[setup]: build 53 ms + page.update 10 ms = 63 ms
-08:28:41  render[setup]: build 46 ms + page.update 11 ms = 56 ms
-08:29:41  render[setup]: build 32 ms + page.update 3 ms = 35 ms
-08:29:55  render[setup]: build 51 ms + page.update 11 ms = 62 ms
-08:31:08  render[setup]: build 44 ms + page.update 8 ms = 52 ms
-09:01:26  render[setup]: build 21 ms + page.update 3 ms = 24 ms
-09:02:04  render[setup]: build 51 ms + page.update 9 ms = 60 ms
-09:02:06  render[setup]: build 193 ms + page.update 54 ms = 247 ms
-09:02:10  render[task_manager]: build 263 ms + page.update 17 ms = 280 ms
-09:02:13  render[setup]: build 37 ms + page.update 33 ms = 70 ms
-09:02:17  render[setup]: build 243 ms + page.update 33 ms = 275 ms
-09:02:17  render[setup]: build 294 ms + page.update 35 ms = 329 ms
-09:02:19  render[setup]: build 92 ms + page.update 32 ms = 124 ms
-09:02:21  render[setup]: build 136 ms + page.update 38 ms = 174 ms
-09:02:24  render[setup]: build 246 ms + page.update 33 ms = 279 ms
-09:19:19  render[setup]: build 29 ms + page.update 5 ms = 34 ms
-09:19:19  render[setup]: build 73 ms + page.update 6 ms = 79 ms
-09:19:23  render[setup]: build 94 ms + page.update 17 ms = 111 ms
-09:19:23  render[setup]: build 132 ms + page.update 16 ms = 148 ms
-09:19:24  render[setup]: build 138 ms + page.update 17 ms = 155 ms
-09:19:26  render[setup]: build 144 ms + page.update 20 ms = 164 ms
-09:19:27  render[task_manager]: build 300 ms + page.update 19 ms = 320 ms
-09:19:27  render[task_manager]: build 125 ms + page.update 24 ms = 149 ms
-09:19:28  render[task_manager]: build 75 ms + page.update 12 ms = 87 ms
-09:19:39  render[task_manager]: build 215 ms + page.update 49 ms = 264 ms
-09:19:42  render[task_manager]: build 168 ms + page.update 30 ms = 197 ms
-09:19:47  render[task_manager]: build 70 ms + page.update 14 ms = 84 ms
-09:19:55  render[task_manager]: build 96 ms + page.update 13 ms = 109 ms
-09:19:55  render[task_manager]: build 95 ms + page.update 14 ms = 109 ms
-09:21:11  render[task_manager]: build 156 ms + page.update 19 ms = 175 ms
-09:21:17  render[task_manager]: build 113 ms + page.update 15 ms = 128 ms
-09:32:24  render[setup]: build 125 ms + page.update 16 ms = 141 ms
-09:32:33  render[setup]: build 136 ms + page.update 21 ms = 157 ms
-09:39:41  render[setup]: build 27 ms + page.update 5 ms = 33 ms
-09:39:41  render[setup]: build 63 ms + page.update 7 ms = 70 ms
-09:39:43  render[setup]: build 74 ms + page.update 8 ms = 81 ms
-09:39:43  render[setup]: build 75 ms + page.update 7 ms = 82 ms
-09:39:44  render[setup]: build 62 ms + page.update 7 ms = 69 ms
-09:39:46  render[setup]: build 141 ms + page.update 18 ms = 159 ms
-09:39:47  render[setup]: build 144 ms + page.update 17 ms = 162 ms
-09:39:51  render[task_manager]: build 223 ms + page.update 12 ms = 235 ms
-09:39:51  render[task_manager]: build 86 ms + page.update 13 ms = 99 ms
-09:40:01  render[task_manager]: build 55 ms + page.update 15 ms = 70 ms
-09:40:03  render[task_manager]: build 95 ms + page.update 15 ms = 109 ms
-09:40:06  render[task_manager]: build 57 ms + page.update 15 ms = 72 ms
-09:40:43  render[task_manager]: build 112 ms + page.update 17 ms = 130 ms
-09:40:44  render[task_manager]: build 97 ms + page.update 13 ms = 110 ms
-09:46:26  render[task_manager]: build 91 ms + page.update 13 ms = 104 ms
-09:46:27  render[task_manager]: build 143 ms + page.update 19 ms = 162 ms
-09:48:17  render[setup]: build 29 ms + page.update 5 ms = 34 ms
-09:48:17  render[setup]: build 74 ms + page.update 6 ms = 79 ms
-09:48:20  render[setup]: build 68 ms + page.update 8 ms = 76 ms
-09:48:20  render[setup]: build 58 ms + page.update 8 ms = 66 ms
-09:48:20  render[setup]: build 65 ms + page.update 7 ms = 72 ms
-09:48:22  render[setup]: build 106 ms + page.update 17 ms = 123 ms
-09:48:23  render[task_manager]: build 276 ms + page.update 11 ms = 287 ms
-09:48:23  render[task_manager]: build 62 ms + page.update 15 ms = 77 ms
-09:48:24  render[task_manager]: build 95 ms + page.update 13 ms = 108 ms
-09:48:30  render[task_manager]: build 74 ms + page.update 13 ms = 87 ms
-09:48:32  render[task_manager]: build 95 ms + page.update 12 ms = 106 ms
-09:48:42  render[task_manager]: build 60 ms + page.update 13 ms = 73 ms
-09:48:44  render[task_manager]: build 106 ms + page.update 14 ms = 120 ms
-09:48:44  render[task_manager]: build 159 ms + page.update 29 ms = 188 ms
-09:52:14  render[titles]: build 51 ms + page.update 9 ms = 59 ms
-09:52:15  render[titles]: build 49 ms + page.update 7 ms = 56 ms
-09:52:15  render[task_manager]: build 135 ms + page.update 23 ms = 159 ms
-09:53:40  render[setup]: build 28 ms + page.update 5 ms = 33 ms
-09:53:40  render[setup]: build 61 ms + page.update 7 ms = 68 ms
-09:53:42  render[setup]: build 60 ms + page.update 7 ms = 67 ms
-09:53:42  render[setup]: build 57 ms + page.update 7 ms = 65 ms
-09:53:42  render[setup]: build 62 ms + page.update 7 ms = 69 ms
-09:53:44  render[setup]: build 93 ms + page.update 8 ms = 101 ms
-09:53:45  render[task_manager]: build 259 ms + page.update 19 ms = 278 ms
-09:53:45  render[task_manager]: build 76 ms + page.update 11 ms = 87 ms
-09:53:45  render[task_manager]: build 92 ms + page.update 19 ms = 111 ms
-09:53:49  render[task_manager]: build 96 ms + page.update 17 ms = 113 ms
-09:53:51  render[task_manager]: build 81 ms + page.update 12 ms = 92 ms
-09:54:01  render[task_manager]: build 87 ms + page.update 15 ms = 102 ms
-09:54:03  render[task_manager]: build 91 ms + page.update 12 ms = 103 ms
-09:54:04  render[task_manager]: build 158 ms + page.update 26 ms = 184 ms
-09:54:50  render[task_manager]: build 109 ms + page.update 12 ms = 121 ms
-09:54:51  render[task_manager]: build 105 ms + page.update 17 ms = 122 ms
-09:54:51  render[task_manager]: build 177 ms + page.update 19 ms = 196 ms
-09:54:52  render[task_manager]: build 153 ms + page.update 21 ms = 174 ms
-10:00:09  render[setup]: build 28 ms + page.update 7 ms = 35 ms
-10:00:09  render[setup]: build 68 ms + page.update 8 ms = 76 ms
-10:00:10  render[setup]: build 65 ms + page.update 7 ms = 72 ms
-10:00:10  render[setup]: build 62 ms + page.update 8 ms = 70 ms
-10:00:11  render[setup]: build 56 ms + page.update 7 ms = 64 ms
-10:00:12  render[setup]: build 150 ms + page.update 17 ms = 168 ms
-10:00:14  render[setup]: build 141 ms + page.update 18 ms = 158 ms
-10:00:18  render[task_manager]: build 249 ms + page.update 11 ms = 260 ms
-10:00:18  render[task_manager]: build 90 ms + page.update 16 ms = 106 ms
-10:00:26  render[task_manager]: build 113 ms + page.update 16 ms = 129 ms
-10:00:27  render[task_manager]: build 80 ms + page.update 11 ms = 91 ms
-10:00:35  render[task_manager]: build 80 ms + page.update 14 ms = 95 ms
-10:00:37  render[task_manager]: build 95 ms + page.update 12 ms = 107 ms
-10:00:38  render[task_manager]: build 162 ms + page.update 24 ms = 186 ms
-10:16:04  render[setup]: build 37 ms + page.update 6 ms = 43 ms
-10:16:04  render[setup]: build 81 ms + page.update 11 ms = 93 ms
-10:16:08  render[users]: build 236 ms + page.update 7 ms = 243 ms
-10:16:09  render[users]: build 98 ms + page.update 13 ms = 111 ms
-10:16:19  render[users]: build 146 ms + page.update 20 ms = 165 ms
-10:26:31  render[setup]: build 31 ms + page.update 5 ms = 36 ms
-10:26:31  render[setup]: build 77 ms + page.update 9 ms = 86 ms
-10:26:33  render[setup]: build 74 ms + page.update 8 ms = 83 ms
-10:26:33  render[setup]: build 61 ms + page.update 8 ms = 68 ms
-10:26:33  render[setup]: build 75 ms + page.update 10 ms = 84 ms
-10:26:35  render[setup]: build 262 ms + page.update 40 ms = 302 ms
-10:26:38  render[setup]: build 278 ms + page.update 38 ms = 316 ms
-10:26:40  render[task_manager]: build 441 ms + page.update 29 ms = 470 ms
-10:26:40  render[task_manager]: build 159 ms + page.update 29 ms = 189 ms
-10:26:45  render[task_manager]: build 125 ms + page.update 34 ms = 159 ms
-10:26:48  render[task_manager]: build 165 ms + page.update 28 ms = 193 ms
-10:26:53  render[task_manager]: build 58 ms + page.update 16 ms = 74 ms
-10:26:54  render[task_manager]: build 105 ms + page.update 16 ms = 121 ms
-10:26:55  render[task_manager]: build 141 ms + page.update 20 ms = 161 ms
-10:50:21  render[setup]: build 33 ms + page.update 7 ms = 40 ms
-10:50:21  render[setup]: build 80 ms + page.update 7 ms = 87 ms
-10:50:25  render[setup]: build 140 ms + page.update 20 ms = 160 ms
-10:50:25  render[setup]: build 132 ms + page.update 18 ms = 150 ms
-10:50:26  render[setup]: build 115 ms + page.update 18 ms = 134 ms
-10:50:28  render[setup]: build 166 ms + page.update 19 ms = 185 ms
-10:50:31  render[setup]: build 294 ms + page.update 31 ms = 325 ms
-10:50:39  render[task_manager]: build 267 ms + page.update 13 ms = 280 ms
-10:50:40  render[task_manager]: build 84 ms + page.update 14 ms = 97 ms
-10:50:44  render[task_manager]: build 69 ms + page.update 12 ms = 81 ms
-10:50:46  render[task_manager]: build 163 ms + page.update 26 ms = 190 ms
-10:50:51  render[task_manager]: build 75 ms + page.update 14 ms = 88 ms
-10:50:52  render[task_manager]: build 95 ms + page.update 14 ms = 108 ms
-10:50:53  render[task_manager]: build 166 ms + page.update 26 ms = 192 ms
-11:19:01  render[setup]: build 38 ms + page.update 8 ms = 45 ms
-11:19:01  render[setup]: build 83 ms + page.update 12 ms = 96 ms
-11:19:03  render[setup]: build 139 ms + page.update 18 ms = 157 ms
-11:19:03  render[setup]: build 143 ms + page.update 17 ms = 160 ms
-11:19:04  render[setup]: build 85 ms + page.update 17 ms = 103 ms
-11:19:07  render[setup]: build 169 ms + page.update 18 ms = 187 ms
-11:19:08  render[setup]: build 154 ms + page.update 20 ms = 174 ms
-11:19:14  render[task_manager]: build 243 ms + page.update 12 ms = 255 ms
-11:19:14  render[task_manager]: build 84 ms + page.update 12 ms = 96 ms
-11:19:21  render[task_manager]: build 90 ms + page.update 14 ms = 105 ms
-11:19:22  render[task_manager]: build 80 ms + page.update 12 ms = 92 ms
-11:19:29  render[task_manager]: build 74 ms + page.update 15 ms = 89 ms
-11:19:31  render[task_manager]: build 93 ms + page.update 12 ms = 105 ms
-11:19:32  render[task_manager]: build 164 ms + page.update 24 ms = 188 ms
-11:20:24  render[task_manager]: build 116 ms + page.update 12 ms = 128 ms
-11:20:26  render[task_manager]: build 99 ms + page.update 14 ms = 113 ms
-11:21:56  render[task_manager]: build 152 ms + page.update 19 ms = 171 ms
-11:21:59  render[task_manager]: build 209 ms + page.update 16 ms = 226 ms
-11:52:03  render[setup]: build 158 ms + page.update 10 ms = 168 ms
-12:03:55  render[setup]: build 91 ms + page.update 19 ms = 109 ms
-12:04:38  render[setup]: build 44 ms + page.update 9 ms = 53 ms
-12:04:40  render[setup]: build 193 ms + page.update 74 ms = 267 ms
-12:04:42  render[setup]: build 246 ms + page.update 32 ms = 278 ms
-12:04:42  render[setup]: build 214 ms + page.update 35 ms = 249 ms
-12:04:44  render[setup]: build 102 ms + page.update 33 ms = 134 ms
-12:04:47  render[setup]: build 160 ms + page.update 37 ms = 197 ms
-12:04:49  render[task_manager]: build 313 ms + page.update 21 ms = 335 ms
-12:04:50  render[task_manager]: build 255 ms + page.update 1 ms = 256 ms
-12:04:50  render[task_manager]: build 320 ms + page.update 25 ms = 345 ms
-12:17:45  render[setup]: build 28 ms + page.update 5 ms = 32 ms
-12:17:45  render[setup]: build 62 ms + page.update 6 ms = 68 ms
-12:17:47  render[setup]: build 43 ms + page.update 6 ms = 49 ms
-12:17:47  render[setup]: build 47 ms + page.update 9 ms = 55 ms
-12:17:48  render[setup]: build 43 ms + page.update 5 ms = 48 ms
-12:17:49  render[setup]: build 125 ms + page.update 34 ms = 158 ms
-12:17:52  render[task_manager]: build 305 ms + page.update 26 ms = 331 ms
-12:17:52  render[task_manager]: build 170 ms + page.update 21 ms = 191 ms
-12:17:52  render[task_manager]: build 233 ms + page.update 30 ms = 263 ms
-12:47:57  render[setup]: build 133 ms + page.update 13 ms = 146 ms
-15:11:28  render[setup]: build 37 ms + page.update 5 ms = 42 ms
-15:14:14  render[setup]: build 35 ms + page.update 8 ms = 43 ms
-15:14:16  render[setup]: build 143 ms + page.update 15 ms = 158 ms
-15:14:29  render[setup]: build 135 ms + page.update 20 ms = 155 ms
-15:14:29  render[setup]: build 141 ms + page.update 18 ms = 159 ms
-15:14:30  render[setup]: build 87 ms + page.update 17 ms = 104 ms
-15:14:32  render[setup]: build 153 ms + page.update 17 ms = 170 ms
-15:14:35  render[regression]: build 204 ms + page.update 11 ms = 215 ms
-15:14:35  render[regression]: build 71 ms + page.update 13 ms = 84 ms
-15:14:35  render[regression]: build 81 ms + page.update 14 ms = 95 ms
-15:14:37  render[settings]: build 52 ms + page.update 12 ms = 64 ms
-15:14:43  render[regression]: build 66 ms + page.update 12 ms = 77 ms
-15:14:48  render[regression]: build 257 ms + page.update 52 ms = 310 ms
-15:14:51  render[regression]: build 206 ms + page.update 51 ms = 257 ms
-15:14:51  render[regression]: build 236 ms + page.update 55 ms = 290 ms
-15:14:54  render[regression]: build 560 ms + page.update 71 ms = 631 ms
-15:14:54  render[regression]: build 695 ms + page.update 122 ms = 817 ms
-15:15:14  render[regression]: build 243 ms + page.update 45 ms = 288 ms
-15:17:05  render[regression]: build 516 ms + page.update 28 ms = 543 ms
-15:17:06  build_rows.fetch_meta (414 stories): 1283 ms
-15:17:17  build_rows.count_cases (414 stories): 11325 ms
-15:17:18  render[regression]: build 687 ms + page.update 73 ms = 761 ms
-15:18:04  table.rebuild_rows: 8 ms
-15:18:04  table.flet_update: 95 ms
-15:19:37  render[testplan]: build 516 ms + page.update 25 ms = 541 ms
-15:19:39  render[testplan]: build 262 ms + page.update 57 ms = 319 ms
-15:19:47  render[regression]: build 443 ms + page.update 59 ms = 502 ms
-15:49:51  render[setup]: build 183 ms + page.update 10 ms = 194 ms
-17:12:06  render[setup]: build 92 ms + page.update 18 ms = 110 ms
-17:12:28  render[setup]: build 30 ms + page.update 5 ms = 35 ms
-17:12:30  render[setup]: build 132 ms + page.update 19 ms = 151 ms
-17:12:33  render[setup]: build 111 ms + page.update 19 ms = 130 ms
-17:12:34  render[setup]: build 133 ms + page.update 20 ms = 154 ms
-17:12:35  render[setup]: build 84 ms + page.update 16 ms = 100 ms
-17:12:37  render[setup]: build 185 ms + page.update 19 ms = 204 ms
-17:12:39  render[task_manager]: build 210 ms + page.update 11 ms = 222 ms
-17:12:39  render[task_manager]: build 79 ms + page.update 13 ms = 92 ms
-17:12:39  render[task_manager]: build 88 ms + page.update 14 ms = 103 ms
-17:15:29  render[setup]: build 36 ms + page.update 6 ms = 42 ms
-17:15:29  render[setup]: build 81 ms + page.update 9 ms = 90 ms
-17:15:32  render[setup]: build 64 ms + page.update 7 ms = 71 ms
-17:15:32  render[setup]: build 112 ms + page.update 48 ms = 160 ms
-17:15:34  render[setup]: build 151 ms + page.update 39 ms = 190 ms
-17:15:36  render[setup]: build 110 ms + page.update 17 ms = 127 ms
-17:15:38  render[setup]: build 153 ms + page.update 16 ms = 169 ms
-17:15:41  render[task_manager]: build 280 ms + page.update 16 ms = 295 ms
-17:15:41  render[task_manager]: build 113 ms + page.update 20 ms = 134 ms
-17:16:43  render[task_manager]: build 72 ms + page.update 15 ms = 86 ms
-17:16:45  render[task_manager]: build 109 ms + page.update 16 ms = 125 ms
-18:03:16  render[setup]: build 62 ms + page.update 5 ms = 67 ms
-18:03:35  render[setup]: build 40 ms + page.update 7 ms = 47 ms
-18:03:36  render[setup]: build 118 ms + page.update 33 ms = 151 ms
-18:03:41  render[setup]: build 141 ms + page.update 20 ms = 162 ms
-18:03:41  render[setup]: build 138 ms + page.update 18 ms = 156 ms
-18:03:42  render[setup]: build 183 ms + page.update 21 ms = 203 ms
-18:03:45  render[setup]: build 147 ms + page.update 17 ms = 165 ms
-18:03:56  render[task_manager]: build 95 ms + page.update 14 ms = 109 ms
-18:04:40  render[ai_usage]: build 49 ms + page.update 8 ms = 57 ms
-18:04:40  render[ai_usage]: build 67 ms + page.update 8 ms = 75 ms
-18:04:41  render[ai_usage]: build 221 ms + page.update 28 ms = 249 ms
-18:04:50  render[task_manager]: build 148 ms + page.update 15 ms = 163 ms
-18:24:30  render[setup]: build 28 ms + page.update 5 ms = 34 ms
-18:24:30  render[setup]: build 64 ms + page.update 6 ms = 71 ms
-18:24:32  render[setup]: build 65 ms + page.update 8 ms = 73 ms
-18:24:32  render[setup]: build 66 ms + page.update 8 ms = 74 ms
-18:24:33  render[setup]: build 64 ms + page.update 8 ms = 72 ms
-18:24:35  render[setup]: build 158 ms + page.update 16 ms = 174 ms
-18:24:36  render[task_manager]: build 306 ms + page.update 15 ms = 322 ms
-18:24:36  render[task_manager]: build 134 ms + page.update 25 ms = 160 ms
-18:24:37  render[task_manager]: build 79 ms + page.update 14 ms = 93 ms
-01:42:18  render[setup]: build 20 ms + page.update 3 ms = 23 ms
-01:42:34  render[setup]: build 23 ms + page.update 6 ms = 29 ms
-01:42:55  render[setup]: build 14 ms + page.update 1 ms = 15 ms
-01:42:55  render[setup]: build 48 ms + page.update 6 ms = 54 ms
-01:42:59  render[setup]: build 49 ms + page.update 6 ms = 55 ms
-01:42:59  render[setup]: build 58 ms + page.update 8 ms = 66 ms
-01:43:00  render[setup]: build 47 ms + page.update 7 ms = 54 ms
-01:43:02  render[setup]: build 144 ms + page.update 26 ms = 169 ms
-01:43:05  render[setup]: build 278 ms + page.update 33 ms = 311 ms
-01:43:10  render[task_manager]: build 269 ms + page.update 27 ms = 296 ms
-01:43:10  render[task_manager]: build 167 ms + page.update 30 ms = 197 ms
-01:46:24  render[task_manager]: build 131 ms + page.update 25 ms = 156 ms
-01:46:26  render[task_manager]: build 94 ms + page.update 13 ms = 107 ms
-01:49:05  render[setup]: build 29 ms + page.update 5 ms = 34 ms
-01:49:05  render[setup]: build 69 ms + page.update 6 ms = 75 ms
-01:49:08  render[setup]: build 52 ms + page.update 7 ms = 59 ms
-01:49:08  render[setup]: build 49 ms + page.update 7 ms = 56 ms
-01:49:08  render[setup]: build 48 ms + page.update 7 ms = 55 ms
-01:49:10  render[setup]: build 163 ms + page.update 18 ms = 181 ms
-01:49:12  render[setup]: build 147 ms + page.update 17 ms = 164 ms
-01:50:32  render[task_manager]: build 247 ms + page.update 12 ms = 259 ms
-01:50:33  render[task_manager]: build 92 ms + page.update 11 ms = 103 ms
-01:58:21  render[setup]: build 150 ms + page.update 33 ms = 183 ms
-01:58:22  render[setup]: build 223 ms + page.update 32 ms = 255 ms
-01:58:26  render[setup]: build 144 ms + page.update 16 ms = 160 ms
-01:58:26  render[setup]: build 136 ms + page.update 17 ms = 153 ms
-01:58:27  render[setup]: build 98 ms + page.update 17 ms = 115 ms
-01:58:29  render[setup]: build 111 ms + page.update 18 ms = 129 ms
-01:58:31  render[setup]: build 140 ms + page.update 17 ms = 157 ms
-01:58:32  render[task_manager]: build 256 ms + page.update 15 ms = 270 ms
-01:58:32  render[task_manager]: build 89 ms + page.update 15 ms = 104 ms
-01:59:12  render[task_manager]: build 153 ms + page.update 12 ms = 165 ms
-01:59:14  render[task_manager]: build 93 ms + page.update 12 ms = 105 ms
-02:00:14  render[setup]: build 27 ms + page.update 5 ms = 32 ms
-02:00:14  render[setup]: build 69 ms + page.update 8 ms = 77 ms
-02:00:15  render[setup]: build 68 ms + page.update 7 ms = 75 ms
-02:00:15  render[setup]: build 54 ms + page.update 6 ms = 60 ms
-02:00:16  render[setup]: build 48 ms + page.update 6 ms = 54 ms
-02:00:17  render[setup]: build 142 ms + page.update 16 ms = 158 ms
-02:00:19  render[task_manager]: build 203 ms + page.update 11 ms = 214 ms
-02:00:19  render[task_manager]: build 134 ms + page.update 1 ms = 135 ms
-02:00:19  render[task_manager]: build 170 ms + page.update 13 ms = 182 ms
-02:00:29  render[task_manager]: build 69 ms + page.update 14 ms = 84 ms
-02:00:31  render[task_manager]: build 94 ms + page.update 14 ms = 107 ms
-02:02:26  render[setup]: build 32 ms + page.update 6 ms = 37 ms
-02:02:26  render[setup]: build 71 ms + page.update 6 ms = 77 ms
-02:02:27  render[setup]: build 54 ms + page.update 6 ms = 60 ms
-02:02:27  render[setup]: build 51 ms + page.update 7 ms = 57 ms
-02:02:28  render[setup]: build 57 ms + page.update 6 ms = 63 ms
-02:02:29  render[setup]: build 58 ms + page.update 6 ms = 64 ms
-02:02:30  render[task_manager]: build 152 ms + page.update 11 ms = 163 ms
-02:02:30  render[task_manager]: build 127 ms + page.update 17 ms = 144 ms
-02:02:30  render[task_manager]: build 170 ms + page.update 15 ms = 185 ms
-02:03:09  render[task_manager]: build 139 ms + page.update 15 ms = 155 ms
-02:03:11  render[task_manager]: build 138 ms + page.update 12 ms = 151 ms
-02:03:29  render[task_manager]: build 82 ms + page.update 13 ms = 95 ms
-02:03:31  render[task_manager]: build 208 ms + page.update 13 ms = 220 ms
-02:20:02  render[setup]: build 28 ms + page.update 5 ms = 33 ms
-02:20:02  render[setup]: build 63 ms + page.update 6 ms = 69 ms
-02:20:04  render[setup]: build 67 ms + page.update 8 ms = 76 ms
-02:20:05  render[setup]: build 72 ms + page.update 12 ms = 84 ms
-02:20:05  render[setup]: build 60 ms + page.update 10 ms = 69 ms
-02:20:07  render[setup]: build 144 ms + page.update 17 ms = 161 ms
-02:20:09  render[setup]: build 142 ms + page.update 20 ms = 161 ms
-02:20:10  render[task_manager]: build 257 ms + page.update 12 ms = 270 ms
-02:20:10  render[task_manager]: build 92 ms + page.update 13 ms = 105 ms
-02:20:18  render[task_manager]: build 89 ms + page.update 19 ms = 107 ms
-02:20:19  render[task_manager]: build 90 ms + page.update 13 ms = 103 ms
-02:20:30  render[task_manager]: build 105 ms + page.update 14 ms = 119 ms
-02:20:32  render[task_manager]: build 97 ms + page.update 13 ms = 110 ms
-02:23:39  render[setup]: build 30 ms + page.update 5 ms = 35 ms
-02:23:39  render[setup]: build 73 ms + page.update 6 ms = 80 ms
-02:23:41  render[setup]: build 56 ms + page.update 9 ms = 65 ms
-02:23:41  render[setup]: build 58 ms + page.update 6 ms = 64 ms
-02:23:41  render[setup]: build 52 ms + page.update 6 ms = 58 ms
-02:23:43  render[setup]: build 192 ms + page.update 40 ms = 232 ms
-02:23:46  render[setup]: build 146 ms + page.update 16 ms = 162 ms
-02:23:49  render[task_manager]: build 404 ms + page.update 29 ms = 433 ms
-02:23:49  render[task_manager]: build 172 ms + page.update 27 ms = 200 ms
-02:23:55  render[task_manager]: build 66 ms + page.update 14 ms = 80 ms
-02:23:57  render[task_manager]: build 165 ms + page.update 27 ms = 192 ms
-02:24:13  render[task_manager]: build 223 ms + page.update 27 ms = 249 ms
-02:24:16  render[task_manager]: build 169 ms + page.update 27 ms = 196 ms
-02:24:40  render[setup]: build 28 ms + page.update 5 ms = 34 ms
-02:24:40  render[setup]: build 69 ms + page.update 7 ms = 76 ms
-02:24:42  render[setup]: build 52 ms + page.update 7 ms = 58 ms
-02:24:42  render[setup]: build 50 ms + page.update 7 ms = 57 ms
-02:24:42  render[setup]: build 51 ms + page.update 6 ms = 57 ms
-02:24:45  render[setup]: build 275 ms + page.update 38 ms = 314 ms
-02:24:47  render[setup]: build 265 ms + page.update 40 ms = 305 ms
-02:28:34  render[setup]: build 29 ms + page.update 5 ms = 34 ms
-02:28:34  render[setup]: build 68 ms + page.update 8 ms = 76 ms
-02:28:36  render[setup]: build 65 ms + page.update 7 ms = 72 ms
-02:28:36  render[setup]: build 63 ms + page.update 8 ms = 71 ms
-02:28:36  render[setup]: build 71 ms + page.update 8 ms = 79 ms
-02:28:38  render[setup]: build 101 ms + page.update 8 ms = 109 ms
-02:28:39  render[setup]: build 139 ms + page.update 17 ms = 156 ms
-02:28:40  render[task_manager]: build 262 ms + page.update 19 ms = 281 ms
-02:28:41  render[task_manager]: build 89 ms + page.update 14 ms = 103 ms
-02:28:45  render[task_manager]: build 87 ms + page.update 13 ms = 100 ms
-02:28:47  render[task_manager]: build 116 ms + page.update 12 ms = 128 ms
-02:28:58  render[task_manager]: build 96 ms + page.update 12 ms = 108 ms
-02:29:00  render[task_manager]: build 243 ms + page.update 17 ms = 261 ms
-02:29:10  render[task_manager]: build 135 ms + page.update 16 ms = 151 ms
-02:29:11  render[task_manager]: build 99 ms + page.update 13 ms = 112 ms
-02:29:12  render[task_manager]: build 181 ms + page.update 22 ms = 203 ms
-02:29:35  render[task_manager]: build 137 ms + page.update 13 ms = 150 ms
-02:29:36  render[task_manager]: build 104 ms + page.update 19 ms = 123 ms
-02:29:42  render[task_manager]: build 179 ms + page.update 13 ms = 192 ms
-02:29:43  render[task_manager]: build 222 ms + page.update 20 ms = 242 ms
-02:32:02  render[setup]: build 26 ms + page.update 5 ms = 31 ms
-02:32:02  render[setup]: build 68 ms + page.update 7 ms = 74 ms
-02:33:53  render[setup]: build 147 ms + page.update 18 ms = 165 ms
-02:33:53  render[setup]: build 124 ms + page.update 24 ms = 148 ms
-02:33:54  render[setup]: build 89 ms + page.update 16 ms = 105 ms
-02:33:56  render[setup]: build 171 ms + page.update 27 ms = 198 ms
-02:33:58  render[setup]: build 138 ms + page.update 19 ms = 157 ms
-02:34:03  render[task_manager]: build 270 ms + page.update 12 ms = 282 ms
-02:34:04  render[task_manager]: build 116 ms + page.update 14 ms = 130 ms
-02:35:33  render[task_manager]: build 198 ms + page.update 48 ms = 246 ms
-02:35:36  render[task_manager]: build 91 ms + page.update 13 ms = 105 ms
-02:38:44  render[users]: build 41 ms + page.update 9 ms = 50 ms
-02:38:45  render[users]: build 106 ms + page.update 19 ms = 126 ms
-02:38:52  render[users]: build 144 ms + page.update 20 ms = 164 ms
-02:38:57  render[users]: build 148 ms + page.update 19 ms = 167 ms
-02:38:57  render[users]: build 155 ms + page.update 13 ms = 168 ms
-02:38:59  render[users]: build 149 ms + page.update 17 ms = 166 ms
-02:38:59  render[users]: build 228 ms + page.update 18 ms = 246 ms
-02:39:04  render[users]: build 123 ms + page.update 14 ms = 136 ms
-02:39:06  render[users]: build 138 ms + page.update 21 ms = 159 ms
-02:39:07  render[users]: build 116 ms + page.update 14 ms = 130 ms
-02:39:11  render[users]: build 209 ms + page.update 20 ms = 230 ms
-02:39:16  render[users]: build 153 ms + page.update 18 ms = 170 ms
-02:39:17  render[users]: build 135 ms + page.update 18 ms = 153 ms
-02:39:29  render[users]: build 205 ms + page.update 23 ms = 227 ms
-02:39:34  render[users]: build 205 ms + page.update 22 ms = 227 ms
-02:39:35  render[users]: build 265 ms + page.update 26 ms = 291 ms
-02:39:56  render[users]: build 205 ms + page.update 25 ms = 231 ms
-02:39:56  render[users]: build 207 ms + page.update 25 ms = 232 ms
-02:40:02  render[users]: build 201 ms + page.update 23 ms = 225 ms
-02:40:02  render[users]: build 261 ms + page.update 25 ms = 287 ms
-02:40:07  render[users]: build 205 ms + page.update 50 ms = 254 ms
-02:40:08  render[users]: build 238 ms + page.update 29 ms = 267 ms
-02:40:19  render[setup]: build 120 ms + page.update 10 ms = 130 ms
-02:40:32  render[setup]: build 29 ms + page.update 4 ms = 33 ms
-02:40:33  render[setup]: build 145 ms + page.update 36 ms = 181 ms
-02:40:43  render[task_manager]: build 151 ms + page.update 17 ms = 167 ms
-02:42:47  render[ai_usage]: build 39 ms + page.update 9 ms = 48 ms
-02:42:47  render[ai_usage]: build 60 ms + page.update 10 ms = 70 ms
-02:42:48  render[ai_usage]: build 106 ms + page.update 20 ms = 127 ms
-02:43:48  render[links]: build 33 ms + page.update 11 ms = 44 ms
-02:43:53  render[automation]: build 110 ms + page.update 18 ms = 129 ms
-02:44:07  render[setup]: build 232 ms + page.update 21 ms = 253 ms
-02:44:11  render[setup]: build 49 ms + page.update 7 ms = 55 ms
-02:44:34  render[setup]: build 28 ms + page.update 5 ms = 33 ms
-02:44:34  render[setup]: build 109 ms + page.update 32 ms = 141 ms
-02:44:54  render[task_manager]: build 106 ms + page.update 17 ms = 123 ms
-02:45:08  render[setup]: build 49 ms + page.update 7 ms = 56 ms
-02:45:28  render[setup]: build 30 ms + page.update 5 ms = 35 ms
-02:45:29  render[setup]: build 133 ms + page.update 49 ms = 182 ms
-02:45:32  render[users]: build 253 ms + page.update 76 ms = 329 ms
-02:46:24  render[users]: build 266 ms + page.update 20 ms = 286 ms
-02:46:25  render[users]: build 208 ms + page.update 23 ms = 231 ms
-02:46:31  render[setup]: build 67 ms + page.update 8 ms = 75 ms
-02:46:56  render[setup]: build 30 ms + page.update 5 ms = 35 ms
-02:46:57  render[setup]: build 106 ms + page.update 37 ms = 143 ms
-02:47:00  render[task_manager]: build 173 ms + page.update 18 ms = 191 ms
-02:47:18  render[setup]: build 41 ms + page.update 6 ms = 46 ms
-02:48:42  render[setup]: build 21 ms + page.update 4 ms = 25 ms
-02:49:00  render[setup]: build 43 ms + page.update 10 ms = 53 ms
-02:49:01  render[setup]: build 30 ms + page.update 5 ms = 35 ms
-02:49:13  render[setup]: build 30 ms + page.update 6 ms = 36 ms
-02:49:14  render[setup]: build 174 ms + page.update 32 ms = 206 ms
-02:49:17  render[task_manager]: build 255 ms + page.update 12 ms = 267 ms
-02:49:31  render[ai_usage]: build 33 ms + page.update 7 ms = 40 ms
-02:49:31  render[ai_usage]: build 59 ms + page.update 8 ms = 67 ms
-02:49:31  render[ai_usage]: build 112 ms + page.update 15 ms = 127 ms
-02:50:17  render[setup]: build 36 ms + page.update 8 ms = 44 ms
-02:50:36  render[setup]: build 31 ms + page.update 5 ms = 36 ms
-02:50:37  render[setup]: build 132 ms + page.update 19 ms = 151 ms
-02:50:44  render[setup]: build 150 ms + page.update 23 ms = 174 ms
-02:50:44  render[setup]: build 136 ms + page.update 17 ms = 154 ms
-02:50:45  render[setup]: build 150 ms + page.update 19 ms = 170 ms
-02:50:48  render[setup]: build 158 ms + page.update 20 ms = 177 ms
-02:50:49  render[task_manager]: build 84 ms + page.update 14 ms = 98 ms
-02:50:49  render[task_manager]: build 92 ms + page.update 22 ms = 113 ms
-02:50:50  render[task_manager]: build 91 ms + page.update 15 ms = 106 ms
-02:51:45  render[task_manager]: build 107 ms + page.update 18 ms = 124 ms
-02:51:48  render[task_manager]: build 95 ms + page.update 29 ms = 124 ms
-02:52:21  render[setup]: build 28 ms + page.update 6 ms = 34 ms
-02:52:22  render[setup]: build 70 ms + page.update 12 ms = 83 ms
-02:53:09  render[setup]: build 143 ms + page.update 19 ms = 161 ms
-02:53:09  render[setup]: build 149 ms + page.update 20 ms = 169 ms
-02:53:10  render[setup]: build 120 ms + page.update 21 ms = 141 ms
-02:53:12  render[setup]: build 153 ms + page.update 18 ms = 171 ms
-02:53:14  render[setup]: build 172 ms + page.update 23 ms = 195 ms
-02:53:16  render[task_manager]: build 291 ms + page.update 15 ms = 305 ms
-02:53:17  render[task_manager]: build 262 ms + page.update 15 ms = 278 ms
-02:55:33  render[task_manager]: build 100 ms + page.update 31 ms = 130 ms
-02:55:36  render[task_manager]: build 109 ms + page.update 14 ms = 123 ms
-02:57:04  render[setup]: build 29 ms + page.update 5 ms = 34 ms
-02:57:04  render[setup]: build 69 ms + page.update 7 ms = 75 ms
-02:57:12  render[setup]: build 165 ms + page.update 27 ms = 191 ms
-02:57:12  render[setup]: build 159 ms + page.update 17 ms = 176 ms
-02:57:13  render[setup]: build 175 ms + page.update 17 ms = 192 ms
-02:57:15  render[setup]: build 200 ms + page.update 18 ms = 219 ms
-02:57:17  render[setup]: build 188 ms + page.update 33 ms = 220 ms
-02:57:22  render[task_manager]: build 260 ms + page.update 16 ms = 276 ms
-02:57:23  render[task_manager]: build 216 ms + page.update 13 ms = 228 ms
-02:58:13  render[task_manager]: build 125 ms + page.update 15 ms = 140 ms
-02:58:14  render[task_manager]: build 102 ms + page.update 13 ms = 116 ms
-03:12:11  render[setup]: build 124 ms + page.update 10 ms = 133 ms
-03:12:43  render[setup]: build 44 ms + page.update 10 ms = 54 ms
-03:12:43  render[setup]: build 151 ms + page.update 35 ms = 187 ms
-03:13:07  render[setup]: build 20 ms + page.update 4 ms = 24 ms
-03:13:07  render[setup]: build 57 ms + page.update 6 ms = 63 ms
-03:13:21  render[task_manager]: build 272 ms + page.update 20 ms = 292 ms
-03:13:31  render[titles]: build 19 ms + page.update 2 ms = 21 ms
-03:13:33  render[task_manager]: build 21 ms + page.update 3 ms = 24 ms
-03:13:36  render[setup]: build 114 ms + page.update 11 ms = 125 ms
-03:13:57  render[setup]: build 44 ms + page.update 8 ms = 52 ms
-03:13:57  render[setup]: build 192 ms + page.update 46 ms = 238 ms
-03:14:00  render[task_manager]: build 21 ms + page.update 3 ms = 24 ms
-03:14:15  render[users]: build 17 ms + page.update 2 ms = 19 ms
-03:14:15  render[users]: build 163 ms + page.update 25 ms = 188 ms
-03:14:25  render[users]: build 222 ms + page.update 34 ms = 256 ms
-03:14:41  render[users]: build 263 ms + page.update 34 ms = 297 ms
-03:14:42  render[users]: build 263 ms + page.update 39 ms = 302 ms
-03:14:46  render[setup]: build 64 ms + page.update 10 ms = 74 ms
-03:15:22  render[setup]: build 43 ms + page.update 8 ms = 52 ms
-03:15:22  render[setup]: build 46 ms + page.update 10 ms = 56 ms
-03:15:39  render[setup]: build 46 ms + page.update 9 ms = 55 ms
-03:15:39  render[setup]: build 151 ms + page.update 36 ms = 186 ms
-03:15:46  render[task_manager]: build 22 ms + page.update 2 ms = 24 ms
-03:15:53  render[links]: build 20 ms + page.update 3 ms = 23 ms
-03:24:41  render[setup]: build 105 ms + page.update 27 ms = 132 ms
-03:24:47  render[links]: build 20 ms + page.update 3 ms = 23 ms
-03:33:36  render[setup]: build 22 ms + page.update 5 ms = 26 ms
-03:33:36  render[setup]: build 60 ms + page.update 5 ms = 66 ms
-03:33:45  render[setup]: build 107 ms + page.update 9 ms = 116 ms
-03:34:01  render[setup]: build 47 ms + page.update 9 ms = 55 ms
-03:34:01  render[setup]: build 154 ms + page.update 37 ms = 190 ms
-03:34:04  render[setup]: build 227 ms + page.update 35 ms = 262 ms
-03:34:04  render[setup]: build 222 ms + page.update 36 ms = 258 ms
-03:34:06  render[setup]: build 105 ms + page.update 31 ms = 136 ms
-03:34:08  render[setup]: build 137 ms + page.update 32 ms = 169 ms
-03:34:11  render[setup]: build 247 ms + page.update 35 ms = 282 ms
-03:37:12  render[task_manager]: build 151 ms + page.update 15 ms = 166 ms
-03:37:13  render[task_manager]: build 154 ms + page.update 16 ms = 169 ms
-03:37:18  render[task_manager]: build 35 ms + page.update 17 ms = 52 ms
-03:37:20  render[task_manager]: build 162 ms + page.update 23 ms = 185 ms
-03:42:33  render[setup]: build 23 ms + page.update 5 ms = 27 ms
-03:42:33  render[setup]: build 58 ms + page.update 7 ms = 65 ms
-03:42:35  render[setup]: build 40 ms + page.update 6 ms = 46 ms
-03:42:35  render[setup]: build 42 ms + page.update 6 ms = 48 ms
-03:42:36  render[setup]: build 41 ms + page.update 5 ms = 46 ms
-03:42:37  render[setup]: build 48 ms + page.update 5 ms = 53 ms
-03:42:38  render[task_manager]: build 306 ms + page.update 28 ms = 335 ms
-03:42:38  render[task_manager]: build 136 ms + page.update 25 ms = 162 ms
-03:42:39  render[task_manager]: build 161 ms + page.update 26 ms = 187 ms
-03:42:47  render[task_manager]: build 32 ms + page.update 3 ms = 35 ms
-03:42:50  render[task_manager]: build 161 ms + page.update 19 ms = 180 ms
-03:51:14  render[setup]: build 24 ms + page.update 5 ms = 29 ms
-03:51:14  render[setup]: build 62 ms + page.update 6 ms = 68 ms
-03:51:15  render[setup]: build 42 ms + page.update 6 ms = 48 ms
-03:51:15  render[setup]: build 45 ms + page.update 7 ms = 52 ms
-03:51:16  render[setup]: build 42 ms + page.update 6 ms = 48 ms
-03:51:18  render[setup]: build 138 ms + page.update 34 ms = 173 ms
-03:51:19  render[task_manager]: build 291 ms + page.update 21 ms = 311 ms
-03:51:19  render[task_manager]: build 129 ms + page.update 25 ms = 154 ms
-03:51:20  render[task_manager]: build 146 ms + page.update 26 ms = 171 ms
-03:51:24  render[task_manager]: build 30 ms + page.update 4 ms = 34 ms
-03:51:27  render[task_manager]: build 158 ms + page.update 25 ms = 182 ms
-03:52:33  render[task_manager]: build 65 ms + page.update 26 ms = 91 ms
-03:52:36  render[task_manager]: build 391 ms + page.update 38 ms = 428 ms
-03:53:51  render[task_manager]: build 137 ms + page.update 28 ms = 165 ms
-03:53:54  render[task_manager]: build 158 ms + page.update 25 ms = 183 ms
-03:53:54  render[task_manager]: build 168 ms + page.update 24 ms = 193 ms
-03:54:05  render[task_manager]: build 33 ms + page.update 13 ms = 46 ms
-03:54:07  render[task_manager]: build 55 ms + page.update 8 ms = 64 ms
-03:54:08  render[task_manager]: build 276 ms + page.update 43 ms = 319 ms
-03:59:20  render[setup]: build 26 ms + page.update 5 ms = 31 ms
-03:59:21  render[setup]: build 57 ms + page.update 6 ms = 63 ms
-03:59:22  render[task_manager]: build 75 ms + page.update 3 ms = 77 ms
-03:59:23  render[setup]: build 33 ms + page.update 5 ms = 38 ms
-03:59:25  render[setup]: build 217 ms + page.update 33 ms = 250 ms
-03:59:25  render[setup]: build 283 ms + page.update 29 ms = 311 ms
-03:59:26  render[setup]: build 100 ms + page.update 31 ms = 130 ms
-03:59:29  render[setup]: build 138 ms + page.update 32 ms = 170 ms
-03:59:30  render[task_manager]: build 36 ms + page.update 22 ms = 58 ms
-03:59:30  render[task_manager]: build 125 ms + page.update 23 ms = 149 ms
-03:59:31  render[task_manager]: build 148 ms + page.update 24 ms = 172 ms
-03:59:37  render[task_manager]: build 32 ms + page.update 8 ms = 40 ms
-03:59:40  render[task_manager]: build 160 ms + page.update 24 ms = 184 ms
-04:04:32  render[setup]: build 158 ms + page.update 31 ms = 189 ms
-04:04:43  render[setup]: build 258 ms + page.update 41 ms = 299 ms
-04:22:09  render[setup]: build 88 ms + page.update 15 ms = 104 ms
-04:22:09  render[setup]: build 244 ms + page.update 29 ms = 274 ms
-04:22:12  render[setup]: build 164 ms + page.update 37 ms = 201 ms
-04:22:12  render[setup]: build 238 ms + page.update 15 ms = 253 ms
-04:22:13  render[setup]: build 167 ms + page.update 34 ms = 201 ms
-04:22:15  render[setup]: build 146 ms + page.update 19 ms = 165 ms
-04:22:17  render[setup]: build 165 ms + page.update 34 ms = 199 ms
-04:22:24  render[setup]: build 139 ms + page.update 19 ms = 158 ms
-04:34:39  render[setup]: build 67 ms + page.update 15 ms = 82 ms
-04:34:39  render[setup]: build 131 ms + page.update 17 ms = 148 ms
-04:34:47  render[setup]: build 146 ms + page.update 18 ms = 164 ms
-04:34:47  render[setup]: build 139 ms + page.update 19 ms = 159 ms
-04:34:48  render[setup]: build 109 ms + page.update 18 ms = 128 ms
-04:34:50  render[setup]: build 156 ms + page.update 18 ms = 174 ms
-04:34:52  render[setup]: build 145 ms + page.update 17 ms = 162 ms
-04:35:18  render[setup]: build 234 ms + page.update 54 ms = 288 ms
-04:42:48  render[setup]: build 27 ms + page.update 6 ms = 33 ms
-04:42:49  render[setup]: build 70 ms + page.update 6 ms = 76 ms
-04:42:51  render[setup]: build 67 ms + page.update 7 ms = 74 ms
-04:42:51  render[setup]: build 62 ms + page.update 8 ms = 70 ms
-04:42:51  render[setup]: build 63 ms + page.update 7 ms = 70 ms
-04:42:53  render[setup]: build 130 ms + page.update 19 ms = 149 ms
-04:42:55  render[setup]: build 206 ms + page.update 20 ms = 226 ms
-04:43:08  render[setup]: build 150 ms + page.update 18 ms = 168 ms
-04:49:31  render[setup]: build 27 ms + page.update 5 ms = 32 ms
-04:49:32  render[setup]: build 72 ms + page.update 11 ms = 82 ms
-04:49:35  render[setup]: build 56 ms + page.update 6 ms = 63 ms
-04:49:35  render[setup]: build 57 ms + page.update 8 ms = 66 ms
-04:49:35  render[setup]: build 92 ms + page.update 18 ms = 110 ms
-04:49:38  render[setup]: build 130 ms + page.update 18 ms = 147 ms
-04:49:39  render[setup]: build 143 ms + page.update 17 ms = 159 ms
-04:49:46  render[setup]: build 153 ms + page.update 17 ms = 170 ms
-04:52:02  render[setup]: build 27 ms + page.update 6 ms = 33 ms
-04:52:02  render[setup]: build 61 ms + page.update 7 ms = 67 ms
-04:52:05  render[setup]: build 51 ms + page.update 6 ms = 58 ms
-04:52:05  render[setup]: build 55 ms + page.update 7 ms = 62 ms
-04:52:06  render[setup]: build 49 ms + page.update 6 ms = 56 ms
-04:52:07  render[setup]: build 112 ms + page.update 17 ms = 129 ms
-04:52:09  render[setup]: build 285 ms + page.update 43 ms = 328 ms
-04:52:18  render[setup]: build 144 ms + page.update 18 ms = 162 ms
-04:55:42  render[setup]: build 149 ms + page.update 18 ms = 167 ms
-04:55:46  render[setup]: build 122 ms + page.update 17 ms = 139 ms
-05:06:20  render[setup]: build 38 ms + page.update 6 ms = 44 ms
-05:06:20  render[setup]: build 76 ms + page.update 6 ms = 82 ms
-05:06:35  render[setup]: build 112 ms + page.update 15 ms = 127 ms
-05:06:38  render[setup]: build 144 ms + page.update 20 ms = 163 ms
-05:06:41  render[setup]: build 143 ms + page.update 19 ms = 162 ms
-05:06:43  render[setup]: build 287 ms + page.update 38 ms = 324 ms
-05:07:09  render[setup]: build 150 ms + page.update 17 ms = 168 ms
-05:07:37  render[setup]: build 101 ms + page.update 19 ms = 120 ms
-05:08:21  render[setup]: build 142 ms + page.update 19 ms = 161 ms
-05:08:24  render[setup]: build 135 ms + page.update 17 ms = 152 ms
-05:08:25  render[task_manager]: build 256 ms + page.update 13 ms = 269 ms
-05:08:26  render[task_manager]: build 96 ms + page.update 14 ms = 110 ms
-05:10:56  render[setup]: build 131 ms + page.update 10 ms = 142 ms
-05:11:24  render[setup]: build 140 ms + page.update 14 ms = 154 ms
-05:25:18  render[setup]: build 29 ms + page.update 5 ms = 35 ms
-05:25:18  render[setup]: build 59 ms + page.update 6 ms = 66 ms
-05:25:20  render[setup]: build 50 ms + page.update 6 ms = 56 ms
-05:25:22  render[setup]: build 79 ms + page.update 20 ms = 99 ms
-05:25:24  render[setup]: build 268 ms + page.update 39 ms = 307 ms
-05:26:32  render[regression]: build 269 ms + page.update 11 ms = 280 ms
-05:26:33  render[regression]: build 80 ms + page.update 12 ms = 92 ms
-05:26:45  render[regression]: build 87 ms + page.update 12 ms = 99 ms
-05:26:45  render[regression]: build 93 ms + page.update 13 ms = 106 ms
-05:27:02  render[regression]: build 107 ms + page.update 20 ms = 126 ms
-05:27:02  build_rows.fetch_meta (17 stories): 0 ms
-05:27:02  build_rows.count_cases (17 stories): 1 ms
-05:27:02  render[regression]: build 461 ms + page.update 51 ms = 512 ms
-05:28:49  render[regression]: build 172 ms + page.update 14 ms = 186 ms
-05:28:59  render[regression]: build 144 ms + page.update 20 ms = 163 ms
-05:28:59  build_rows.fetch_meta (17 stories): 0 ms
-05:28:59  build_rows.count_cases (17 stories): 1 ms
-05:29:00  render[regression]: build 365 ms + page.update 56 ms = 422 ms
-05:29:34  render[testplan]: build 200 ms + page.update 14 ms = 214 ms
-05:29:35  render[testplan]: build 68 ms + page.update 14 ms = 82 ms
-05:29:49  render[testplan]: build 102 ms + page.update 18 ms = 120 ms
-05:29:49  cp.fetch_stories (1 sprints): 1595 ms
-05:29:54  cp.fetch_meta+features (5 stories): 4667 ms
-05:29:54  render[testplan]: build 177 ms + page.update 18 ms = 194 ms
-05:30:12  render[testplan]: build 109 ms + page.update 18 ms = 127 ms
-05:30:12  render[testplan]: build 265 ms + page.update 28 ms = 293 ms
-05:30:12  cp.generate_render (5 stories): 296 ms
-05:51:21  render[setup]: build 31 ms + page.update 6 ms = 38 ms
-05:51:21  render[setup]: build 78 ms + page.update 7 ms = 85 ms
-05:51:23  render[setup]: build 84 ms + page.update 8 ms = 92 ms
-05:51:25  render[setup]: build 169 ms + page.update 29 ms = 197 ms
-05:51:27  render[setup]: build 149 ms + page.update 19 ms = 169 ms
-05:51:27  render[settings]: build 34 ms + page.update 12 ms = 46 ms
-05:51:33  render[regression]: build 232 ms + page.update 14 ms = 246 ms
-05:51:34  render[regression]: build 80 ms + page.update 13 ms = 93 ms
-05:51:40  render[regression]: build 172 ms + page.update 32 ms = 204 ms
-05:51:44  render[regression]: build 208 ms + page.update 39 ms = 247 ms
-05:51:44  render[regression]: build 518 ms + page.update 172 ms = 690 ms
-05:51:46  render[regression]: build 271 ms + page.update 74 ms = 345 ms
-05:51:46  render[regression]: build 300 ms + page.update 51 ms = 351 ms
-05:52:01  render[regression]: build 186 ms + page.update 20 ms = 206 ms
-05:52:23  render[regression]: build 546 ms + page.update 25 ms = 571 ms
-05:52:24  build_rows.fetch_meta (414 stories): 510 ms
-05:52:33  build_rows.count_cases (414 stories): 9432 ms
-05:52:34  render[regression]: build 626 ms + page.update 72 ms = 699 ms
-05:52:42  table.rebuild_rows: 7 ms
-05:52:42  table.flet_update: 72 ms
-05:53:09  table.rebuild_rows: 72 ms
-05:53:10  table.flet_update: 514 ms
-05:53:11  render[titles]: build 235 ms + page.update 17 ms = 252 ms
-05:53:11  render[titles]: build 115 ms + page.update 20 ms = 135 ms
-05:53:20  render[regression]: build 454 ms + page.update 69 ms = 523 ms
-05:53:27  table.rebuild_rows: 8 ms
-05:53:27  table.flet_update: 73 ms
-05:53:41  table.rebuild_rows: 8 ms
-05:53:41  table.flet_update: 75 ms
-05:53:45  table.rebuild_rows: 19 ms
-05:53:45  table.flet_update: 173 ms
-05:55:07  table.rebuild_rows: 3 ms
-05:55:07  table.flet_update: 309 ms
-05:55:11  table.rebuild_rows: 44 ms
-05:55:12  table.flet_update: 549 ms
-06:01:32  render[setup]: build 27 ms + page.update 6 ms = 32 ms
-06:01:32  render[setup]: build 63 ms + page.update 7 ms = 69 ms
-06:01:35  render[setup]: build 148 ms + page.update 19 ms = 166 ms
-06:01:38  render[setup]: build 129 ms + page.update 31 ms = 160 ms
-06:01:40  render[settings]: build 37 ms + page.update 11 ms = 49 ms
-06:01:41  render[settings]: build 75 ms + page.update 11 ms = 86 ms
-06:01:44  render[regression]: build 233 ms + page.update 10 ms = 243 ms
-06:01:45  render[regression]: build 81 ms + page.update 13 ms = 93 ms
-06:01:49  render[regression]: build 135 ms + page.update 43 ms = 178 ms
-06:01:52  render[regression]: build 101 ms + page.update 24 ms = 125 ms
-06:01:53  render[regression]: build 327 ms + page.update 116 ms = 443 ms
-06:01:54  render[regression]: build 164 ms + page.update 80 ms = 244 ms
-06:01:55  render[regression]: build 378 ms + page.update 110 ms = 488 ms
-06:02:12  render[regression]: build 166 ms + page.update 21 ms = 187 ms
-06:02:43  render[regression]: build 565 ms + page.update 25 ms = 591 ms
-06:02:44  build_rows.fetch_meta (414 stories): 495 ms
-06:02:53  build_rows.count_cases (414 stories): 9073 ms
-06:02:54  render[regression]: build 635 ms + page.update 70 ms = 705 ms
-06:03:06  table.rebuild_rows: 7 ms
-06:03:06  table.flet_update: 82 ms
-06:03:27  render[titles]: build 248 ms + page.update 16 ms = 264 ms
-06:03:28  render[titles]: build 114 ms + page.update 17 ms = 131 ms
-06:03:41  render[regression]: build 531 ms + page.update 61 ms = 592 ms
-06:03:48  table.rebuild_rows: 64 ms
-06:03:49  table.flet_update: 456 ms
-06:03:55  table.rebuild_rows: 122 ms
-06:03:55  table.flet_update: 559 ms
-06:07:24  render[setup]: build 27 ms + page.update 5 ms = 32 ms
-06:07:24  render[setup]: build 69 ms + page.update 7 ms = 76 ms
-06:07:27  render[setup]: build 58 ms + page.update 7 ms = 65 ms
-06:07:29  render[setup]: build 150 ms + page.update 19 ms = 169 ms
-06:07:30  render[setup]: build 232 ms + page.update 31 ms = 263 ms
-06:07:34  render[settings]: build 63 ms + page.update 16 ms = 78 ms
-06:07:39  render[regression]: build 204 ms + page.update 11 ms = 215 ms
-06:07:40  render[regression]: build 81 ms + page.update 14 ms = 95 ms
-06:07:44  render[regression]: build 235 ms + page.update 55 ms = 290 ms
-06:07:48  render[regression]: build 158 ms + page.update 37 ms = 195 ms
-06:07:48  render[regression]: build 291 ms + page.update 30 ms = 321 ms
-06:07:50  render[regression]: build 208 ms + page.update 92 ms = 300 ms
-06:07:50  render[regression]: build 442 ms + page.update 141 ms = 583 ms
-06:08:05  render[regression]: build 199 ms + page.update 23 ms = 222 ms
-06:08:15  render[regression]: build 530 ms + page.update 24 ms = 554 ms
-06:08:15  _scroll_to_key(reg_gen_anchor): scroll_to() RAISED: ScrollableControl.scroll_to() got an unexpected keyword argument 'key'
-06:08:16  _scroll_to_key(reg_gen_anchor): scroll_to() RAISED: ScrollableControl.scroll_to() got an unexpected keyword argument 'key'
-06:08:16  build_rows.fetch_meta (414 stories): 624 ms
-06:08:22  build_rows.count_cases (414 stories): 6209 ms
-06:08:23  render[regression]: build 640 ms + page.update 70 ms = 710 ms
-06:08:23  _scroll_to_key(reg_gen_anchor): scroll_to() RAISED: ScrollableControl.scroll_to() got an unexpected keyword argument 'key'
-06:08:23  _scroll_to_key(reg_gen_anchor): scroll_to() RAISED: ScrollableControl.scroll_to() got an unexpected keyword argument 'key'
-06:08:32  table.rebuild_rows: 2 ms
-06:08:32  table.flet_update: 73 ms
-06:08:39  render[titles]: build 134 ms + page.update 8 ms = 143 ms
-06:08:39  render[titles]: build 104 ms + page.update 9 ms = 113 ms
-06:08:40  render[regression]: build 302 ms + page.update 61 ms = 363 ms
-06:08:45  table.rebuild_rows: 2 ms
-06:08:45  table.flet_update: 29 ms
-06:08:48  table.rebuild_rows: 3 ms
-06:08:48  table.flet_update: 16 ms
-06:25:59  render[setup]: build 30 ms + page.update 5 ms = 35 ms
-06:25:59  render[setup]: build 71 ms + page.update 8 ms = 79 ms
-06:26:03  render[setup]: build 131 ms + page.update 18 ms = 149 ms
-06:26:05  render[setup]: build 344 ms + page.update 35 ms = 379 ms
-06:26:07  render[setup]: build 210 ms + page.update 17 ms = 228 ms
-06:26:25  render[titles]: build 130 ms + page.update 5 ms = 135 ms
-06:26:25  render[titles]: build 81 ms + page.update 13 ms = 94 ms
-06:26:26  render[regression]: build 27 ms + page.update 4 ms = 31 ms
-06:26:27  render[regression]: build 102 ms + page.update 9 ms = 110 ms
-06:26:30  render[regression]: build 127 ms + page.update 53 ms = 181 ms
-06:26:32  render[regression]: build 183 ms + page.update 30 ms = 212 ms
-06:26:32  render[regression]: build 320 ms + page.update 15 ms = 335 ms
-06:26:49  render[regression]: build 218 ms + page.update 37 ms = 255 ms
-06:27:09  build_rows.fetch_meta (433 stories): 114 ms
-06:27:12  build_rows.count_cases (433 stories): 3363 ms
-06:27:16  render[regression]: build 2884 ms + page.update 144 ms = 3029 ms
-06:27:25  table.rebuild_rows: 5 ms
-06:27:25  table.flet_update: 65 ms
-06:28:26  table.rebuild_rows: 2 ms
-06:28:26  table.flet_update: 19 ms
-06:28:38  table.rebuild_rows: 1 ms
-06:28:38  table.flet_update: 9 ms
+10:27:43  render[setup]: build 29 ms + page.update 6 ms = 36 ms
+10:27:43  render[setup]: build 78 ms + page.update 12 ms = 90 ms
+10:27:45  render[setup]: build 65 ms + page.update 7 ms = 72 ms
+10:27:45  render[setup]: build 61 ms + page.update 9 ms = 70 ms
+10:27:46  render[setup]: build 64 ms + page.update 8 ms = 72 ms
+10:27:48  render[setup]: build 88 ms + page.update 8 ms = 95 ms
+10:27:49  render[setup]: build 62 ms + page.update 7 ms = 69 ms
+10:27:49  render[task_manager]: build 108 ms + page.update 4 ms = 112 ms
+10:27:50  render[task_manager]: build 33 ms + page.update 5 ms = 37 ms
+10:27:54  render[task_manager]: build 43 ms + page.update 6 ms = 49 ms
+10:27:55  render[task_manager]: build 51 ms + page.update 6 ms = 57 ms
+10:28:00  render[task_manager]: build 56 ms + page.update 6 ms = 62 ms
+10:28:01  render[task_manager]: build 56 ms + page.update 7 ms = 63 ms
+10:28:01  render[task_manager]: build 91 ms + page.update 18 ms = 109 ms
+04:43:53  render[setup]: build 28 ms + page.update 5 ms = 34 ms
+04:43:53  render[setup]: build 71 ms + page.update 7 ms = 79 ms
+04:43:54  render[setup]: build 55 ms + page.update 7 ms = 62 ms
+04:43:54  render[setup]: build 72 ms + page.update 11 ms = 83 ms
+04:43:55  render[setup]: build 56 ms + page.update 7 ms = 63 ms
+04:43:56  render[setup]: build 67 ms + page.update 6 ms = 73 ms
+04:43:57  render[setup]: build 86 ms + page.update 9 ms = 95 ms
+04:44:02  render[setup]: build 75 ms + page.update 7 ms = 83 ms
+04:49:19  render[setup]: build 28 ms + page.update 6 ms = 34 ms
+04:49:19  render[setup]: build 67 ms + page.update 8 ms = 75 ms
+06:49:42  render[setup]: build 147 ms + page.update 27 ms = 174 ms
+06:49:43  render[setup]: build 218 ms + page.update 33 ms = 251 ms
+06:50:05  render[links]: build 34 ms + page.update 4 ms = 38 ms
+06:51:34  render[ai_usage]: build 24 ms + page.update 2 ms = 26 ms
+06:51:34  render[ai_usage]: build 85 ms + page.update 16 ms = 100 ms
+06:51:36  render[ai_usage]: build 258 ms + page.update 42 ms = 300 ms
+06:54:03  render[regression]: build 178 ms + page.update 5 ms = 183 ms
+06:54:05  render[setup]: build 31 ms + page.update 30 ms = 60 ms
+06:54:06  render[setup]: build 112 ms + page.update 32 ms = 144 ms
+06:54:09  render[setup]: build 173 ms + page.update 37 ms = 210 ms
+06:54:12  render[setup]: build 253 ms + page.update 33 ms = 286 ms
+06:54:15  render[regression]: build 33 ms + page.update 14 ms = 47 ms
+06:54:16  render[regression]: build 130 ms + page.update 21 ms = 151 ms
+06:54:19  render[regression]: build 185 ms + page.update 57 ms = 242 ms
+06:54:50  build_rows.fetch_meta (441 stories): 210 ms
+06:54:51  build_rows.count_cases (441 stories): 749 ms
+06:54:55  render[regression]: build 2751 ms + page.update 131 ms = 2882 ms
+06:55:13  table.rebuild_rows: 6 ms
+06:55:13  table.flet_update: 47 ms
+06:55:22  _keep_scroll: final restore to offset=941.0037218835478 applied
+06:55:27  render[ai_usage]: build 131 ms + page.update 5 ms = 136 ms
+06:55:27  render[ai_usage]: build 47 ms + page.update 5 ms = 52 ms
+06:55:28  render[ai_usage]: build 479 ms + page.update 42 ms = 521 ms
+06:55:41  render[regression]: build 944 ms + page.update 70 ms = 1014 ms
+06:55:56  table.rebuild_rows: 10 ms
+06:55:56  table.flet_update: 296 ms
+06:55:57  _keep_scroll: final restore to offset=2696.712707519531 applied
+06:56:02  table.rebuild_rows: 46 ms
+06:56:02  table.flet_update: 418 ms
+06:56:02  _keep_scroll: final restore to offset=3099.2629852054088 applied
+06:56:18  table.rebuild_rows: 55 ms
+06:56:18  table.flet_update: 438 ms
+06:56:19  _keep_scroll: final restore to offset=2572.237497965497 applied
+06:56:20  table.rebuild_rows: 2 ms
+06:56:20  table.flet_update: 14 ms
+06:56:21  _keep_scroll: final restore to offset=2572.237497965497 applied
+06:56:21  table.rebuild_rows: 2 ms
+06:56:21  table.flet_update: 24 ms
+06:56:22  _keep_scroll: final restore to offset=2572.237497965497 applied
+06:56:23  table.rebuild_rows: 2 ms
+06:56:23  table.flet_update: 14 ms
+06:56:23  _keep_scroll: final restore to offset=2572.237497965497 applied
+06:56:24  table.rebuild_rows: 1 ms
+06:56:24  table.flet_update: 16 ms
+06:56:24  _keep_scroll: final restore to offset=2572.237497965497 applied
+06:56:39  table.rebuild_rows: 3 ms
+06:56:39  table.flet_update: 49 ms
+06:56:39  _keep_scroll: final restore to offset=877.4539827725906 applied
+06:56:41  table.rebuild_rows: 2 ms
+06:56:41  table.flet_update: 13 ms
+06:56:42  _keep_scroll: final restore to offset=877.4539827725906 applied
+06:56:43  table.rebuild_rows: 2 ms
+06:56:43  table.flet_update: 13 ms
+06:56:43  _keep_scroll: final restore to offset=877.4539827725906 applied
+06:56:45  table.rebuild_rows: 8 ms
+06:56:45  table.flet_update: 20 ms
+06:56:46  _keep_scroll: final restore to offset=950.3134747566402 applied
+06:56:48  table.rebuild_rows: 2 ms
+06:56:48  table.flet_update: 16 ms
+06:56:48  _keep_scroll: final restore to offset=1093.142027483264 applied
+06:56:49  table.rebuild_rows: 2 ms
+06:56:49  table.flet_update: 10 ms
+06:56:50  _keep_scroll: final restore to offset=1093.142027483264 applied
+06:56:51  table.rebuild_rows: 8 ms
+06:56:51  table.flet_update: 38 ms
+06:56:52  _keep_scroll: final restore to offset=1184.2477708914669 applied
+06:56:53  table.rebuild_rows: 8 ms
+06:56:53  table.flet_update: 50 ms
+06:56:55  _keep_scroll: final restore to offset=1229.1236508149693 applied
+06:56:55  table.rebuild_rows: 6 ms
+06:56:55  table.flet_update: 31 ms
+06:56:57  _keep_scroll: final restore to offset=1295.1561622081986 applied
+07:01:46  table.rebuild_rows: 39 ms
+07:01:46  table.flet_update: 124 ms
+07:01:47  _keep_scroll: final restore to offset=1419.451273600261 applied
+07:01:54  table.rebuild_rows: 53 ms
+07:01:54  table.flet_update: 353 ms
+07:01:55  _keep_scroll: final restore to offset=2806.796086189847 applied
+07:01:58  table.rebuild_rows: 7 ms
+07:01:59  table.flet_update: 268 ms
+07:01:59  _keep_scroll: final restore to offset=2806.796086189847 applied
+07:02:03  table.rebuild_rows: 7 ms
+07:02:04  table.flet_update: 210 ms
+07:02:04  _keep_scroll: final restore to offset=2806.796086189847 applied
+07:02:08  table.rebuild_rows: 9 ms
+07:02:08  table.flet_update: 274 ms
+07:02:09  _keep_scroll: final restore to offset=2806.796086189847 applied
+07:02:15  table.rebuild_rows: 9 ms
+07:02:15  table.flet_update: 303 ms
+07:02:15  _keep_scroll: final restore to offset=2806.796086189847 applied
+07:02:17  table.rebuild_rows: 2 ms
+07:02:17  table.flet_update: 15 ms
+07:02:18  _keep_scroll: final restore to offset=2806.796086189847 applied
+07:02:20  table.rebuild_rows: 62 ms
+07:02:21  table.flet_update: 497 ms
+07:02:21  _keep_scroll: final restore to offset=2930.130288123817 applied
+07:02:24  table.rebuild_rows: 3 ms
+07:02:24  table.flet_update: 17 ms
+07:02:24  _keep_scroll: final restore to offset=2930.130288123817 applied
+07:02:32  table.rebuild_rows: 19 ms
+07:02:33  table.flet_update: 312 ms
+07:02:33  _keep_scroll: final restore to offset=3441.5428466796884 applied
+07:03:09  table.rebuild_rows: 10 ms
+07:03:09  table.flet_update: 89 ms
+07:03:09  _keep_scroll: final restore to offset=765.8309284055001 applied
+07:03:13  table.rebuild_rows: 2 ms
+07:03:13  table.flet_update: 15 ms
+07:03:13  _keep_scroll: final restore to offset=765.8309284055001 applied
+07:03:13  table.rebuild_rows: 1 ms
+07:03:14  table.flet_update: 16 ms
+07:03:14  _keep_scroll: final restore to offset=765.8309284055001 applied
+07:17:12  render[setup]: build 23 ms + page.update 4 ms = 27 ms
+07:17:12  render[setup]: build 61 ms + page.update 5 ms = 66 ms
+07:17:13  render[setup]: build 41 ms + page.update 5 ms = 47 ms
+07:17:15  render[setup]: build 48 ms + page.update 5 ms = 53 ms
+07:17:17  render[setup]: build 247 ms + page.update 33 ms = 281 ms
+07:17:19  render[regression]: build 228 ms + page.update 8 ms = 236 ms
+07:17:20  render[regression]: build 129 ms + page.update 17 ms = 146 ms
+07:17:51  render[regression]: build 153 ms + page.update 28 ms = 181 ms
+07:18:51  render[testplan]: build 411 ms + page.update 8 ms = 419 ms
+07:18:51  render[testplan]: build 129 ms + page.update 8 ms = 138 ms
+07:20:23  render[regression]: build 106 ms + page.update 19 ms = 125 ms
+07:20:26  render[regression]: build 157 ms + page.update 45 ms = 202 ms
+07:21:08  build_rows.fetch_meta (441 stories): 0 ms
+07:21:10  render[regression]: build 974 ms + page.update 81 ms = 1055 ms
+07:21:45  table.rebuild_rows: 4 ms
+07:21:45  table.flet_update: 37 ms
+07:21:55  _keep_scroll: final restore to offset=1861.688277962209 applied
+07:24:23  render[setup]: build 22 ms + page.update 4 ms = 27 ms
+07:24:23  render[setup]: build 54 ms + page.update 6 ms = 60 ms
+07:24:24  render[setup]: build 42 ms + page.update 5 ms = 48 ms
+07:24:26  render[setup]: build 50 ms + page.update 5 ms = 55 ms
+07:24:27  render[setup]: build 75 ms + page.update 33 ms = 109 ms
+07:27:22  render[setup]: build 22 ms + page.update 5 ms = 27 ms
+07:27:22  render[setup]: build 59 ms + page.update 5 ms = 64 ms
+07:27:27  render[setup]: build 203 ms + page.update 32 ms = 234 ms
+07:27:30  render[setup]: build 89 ms + page.update 34 ms = 123 ms
+07:27:31  render[regression]: build 285 ms + page.update 25 ms = 311 ms
+07:27:32  render[regression]: build 73 ms + page.update 12 ms = 86 ms
+07:27:32  render[regression]: build 139 ms + page.update 13 ms = 152 ms
+07:37:20  render[regression]: build 357 ms + page.update 91 ms = 448 ms
+07:37:59  build_rows.fetch_meta (441 stories): 0 ms
+07:38:01  render[regression]: build 1706 ms + page.update 127 ms = 1833 ms
+07:38:15  table.rebuild_rows: 6 ms
+07:38:15  table.flet_update: 64 ms
+07:38:18  _keep_scroll: final restore to offset=1485.4193660574047 applied
+07:38:23  table.rebuild_rows: 7 ms
+07:38:23  table.flet_update: 106 ms
+07:38:23  _keep_scroll: final restore to offset=1296.8431790499699 applied
+07:38:42  render[regression]: build 795 ms + page.update 48 ms = 843 ms
+07:38:54  build_rows.fetch_meta (441 stories): 0 ms
+07:38:54  build_rows.count_cases (441 stories): 10 ms
+07:38:55  render[regression]: build 896 ms + page.update 52 ms = 947 ms
+07:42:32  render[setup]: build 29 ms + page.update 6 ms = 35 ms
+07:42:32  render[setup]: build 79 ms + page.update 8 ms = 87 ms
+07:42:42  render[setup]: build 479 ms + page.update 87 ms = 566 ms
+07:42:47  render[setup]: build 266 ms + page.update 38 ms = 304 ms
+07:42:49  render[setup]: build 357 ms + page.update 39 ms = 396 ms
+07:42:53  render[regression]: build 385 ms + page.update 25 ms = 410 ms
+07:42:54  render[regression]: build 147 ms + page.update 24 ms = 171 ms
+07:42:59  render[regression]: build 479 ms + page.update 47 ms = 526 ms
+07:43:28  build_rows.fetch_meta (441 stories): 0 ms
+07:43:29  render[regression]: build 1716 ms + page.update 62 ms = 1779 ms
+07:43:39  table.rebuild_rows: 13 ms
+07:43:39  table.flet_update: 59 ms
+07:43:40  _keep_scroll: final restore to offset=1010.3184800208473 applied
+07:43:42  table.rebuild_rows: 2 ms
+07:43:42  table.flet_update: 17 ms
+07:43:43  _keep_scroll: final restore to offset=1149.7459644048874 applied
+07:43:44  table.rebuild_rows: 2 ms
+07:43:44  table.flet_update: 16 ms
+07:43:44  _keep_scroll: final restore to offset=1149.7459644048874 applied
+07:43:45  table.rebuild_rows: 2 ms
+07:43:45  table.flet_update: 10 ms
+07:43:45  _keep_scroll: final restore to offset=1149.7459644048874 applied
+07:43:48  table.rebuild_rows: 4 ms
+07:43:48  table.flet_update: 9 ms
+07:43:48  _keep_scroll: final restore to offset=1279.0263599127002 applied
+07:43:48  table.rebuild_rows: 2 ms
+07:43:48  table.flet_update: 10 ms
+07:43:49  _keep_scroll: final restore to offset=1279.0263599127002 applied
+07:43:54  table.rebuild_rows: 57 ms
+07:43:54  table.flet_update: 243 ms
+07:43:55  _keep_scroll: final restore to offset=1724.556668587514 applied
+07:44:04  table.rebuild_rows: 24 ms
+07:44:04  table.flet_update: 274 ms
+07:44:04  _keep_scroll: final restore to offset=3101.413452148437 applied
+07:44:15  table.rebuild_rows: 7 ms
+07:44:15  table.flet_update: 64 ms
+07:44:15  _keep_scroll: final restore to offset=903.7153230779717 applied
+07:44:16  table.rebuild_rows: 2 ms
+07:44:16  table.flet_update: 14 ms
+07:44:17  _keep_scroll: final restore to offset=903.7153230779717 applied
+07:48:46  render[setup]: build 28 ms + page.update 5 ms = 33 ms
+07:48:46  render[setup]: build 63 ms + page.update 9 ms = 73 ms
+07:48:50  render[settings]: build 142 ms + page.update 25 ms = 167 ms
+07:48:55  render[regression]: build 208 ms + page.update 14 ms = 222 ms
+07:48:57  render[setup]: build 120 ms + page.update 34 ms = 154 ms
+07:48:58  render[setup]: build 273 ms + page.update 33 ms = 306 ms
+07:49:02  render[setup]: build 245 ms + page.update 40 ms = 285 ms
+07:49:04  render[setup]: build 267 ms + page.update 13 ms = 280 ms
+07:49:04  render[regression]: build 83 ms + page.update 17 ms = 100 ms
+07:49:05  render[regression]: build 149 ms + page.update 24 ms = 173 ms
+07:49:09  render[regression]: build 204 ms + page.update 76 ms = 280 ms
+07:50:36  build_rows.fetch_meta (441 stories): 1710 ms
+07:50:47  build_rows.count_cases (441 stories): 10700 ms
+07:50:49  render[regression]: build 1613 ms + page.update 68 ms = 1681 ms
+07:51:00  table.rebuild_rows: 7 ms
+07:51:00  table.flet_update: 81 ms
+07:51:00  _keep_scroll: final restore to offset=1137.8969178715486 applied
+07:51:02  table.rebuild_rows: 2 ms
+07:51:02  table.flet_update: 24 ms
+07:51:02  _keep_scroll: final restore to offset=1137.8969178715486 applied
+07:51:03  table.rebuild_rows: 5 ms
+07:51:03  table.flet_update: 32 ms
+07:51:04  _keep_scroll: final restore to offset=1137.8969178715486 applied
+07:51:04  table.rebuild_rows: 2 ms
+07:51:04  table.flet_update: 33 ms
+07:51:05  _keep_scroll: final restore to offset=1137.8969178715486 applied
+07:51:08  render[titles]: build 129 ms + page.update 11 ms = 140 ms
+07:51:08  render[titles]: build 48 ms + page.update 13 ms = 61 ms
+07:51:10  render[regression]: build 380 ms + page.update 58 ms = 439 ms
+07:51:24  table.rebuild_rows: 6 ms
+07:51:24  table.flet_update: 75 ms
+07:51:30  _keep_scroll: final restore to offset=1316.092802620011 applied
+07:52:18  render[regression]: build 649 ms + page.update 27 ms = 676 ms
+07:52:26  build_rows.fetch_meta (441 stories): 0 ms
+07:52:27  render[regression]: build 526 ms + page.update 61 ms = 587 ms
+07:52:37  table.rebuild_rows: 19 ms
+07:52:37  table.flet_update: 177 ms
+07:52:37  _keep_scroll: final restore to offset=1022.7760526104712 applied
+07:52:39  table.rebuild_rows: 1 ms
+07:52:39  table.flet_update: 13 ms
+07:52:40  _keep_scroll: final restore to offset=1254.8422757550024 applied
+07:52:40  table.rebuild_rows: 2 ms
+07:52:40  table.flet_update: 28 ms
+07:52:41  _keep_scroll: final restore to offset=1254.8422757550024 applied
+07:52:44  table.rebuild_rows: 6 ms
+07:52:44  table.flet_update: 51 ms
+07:52:45  _keep_scroll: final restore to offset=1035.5674205866108 applied
+07:52:45  table.rebuild_rows: 3 ms
+07:52:45  table.flet_update: 27 ms
+07:52:46  _keep_scroll: final restore to offset=1035.5674205866108 applied
+07:57:23  render[titles]: build 176 ms + page.update 7 ms = 183 ms
+07:57:29  render[testplan]: build 98 ms + page.update 12 ms = 110 ms
+07:57:29  render[testplan]: build 86 ms + page.update 11 ms = 97 ms
+07:57:31  render[titles]: build 48 ms + page.update 9 ms = 57 ms
+07:59:32  render[testplan]: build 73 ms + page.update 14 ms = 87 ms
+07:59:34  render[titles]: build 49 ms + page.update 10 ms = 59 ms
+07:59:47  render[titles]: build 79 ms + page.update 10 ms = 89 ms
+07:59:56  render[titles]: build 95 ms + page.update 17 ms = 112 ms
+08:18:08  render[setup]: build 30 ms + page.update 6 ms = 36 ms
+08:18:08  render[setup]: build 60 ms + page.update 6 ms = 65 ms
+08:18:10  render[setup]: build 68 ms + page.update 8 ms = 76 ms
+08:18:12  render[setup]: build 245 ms + page.update 23 ms = 269 ms
+08:18:14  render[setup]: build 259 ms + page.update 38 ms = 296 ms
+08:18:15  render[regression]: build 271 ms + page.update 29 ms = 300 ms
+08:18:15  render[regression]: build 140 ms + page.update 28 ms = 168 ms
+08:18:17  render[testplan]: build 73 ms + page.update 17 ms = 90 ms
+08:18:18  render[testplan]: build 137 ms + page.update 23 ms = 160 ms
+08:18:20  render[titles]: build 25 ms + page.update 3 ms = 28 ms
+08:18:21  render[titles]: build 68 ms + page.update 8 ms = 76 ms
+08:18:24  render[testplan]: build 51 ms + page.update 23 ms = 75 ms
+08:18:50  render[regression]: build 98 ms + page.update 29 ms = 126 ms
+08:18:56  render[regression]: build 245 ms + page.update 49 ms = 294 ms
+08:19:28  build_rows.fetch_meta (441 stories): 0 ms
+08:19:28  build_rows.count_cases (441 stories): 10 ms
+08:19:31  render[regression]: build 2956 ms + page.update 149 ms = 3106 ms
+08:20:40  render[regression]: build 1060 ms + page.update 59 ms = 1119 ms
+08:20:47  build_rows.fetch_meta (441 stories): 0 ms
+08:20:48  render[regression]: build 641 ms + page.update 146 ms = 787 ms
+08:22:31  render[setup]: build 32 ms + page.update 7 ms = 39 ms
+08:22:31  render[setup]: build 75 ms + page.update 7 ms = 83 ms
+08:23:33  render[titles]: build 192 ms + page.update 6 ms = 198 ms
+08:23:33  render[titles]: build 23 ms + page.update 4 ms = 27 ms
+08:23:35  render[setup]: build 68 ms + page.update 23 ms = 90 ms
+08:23:36  render[setup]: build 150 ms + page.update 16 ms = 166 ms
+08:23:39  render[setup]: build 183 ms + page.update 18 ms = 201 ms
+08:23:40  render[titles]: build 25 ms + page.update 3 ms = 29 ms
+08:23:40  render[titles]: build 47 ms + page.update 6 ms = 53 ms
+08:23:40  render[titles]: build 69 ms + page.update 13 ms = 82 ms
+08:23:46  render[titles]: build 72 ms + page.update 9 ms = 81 ms
+08:23:57  render[titles]: build 94 ms + page.update 14 ms = 108 ms
+08:26:09  render[setup]: build 28 ms + page.update 6 ms = 33 ms
+08:26:09  render[setup]: build 64 ms + page.update 6 ms = 70 ms
+08:26:12  render[setup]: build 370 ms + page.update 41 ms = 412 ms
+08:26:15  render[setup]: build 292 ms + page.update 45 ms = 337 ms
+08:26:17  render[setup]: build 263 ms + page.update 56 ms = 319 ms
+08:26:47  render[setup]: build 120 ms + page.update 19 ms = 140 ms
+08:26:50  render[setup]: build 123 ms + page.update 17 ms = 139 ms
+08:26:51  render[setup]: build 144 ms + page.update 34 ms = 178 ms
+08:29:55  render[setup]: build 32 ms + page.update 8 ms = 40 ms
+08:29:55  render[setup]: build 76 ms + page.update 7 ms = 83 ms
+08:29:57  render[setup]: build 60 ms + page.update 7 ms = 67 ms
+08:29:59  render[setup]: build 105 ms + page.update 17 ms = 122 ms
+08:30:01  render[setup]: build 178 ms + page.update 35 ms = 213 ms
+08:30:07  render[titles]: build 220 ms + page.update 8 ms = 227 ms
+08:30:07  render[titles]: build 56 ms + page.update 9 ms = 65 ms
+08:30:17  render[titles]: build 62 ms + page.update 9 ms = 71 ms
+08:31:16  render[titles]: build 175 ms + page.update 20 ms = 195 ms
+08:32:25  render[testplan]: build 79 ms + page.update 10 ms = 89 ms
+08:32:26  render[testplan]: build 82 ms + page.update 11 ms = 93 ms
+08:33:28  render[regression]: build 70 ms + page.update 14 ms = 84 ms
+08:33:29  render[regression]: build 82 ms + page.update 12 ms = 94 ms
+08:33:37  render[regression]: build 202 ms + page.update 55 ms = 257 ms
+08:34:32  build_rows.fetch_meta (441 stories): 0 ms
+08:34:32  build_rows.count_cases (441 stories): 11 ms
+08:34:35  render[regression]: build 2928 ms + page.update 143 ms = 3071 ms
+08:41:14  render[setup]: build 28 ms + page.update 5 ms = 33 ms
+08:41:14  render[setup]: build 61 ms + page.update 7 ms = 68 ms
+08:41:17  render[setup]: build 98 ms + page.update 11 ms = 109 ms
+08:41:19  render[setup]: build 134 ms + page.update 16 ms = 150 ms
+08:41:21  render[setup]: build 137 ms + page.update 18 ms = 154 ms
+08:48:11  render[setup]: build 29 ms + page.update 5 ms = 34 ms
+08:48:11  render[setup]: build 65 ms + page.update 6 ms = 71 ms
+08:48:13  render[setup]: build 65 ms + page.update 8 ms = 72 ms
+08:48:15  render[setup]: build 113 ms + page.update 17 ms = 130 ms
+08:48:17  render[setup]: build 139 ms + page.update 17 ms = 155 ms
+08:50:36  render[regression]: build 246 ms + page.update 11 ms = 257 ms
+08:50:38  render[regression]: build 81 ms + page.update 11 ms = 92 ms
+08:50:41  render[regression]: build 212 ms + page.update 34 ms = 246 ms
+08:51:10  build_rows.fetch_meta (441 stories): 0 ms
+08:51:10  build_rows.count_cases (441 stories): 6 ms
+08:51:12  render[regression]: build 1600 ms + page.update 73 ms = 1673 ms
+08:55:50  render[regression]: build 869 ms + page.update 38 ms = 906 ms
+08:55:58  build_rows.fetch_meta (441 stories): 0 ms
+08:55:58  render[regression]: build 547 ms + page.update 57 ms = 603 ms
+08:58:29  table.rebuild_rows: 7 ms
+08:58:29  table.flet_update: 66 ms
+08:58:29  _keep_scroll: final restore to offset=1388.503671082011 applied
+08:58:31  table.rebuild_rows: 2 ms
+08:58:31  table.flet_update: 13 ms
+08:58:32  _keep_scroll: final restore to offset=1388.503671082011 applied
+08:58:35  table.rebuild_rows: 2 ms
+08:58:35  table.flet_update: 18 ms
+08:58:35  _keep_scroll: final restore to offset=1388.503671082011 applied
+08:58:37  render[titles]: build 114 ms + page.update 16 ms = 129 ms
+08:58:38  render[titles]: build 111 ms + page.update 17 ms = 128 ms
+08:58:40  render[regression]: build 244 ms + page.update 41 ms = 285 ms
+09:02:07  render[setup]: build 28 ms + page.update 5 ms = 33 ms
+09:02:07  render[setup]: build 72 ms + page.update 9 ms = 80 ms
+09:02:11  render[setup]: build 135 ms + page.update 20 ms = 155 ms
+09:02:14  render[setup]: build 120 ms + page.update 15 ms = 135 ms
+09:02:15  render[settings]: build 47 ms + page.update 14 ms = 61 ms
+09:02:15  render[settings]: build 63 ms + page.update 15 ms = 77 ms
+09:02:18  render[regression]: build 250 ms + page.update 11 ms = 261 ms
+09:02:19  render[regression]: build 87 ms + page.update 13 ms = 100 ms
+09:02:24  render[regression]: build 172 ms + page.update 62 ms = 234 ms
+09:02:26  render[regression]: build 221 ms + page.update 38 ms = 259 ms
+09:02:26  render[regression]: build 203 ms + page.update 62 ms = 265 ms
+09:02:28  render[regression]: build 223 ms + page.update 42 ms = 265 ms
+09:02:53  build_rows.fetch_meta (414 stories): 514 ms
+09:03:03  build_rows.count_cases (414 stories): 9337 ms
+09:03:03  render[regression]: build 33 ms + page.update 3 ms = 36 ms
+09:03:03  render[regression]: build 303 ms + page.update 77 ms = 380 ms
+09:03:17  table.rebuild_rows: 2 ms
+09:03:17  table.flet_update: 33 ms
+09:03:19  _keep_scroll: final restore to offset=1428.728810425134 applied
+09:03:36  table.rebuild_rows: 3 ms
+09:03:36  table.flet_update: 36 ms
+09:03:39  _keep_scroll: final restore to offset=2491.4733936428306 applied
+09:06:53  render[automation]: build 523 ms + page.update 36 ms = 558 ms
+09:06:54  render[task_manager]: build 110 ms + page.update 15 ms = 124 ms
+09:06:55  render[task_manager]: build 168 ms + page.update 27 ms = 194 ms
+09:07:07  render[settings]: build 43 ms + page.update 10 ms = 54 ms
+09:07:10  render[users]: build 24 ms + page.update 3 ms = 27 ms
+09:07:11  render[users]: build 153 ms + page.update 18 ms = 171 ms
+09:07:18  render[users]: build 134 ms + page.update 16 ms = 150 ms
+09:07:22  render[users]: build 143 ms + page.update 16 ms = 160 ms
+09:07:22  render[users]: build 142 ms + page.update 18 ms = 159 ms
+09:07:28  render[users]: build 154 ms + page.update 16 ms = 171 ms
+09:07:29  render[users]: build 161 ms + page.update 19 ms = 180 ms
+09:07:34  render[users]: build 121 ms + page.update 19 ms = 140 ms
+09:07:41  render[users]: build 132 ms + page.update 19 ms = 151 ms
+09:07:44  render[users]: build 158 ms + page.update 20 ms = 177 ms
+09:07:45  render[users]: build 132 ms + page.update 20 ms = 151 ms
+09:07:48  render[users]: build 281 ms + page.update 21 ms = 303 ms
+09:07:49  render[users]: build 175 ms + page.update 36 ms = 211 ms
+09:07:51  render[users]: build 125 ms + page.update 16 ms = 141 ms
+09:07:56  render[users]: build 142 ms + page.update 19 ms = 161 ms
+09:08:06  render[users]: build 255 ms + page.update 26 ms = 281 ms
+09:08:06  render[users]: build 288 ms + page.update 29 ms = 317 ms
+09:08:14  render[users]: build 176 ms + page.update 16 ms = 192 ms
+09:08:15  render[users]: build 133 ms + page.update 17 ms = 150 ms
+09:08:18  render[users]: build 134 ms + page.update 19 ms = 152 ms
+09:09:46  render[setup]: build 36 ms + page.update 6 ms = 42 ms
+09:09:46  render[setup]: build 61 ms + page.update 6 ms = 68 ms
+09:09:49  render[setup]: build 62 ms + page.update 8 ms = 70 ms
+09:09:51  render[setup]: build 143 ms + page.update 16 ms = 159 ms
+09:09:52  render[regression]: build 290 ms + page.update 12 ms = 302 ms
+09:09:53  render[regression]: build 129 ms + page.update 23 ms = 152 ms
+09:09:53  render[regression]: build 83 ms + page.update 11 ms = 95 ms
+09:09:56  render[regression]: build 195 ms + page.update 63 ms = 257 ms
+09:10:14  build_rows.fetch_meta (441 stories): 109 ms
+09:10:16  build_rows.count_cases (441 stories): 2644 ms
+09:10:17  render[regression]: build 307 ms + page.update 8 ms = 315 ms
+09:10:18  render[regression]: build 657 ms + page.update 153 ms = 809 ms
+09:10:27  table.rebuild_rows: 6 ms
+09:10:27  table.flet_update: 59 ms
+09:10:28  _keep_scroll: final restore to offset=1148.1420596738249 applied
+09:10:32  table.rebuild_rows: 6 ms
+09:10:32  table.flet_update: 61 ms
+09:10:35  _keep_scroll: final restore to offset=1573.7403918686043 applied
+09:17:47  render[setup]: build 28 ms + page.update 5 ms = 33 ms
+09:17:47  render[setup]: build 60 ms + page.update 6 ms = 66 ms
+09:17:50  render[setup]: build 71 ms + page.update 7 ms = 79 ms
+09:17:52  render[setup]: build 106 ms + page.update 17 ms = 123 ms
+09:17:53  render[setup]: build 154 ms + page.update 17 ms = 171 ms
+09:17:57  render[regression]: build 222 ms + page.update 10 ms = 232 ms
+09:17:58  render[regression]: build 92 ms + page.update 14 ms = 107 ms
+09:18:01  render[regression]: build 207 ms + page.update 87 ms = 294 ms
+09:18:22  build_rows.fetch_meta (441 stories): 0 ms
+09:18:22  build_rows.count_cases (441 stories): 6 ms
+09:18:23  render[regression]: build 235 ms + page.update 6 ms = 242 ms
+09:18:23  render[regression]: build 399 ms + page.update 136 ms = 535 ms
+09:18:27  table.rebuild_rows: 3 ms
+09:18:27  table.flet_update: 37 ms
+09:18:28  _keep_scroll: final restore to offset=1853.6599908172268 applied
+09:18:29  table.rebuild_rows: 2 ms
+09:18:29  table.flet_update: 18 ms
+09:18:29  _keep_scroll: final restore to offset=1853.6599908172268 applied
+09:18:31  render[settings]: build 137 ms + page.update 11 ms = 148 ms
+09:18:54  render[regression]: build 395 ms + page.update 46 ms = 441 ms
+09:18:58  build_rows.fetch_meta (441 stories): 556 ms
+09:19:06  build_rows.count_cases (441 stories): 8209 ms
+09:19:08  render[regression]: build 202 ms + page.update 14 ms = 216 ms
+09:19:09  render[regression]: build 577 ms + page.update 128 ms = 705 ms
+09:19:15  table.rebuild_rows: 6 ms
+09:19:15  table.flet_update: 52 ms
+09:19:16  _keep_scroll: final restore to offset=1108.9155642862772 applied
+09:19:19  table.rebuild_rows: 16 ms
+09:19:19  table.flet_update: 73 ms
+09:19:20  _keep_scroll: final restore to offset=1514.1078914085283 applied
+09:19:21  table.rebuild_rows: 6 ms
+09:19:21  table.flet_update: 25 ms
+09:19:22  _keep_scroll: final restore to offset=1755.5088720400393 applied
+09:19:35  render[settings]: build 188 ms + page.update 11 ms = 199 ms
+09:19:42  render[setup]: build 29 ms + page.update 6 ms = 36 ms
+09:19:42  render[setup]: build 70 ms + page.update 7 ms = 77 ms
+09:19:44  render[setup]: build 63 ms + page.update 7 ms = 70 ms
+09:19:46  render[setup]: build 151 ms + page.update 21 ms = 172 ms
+09:19:47  render[regression]: build 304 ms + page.update 25 ms = 330 ms
+09:19:47  render[regression]: build 120 ms + page.update 25 ms = 145 ms
+09:19:48  render[regression]: build 103 ms + page.update 25 ms = 129 ms
+09:19:50  render[regression]: build 182 ms + page.update 43 ms = 225 ms
+09:20:11  build_rows.fetch_meta (441 stories): 572 ms
+09:20:18  build_rows.count_cases (441 stories): 6509 ms
+09:20:18  render[regression]: build 167 ms + page.update 5 ms = 172 ms
+09:20:18  render[regression]: build 378 ms + page.update 103 ms = 481 ms
+09:20:25  table.rebuild_rows: 6 ms
+09:20:26  table.flet_update: 71 ms
+09:20:30  _keep_scroll: final restore to offset=1130.5448466473947 applied
+09:20:40  table.rebuild_rows: 3 ms
+09:20:40  table.flet_update: 34 ms
+09:20:41  _keep_scroll: final restore to offset=2192.126730419905 applied
+09:29:52  render[setup]: build 31 ms + page.update 6 ms = 37 ms
+09:29:52  render[setup]: build 77 ms + page.update 8 ms = 85 ms
+09:29:55  render[setup]: build 60 ms + page.update 7 ms = 67 ms
+09:29:57  render[setup]: build 126 ms + page.update 18 ms = 144 ms
+09:29:59  render[setup]: build 136 ms + page.update 17 ms = 153 ms
+09:30:02  render[task_manager]: build 252 ms + page.update 13 ms = 265 ms
+09:30:02  render[task_manager]: build 103 ms + page.update 14 ms = 118 ms
+09:56:23  render[setup]: build 22 ms + page.update 4 ms = 26 ms
+09:56:23  render[setup]: build 57 ms + page.update 5 ms = 62 ms
+09:56:26  render[setup]: build 40 ms + page.update 6 ms = 46 ms
+09:56:28  render[setup]: build 149 ms + page.update 31 ms = 180 ms
+09:56:29  render[regression]: build 266 ms + page.update 23 ms = 289 ms
+09:56:29  render[regression]: build 23 ms + page.update 4 ms = 27 ms
+09:56:30  render[regression]: build 25 ms + page.update 4 ms = 29 ms
+09:56:32  render[regression]: build 159 ms + page.update 27 ms = 186 ms
+09:56:34  render[settings]: build 35 ms + page.update 18 ms = 53 ms
+09:56:37  render[regression]: build 146 ms + page.update 33 ms = 179 ms
+09:56:59  build_rows.fetch_meta (441 stories): 620 ms
+09:57:07  build_rows.count_cases (441 stories): 7802 ms
+09:57:07  render[regression]: build 162 ms + page.update 14 ms = 176 ms
+09:57:08  render[regression]: build 689 ms + page.update 118 ms = 807 ms
+09:57:14  table.rebuild_rows: 6 ms
+09:57:14  table.flet_update: 44 ms
+09:57:14  _keep_scroll: final restore to offset=1527.5050811079038 applied
+09:57:16  table.rebuild_rows: 1 ms
+09:57:16  table.flet_update: 11 ms
+09:57:16  _keep_scroll: final restore to offset=1527.5050811079038 applied
+09:57:29  table.rebuild_rows: 28 ms
+09:57:29  table.flet_update: 272 ms
+09:57:30  _keep_scroll: final restore to offset=2420.345160059606 applied
+09:57:34  table.rebuild_rows: 58 ms
+09:57:35  table.flet_update: 535 ms
+09:57:35  _keep_scroll: final restore to offset=3323.9178958156567 applied
+09:57:39  table.rebuild_rows: 63 ms
+09:57:40  table.flet_update: 537 ms
+09:57:40  _keep_scroll: final restore to offset=3228.589150291568 applied
+09:59:31  table.rebuild_rows: 56 ms
+09:59:31  table.flet_update: 363 ms
+09:59:31  _keep_scroll: final restore to offset=3311.67859637262 applied
+09:59:34  table.rebuild_rows: 11 ms
+09:59:34  table.flet_update: 242 ms
+09:59:35  _keep_scroll: final restore to offset=3311.67859637262 applied
+09:59:36  table.rebuild_rows: 11 ms
+09:59:37  table.flet_update: 408 ms
+09:59:37  _keep_scroll: final restore to offset=3311.67859637262 applied
+09:59:39  render[titles]: build 116 ms + page.update 14 ms = 129 ms
+09:59:40  render[titles]: build 20 ms + page.update 3 ms = 23 ms
+09:59:41  render[regression]: build 618 ms + page.update 41 ms = 659 ms
+09:59:43  render[setup]: build 329 ms + page.update 32 ms = 361 ms
+09:59:45  render[regression]: build 459 ms + page.update 90 ms = 549 ms
+09:59:47  render[regression]: build 1895 ms + page.update 107 ms = 2002 ms
+10:00:27  render[regression]: build 584 ms + page.update 44 ms = 628 ms
+10:00:52  build_rows.fetch_meta (441 stories): 0 ms
+10:00:52  render[regression]: build 37 ms + page.update 7 ms = 44 ms
+10:00:53  render[regression]: build 538 ms + page.update 83 ms = 621 ms
+10:01:20  table.rebuild_rows: 6 ms
+10:01:20  table.flet_update: 76 ms
+10:01:22  _keep_scroll: final restore to offset=1120.3278355757802 applied
+10:05:30  table.rebuild_rows: 9 ms
+10:05:30  table.flet_update: 71 ms
+10:05:30  _keep_scroll: final restore to offset=1381.2637997531024 applied
+10:05:31  table.rebuild_rows: 2 ms
+10:05:31  table.flet_update: 18 ms
+10:05:32  _keep_scroll: final restore to offset=1381.2637997531024 applied
+10:05:32  table.rebuild_rows: 4 ms
+10:05:33  table.flet_update: 24 ms
+10:05:33  _keep_scroll: final restore to offset=1381.2637997531024 applied
+10:08:26  render[setup]: build 7 ms + page.update 5 ms = 12 ms
+10:08:26  render[setup]: build 8 ms + page.update 8 ms = 16 ms
+10:08:27  render[setup]: build 7 ms + page.update 7 ms = 14 ms
+10:08:29  render[setup]: build 21 ms + page.update 10 ms = 31 ms
+10:08:30  render[setup]: build 46 ms + page.update 35 ms = 81 ms
+10:08:31  render[regression]: build 146 ms + page.update 21 ms = 166 ms
+10:08:32  render[regression]: build 22 ms + page.update 21 ms = 43 ms
+10:08:33  render[settings]: build 7 ms + page.update 4 ms = 10 ms
+10:08:40  render[regression]: build 7 ms + page.update 3 ms = 11 ms
+10:08:44  render[regression]: build 32 ms + page.update 54 ms = 86 ms
+10:09:03  build_rows.fetch_meta (441 stories): 501 ms
+10:09:10  build_rows.count_cases (441 stories): 6815 ms
+10:09:11  render[regression]: build 17 ms + page.update 13 ms = 30 ms
+10:09:12  render[regression]: build 144 ms + page.update 135 ms = 279 ms
+10:09:17  table.rebuild_rows: 2 ms
+10:09:17  table.flet_update: 49 ms
+10:09:19  _keep_scroll: final restore to offset=819.2646717372878 applied
+10:09:19  table.rebuild_rows: 2 ms
+10:09:19  table.flet_update: 11 ms
+10:09:20  _keep_scroll: final restore to offset=1045.791198537249 applied
+10:09:45  render[regression]: build 10 ms + page.update 43 ms = 53 ms
+10:14:13  build_rows.fetch_meta (441 stories): 0 ms
+10:14:13  render[regression]: build 13 ms + page.update 13 ms = 27 ms
+10:14:14  render[regression]: build 119 ms + page.update 37 ms = 157 ms
+10:14:20  table.rebuild_rows: 2 ms
+10:14:20  table.flet_update: 18 ms
+10:14:20  _keep_scroll: final restore to offset=1108.0836238879688 applied
+10:14:26  render[regression]: build 19 ms + page.update 46 ms = 65 ms
+10:14:31  build_rows.fetch_meta (441 stories): 0 ms
+10:14:31  build_rows.count_cases (441 stories): 7 ms
+10:14:31  render[regression]: build 14 ms + page.update 5 ms = 19 ms
+10:14:32  render[regression]: build 117 ms + page.update 81 ms = 198 ms
+10:14:41  render[regression]: build 30 ms + page.update 45 ms = 74 ms
+10:17:43  render[setup]: build 7 ms + page.update 5 ms = 12 ms
+10:17:43  render[setup]: build 6 ms + page.update 6 ms = 12 ms
+10:17:44  render[setup]: build 6 ms + page.update 7 ms = 12 ms
+10:17:46  render[setup]: build 13 ms + page.update 6 ms = 19 ms
+10:17:47  render[setup]: build 12 ms + page.update 6 ms = 19 ms
+10:17:50  render[regression]: build 163 ms + page.update 22 ms = 185 ms
+10:17:50  render[regression]: build 22 ms + page.update 8 ms = 30 ms
+10:17:53  render[settings]: build 6 ms + page.update 4 ms = 10 ms
+10:17:57  render[regression]: build 8 ms + page.update 21 ms = 29 ms
+10:18:01  render[regression]: build 22 ms + page.update 59 ms = 81 ms
+10:18:21  build_rows.fetch_meta (441 stories): 536 ms
+10:18:28  build_rows.count_cases (441 stories): 6760 ms
+10:18:28  screen(): _reg_screen_busy=True -> returning busy overlay
+10:18:28  render[regression]: build 19 ms + page.update 13 ms = 32 ms
+10:18:29  overlay: busy render dispatched+returned in 350 ms
+10:18:29  overlay: switching to real render now
+10:18:30  render[regression]: build 150 ms + page.update 147 ms = 297 ms
+10:18:38  table.rebuild_rows: 6 ms
+10:18:38  table.flet_update: 72 ms
+10:18:41  _keep_scroll: final restore to offset=830.3805476242674 applied
+10:19:42  table.rebuild_rows: 10 ms
+10:19:43  table.flet_update: 413 ms
+10:19:43  _keep_scroll: final restore to offset=2960.441135602793 applied
+10:19:47  table.rebuild_rows: 45 ms
+10:19:48  table.flet_update: 478 ms
+10:19:48  _keep_scroll: final restore to offset=3388.406439944283 applied
+10:19:51  table.rebuild_rows: 56 ms
+10:19:52  table.flet_update: 424 ms
+10:19:52  _keep_scroll: final restore to offset=2862.9276123046875 applied
+10:19:57  table.rebuild_rows: 61 ms
+10:19:58  table.flet_update: 369 ms
+10:19:58  _keep_scroll: final restore to offset=3234.121352558443 applied

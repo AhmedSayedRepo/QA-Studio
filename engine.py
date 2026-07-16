@@ -6209,6 +6209,11 @@ def build_sprint_summary_email(data):
         sid = _html.escape(str(s.get("id", "")))
         state = str(s.get("state", ""))
         tc = int(s.get("test_cases", 0) or 0)
+        # Same "QA Assigned" field the in-app Sprint Summary modal shows
+        # (modals.py's assigned_cell) — was missing here, so the email never
+        # reflected who each story is assigned to.
+        assigned_name = _html.escape(str(s.get("assigned_to") or "Unassigned"))
+        assigned_col = (INK3 if assigned_name == "Unassigned" else INK2)
         fg, bg = _state_colors(state)
         rtl = "direction:rtl;text-align:right;" if _is_ar(title) else ""
         wi = (f"https://dev.azure.com/{_org}/{_proj}/_workitems/edit/{s.get('id','')}" if _proj and s.get("id") else "")
@@ -6217,16 +6222,38 @@ def build_sprint_summary_email(data):
         rows += (f"<tr><td style='padding:13px 0;border-top:1px solid {LINE2};vertical-align:middle'>"
                  f"<div style='font-size:13.5px;font-weight:700;color:{INK};{rtl}'>{tlink}</div>"
                  f"<div style='font-family:{MONO};font-size:11px;font-weight:600;color:{INK3};margin-top:3px'>{idlink}</div></td>"
-                 f"<td align='right' style='padding:13px 0;border-top:1px solid {LINE2};vertical-align:middle;white-space:nowrap'>"
-                 f"<span style='font-family:{MONO};font-size:11px;font-weight:700;color:{INK2};margin-right:8px'>{tc} TC</span>"
+                 f"<td align='right' width='100' style='padding:13px 0;border-top:1px solid {LINE2};vertical-align:middle;white-space:nowrap'>"
+                 f"<span style='font-size:11.5px;font-weight:600;color:{assigned_col}'>{assigned_name}</span></td>"
+                 f"<td align='right' width='55' style='padding:13px 0;border-top:1px solid {LINE2};vertical-align:middle;white-space:nowrap'>"
+                 f"<span style='font-family:{MONO};font-size:11px;font-weight:700;color:{INK2}'>{tc} TC</span></td>"
+                 f"<td align='right' width='110' style='padding:13px 0;border-top:1px solid {LINE2};vertical-align:middle;white-space:nowrap'>"
                  f"<span style='display:inline-block;background:{bg};color:{fg};font-size:11px;font-weight:800;padding:3px 10px;border-radius:20px'>{_html.escape(state)}</span></td>"
                  f"</tr>")
     _stories_more = (f"<div style='font-size:12px;color:{INK3};margin-top:10px'>&hellip; and "
                      f"{len(stories)-150} more &middot; see the full list in the Sprint Report/"
                      f"Plan screen</div>") if len(stories) > 150 else ""
+    # Full 4-column header (STORY / ASSIGNED / TC / STATUS), matching the
+    # in-app Sprint Summary modal's table_header (modals.py) — previously
+    # only the "Assigned" cell had a label, leaving the rest of the row
+    # looking headerless. TC and status also split back into their own
+    # columns (were combined in one cell) so each gets its own label.
+    # Column widths (real HTML width= attributes, not just CSS) MUST match
+    # the data rows' <td width=...> above exactly — Outlook's Word rendering
+    # engine ignores CSS max-width entirely and won't infer a column's width
+    # from an empty sibling cell, so mismatched/missing widths let whichever
+    # cell has content balloon and swallow the row instead of lining up.
+    def _hdr(t):
+        return (f"<span style='font-size:9.5px;font-weight:800;letter-spacing:.6px;"
+                f"color:{INK3};text-transform:uppercase'>{t}</span>")
+    story_header = (f"<tr>"
+                     f"<td style='padding-bottom:6px'>{_hdr('Story')}</td>"
+                     f"<td align='right' width='100' style='padding-bottom:6px'>{_hdr('Assigned')}</td>"
+                     f"<td align='right' width='55' style='padding-bottom:6px'>{_hdr('TC')}</td>"
+                     f"<td align='right' width='110' style='padding-bottom:6px'>{_hdr('Status')}</td>"
+                     f"</tr>") if stories else ""
     story_block = (f"<tr><td style='padding:26px 32px;border-top:1px solid {LINE}'>"
                    f"{_sec_head(INK, 'Stories', len(stories))}"
-                   f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0' style='margin-top:6px'>{rows}</table>{_stories_more}</td></tr>") if stories else ""
+                   f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0' style='margin-top:10px'>{story_header}{rows}</table>{_stories_more}</td></tr>") if stories else ""
 
     footer = (f"<table role='presentation' cellpadding='0' cellspacing='0'><tr>"
               f"<td valign='middle' style='padding-right:9px'>{_logo_tag(24)}</td>"

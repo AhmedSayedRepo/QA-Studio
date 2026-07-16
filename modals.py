@@ -173,8 +173,8 @@ def open_onboarding(app):
             except Exception:
                 pass
         try:
-            threading.Timer(0.05, lambda: (app.page.run_thread(_reveal)
-                if callable(getattr(app.page, "run_thread", None)) else _reveal())).start()
+            # Serialized on the session loop (see main.py ui_safe's docstring).
+            threading.Timer(0.05, lambda: app.ui_safe(_reveal)).start()
         except Exception:
             _reveal()
 
@@ -278,15 +278,10 @@ def open_create_plan(app):
         def _paint():
             try: app.page.update()
             except Exception: pass
-        _paint()
-        # background-thread updates don't always repaint until the loop ticks;
-        # force a second update via the page loop (same trick as _safe_render)
-        try:
-            ru = getattr(app.page, "run_thread", None)
-            if callable(ru):
-                ru(_paint)
-        except Exception:
-            pass
+        # Single serialized dispatch (see main.py ui_safe's docstring): the
+        # old inline call from the worker + run_thread duplicate ran the same
+        # whole-page update on two threads at once.
+        app.ui_safe(_paint)
 
     def do_create(e):
         nm = (name_field.value or "").strip()
@@ -527,7 +522,7 @@ def open_sprint_summary(app):
 
     dlg = ft.AlertDialog(
         modal=True,
-        title=ft.Row([ft.Container(logo_img(28, ft.Icons.SUMMARIZE_OUTLINED, T.VIOLET_INK),
+        title=ft.Row([ft.Container(logo_img(32, ft.Icons.SUMMARIZE_OUTLINED, T.VIOLET_INK),
                                    width=46, height=46, bgcolor=T.VIOLET_SOFT,
                                    border_radius=12, alignment=ft.Alignment.CENTER),
                       ft.Text("Sprint Summary", weight=ft.FontWeight.W_800, size=16,
