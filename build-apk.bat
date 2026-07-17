@@ -57,8 +57,15 @@ if /i not "%PUSHNOW%"=="y" (
 )
 set /p MSG=Commit message:
 if "%MSG%"=="" set "MSG=APK build"
-powershell -ExecutionPolicy Bypass -File "%~dp0push.ps1" "%MSG%"
-if errorlevel 1 ( echo. & echo push.ps1 failed - fix the error above and retry. & pause & exit /b 1 )
+rem Plain commit+push — deliberately NOT push.ps1: that helper is release-
+rem coupled (reads VERSION and creates the vX.Y.Z tag, and fails when the tag
+rem already exists — hit live on this script's first run). An APK build must
+rem never bump/tag versions; that's release.bat's job.
+git add -A
+git commit -m "%MSG%"
+if errorlevel 1 ( echo. & echo git commit failed - see the error above. & pause & exit /b 1 )
+git push
+if errorlevel 1 ( echo. & echo git push failed - see the error above. & pause & exit /b 1 )
 
 :dispatch
 echo.
