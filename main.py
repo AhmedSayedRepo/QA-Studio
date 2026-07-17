@@ -539,12 +539,21 @@ class QAStudio:
         _sp = self.creds.get("provider")
         self._provider_choice = (_sp if _sp in E.AI_CONFIG
                                  else (E.active_providers()[:1] or ["anthropic"])[0])
-        try:
-            T.apply_theme(self.creds.get("theme", "light"))
-            self.page.theme_mode = (ft.ThemeMode.DARK if T.MODE == "dark"
-                                    else ft.ThemeMode.LIGHT)
-        except Exception:
-            pass
+        if getattr(self, "_theme_touched", False):
+            # The user already toggled the theme locally (e.g. tapped it on
+            # the login screen) since launch, possibly WHILE this bootstrap
+            # was still in flight — see _toggle_theme()'s comment for the
+            # GET/SET race this guards against. Their explicit choice wins;
+            # keep self.creds in sync with what's actually on screen so a
+            # later save() elsewhere doesn't silently revert it either.
+            self.creds["theme"] = T.MODE
+        else:
+            try:
+                T.apply_theme(self.creds.get("theme", "light"))
+                self.page.theme_mode = (ft.ThemeMode.DARK if T.MODE == "dark"
+                                        else ft.ThemeMode.LIGHT)
+            except Exception:
+                pass
         self.render()
         # One-shot: only the FIRST bootstrap of the app process drives the
         # auto-onboarding check (matches desktop's single at-launch check).
@@ -574,6 +583,14 @@ class QAStudio:
             _sp = self.creds.get("provider")
             self._provider_choice = (_sp if _sp in E.AI_CONFIG
                                      else (E.active_providers()[:1] or ["anthropic"])[0])
+            # Theme is a device display preference, not a per-account
+            # credential — don't let switching to this account's own creds
+            # slot (which may have no "theme" key, or a stale one from a
+            # much older session) silently diverge from what's already on
+            # screen. Doesn't call T.apply_theme: this path never changes
+            # the rendered theme, only keeps self.creds in sync so a later
+            # unrelated store.save(self.creds) can't drift it either.
+            self.creds["theme"] = T.MODE
         except Exception:
             return
         self.connected = False        # re-connect with THIS user's own creds
@@ -1023,13 +1040,28 @@ class QAStudio:
             ], spacing=0, expand=True),
         )
 
-    def _account_chip(self):
+    def _account_chip(self, compact=None):
         """Signed-in user pill (avatar + name + role) with a sign-out button — lives
         in the top-right of the header so it's always visible, regardless of how many
-        nav tabs there are. Returns None when auth is off / nobody is signed in."""
+        nav tabs there are. Returns None when auth is off / nobody is signed in.
+
+        compact=True (mobile default): the full pill — avatar + name text +
+        role badge + a separate logout icon, sized for a desktop header —
+        has no give left once a hamburger button AND an expand=True title
+        column are also fighting for the same ~390px width. Flutter's Row
+        doesn't shrink non-Expanded children below their intrinsic size, so
+        this fixed-width chip simply didn't fit and visually overlapped the
+        title text underneath it (confirmed live on Users/Task
+        Manager/Home). Compact mode drops to just the 34px avatar circle —
+        tap it to see name/role/sign-out in a small popup instead of always
+        inline — cutting the header's fixed-width footprint from ~200px to
+        ~40px, which is what title_col's ellipsis fallback was actually
+        sized to co-exist with."""
         u = getattr(self, "user", None)
         if not auth.configured() or not u:
             return None
+        if compact is None:
+            compact = platform_caps.is_mobile()
         _op = lambda c, o: ft.Colors.with_opacity(o, c)
         initial = (u.get("name") or u.get("email") or "?").strip()[:1].upper()
         name = u.get("name") or u.get("email") or "Signed in"
@@ -1073,6 +1105,27 @@ class QAStudio:
                 pass
         logout.on_hover = _lo_hover
 
+        if compact:
+            def _open_account_popup(e):
+                dlg = ft.AlertDialog(
+                    modal=False,
+                    content=ft.Container(
+                        ft.Row([
+                            avatar_wrap,
+                            ft.Column([
+                                ft.Text(name, size=14, weight=ft.FontWeight.W_800,
+                                        color=T.INK, max_lines=1,
+                                        overflow=ft.TextOverflow.ELLIPSIS),
+                                ft.Container(role_pill, margin=ft.Margin.only(top=4)),
+                            ], spacing=0, tight=True, expand=True),
+                            logout,
+                        ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                        width=280, padding=ft.Padding.symmetric(vertical=4)))
+                self._show_dialog(dlg)
+            return ft.Container(
+                avatar_wrap, on_click=_open_account_popup, ink=True,
+                border_radius=20, padding=3, tooltip=name)
+
         chip = ft.Container(
             ft.Row([
                 avatar_wrap,
@@ -1108,6 +1161,17 @@ class QAStudio:
             T.apply_theme(new)
         except Exception:
             pass
+        # Mobile: secure_store_mobile's OS-keychain read is async and can
+        # still be in flight when this fires (e.g. a tap on the login
+        # screen's theme toggle, seconds after launch). That in-flight GET
+        # can resolve AFTER this toggle's SET lands and unconditionally
+        # overwrites the in-memory cache with the pre-toggle value once it
+        # completes (_on_secure_creds_ready() reruns T.apply_theme from
+        # whatever store.load() returns then) — a classic concurrent
+        # GET/SET race, and exactly what looked like "toggle to light, then
+        # it silently reverts to dark". This flag tells that later callback
+        # the user has since made an explicit local choice that must win.
+        self._theme_touched = True
         try:
             self.creds["theme"] = new
             store.save(self.creds)
@@ -1325,6 +1389,24 @@ class QAStudio:
             if _nv and not self.can(_nv):
                 continue
             if n["id"] == "automation" and not platform_caps.has_automation():
+                continue
+            # "Run" is the LOCAL execution screen — on mobile it's a dead
+            # end for anyone using this app the way the mobile flow was
+            # actually built for (Setup's "Run remotely" toggle → GitHub
+            # Actions worker → the Remote Runs viewer for progress), and
+            # reported live as non-functioning even for a direct local run.
+            # Rather than leave a nav destination that doesn't do anything
+            # useful, drop it from the drawer on mobile; the drawer's own
+            # "Remote Runs" item (added to the extra list below the primary
+            # destinations — see _open_nav_drawer) is the working
+            # equivalent entry point. Desktop's rail() is unaffected: it
+            # iterates T.NAV directly, never through this method, and
+            # local Run is fully functional there. A local run started
+            # from Setup on mobile can still reach this screen via goto()
+            # (that permission check doesn't depend on nav-list
+            # membership) — this only removes it as a tappable drawer
+            # destination.
+            if n["id"] == "run" and platform_caps.is_mobile():
                 continue
             out.append(n)
         return out
@@ -1828,6 +1910,7 @@ class QAStudio:
             store.save(self.creds)
         except Exception:
             pass
+        self._onboarding_open = False
         try:
             self._close_dialog()
         except Exception:
@@ -1836,6 +1919,15 @@ class QAStudio:
             self.goto("setup")
 
     def _open_onboarding(self):
+        # Flet 0.85's page.show_dialog() pushes onto a real dialog STACK
+        # (not a single page.dialog slot), so a second dialog opened while
+        # this one is still up renders layered on top of it instead of
+        # replacing it — confirmed live on mobile: the update-available
+        # notice (_check_mobile_update, a separate background/network-timed
+        # path with no knowledge of onboarding) popped stacked over an
+        # already-open onboarding walkthrough. This flag lets that path wait
+        # its turn instead of racing onto the same stack.
+        self._onboarding_open = True
         return modals.open_onboarding(self)
 
     def goto(self, screen):
@@ -6383,21 +6475,18 @@ class QAStudio:
                 res = E.check_for_update() or {}
                 if not res.get("update"):
                     return
-                url = "https://github.com/AhmedSayedRepo/QA-Studio/releases/latest"
-                try:
-                    import requests as _rq
-                    r = _rq.get("https://api.github.com/repos/AhmedSayedRepo/"
-                                "QA-Studio/releases/latest",
-                                headers={"Accept": "application/vnd.github+json"},
-                                timeout=8)
-                    if r.status_code == 200:
-                        j = r.json() or {}
-                        url = next((a.get("browser_download_url")
-                                    for a in (j.get("assets") or [])
-                                    if str(a.get("name", "")).lower().endswith(".apk")),
-                                   j.get("html_url") or url)
-                except Exception:
-                    pass
+                # Stable download URL — a dedicated, permanent "android-apk"
+                # release that build-apk.yml's CI job re-publishes on every
+                # successful build (see that workflow's "Publish to rolling
+                # Android release" step). NOT releases/latest: that's the
+                # desktop's own versioned release, published manually via
+                # release.bat, which drifted for months (stuck at v2.1.1
+                # while VERSION climbed past 3.x) — querying it here either
+                # found no .apk asset at all or served a stale one, which is
+                # why Download silently did nothing / installed an APK
+                # signed before the persistent-keystore fix existed.
+                url = ("https://github.com/AhmedSayedRepo/QA-Studio/releases/"
+                       "download/android-apk/qa-studio.apk")
 
                 def _open(u):
                     # launch_url is async on some Flet builds (same class of
@@ -6428,6 +6517,24 @@ class QAStudio:
                                           _open(u), self._close_dialog())),
                         ])
                     self._show_dialog(dlg)
+
+                # Flet 0.85's dialog API is a real stack (page.show_dialog),
+                # not a single page.dialog slot — showing this while
+                # onboarding is still up would layer on top of it instead of
+                # replacing it (confirmed live: the update notice appeared
+                # stacked over the "Welcome to QA Studio" card, its own
+                # actions unreachable behind the modal onboarding barrier).
+                # Wait for onboarding to close first; give up quietly after
+                # 2 minutes (fail-soft, same posture as everything else in
+                # this notice — a missed update popup once isn't fatal, the
+                # next launch checks again).
+                import time as _t
+                waited = 0
+                while getattr(self, "_onboarding_open", False) and waited < 120:
+                    _t.sleep(1)
+                    waited += 1
+                if getattr(self, "_onboarding_open", False):
+                    return
                 self.ui_safe(_show)
             except Exception:
                 pass

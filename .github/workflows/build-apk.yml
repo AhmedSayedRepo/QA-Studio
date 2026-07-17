@@ -17,6 +17,10 @@ name: Build Android APK
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write   # needed by the "Publish to rolling release" step below
+                     # (gh release create/upload against this same repo)
+
 jobs:
   apk:
     runs-on: ubuntu-latest
@@ -44,6 +48,20 @@ jobs:
           mkdir -p /tmp/mobile
           cp *.py /tmp/mobile/
           cp app.ico /tmp/mobile/ 2>/dev/null || true
+          # In-app logo (login screen, nav rail, dialogs — ui.py's logo_img()):
+          # _logo_path()/_logo_b64() look for app.png/qa-logo.png next to
+          # ui.py itself at RUNTIME (os.path.dirname(os.path.abspath(__file__))),
+          # not via any bundled-asset mechanism — a plain filesystem read that
+          # works on desktop because those PNGs sit next to ui.py in the repo,
+          # but this staged directory only ever copied *.py, so neither file
+          # ever existed here. logo_img() silently falls through to its
+          # fallback_icon (a generic flask/science glyph) when both lookups
+          # come up empty — which is why the login screen (and everywhere else
+          # logo_img() is used) showed that icon instead of the real logo on
+          # every mobile build to date. Stage both candidate names so it
+          # finds one regardless of which ui.py currently prefers.
+          cp app.png /tmp/mobile/ 2>/dev/null || true
+          cp qa-logo.png /tmp/mobile/ 2>/dev/null || true
           # VERSION must ship in the bundle: the mobile update NOTICE compares
           # engine.local_version() (reads this file) against the repo's copy —
           # without it local_version() returns 0.0.0 and every launch nags.
@@ -134,3 +152,39 @@ jobs:
           name: qa-studio-apk
           path: /tmp/mobile/build/apk/*.apk
           if-no-files-found: error
+
+      # ROOT CAUSE this step fixes: index.html's "Android APK" link and the
+      # in-app update-available popup's Download button both resolve the
+      # APK via GitHub Releases (releases/latest or releases/download/TAG),
+      # but every mobile build this project has ever produced only ever
+      # landed as a GitHub Actions *artifact* (the step above) — artifacts
+      # require repo-scoped `gh`/API auth to fetch and expire after 90 days,
+      # so they were never reachable by an anonymous download link or the
+      # in-app updater. Meanwhile the desktop's versioned GitHub Releases
+      # (vX.Y.Z, published by release.bat) haven't been cut since v2.1.1 —
+      # VERSION has since climbed to 3.x+ with no matching release, so
+      # `releases/latest` resolves to a release that predates mobile
+      # entirely and has no working .apk asset at all. Fixed by publishing
+      # every successful CI build straight to a dedicated, permanent,
+      # NON-latest release (tag `android-apk`, marked prerelease so it never
+      # becomes GitHub's "latest" release and never collides with the
+      # desktop's own vX.Y.Z semantic releases) — `--clobber` replaces the
+      # single `qa-studio.apk` asset in place each run, so this tag's
+      # download URL is always a stable, world-downloadable pointer at the
+      # newest successful build with zero manual release.bat step required.
+      - name: Publish to rolling Android release
+        working-directory: /tmp/mobile
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          APK=$(ls build/apk/*.apk | head -n1)
+          cp "$APK" qa-studio.apk
+          if ! gh release view android-apk --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create android-apk \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "QA Studio — Android (rolling build)" \
+              --notes "Always the most recent successful Android CI build. Not a versioned release — see the desktop vX.Y.Z releases for those. Re-published automatically on every build-apk.yml run." \
+              --prerelease
+          fi
+          gh release upload android-apk qa-studio.apk \
+            --repo "$GITHUB_REPOSITORY" --clobber

@@ -15,12 +15,30 @@ def screen(app):
         ro = bool(getattr(app, "readonly", False))   # no 'act.settings' → read-only
 
         def srow(title, desc, control):
+            title_col = ft.Column([
+                ft.Text(title, size=13.5, weight=ft.FontWeight.BOLD, color=T.INK),
+                ft.Text(desc, size=12, color=T.INK_3, weight=ft.FontWeight.W_500),
+            ], spacing=2, expand=True)
+            if platform_caps.is_mobile():
+                # A wide, non-shrinking control (e.g. the idle-auto-logout
+                # 5-option segmented row: Off/5m/15m/30m/60m) left title_col's
+                # expand=True share so close to zero on a ~390px phone that
+                # its Text wrapped one CHARACTER per line ("I d l e a u t o -
+                # l o g o u t…", confirmed live) rather than a normal word
+                # wrap — Flutter still tries to lay text out in whatever
+                # sliver of width is left, and a sliver narrower than one
+                # glyph forces that. Stack instead of sitting side by side on
+                # mobile, same as every other "too much crammed in one Row"
+                # fix this session — title/desc get the full row width, the
+                # control gets its own line below with room to wrap/scroll.
+                title_col.expand = False
+                return ft.Container(
+                    ft.Column([title_col, ft.Container(control, padding=ft.Padding.only(top=8))],
+                              spacing=0),
+                    padding=ft.Padding.symmetric(vertical=13))
             return ft.Container(
                 ft.Row([
-                    ft.Column([
-                        ft.Text(title, size=13.5, weight=ft.FontWeight.BOLD, color=T.INK),
-                        ft.Text(desc, size=12, color=T.INK_3, weight=ft.FontWeight.W_500),
-                    ], spacing=2, expand=True),
+                    title_col,
                     control,
                 ], vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=16),
                 padding=ft.Padding.symmetric(vertical=13))

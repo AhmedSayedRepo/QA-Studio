@@ -2958,9 +2958,21 @@ def email_recipient_picker(app, state_key, *, is_open_key, sync_key, height=260,
         on_submit=_add_custom)
 
     _rebuild_chips()   # populate initial chip state
-    top = (ft.Row([ft.Container(picker, expand=True), trailing], spacing=8,
-                  vertical_alignment=ft.CrossAxisAlignment.START)
-           if trailing is not None else picker)
+    # trailing (the Email/Send button) sits beside the picker at its own
+    # intrinsic width — fine on desktop, but on a ~390px phone dialog it
+    # left the picker's Container(expand=True) so little remaining space
+    # that its "N selected" trigger text wrapped to one character per line
+    # (confirmed live in the Sprint Summary dialog). Stack instead of
+    # side-by-side on mobile, same pattern used elsewhere this session for
+    # this exact squeeze.
+    import platform_caps as _pc_erp
+    if trailing is not None and _pc_erp.is_mobile():
+        top = ft.Column([picker, trailing], spacing=8)
+    elif trailing is not None:
+        top = ft.Row([ft.Container(picker, expand=True), trailing], spacing=8,
+                     vertical_alignment=ft.CrossAxisAlignment.START)
+    else:
+        top = picker
     return ft.Column([
         top,
         ft.Container(hover_field(custom_tf), padding=ft.Padding.only(top=8)),

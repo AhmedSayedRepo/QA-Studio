@@ -7,6 +7,7 @@ import threading
 import flet as ft
 import theme as T
 import engine as E
+import platform_caps
 from ui import _ic, badge, field_label, ghost_btn, grad, green_btn, hover_field, logo_img, primary_btn, stat_tile
 from regression import email_recipient_picker, _id_link
 
@@ -366,7 +367,13 @@ def open_create_plan(app):
                         size=11, color=T.INK_2, weight=ft.FontWeight.W_500),
             ], spacing=1, expand=True),
         ], spacing=10),
-        content=ft.Container(width=470, content=ft.Column([
+        content=ft.Container(
+            # Same "fixed desktop width forces the phone to squeeze
+            # everything down to fit" bug fixed elsewhere this session
+            # (onboarding, Sprint Summary below) — let content size to the
+            # viewport on mobile instead of a hardcoded 470px.
+            width=(None if platform_caps.is_mobile() else 470),
+            content=ft.Column([
             field_label("Plan name", req=True),
             ft.Container(hover_field(name_field), padding=ft.Padding.only(top=4, bottom=14)),
             field_label("Iteration / Sprint", req=True),
@@ -539,7 +546,14 @@ def open_sprint_summary(app):
         content=ft.Container(
             ft.Column([ft.Container(body_col, expand=True), email_bar],
                       spacing=4, tight=False),
-            width=820, height=580),
+            # width=820 forced this whole dialog — including the recipient
+            # picker's Row inside email_bar — to squeeze into a ~390px phone
+            # viewport, which is what turned "selected" into a vertical
+            # one-letter-per-line column (not enough width left for even a
+            # single character to lay out normally). Let it size to the
+            # viewport on mobile; see email_recipient_picker's own mobile
+            # handling in regression.py for the picker Row itself.
+            width=(None if platform_caps.is_mobile() else 820), height=580),
         actions=[close_btn],
         actions_alignment=ft.MainAxisAlignment.END,
     )
@@ -845,7 +859,9 @@ def open_existing_steps_modal(app, have, total, on_choice):
 
     dlg = ft.AlertDialog(
         modal=True,
-        content=ft.Container(width=496, content=ft.Column([
+        content=ft.Container(
+            width=(None if platform_caps.is_mobile() else 496),
+            content=ft.Column([
             ft.Row([
                 ft.Container(ft.Icon(ft.Icons.WARNING_AMBER_ROUNDED, size=18, color=T.AMBER),
                              width=34, height=34, bgcolor=T.AMBER_SOFT, border_radius=9,
