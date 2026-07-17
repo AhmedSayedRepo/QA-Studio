@@ -48,6 +48,9 @@ _page = None                # live Page ref
 _key = "qa_studio_creds"    # secure-storage key; set_user() makes this per-uid
 _cache = None                # None until the first successful read for `_key` lands
 _on_ready = None             # callback re-invoked after every (re)bootstrap
+_bio_reverted = False        # set True when a biometric-gated read failed and
+                              # require_biometric got auto-turned back off —
+                              # main.py polls/consumes this to toast the user
 
 
 def available():
@@ -90,7 +93,27 @@ def init(page, on_ready=None):
             _want_bio = False
         _storage = fss.SecureStorage(
             android_options=fss.AndroidOptions(
-                reset_on_error=True, migrate_on_algorithm_change=True,
+                # reset_on_error=True is flet_secure_storage's own recovery
+                # path for an Android-Keystore-invalidated encryption key
+                # (device lock reset, factory reset, etc.) — but newly
+                # ENABLING enforce_biometrics on an already-populated vault
+                # is itself one of the documented triggers for exactly that
+                # invalidation (Android regenerates the AES key's auth
+                # requirements the moment setUserAuthenticationRequired(true)
+                # is added, which invalidates ciphertext written under the
+                # OLD, non-biometric key). Toggling the Settings switch used
+                # to walk straight into reset_on_error silently wiping every
+                # stored credential on the very next launch — reported live
+                # as "biometrics enabled and clears the setup credentials,
+                # next login without asking for biometrics at any stage"
+                # (nothing was left to unlock, so the prompt never had
+                # anything to guard). Off whenever biometrics is being
+                # enforced: a failed decrypt now surfaces as a caught
+                # exception in _bootstrap() below (existing OS-keystore data
+                # preserved, see the auto-revert handling there) instead of
+                # an irreversible wipe.
+                reset_on_error=not _want_bio,
+                migrate_on_algorithm_change=True,
                 enforce_biometrics=_want_bio),
             ios_options=fss.IOSOptions())
     except Exception:
@@ -133,7 +156,7 @@ def set_user(uid):
 
 
 async def _bootstrap():
-    global _cache
+    global _cache, _bio_reverted
     key = _key
     try:
         raw = await _storage.get(key)
@@ -147,11 +170,38 @@ async def _bootstrap():
     except Exception:
         if _key == key:
             _cache = _cache or {}
+        # A biometric-gated read can fail for reasons that will keep
+        # failing on every future launch too — no biometric/PIN actually
+        # enrolled on this device (flet_secure_storage throws in that case
+        # per its own docs), or the Keystore key invalidation described in
+        # init()'s AndroidOptions comment. Rather than leave the app stuck
+        # silently retrying a broken read forever, auto-revert the
+        # preference so the next launch goes back to a working, unprotected
+        # read — main.py surfaces this via consume_bio_revert() so the user
+        # actually sees why the toggle turned itself back off.
+        try:
+            import mobile_prefs as _mp
+            if _mp.get("require_biometric", False):
+                _mp.set("require_biometric", False)
+                _bio_reverted = True
+        except Exception:
+            pass
     if _on_ready:
         try:
             _on_ready()
         except Exception:
             pass
+
+
+def consume_bio_revert():
+    """One-shot flag: True exactly once, the first time main.py checks after
+    a biometric-gated read failed and the preference got auto-reverted.
+    Calling this clears it, so a later unrelated re-render doesn't re-toast
+    the same event."""
+    global _bio_reverted
+    was = _bio_reverted
+    _bio_reverted = False
+    return was
 
 
 def _migrate_legacy_file():

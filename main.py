@@ -115,6 +115,17 @@ class QAStudio:
                 mobile_tilt.init(self.page)
             except Exception:
                 pass
+        # Persistent UrlLauncher service (see mobile_url_launcher.py) — the
+        # deprecated `page.launch_url()` convenience wrapper this app used
+        # to fall back to on mobile constructs a throwaway, never-attached
+        # UrlLauncher on every call, which silently fails to reach the
+        # Flutter client. Attached on BOTH platforms: desktop's _open_url()
+        # still tries webbrowser.open() first, this is only its fallback.
+        try:
+            import mobile_url_launcher
+            mobile_url_launcher.init(self.page)
+        except Exception:
+            pass
         self.creds = store.load()
         self._migrate_key_slots()      # legacy per-provider keys → per-model slots
         # Restore the last-selected AI provider so it persists across app restarts.
@@ -548,6 +559,17 @@ class QAStudio:
         _sp = self.creds.get("provider")
         self._provider_choice = (_sp if _sp in E.AI_CONFIG
                                  else (E.active_providers()[:1] or ["anthropic"])[0])
+        # See secure_store_mobile.py's _bootstrap()/consume_bio_revert():
+        # a biometric-gated read that just failed auto-turns the Settings
+        # toggle back off rather than leaving it silently, permanently
+        # broken — surface that here so it isn't a silent mystery.
+        try:
+            import secure_store_mobile as _ssm
+            if _ssm.consume_bio_revert():
+                self._toast("Couldn't unlock with biometrics/PIN — "
+                             "“Require biometric/PIN unlock” was turned back off.")
+        except Exception:
+            pass
         if getattr(self, "_theme_touched", False):
             # The user already toggled the theme locally (e.g. tapped it on
             # the login screen) since launch, possibly WHILE this bootstrap
@@ -769,6 +791,22 @@ class QAStudio:
         return idle_watch.start_idle_watch(self)
 
     def _sign_out(self, e=None):
+        # ROOT CAUSE this guards against: on mobile, _account_chip()'s
+        # compact avatar opens an AlertDialog popup (avatar + name + role +
+        # this same Sign out button) via self._show_dialog(). Flet 0.85's
+        # dialog API is a real STACK (page.show_dialog()/pop_dialog()), and
+        # this button's on_click used to call _sign_out directly with
+        # nothing ever popping that dialog back off — so after user=None
+        # and the login screen rendered underneath, the stale popup stayed
+        # sitting on top of it, looking exactly like the login card had
+        # somehow kept the previous account's avatar/name/role visible.
+        # Reported live as "logging out keeps the avatar on the login
+        # screen". Closing whatever dialog is open FIRST (a no-op if none
+        # is) fixes every entry point into sign-out, not just this one.
+        try:
+            self._close_dialog()
+        except Exception:
+            pass
         try:
             auth.sign_out()
         except Exception:
@@ -1417,6 +1455,17 @@ class QAStudio:
             # destination.
             if n["id"] == "run" and platform_caps.is_mobile():
                 continue
+            # "Report" only ever gets populated by a LOCAL run finishing
+            # (see _stop_run/_run's "transition to report" branch, which
+            # sets self.active = "report" itself — it's not reached via
+            # nav-list membership either). Since local Run is already
+            # hidden on mobile as a dead end, Report is the same dead end
+            # one step further down that same unreachable path: nothing on
+            # mobile ever populates it, so a tappable "Report" destination
+            # there just opens an empty/stale screen. Drop it from the
+            # drawer for the same reason "run" is dropped above.
+            if n["id"] == "report" and platform_caps.is_mobile():
+                continue
             out.append(n)
         return out
 
@@ -1452,7 +1501,20 @@ class QAStudio:
         try:
             sel = ids.index(getattr(self, "active", "setup"))
         except ValueError:
-            sel = 0
+            # Falling back to 0 here used to make "Setup" show as the
+            # selected destination even when the user was somewhere else
+            # entirely — with "run" and "report" now also hidden from this
+            # list (see _nav_items_visible()), the primary destinations are
+            # down to just Setup/Automation, so EVERY other screen (Users,
+            # Settings, Task Manager, Regression, Remote Runs, …) fell
+            # through this except branch and got mislabeled as "Setup"
+            # selected — reported live as "the selected nav doesn't
+            # highlight[ed]" (the highlight was on the wrong item, not
+            # missing). Flet's own NavigationDrawer docs are explicit that
+            # -1 (or any out-of-range value) is how you represent "none of
+            # these are selected" — the correct state here, since the
+            # active screen genuinely isn't one of the two.
+            sel = -1
 
         def _pick(e):
             try:
@@ -1908,6 +1970,23 @@ class QAStudio:
     # ---- first-run onboarding wizard ----
     def _maybe_show_onboarding(self):
         try:
+            if platform_caps.is_mobile():
+                # mobile_prefs is a synchronous, immediately-durable local
+                # file (see mobile_prefs.py) — unlike self.creds["onboarded"]
+                # on mobile, which lives behind the async OS-keychain write
+                # in secure_store_mobile.py. That write is fire-and-forget
+                # (page.run_task, never awaited) — closing/backgrounding the
+                # app right after finishing onboarding could kill the process
+                # before that write actually landed, so the NEXT launch's
+                # real keychain read came back without "onboarded" and the
+                # walkthrough played again — reported live as "closing the
+                # app and reopening launching the walkthrough with the same
+                # old issue". mobile_prefs.set() below returns only after
+                # the file write completes, so it can't lose the race.
+                import mobile_prefs
+                if not mobile_prefs.get("onboarded", False):
+                    self._open_onboarding()
+                return
             if not self.creds.get("onboarded"):
                 self._open_onboarding()
         except Exception:
@@ -1915,6 +1994,9 @@ class QAStudio:
 
     def _finish_onboarding(self, goto_setup=False):
         try:
+            if platform_caps.is_mobile():
+                import mobile_prefs
+                mobile_prefs.set("onboarded", True)
             self.creds["onboarded"] = True
             store.save(self.creds)
         except Exception:
@@ -5534,22 +5616,30 @@ class QAStudio:
 
     def _open_url(self, url):
         """Open a URL in the default browser, brought to the FRONT (over the app).
-        In Flet 0.90 launch_url is async, so we use the OS browser directly.
 
         Mobile (every "link" in the app funnels through here — useful_links.py's
         Links screen, work-item/story links in regression.py and report.py,
         "Open plan in Azure"): os.startfile is Windows-only and already
         correctly skipped, but webbrowser.open() is ALSO desktop-oriented —
         it shells out looking for a system browser controller, which doesn't
-        exist in Flet's embedded Android/iOS runtime. Reported live as
-        "links not working": webbrowser.open() can return True there without
-        having opened anything at all (no exception, no real failure signal),
-        which made this function return immediately and never reach the
-        page.launch_url fallback below — the one mechanism that actually
-        works on mobile (Flutter's own url_launcher plugin), already proven
-        live elsewhere in this file (_check_mobile_update's Download button).
-        Skip straight to it on mobile instead of trusting webbrowser's
-        unreliable return value there."""
+        exist in Flet's embedded Android/iOS runtime, and can return True
+        there without having opened anything (no exception, no real failure
+        signal) — reported live as "links not working" (fix #1).
+
+        The fallback THAT fix relied on — Flet's deprecated `page.launch_url()`
+        convenience wrapper — turned out to be broken too, and the same bug
+        reappeared live ("links not working" AGAIN after fix #1 shipped).
+        `page.launch_url()` just does `await UrlLauncher().launch_url(url)`
+        — a brand-new, throwaway UrlLauncher on every call, never attached to
+        `page.services`. Same class of bug already found twice this session
+        in mobile_wakelock.py/secure_store_mobile.py: an unattached Service
+        control has no matching control on the Flutter client, so its RPC
+        silently goes nowhere — and because this all happens inside a
+        page.run_task()-scheduled coroutine, the failure never reaches this
+        function's try/except either. Fixed (fix #2) by routing through
+        mobile_url_launcher.py's ONE persistent, properly-attached
+        `ft.UrlLauncher()` instance (see main.py's QAStudio.__init__ for the
+        page.services.append()+page.update() wiring) instead."""
         try:
             import os as _os
             if _os.name == "nt":
@@ -5569,8 +5659,16 @@ class QAStudio:
                 opened = False
             if opened:
                 return
-        # Mobile, or the desktop webbrowser path above didn't pan out:
-        # schedule Flet's async launcher on the event loop.
+        # Mobile, or the desktop webbrowser path above didn't pan out: use
+        # the persistent, properly-attached UrlLauncher service.
+        try:
+            import mobile_url_launcher
+            if mobile_url_launcher.open(url):
+                return
+        except Exception:
+            pass
+        # Last-resort fallback (kept in case mobile_url_launcher failed to
+        # attach for some reason) — same caveat as before: may silently no-op.
         try:
             rt = getattr(self.page, "run_task", None)
             if callable(rt):
@@ -6516,14 +6614,20 @@ class QAStudio:
                        "download/android-apk/qa-studio.apk")
 
                 def _open(u):
-                    # launch_url is async on some Flet builds (same class of
-                    # bug as the scroll_to saga) — schedule it properly then.
+                    # Route through the persistent UrlLauncher (see
+                    # mobile_url_launcher.py / _open_url()'s docstring) —
+                    # the deprecated page.launch_url() this used to call
+                    # constructs a throwaway, never-attached UrlLauncher on
+                    # every call and silently fails to reach the Flutter
+                    # client, the same bug that hit every other in-app link.
                     try:
-                        import inspect as _insp
-                        if _insp.iscoroutinefunction(self.page.launch_url):
-                            self.page.run_task(self.page.launch_url, u)
-                        else:
-                            self.page.launch_url(u)
+                        import mobile_url_launcher
+                        if mobile_url_launcher.open(u):
+                            return
+                    except Exception:
+                        pass
+                    try:
+                        self.page.run_task(self.page.launch_url, u)
                     except Exception:
                         pass
 

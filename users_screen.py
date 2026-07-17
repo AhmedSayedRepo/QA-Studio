@@ -233,8 +233,18 @@ def screen(app):
                               alignment=ft.Alignment.CENTER)
         identity = ft.Column([
             ft.Row([
+                # expand=True: without it, a Row's child Text sizes to its
+                # own unwrapped intrinsic width regardless of no_wrap=False
+                # (that flag only permits wrapping, it doesn't by itself
+                # bound the width that triggers it) — the long "✓ confirmed
+                # · last sign-in …" line below was overflowing straight past
+                # the phone's right edge and getting visually cut off rather
+                # than wrapping, reported live as "last login time not
+                # displays". expand=True gives both lines a real width to
+                # wrap against; harmless on desktop, where there's already
+                # room and nothing changes visually.
                 ft.Text(email, size=13.5, weight=ft.FontWeight.W_700, color=T.INK,
-                        no_wrap=False),
+                        no_wrap=False, expand=True),
                 (ft.Container(ft.Text("you", size=10, weight=ft.FontWeight.BOLD,
                                       color=T.VIOLET_INK),
                               padding=ft.Padding.symmetric(vertical=1, horizontal=7),
@@ -245,7 +255,7 @@ def screen(app):
                 ft.Text(("✓ confirmed" if confirmed else "✗ not confirmed")
                         + f"  ·  last sign-in {last}",
                         size=11, color=(T.GREEN if confirmed else T.AMBER),
-                        weight=ft.FontWeight.BOLD),
+                        weight=ft.FontWeight.BOLD, no_wrap=False, expand=True),
                 (ft.Container(ft.Text("ACCESS REVOKED", size=9.5,
                                       weight=ft.FontWeight.BOLD, color=T.RED),
                               padding=ft.Padding.symmetric(vertical=1, horizontal=7),
@@ -280,14 +290,24 @@ def screen(app):
             # (invisible) and, with no wrap/scroll, the role chip and both
             # action buttons (expand-permissions, revoke/"ban") rendered
             # past the right edge entirely — reported live as "doesn't show
-            # the ban action, email, and user". Stack instead: identity on
-            # its own full-width row, role + actions on a second row below.
+            # the ban action, email, and user". Stacking role+actions on ONE
+            # shared row (the first fix) still wasn't enough on its own: the
+            # 3-pill role chip alone (~260-270px incl. its own padding/
+            # border) plus both icon buttons (~34px each) plus spacing still
+            # summed past a ~390px phone's usable width after card/row
+            # padding, so the revoke/"ban" button — the LAST item in that
+            # row — kept getting clipped off the visible edge, reported live
+            # again as the ban button still missing even after the row
+            # stopped overlapping the email. Give the role chip its OWN
+            # full-width row so it never has to compete with the buttons
+            # for space; actions get their own row underneath, pushed right.
             head = ft.Column([
                 ft.Row([avatar, identity], spacing=12,
                        vertical_alignment=ft.CrossAxisAlignment.CENTER),
                 ft.Container(height=8),
-                ft.Row([role_or_spinner, ft.Container(expand=True),
-                        expand_btn, revoke_btn],
+                role_or_spinner,
+                ft.Container(height=8),
+                ft.Row([ft.Container(expand=True), expand_btn, revoke_btn],
                        spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
             ], spacing=0)
         else:
