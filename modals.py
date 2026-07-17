@@ -714,10 +714,22 @@ def open_sprint_summary(app):
             # so labels line up with the cells underneath (badge()/Text() are
             # both auto-width, so without a fixed Container around each one
             # the header wouldn't actually align with anything below it).
-            _COL_ASSIGNED, _COL_TC, _COL_STATE, _COL_DEL = 118, 54, 110, 34
+            # STORY used to be expand=True, which only works with a bounded
+            # parent — fine when this table sat directly inside the dialog's
+            # (previously fixed-820px) Row, but on a ~390px phone the four
+            # OTHER fixed columns (118+54+110+34=316px) already ate nearly
+            # the whole width, so STORY's remaining space collapsed to
+            # ~0px and its own "STORY" label wrapped one character per line
+            # (confirmed live: "S\nT\nO\nR\nY"). Fixed-width like every other
+            # column instead, and the whole table (below) now sits inside a
+            # horizontally-scrolling wrapper — same pattern already used for
+            # AI Usage's own results table — so columns keep their natural
+            # size and a phone just scrolls sideways to see the rest,
+            # instead of every column being squeezed to fit.
+            _COL_STORY, _COL_ASSIGNED, _COL_TC, _COL_STATE, _COL_DEL = 200, 118, 54, 110, 34
             table_header = ft.Row([
-                ft.Text("STORY", size=10, weight=ft.FontWeight.BOLD, color=T.INK_3,
-                        expand=True),
+                ft.Container(ft.Text("STORY", size=10, weight=ft.FontWeight.BOLD,
+                                     color=T.INK_3), width=_COL_STORY),
                 ft.Container(ft.Text("ASSIGNED", size=10, weight=ft.FontWeight.BOLD,
                                      color=T.INK_3), width=_COL_ASSIGNED),
                 ft.Container(ft.Text("TC", size=10, weight=ft.FontWeight.BOLD,
@@ -766,7 +778,7 @@ def open_sprint_summary(app):
                                     text_align=(ft.TextAlign.RIGHT if rtl else ft.TextAlign.LEFT),
                                     max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
                             id_link,
-                        ], spacing=2, expand=True),
+                        ], spacing=2, width=_COL_STORY),
                         assigned_cell,
                         ft.Container(badge(f"{s['test_cases']} TC", "grey"),
                                     width=_COL_TC, alignment=ft.Alignment.CENTER),
@@ -792,16 +804,18 @@ def open_sprint_summary(app):
                 status_row,
                 ft.Container(height=6),
                 ft.Text("STORIES", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
-                ft.Container(ft.Column([
+                ft.Container(
+                    ft.Row([ft.Column([
                                 ft.Container(table_header,
                                             padding=ft.Padding.symmetric(vertical=6, horizontal=12),
                                             bgcolor=T.CARD_2,
                                             border=ft.Border.only(bottom=ft.BorderSide(1, T.BORDER))),
                                 ft.Column(story_rows, spacing=0, scroll=ft.ScrollMode.AUTO,
                                          height=240),
-                             ], spacing=0, tight=True),
-                             bgcolor=T.CARD, border=ft.Border.all(1, T.BORDER),
-                             border_radius=T.R, padding=ft.Padding.symmetric(vertical=2, horizontal=4)),
+                             ], spacing=0, tight=True)], scroll=ft.ScrollMode.AUTO),
+                    bgcolor=T.CARD, border=ft.Border.all(1, T.BORDER),
+                    border_radius=T.R, padding=ft.Padding.symmetric(vertical=2, horizontal=4),
+                    clip_behavior=ft.ClipBehavior.HARD_EDGE),
             ]
             email_bar.visible = True
             try:

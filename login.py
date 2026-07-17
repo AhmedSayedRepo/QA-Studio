@@ -10,6 +10,7 @@ import flet as ft
 import theme as T
 import store
 import auth_supabase as auth
+import platform_caps
 from ui import card, grad, logo_img
 
 
@@ -302,6 +303,12 @@ def login_gate(app):
                         pass
                     app.active = "setup"
                     app._land_app = True   # play the entrance on the app view
+                    if platform_caps.is_mobile():
+                        try:
+                            import mobile_tilt
+                            mobile_tilt.disable()
+                        except Exception:
+                            pass
                     app.ui_safe(app.render); return
                 app._auth_msg = ("ok" if ok else "err", m)
                 if ok and signup:
@@ -567,27 +574,75 @@ def login_gate(app):
     except Exception:
         _ver = ""
     _fmono = MONO
-    footer = ft.Container(
-        ft.Row([
-            ft.Text(("QA STUDIO v" + _ver) if _ver else "QA STUDIO", size=11,
-                    color=_op(accent, 0.85), font_family=_fmono,
-                    style=ft.TextStyle(letter_spacing=1.4)),
-            ft.Container(expand=True),
-            ft.Text("© 2026 QA Studio Terminal. All rights reserved.", size=11,
-                    color=INK2, font_family=_fmono,
-                    style=ft.TextStyle(letter_spacing=0.4)),
-            ft.Container(expand=True),
-            ft.Row([ft.Container(width=8, height=8, border_radius=4, bgcolor="#22c55e"),
-                    ft.Text("System Status", size=11, color=INK2, font_family=_fmono,
-                            style=ft.TextStyle(letter_spacing=1.0))],
-                   spacing=7, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-        ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
-        left=0, right=0, bottom=0,
-        padding=ft.Padding.symmetric(vertical=14, horizontal=44))
+    if platform_caps.is_mobile():
+        # The desktop footer is 3 segments (version / copyright / status)
+        # separated by two expand=True spacers inside 44px of horizontal
+        # padding — on a ~390px phone that's nowhere near enough room even
+        # for the copyright line alone ("© 2026 QA Studio Terminal. All
+        # rights reserved."), so it rendered cut off mid-sentence with
+        # System Status pushed off-screen entirely. Condensed to two short,
+        # centered lines with the copyright shortened and no expand spacers
+        # (nothing left to fight over for space).
+        footer = ft.Container(
+            ft.Column([
+                ft.Row([ft.Container(width=7, height=7, border_radius=4, bgcolor="#22c55e"),
+                        ft.Text("System Status", size=10, color=INK2, font_family=_fmono,
+                                style=ft.TextStyle(letter_spacing=0.8))],
+                       spacing=6, tight=True, alignment=ft.MainAxisAlignment.CENTER,
+                       vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                ft.Container(height=4),
+                ft.Text((("QA STUDIO v" + _ver) if _ver else "QA STUDIO") + "  ·  © 2026",
+                        size=9.5, color=_op(accent, 0.85), font_family=_fmono,
+                        text_align=ft.TextAlign.CENTER,
+                        style=ft.TextStyle(letter_spacing=0.6)),
+            ], spacing=0, tight=True, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+            left=0, right=0, bottom=0,
+            padding=ft.Padding.symmetric(vertical=10, horizontal=16))
+    else:
+        footer = ft.Container(
+            ft.Row([
+                ft.Text(("QA STUDIO v" + _ver) if _ver else "QA STUDIO", size=11,
+                        color=_op(accent, 0.85), font_family=_fmono,
+                        style=ft.TextStyle(letter_spacing=1.4)),
+                ft.Container(expand=True),
+                ft.Text("© 2026 QA Studio Terminal. All rights reserved.", size=11,
+                        color=INK2, font_family=_fmono,
+                        style=ft.TextStyle(letter_spacing=0.4)),
+                ft.Container(expand=True),
+                ft.Row([ft.Container(width=8, height=8, border_radius=4, bgcolor="#22c55e"),
+                        ft.Text("System Status", size=11, color=INK2, font_family=_fmono,
+                                style=ft.TextStyle(letter_spacing=1.0))],
+                       spacing=7, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            left=0, right=0, bottom=0,
+            padding=ft.Padding.symmetric(vertical=14, horizontal=44))
 
     # Expose the backdrop layer so the app's top-level gesture layer can drive
     # the mouse-move parallax (see render() / _login_parallax).
     app._login_bg_layer = bg_layer
+
+    # Mobile: no mouse, so on_hover above never fires there — the requested
+    # equivalent is tilting/moving the PHONE instead of the cursor. Backed
+    # by mobile_tilt.py (flet.Accelerometer, core-bundled, same posture as
+    # ft.Wakelock/ft.Share this session). enable() is safe to call on every
+    # render of this screen (it just re-arms the same stream + callback);
+    # _submit()'s success path calls disable() once signed in so the sensor
+    # isn't left streaming for the rest of the app session.
+    if platform_caps.is_mobile():
+        def _tilt(mx, my, _lay=bg_layer):
+            # Same offset formula login_parallax uses for the mouse — see
+            # mobile_tilt.py's docstring for why (mx, my) are normalized to
+            # the same rough [-0.5, 0.5] range there.
+            try:
+                _lay.offset = ft.Offset(-mx * 0.06, -my * 0.06)
+                _lay.update()
+            except Exception:
+                pass
+        try:
+            import mobile_tilt
+            mobile_tilt.enable(_tilt)
+        except Exception:
+            pass
 
     # RE-CHECK for updates whenever the login screen renders (throttled to ~12s), so
     # a version published while the app sits on login pops the banner promptly. A

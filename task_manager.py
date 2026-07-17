@@ -1053,13 +1053,28 @@ def screen(app):
                 shape=ft.RoundedRectangleBorder(radius=T.R),
                 bgcolor={"": T.CARD_2}, side=ft.BorderSide(1, T.BORDER)))
 
-        fields_row = ft.Row(
-            [_date_field(app, "Start date", app._tm_start_date, _set_start_date,
-                        on_after=_sync_dates, disabled=disabled),
-             _date_field(app, "End date", app._tm_end_date, _set_end_date,
-                        on_after=_sync_dates, disabled=disabled, min_date=(start or None))]
-            + ([clear_btn] if (has_dates and not disabled) else []),
-            spacing=10, vertical_alignment=ft.CrossAxisAlignment.END)
+        _sd_field = _date_field(app, "Start date", app._tm_start_date, _set_start_date,
+                                on_after=_sync_dates, disabled=disabled)
+        _ed_field = _date_field(app, "End date", app._tm_end_date, _set_end_date,
+                                on_after=_sync_dates, disabled=disabled, min_date=(start or None))
+        import platform_caps as _pc_tm
+        if _pc_tm.is_mobile():
+            # Each date box is a fixed 150px (_date_field's own width) — two
+            # of them plus the 40px clear button (150+150+40+spacing ≈ 380px)
+            # left no margin at all against a ~390px phone once this card's
+            # own padding is subtracted, so End date (last in the Row, no
+            # wrap) rendered fully or partly off-screen — reported live as
+            # "end date not displays". Wrap instead of a single unwrapping
+            # Row so End date (and the clear button) drop to a second line
+            # rather than being clipped.
+            fields_row = ft.Row(
+                [_sd_field, _ed_field] + ([clear_btn] if (has_dates and not disabled) else []),
+                spacing=10, run_spacing=10, wrap=True,
+                vertical_alignment=ft.CrossAxisAlignment.END)
+        else:
+            fields_row = ft.Row(
+                [_sd_field, _ed_field] + ([clear_btn] if (has_dates and not disabled) else []),
+                spacing=10, vertical_alignment=ft.CrossAxisAlignment.END)
 
         parts = [
             ft.Text("Date range", size=12, weight=ft.FontWeight.BOLD,

@@ -489,8 +489,16 @@ def screen(app):
     reset_btn = ghost_btn("Reset", icon=ft.Icons.RESTART_ALT,
                           on_click=_reset, disabled=(app._usage_loading or _ro))
 
+    import platform_caps as _pc_dates
+    # Start(160px) + End(160px) + Generate + Reset in one non-wrapping Row
+    # totals well over 500px — massive overflow against a ~390px phone, not
+    # just a squeeze: End date rendered visibly cut off at the screen edge
+    # and Generate/Reset were pushed off-screen entirely (reported live).
+    # wrap=True lets extra items fall to additional lines instead of being
+    # clipped; desktop keeps the single Row unchanged.
     controls = [
         ft.Row([start_field, end_field, gen_btn, reset_btn], spacing=10,
+              run_spacing=10, wrap=_pc_dates.is_mobile(),
               vertical_alignment=ft.CrossAxisAlignment.END),
     ]
 

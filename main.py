@@ -106,6 +106,15 @@ class QAStudio:
                 mobile_wakelock.init(self.page)
             except Exception:
                 pass
+            # Login screen's device-tilt backdrop parallax (mobile equivalent
+            # of the desktop's mouse-move parallax — see mobile_tilt.py and
+            # login.py's login_gate()). Attached disabled here; login_gate()
+            # enables it only while that screen is actually showing.
+            try:
+                import mobile_tilt
+                mobile_tilt.init(self.page)
+            except Exception:
+                pass
         self.creds = store.load()
         self._migrate_key_slots()      # legacy per-provider keys → per-model slots
         # Restore the last-selected AI provider so it persists across app restarts.

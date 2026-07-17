@@ -6,6 +6,7 @@ app.shell, app._toast, ...) are read straight off it.
 """
 import flet as ft
 import theme as T
+import platform_caps
 from ui import card, field_label, green_btn, ghost_btn, hover_field, badge
 
 # Built-in links shown to every signed-in user, regardless of their own saved
@@ -106,20 +107,39 @@ def screen(app):
                     shape=ft.RoundedRectangleBorder(radius=T.R),
                     padding=ft.Padding.symmetric(horizontal=16, vertical=0)))
 
-        form_row = [
-            ft.Column([field_label("App name"),
-                       ft.Container(hover_field(name_field), width=230,
-                                    padding=ft.Padding.only(top=4))],
-                      spacing=0, tight=True),
-            ft.Column([field_label("URL"),
-                       ft.Container(hover_field(url_field), padding=ft.Padding.only(top=4))],
-                      spacing=0, expand=True),
-        ]
-        if editing:
-            form_row.append(ghost_btn("Cancel", on_click=_cancel_edit, height=44))
-        form_row.append(green_btn("Save changes" if editing else "Add link",
-                                   icon=ft.Icons.CHECK if editing else ft.Icons.ADD,
-                                   on_click=_add, height=44))
+        _mobile = platform_caps.is_mobile()
+        name_block = ft.Column([field_label("App name"),
+                                 ft.Container(hover_field(name_field),
+                                              width=(None if _mobile else 230),
+                                              padding=ft.Padding.only(top=4))],
+                                spacing=0, tight=(not _mobile))
+        url_block = ft.Column([field_label("URL"),
+                                ft.Container(hover_field(url_field),
+                                             padding=ft.Padding.only(top=4))],
+                               spacing=0, expand=True)
+        save_btn = green_btn("Save changes" if editing else "Add link",
+                             icon=ft.Icons.CHECK if editing else ft.Icons.ADD,
+                             on_click=_add, height=44)
+
+        if _mobile:
+            # Desktop packs App name(230px fixed) + URL(expand) + Add-link
+            # button on one Row — the fixed name field alone plus the
+            # button's own width already exceeds a ~390px phone, pushing
+            # the button off the right edge (confirmed live: "+ Ad…" cut
+            # off). Stack each field on its own full-width row on mobile.
+            form_items = [name_block, ft.Container(height=12), url_block,
+                          ft.Container(height=12)]
+            if editing:
+                form_items.append(ghost_btn("Cancel", on_click=_cancel_edit, height=44))
+                form_items.append(ft.Container(height=8))
+            form_items.append(save_btn)
+            form_col = ft.Column(form_items, spacing=0)
+        else:
+            form_row = [name_block, url_block]
+            if editing:
+                form_row.append(ghost_btn("Cancel", on_click=_cancel_edit, height=44))
+            form_row.append(save_btn)
+            form_col = ft.Row(form_row, spacing=12, vertical_alignment=ft.CrossAxisAlignment.END)
 
         add_card = card(ft.Column([
             ft.Row([
@@ -131,7 +151,7 @@ def screen(app):
                         weight=ft.FontWeight.BOLD, color=T.INK),
             ], spacing=11),
             ft.Container(height=16),
-            ft.Row(form_row, spacing=12, vertical_alignment=ft.CrossAxisAlignment.END),
+            form_col,
         ], spacing=0))
 
         palette = ["#4d5ad6", "#0f9586", "#7c45d4", "#C2860C", "#1C80E0", "#E0474D"]
@@ -161,20 +181,41 @@ def screen(app):
                     tooltip="Remove", on_click=_del(i),
                     style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8))))
 
+            avatar = ft.Container(ft.Text(init, size=15, weight=ft.FontWeight.BOLD,
+                                          color="#FFFFFF"), width=40, height=40,
+                                  bgcolor=col, border_radius=11,
+                                  alignment=ft.Alignment.CENTER)
+            identity = ft.Column([
+                ft.Row(name_row, spacing=8,
+                       vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                ft.Text(l.get("url", ""), size=12.5, color=T.INK_2,
+                        font_family=T.F_MONO, no_wrap=True,
+                        overflow=ft.TextOverflow.ELLIPSIS),
+            ], spacing=1, tight=True, expand=True)
+
+            if platform_caps.is_mobile():
+                # avatar(40) + Open button(~100) + edit/delete IconButtons
+                # (~48px each, Material's minimum touch target) left almost
+                # nothing for the expand=True name/url column on a ~390px
+                # phone — reported live as the Open button rendering
+                # overlapping the name text rather than beside it (the
+                # squeezed column had no real width left to lay out into).
+                # Identity gets its own full-width row; actions go on a
+                # second row below, same pattern used for Users/Task
+                # Manager rows this session.
+                row_content = ft.Column([
+                    ft.Row([avatar, identity], spacing=14,
+                           vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    ft.Container(height=10),
+                    ft.Row([ft.Container(expand=True), *trailing],
+                           spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                ], spacing=0)
+            else:
+                row_content = ft.Row([avatar, identity, *trailing], spacing=14,
+                                     vertical_alignment=ft.CrossAxisAlignment.CENTER)
+
             rows.append(ft.Container(
-                ft.Row([
-                    ft.Container(ft.Text(init, size=15, weight=ft.FontWeight.BOLD,
-                                         color="#FFFFFF"), width=40, height=40,
-                                 bgcolor=col, border_radius=11,
-                                 alignment=ft.Alignment.CENTER),
-                    ft.Column([
-                        ft.Row(name_row, spacing=8,
-                               vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                        ft.Text(l.get("url", ""), size=12.5, color=T.INK_2,
-                                font_family=T.F_MONO, no_wrap=True),
-                    ], spacing=1, tight=True, expand=True),
-                    *trailing,
-                ], spacing=14, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                row_content,
                 padding=ft.Padding.symmetric(vertical=12, horizontal=16),
                 bgcolor=T.CARD, border=ft.Border.all(1, T.BORDER), border_radius=14))
 

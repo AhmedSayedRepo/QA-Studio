@@ -13,6 +13,7 @@ import threading
 import flet as ft
 import theme as T
 import auth_supabase as auth
+import platform_caps
 from ui import hover_field
 
 _ROLES = ["Viewer", "Member", "Admin"]
@@ -226,51 +227,72 @@ def screen(app):
         busy = (app._users_busy == uid)
         expanded = uid in app._users_expanded
 
-        head = ft.Row([
-            ft.Container(ft.Text((email[:1] or "?").upper(), size=13,
-                                 weight=ft.FontWeight.BOLD, color="#FFFFFF"),
-                         width=34, height=34, bgcolor=T.VIOLET, border_radius=17,
-                         alignment=ft.Alignment.CENTER),
-            ft.Column([
-                ft.Row([
-                    ft.Text(email, size=13.5, weight=ft.FontWeight.W_700, color=T.INK,
-                            no_wrap=False),
-                    (ft.Container(ft.Text("you", size=10, weight=ft.FontWeight.BOLD,
-                                          color=T.VIOLET_INK),
-                                  padding=ft.Padding.symmetric(vertical=1, horizontal=7),
-                                  bgcolor=T.VIOLET_SOFT, border_radius=999)
-                     if is_self else ft.Container(width=0)),
-                ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                ft.Row([
-                    ft.Text(("✓ confirmed" if confirmed else "✗ not confirmed")
-                            + f"  ·  last sign-in {last}",
-                            size=11, color=(T.GREEN if confirmed else T.AMBER),
-                            weight=ft.FontWeight.BOLD),
-                    (ft.Container(ft.Text("ACCESS REVOKED", size=9.5,
-                                          weight=ft.FontWeight.BOLD, color=T.RED),
-                                  padding=ft.Padding.symmetric(vertical=1, horizontal=7),
-                                  bgcolor=ft.Colors.with_opacity(0.12, T.RED),
-                                  border_radius=999)
-                     if revoked else ft.Container(width=0)),
-                ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-            ], spacing=2, expand=True),
-            (ft.Row([ft.ProgressRing(width=18, height=18, stroke_width=2.4,
-                                     color=T.VIOLET)], tight=True)
-             if busy else _role_chip(uid, (None if revoked else role), busy)),
-            ft.Container(
-                ft.Icon(ft.Icons.EXPAND_LESS if expanded else ft.Icons.TUNE,
-                        size=18, color=T.INK_3),
-                on_click=lambda e, x=uid: _toggle_expand(x), ink=True, border_radius=8,
-                padding=8, tooltip="Per-permission access"),
-            ft.Container(
-                ft.Icon(ft.Icons.REMOVE_CIRCLE_OUTLINE, size=18,
-                        color=(T.INK_3 if (busy or revoked) else T.RED)),
-                on_click=(None if (busy or revoked)
-                          else (lambda e, x=uid, em=email: _revoke(x, em))),
-                ink=True, border_radius=8, padding=8,
-                tooltip=("Access already revoked — set a role to restore"
-                         if revoked else "Revoke access")),
-        ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+        avatar = ft.Container(ft.Text((email[:1] or "?").upper(), size=13,
+                                      weight=ft.FontWeight.BOLD, color="#FFFFFF"),
+                              width=34, height=34, bgcolor=T.VIOLET, border_radius=17,
+                              alignment=ft.Alignment.CENTER)
+        identity = ft.Column([
+            ft.Row([
+                ft.Text(email, size=13.5, weight=ft.FontWeight.W_700, color=T.INK,
+                        no_wrap=False),
+                (ft.Container(ft.Text("you", size=10, weight=ft.FontWeight.BOLD,
+                                      color=T.VIOLET_INK),
+                              padding=ft.Padding.symmetric(vertical=1, horizontal=7),
+                              bgcolor=T.VIOLET_SOFT, border_radius=999)
+                 if is_self else ft.Container(width=0)),
+            ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            ft.Row([
+                ft.Text(("✓ confirmed" if confirmed else "✗ not confirmed")
+                        + f"  ·  last sign-in {last}",
+                        size=11, color=(T.GREEN if confirmed else T.AMBER),
+                        weight=ft.FontWeight.BOLD),
+                (ft.Container(ft.Text("ACCESS REVOKED", size=9.5,
+                                      weight=ft.FontWeight.BOLD, color=T.RED),
+                              padding=ft.Padding.symmetric(vertical=1, horizontal=7),
+                              bgcolor=ft.Colors.with_opacity(0.12, T.RED),
+                              border_radius=999)
+                 if revoked else ft.Container(width=0)),
+            ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        ], spacing=2, expand=True)
+        role_or_spinner = (ft.Row([ft.ProgressRing(width=18, height=18, stroke_width=2.4,
+                                                    color=T.VIOLET)], tight=True)
+                           if busy else _role_chip(uid, (None if revoked else role), busy))
+        expand_btn = ft.Container(
+            ft.Icon(ft.Icons.EXPAND_LESS if expanded else ft.Icons.TUNE,
+                    size=18, color=T.INK_3),
+            on_click=lambda e, x=uid: _toggle_expand(x), ink=True, border_radius=8,
+            padding=8, tooltip="Per-permission access")
+        revoke_btn = ft.Container(
+            ft.Icon(ft.Icons.REMOVE_CIRCLE_OUTLINE, size=18,
+                    color=(T.INK_3 if (busy or revoked) else T.RED)),
+            on_click=(None if (busy or revoked)
+                      else (lambda e, x=uid, em=email: _revoke(x, em))),
+            ink=True, border_radius=8, padding=8,
+            tooltip=("Access already revoked — set a role to restore"
+                     if revoked else "Revoke access"))
+
+        if platform_caps.is_mobile():
+            # Desktop's single Row packs avatar + email/status(expand) + the
+            # 3-pill role chip + 2 icon buttons side by side — on a ~390px
+            # phone the FIXED-width items alone (avatar ~34 + role chip
+            # ~190 + 2 icons ~34 each + spacing) already exceed the screen,
+            # so the expand=True email column got squeezed to nothing
+            # (invisible) and, with no wrap/scroll, the role chip and both
+            # action buttons (expand-permissions, revoke/"ban") rendered
+            # past the right edge entirely — reported live as "doesn't show
+            # the ban action, email, and user". Stack instead: identity on
+            # its own full-width row, role + actions on a second row below.
+            head = ft.Column([
+                ft.Row([avatar, identity], spacing=12,
+                       vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                ft.Container(height=8),
+                ft.Row([role_or_spinner, ft.Container(expand=True),
+                        expand_btn, revoke_btn],
+                       spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            ], spacing=0)
+        else:
+            head = ft.Row([avatar, identity, role_or_spinner, expand_btn, revoke_btn],
+                          spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
         children = [head]
         if expanded:
