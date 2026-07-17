@@ -32,5 +32,8 @@ desktop.ini
 build/
 storage/
 
+# Downloaded APK artifacts (build-apk.bat) — never commit binaries
+apk-out/
+
 # Runtime perf log
 qa_perf.log

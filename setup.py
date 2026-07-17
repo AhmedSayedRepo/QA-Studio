@@ -79,10 +79,17 @@ def screen(app):
 
         right = app._setup_right()
 
-        body = ft.Row([
-            ft.Container(left, expand=True),
-            ft.Container(right, width=290),
-        ], spacing=22, vertical_alignment=ft.CrossAxisAlignment.STRETCH, expand=True)
+        import platform_caps as _pc
+        if _pc.is_mobile():
+            # Phone (mobile Phase 2): the 290px sidebar + gutters don't fit a
+            # ~390px screen — main cards only; the sidebar's supplementary
+            # content returns in a later iteration (e.g. as a bottom sheet).
+            body = left
+        else:
+            body = ft.Row([
+                ft.Container(left, expand=True),
+                ft.Container(right, width=290),
+            ], spacing=22, vertical_alignment=ft.CrossAxisAlignment.STRETCH, expand=True)
 
         sub = "1 of 2 — configure & run" if app.connected else "1 of 2 — connect first"
         right_tag = ft.Container(

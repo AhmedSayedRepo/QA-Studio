@@ -1115,6 +1115,17 @@ class QAStudio:
         _acct = self._account_chip()
         if _acct is not None:
             row.append(_acct)
+        if platform_caps.is_mobile():
+            # Phone header (mobile Phase 2): hamburger opens the nav drawer —
+            # shell() skips the permanent rail on mobile (it ate half the
+            # width) — and the title shrinks so the row fits.
+            row.insert(0, ft.IconButton(ft.Icons.MENU, icon_size=24,
+                                        icon_color=T.INK,
+                                        on_click=lambda e: self._open_nav_drawer()))
+            try:
+                title_ctl.size = 20
+            except Exception:
+                pass
         # Glass top bar: a translucent frosted gradient with a backdrop blur so
         # scrolled content shows softly behind it. Falls back to an opaque bar on
         # older Flet builds that lack ft.Blur.
@@ -1182,6 +1193,62 @@ class QAStudio:
                 except Exception:
                     pass
 
+    def _nav_items_visible(self):
+        """Nav entries the current user AND platform can see — the same two
+        filters rail() applies (per-user capability + platform gating)."""
+        out = []
+        for n in T.NAV:
+            _nv = self._screen_nav_cap(n["id"])
+            if _nv and not self.can(_nv):
+                continue
+            if n["id"] == "automation" and not platform_caps.has_automation():
+                continue
+            out.append(n)
+        return out
+
+    def _open_nav_drawer(self):
+        """Mobile nav (mobile Phase 2): a modal drawer replacing the permanent
+        rail — opened by the header hamburger, closes on pick, then goto()."""
+        items = self._nav_items_visible()
+        ids = [n["id"] for n in items]
+        try:
+            sel = ids.index(getattr(self, "active", "setup"))
+        except ValueError:
+            sel = 0
+
+        def _pick(e):
+            try:
+                i = int(e.control.selected_index)
+            except Exception:
+                return
+            try:
+                self.page.close(drawer)
+            except Exception:
+                try:
+                    drawer.open = False
+                    self.page.update()
+                except Exception:
+                    pass
+            if 0 <= i < len(ids) and ids[i] != getattr(self, "active", None):
+                self.goto(ids[i])
+
+        drawer = ft.NavigationDrawer(
+            controls=[ft.Container(height=12)] + [
+                ft.NavigationDrawerDestination(
+                    icon=getattr(ft.Icons, n.get("icon", "CIRCLE"), ft.Icons.CIRCLE),
+                    label=n.get("label", n["id"]))
+                for n in items],
+            selected_index=sel, on_change=_pick)
+        try:
+            self.page.open(drawer)            # newer Flet API
+        except Exception:
+            try:
+                self.page.drawer = drawer     # older API
+                drawer.open = True
+                self.page.update()
+            except Exception:
+                pass
+
     def shell(self, title, sub, body, right=None, badge=None):
         # Glass-header pattern: the frosted, translucent header is pinned ON TOP of
         # the scroll area in a Stack. The body has NO top padding; instead each
@@ -1225,6 +1292,25 @@ class QAStudio:
         header.top = 0
         header.left = 0
         header.right = 0
+        if platform_caps.is_mobile():
+            # Phone shell (mobile Phase 2): NO permanent rail — nav lives in
+            # the drawer behind the header's hamburger (see topbar /
+            # _open_nav_drawer) — and content padding tightens for a ~390px
+            # width. Desktop is untouched: this branch never runs there.
+            return ft.Container(
+                ft.Stack([
+                    ft.Container(
+                        ft.SelectionArea(content=ft.GestureDetector(
+                            content=body, on_tap=self._close_dropdowns)),
+                        expand=True,
+                        padding=ft.Padding.only(left=10, right=10, bottom=12),
+                        clip_behavior=ft.ClipBehavior.HARD_EDGE),
+                    header,
+                ], expand=True),
+                expand=True,
+                gradient=ft.LinearGradient(
+                    begin=ft.Alignment.TOP_CENTER, end=ft.Alignment.BOTTOM_CENTER,
+                    colors=list(T.GRAD_PAGE)))
         return ft.Row([
             self.rail(),
             ft.Container(
@@ -4326,7 +4412,24 @@ class QAStudio:
                           "finish or stop it first." if run_busy else None)
         except Exception:
             pass
-        return btn
+        # 'Run remotely' toggle (REMOTE_RUNS.md): same Start button, but the
+        # run enqueues for the GitHub Actions worker (executing with THIS
+        # user's synced vault credentials) instead of running locally.
+        def _flip(e):
+            self.run_remote = bool(e.control.value)
+        sw = ft.Switch(value=bool(getattr(self, "run_remote", False)),
+                       active_color=T.VIOLET, scale=0.8,
+                       disabled=run_busy, on_change=_flip)
+        remote_row = ft.Container(
+            ft.Row([sw, ft.Column([
+                ft.Text("Run remotely", size=12.5, weight=ft.FontWeight.BOLD,
+                        color=T.INK),
+                ft.Text("Executes on GitHub with your synced credentials — "
+                        "you can close the app.", size=11, color=T.INK_3),
+            ], spacing=1, expand=True)],
+                   spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=ft.Padding.only(bottom=10))
+        return ft.Column([remote_row, btn], spacing=0)
 
     def _start_run(self):
         # Belt-and-suspenders: the button above is already disabled while a
@@ -4365,6 +4468,11 @@ class QAStudio:
             return
         self._invalid = set()
         self._err_msg = ""  # all good — clear any prior validation error
+        # 'Run remotely': enqueue for the GitHub Actions worker instead of
+        # executing locally — the validations above apply to both paths.
+        if bool(getattr(self, "run_remote", False)):
+            self._start_remote_run()
+            return
         # Steps tool: check existing steps first
         if self.tool == "steps":
             self._busy("Checking existing steps…")
@@ -5873,6 +5981,37 @@ class QAStudio:
             while getattr(self, "_run_paused", False) and not self.stop_flag:
                 cond.wait(timeout=0.5)
         return "stop" if self.stop_flag else "retry"
+
+    def _start_remote_run(self):
+        """'Run remotely' path (REMOTE_RUNS.md): INSERT a remote_runs row as
+        the signed-in user — the DB trigger auto-dispatches the GitHub
+        Actions worker, which executes with THIS user's vault credentials.
+        The app can be closed afterwards; progress is visible in the repo's
+        Actions tab (in-app live viewer is the next iteration)."""
+        def work():
+            try:
+                st = auth.remote_credentials_status()
+                if not (st and st.get("has_pat") and st.get("has_key")):
+                    self._unbusy()
+                    self._err("Sync your credentials first: Settings → "
+                              "Remote runs → Sync now.")
+                    return
+                ok, res = auth.enqueue_remote_run(
+                    self.tool, self.project, self.plan_id, self.story_ids,
+                    existing_mode=getattr(self, "existing_mode", "skip"),
+                    output_lang=E.OUTPUT_LANG)
+                self._unbusy()
+                if ok:
+                    self._toast(f"Remote run queued ({str(res)[:8]}…) — executing "
+                                "on GitHub as you. Watch it in the repo's Actions tab; "
+                                "you can close the app.")
+                else:
+                    self._err(f"Couldn't queue the remote run: {res}")
+            except Exception as ex:
+                self._unbusy()
+                self._err(f"Couldn't queue the remote run: {str(ex)[:120]}")
+        self._busy("Queuing remote run…")
+        self._bg(work)
 
     def _sync_remote_creds(self, status_ctl=None):
         """Settings → Remote runs: push the credentials THIS app is currently

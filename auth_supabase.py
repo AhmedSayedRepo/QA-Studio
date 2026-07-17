@@ -754,6 +754,40 @@ def sync_remote_credentials(azure_org, azure_pat, ai_provider, ai_api_key, ai_mo
     return True, "Credentials synced — remote runs will execute as you."
 
 
+def enqueue_remote_run(kind, project, plan_id, story_ids, existing_mode="skip",
+                       output_lang="ar"):
+    """INSERT a remote_runs row AS the signed-in user (created_by = auth uid →
+    the worker resolves THIS user's vault credentials). The DB trigger
+    auto-dispatches the GitHub Actions workflow within seconds. Returns
+    (ok, run_id_or_error_message)."""
+    if not configured():
+        return False, "Supabase isn't configured."
+    tok = access_token()
+    uid = user_id()
+    if not tok or not uid:
+        return False, "Not signed in."
+    row = {"kind": "titles" if str(kind).startswith("title") else "steps",
+           "project": str(project or ""), "plan_id": int(plan_id),
+           "story_ids": [int(s) for s in (story_ids or [])],
+           "existing_mode": existing_mode or "skip",
+           "output_lang": output_lang or "ar",
+           "created_by": uid}
+    try:
+        r = _client().post(f"{SUPABASE_URL}/rest/v1/remote_runs",
+                           headers={"Authorization": f"Bearer {tok}",
+                                    "Prefer": "return=representation"},
+                           json=row, timeout=_TIMEOUT)
+    except Exception as ex:
+        if _diag: _diag.log("auth_supabase.enqueue_remote_run", ex)
+        return False, f"Network error: {str(ex)[:120]}"
+    if r.status_code not in (200, 201):
+        return False, _friendly(r)
+    try:
+        return True, (r.json() or [{}])[0].get("id", "")
+    except Exception:
+        return True, ""
+
+
 def remote_credentials_status():
     """Masked status via rpc get_my_credentials_status: {azure_org,
     ai_provider, ai_model, has_pat, has_key, updated_at} — never secret

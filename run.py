@@ -47,9 +47,13 @@ def screen(app):
                 padding=ft.Padding.symmetric(vertical=40, horizontal=20))
             return app.shell("Run", "no run in progress", idle)
 
+        import platform_caps as _pc
+        # Phone (mobile Phase 2): five fixed stat tiles overflow a ~390px
+        # width — let the row wrap into two lines. Desktop keeps one line.
+        _wrap = _pc.is_mobile()
         is_steps = (app.tool == "steps")
         if is_steps:
-            app._stats_row = ft.Row([
+            app._stats_row = ft.Row(wrap=_wrap, controls=[
                 stat_tile("Test Cases", s["total"]),
                 stat_tile("Created", s.get("created", 0), tone="violet"),
                 stat_tile("Updated", s["done"], tone="green"),
@@ -57,7 +61,7 @@ def screen(app):
                 stat_tile("Errors", s["errors"], tone="red"),
             ], spacing=11)
         else:
-            app._stats_row = ft.Row([
+            app._stats_row = ft.Row(wrap=_wrap, controls=[
                 stat_tile("Test Cases", s["total"]),
                 stat_tile("Stories", f"{s['stories_done']}", tone="violet", sub=f"/{s['total_stories']}"),
                 stat_tile("Created", s["done"], tone="green"),
