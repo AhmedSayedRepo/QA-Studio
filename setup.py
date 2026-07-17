@@ -81,9 +81,22 @@ def screen(app):
 
         import platform_caps as _pc
         if _pc.is_mobile():
-            # Phone (mobile Phase 2): the 290px sidebar + gutters don't fit a
-            # ~390px screen — main cards only; the sidebar's supplementary
-            # content returns in a later iteration (e.g. as a bottom sheet).
+            # Phone (mobile Phase 2): the 290px sidebar doesn't fit a ~390px
+            # screen, BUT _setup_right() is not merely supplementary — before
+            # connecting it IS the "Connect & load projects" button (the only
+            # way to validate the PAT and load Azure DevOps projects/plans),
+            # and once connected it's the run-summary + Start button. Dropping
+            # it left no way to connect on mobile at all. Insert it as the
+            # FIRST item of the same scrolling column instead of a separate
+            # expand=True region — right's card was built for a Row's cross-
+            # axis stretch (fills the row's height); in a scrolling list it
+            # must size to its own content, so the stretch flags are cleared.
+            right.expand = False
+            if isinstance(right.content, ft.Column):
+                right.content.expand = False
+                right.content.tight = True
+            app._left_scroll.controls.insert(0, right)
+            app._left_scroll.controls.insert(1, ft.Container(height=14))
             body = left
         else:
             body = ft.Row([

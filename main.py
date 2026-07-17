@@ -1206,6 +1206,30 @@ class QAStudio:
             out.append(n)
         return out
 
+    def _show_nav_drawer(self):
+        """Actually trigger the drawer open animation.
+
+        Verified against the installed Flet 0.85.3 package (the version this
+        app's mobile build is pinned to, see requirements.txt/build-apk.yml):
+        `Page.open()` does not exist on this version at all, and
+        `NavigationDrawer` has no `open` field either (it's the newer
+        dataclass-style control — `drawer.open = True` silently creates a
+        throwaway Python attribute Flet never serializes). The real trigger is
+        the ASYNC `Page.show_drawer()` (confirmed present on BasePage), so it
+        must be scheduled via `page.run_task` — the same dispatch mechanism
+        `_open_url()` already uses for `page.launch_url`. Previously this was
+        a silent no-op: no exception, no drawer, hamburger looked dead."""
+        try:
+            self.page.run_task(self.page.show_drawer)
+        except Exception:
+            pass
+
+    def _close_nav_drawer(self):
+        try:
+            self.page.run_task(self.page.close_drawer)
+        except Exception:
+            pass
+
     def _open_nav_drawer(self):
         """Mobile nav (mobile Phase 2): a modal drawer replacing the permanent
         rail — opened by the header hamburger, closes on pick, then goto()."""
@@ -1221,14 +1245,7 @@ class QAStudio:
                 i = int(e.control.selected_index)
             except Exception:
                 return
-            try:
-                self.page.close(drawer)
-            except Exception:
-                try:
-                    drawer.open = False
-                    self.page.update()
-                except Exception:
-                    pass
+            self._close_nav_drawer()
             if 0 <= i < len(ids) and ids[i] != getattr(self, "active", None):
                 self.goto(ids[i])
 
@@ -1239,15 +1256,8 @@ class QAStudio:
                     label=n.get("label", n["id"]))
                 for n in items],
             selected_index=sel, on_change=_pick)
-        try:
-            self.page.open(drawer)            # newer Flet API
-        except Exception:
-            try:
-                self.page.drawer = drawer     # older API
-                drawer.open = True
-                self.page.update()
-            except Exception:
-                pass
+        self.page.drawer = drawer
+        self._show_nav_drawer()
 
     def shell(self, title, sub, body, right=None, badge=None):
         # Glass-header pattern: the frosted, translucent header is pinned ON TOP of
@@ -1297,16 +1307,23 @@ class QAStudio:
             # the drawer behind the header's hamburger (see topbar /
             # _open_nav_drawer) — and content padding tightens for a ~390px
             # width. Desktop is untouched: this branch never runs there.
+            # SafeArea (mobile Phase 2 fix): nothing previously inset this Stack
+            # from the system status bar / notch, so the glass header rendered
+            # flush against it. ft.SafeArea (present in the pinned Flet 0.85.3)
+            # pads the whole Stack — header + scrolling content — by the actual
+            # device insets instead of a guessed fixed value.
             return ft.Container(
-                ft.Stack([
-                    ft.Container(
-                        ft.SelectionArea(content=ft.GestureDetector(
-                            content=body, on_tap=self._close_dropdowns)),
-                        expand=True,
-                        padding=ft.Padding.only(left=10, right=10, bottom=12),
-                        clip_behavior=ft.ClipBehavior.HARD_EDGE),
-                    header,
-                ], expand=True),
+                ft.SafeArea(
+                    ft.Stack([
+                        ft.Container(
+                            ft.SelectionArea(content=ft.GestureDetector(
+                                content=body, on_tap=self._close_dropdowns)),
+                            expand=True,
+                            padding=ft.Padding.only(left=10, right=10, bottom=12),
+                            clip_behavior=ft.ClipBehavior.HARD_EDGE),
+                        header,
+                    ], expand=True),
+                    expand=True),
                 expand=True,
                 gradient=ft.LinearGradient(
                     begin=ft.Alignment.TOP_CENTER, end=ft.Alignment.BOTTOM_CENTER,
