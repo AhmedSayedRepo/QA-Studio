@@ -38,11 +38,16 @@ import time
 
 import requests
 
-SB_URL = os.environ["SUPABASE_URL"].rstrip("/")
-SB_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
+SB_URL = os.environ["SUPABASE_URL"].strip().rstrip("/")
+SB_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"].strip()
 RUN_ID = os.environ["RUN_ID"].strip()
-_HDRS = {"apikey": SB_KEY, "Authorization": f"Bearer {SB_KEY}",
-         "Content-Type": "application/json"}
+# Supabase has TWO server-key formats: the legacy service_role JWT ("eyJ…",
+# sent as apikey + Authorization: Bearer) and the new secret keys
+# ("sb_secret_…", sent as apikey ONLY — a Bearer header carrying a non-JWT
+# gets rejected as "Invalid API key"; confirmed live on the first dispatch).
+_HDRS = {"apikey": SB_KEY, "Content-Type": "application/json"}
+if SB_KEY.startswith("eyJ"):
+    _HDRS["Authorization"] = f"Bearer {SB_KEY}"
 
 
 def _sb(method, path, payload=None, params=None):
