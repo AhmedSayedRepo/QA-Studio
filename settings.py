@@ -115,6 +115,26 @@ def screen(app):
                      _idle_seg()),
             ], spacing=0))
 
+        # ── Remote runs — sync THIS user's credentials to the per-user vault ──
+        # Deliberately no fetch at build time (no load-on-render — see
+        # PERF_ARCH_PLAN.md): the status line updates in place after a Sync.
+        _remote_status = ft.Text(
+            "Not synced from this device yet — Sync sends the credentials "
+            "the app is currently connected with.",
+            size=12, color=T.INK_3, weight=ft.FontWeight.W_500)
+        remote = card(ft.Column([
+            ft.Text("REMOTE RUNS", size=11, weight=ft.FontWeight.BOLD, color=T.INK_3),
+            ft.Container(height=4),
+            srow("Credentials for remote & mobile runs",
+                 "Stores your Azure PAT and AI key in your private encrypted "
+                 "vault (Supabase) so runs can execute server-side as you. "
+                 "Re-sync after changing provider or rotating a key.",
+                 ghost_btn("Sync now", icon=_ic("CLOUD_SYNC_OUTLINED", "SYNC"),
+                           on_click=(None if ro else
+                                     (lambda e: app._sync_remote_creds(_remote_status))))),
+            ft.Container(_remote_status, padding=ft.Padding.only(bottom=10)),
+        ], spacing=0))
+
         reset = card(ft.Column([
             ft.Text("HELP & RESET", size=11, weight=ft.FontWeight.BOLD, color=T.INK_3),
             ft.Container(height=4),
@@ -130,7 +150,7 @@ def screen(app):
                             on_click=lambda e: app._reset_prefs())),
         ], spacing=0))
 
-        cards = [appearance, data] + ([security] if security else []) + [reset]
+        cards = [appearance, data, remote] + ([security] if security else []) + [reset]
         body = ft.Column(cards, spacing=16, scroll=ft.ScrollMode.AUTO, expand=True)
         return app.shell("Settings", "Preferences for this device", body)
 

@@ -667,6 +667,10 @@ class QAStudio:
         return idle_watch.set_idle_minutes(self, minutes)
 
     def _start_idle_watch(self):
+        # Desktop concept (mobile Phase 1 gating): on a phone the OS lifecycle
+        # suspends the app itself; re-auth on resume replaces idle-logout.
+        if platform_caps.is_mobile():
+            return None
         return idle_watch.start_idle_watch(self)
 
     def _sign_out(self, e=None):
@@ -694,6 +698,10 @@ class QAStudio:
         self.render()
 
     def _with_window_chrome(self, root):
+        # Mobile has no window to chrome (mobile Phase 1 gating): no title bar
+        # was hidden, so no custom min/max/close buttons or drag strip needed.
+        if platform_caps.is_mobile():
+            return root
         return window_chrome.with_window_chrome(self, root)
 
     def _entrance(self, child, dy=0.05, scale=0.98, dur=460):
@@ -1809,7 +1817,7 @@ class QAStudio:
             _cands.append(_os.path.dirname(_os.path.abspath(__file__)))
             _icon = next((_os.path.join(d, "app.ico") for d in _cands
                           if d and _os.path.exists(_os.path.join(d, "app.ico"))), "")
-            if _icon:
+            if _icon and not platform_caps.is_mobile():
                 if hasattr(self.page, "window") and self.page.window is not None:
                     self.page.window.icon = _icon
                 else:
@@ -1818,7 +1826,10 @@ class QAStudio:
             pass
         try:
             # Flet >= 0.23 uses page.window.* ; older uses page.window_*
-            if hasattr(self.page, "window") and self.page.window is not None:
+            # (mobile Phase 1 gating: no sizing/frameless on a phone — the OS
+            # owns the "window"; the elif chain keeps mobile out entirely.)
+            if not platform_caps.is_mobile() and \
+                    hasattr(self.page, "window") and self.page.window is not None:
                 self.page.window.width = 1120
                 self.page.window.height = 720
                 self.page.window.min_width = 980
@@ -1831,14 +1842,16 @@ class QAStudio:
                     self.page.window.title_bar_buttons_hidden = True
                 except Exception:
                     pass
-            else:
+            elif not platform_caps.is_mobile():
                 self.page.window_width = 1120
                 self.page.window_height = 720
                 self.page.window_min_width = 980
                 self.page.window_min_height = 620
             # centre the window on screen (else some Flet builds open it low/left)
             try:
-                if hasattr(self.page, "window") and self.page.window is not None:
+                if platform_caps.is_mobile():
+                    pass
+                elif hasattr(self.page, "window") and self.page.window is not None:
                     self.page.window.center()
                 elif hasattr(self.page, "window_center"):
                     self.page.window_center()
@@ -1853,7 +1866,7 @@ class QAStudio:
         # window still closes cleanly.
         import os
         _web = os.environ.get("WEB_MODE", "").strip() in ("1", "true", "yes")
-        if not _web:
+        if not _web and not platform_caps.is_mobile():
             try:
                 if hasattr(self.page, "window") and self.page.window is not None:
                     # Do NOT prevent_close while idle — let Flet's native close
@@ -5860,6 +5873,47 @@ class QAStudio:
             while getattr(self, "_run_paused", False) and not self.stop_flag:
                 cond.wait(timeout=0.5)
         return "stop" if self.stop_flag else "retry"
+
+    def _sync_remote_creds(self, status_ctl=None):
+        """Settings → Remote runs: push the credentials THIS app is currently
+        using (Azure org/PAT + the active AI provider's key/model) to the
+        per-user Supabase vault (rpc set_my_credentials), so remote runs —
+        GitHub Actions worker, later the mobile app — execute AS this user.
+        No new form: the values were already entered in Setup; this is a
+        one-click sync of exactly what the app is connected with."""
+        def work():
+            try:
+                prov = E.AI_PROVIDER
+                cfg = E.AI_CONFIG.get(prov) or {}
+                key = (cfg.get("api_key") or "").strip()
+                model = ((cfg.get("deployment") if prov == "azure_openai"
+                          else cfg.get("model")) or "").strip()
+                pat = (E.AZURE_PAT or "").strip()
+                org = (E.AZURE_ORG or "").strip()
+                if not pat or not key:
+                    self.ui_safe(lambda: self._err(
+                        "Connect Azure DevOps and the AI provider in Setup first — "
+                        "Sync sends the credentials the app is currently using."))
+                    return
+                ok, msg = auth.sync_remote_credentials(org, pat, prov, key, model)
+                st = auth.remote_credentials_status() if ok else None
+                def _apply():
+                    (self._toast if ok else self._err)(msg)
+                    if status_ctl is not None and st:
+                        status_ctl.value = (
+                            f"Synced ✓ · {E.T_disp(st.get('ai_provider') or '')}"
+                            + (f" · {st.get('ai_model')}" if st.get("ai_model") else "")
+                            + f" · PAT {'✓' if st.get('has_pat') else '—'}"
+                            + f" · AI key {'✓' if st.get('has_key') else '—'}")
+                        status_ctl.color = T.GREEN
+                        try:
+                            status_ctl.update()
+                        except Exception:
+                            pass
+                self.ui_safe(_apply)
+            except Exception as ex:
+                self.ui_safe(lambda m=str(ex)[:120]: self._err(f"Sync failed: {m}"))
+        self._bg(work)
 
     def _auto_project_dir(self):
         """The chosen folder IS the project home and the git repo we push from.

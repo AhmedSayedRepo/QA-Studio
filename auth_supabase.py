@@ -713,3 +713,64 @@ def admin_get_ai_usage(start_date=None, end_date=None):
         return True, (r.json() or {}).get("rows", [])
     except Exception as ex:
         return False, f"Bad response from ai-usage: {ex}"
+
+
+# ── Remote-run credentials (per-user Supabase Vault — see REMOTE_RUNS.md) ────
+def user_id():
+    """The signed-in user's auth uid ('' when signed out). Used as
+    remote_runs.created_by so the GitHub Actions worker resolves THIS user's
+    credentials via worker_get_credentials."""
+    with _lock:
+        data = _load_session()
+    u = (data or {}).get("user") or {}
+    return str(u.get("id") or "")
+
+
+def sync_remote_credentials(azure_org, azure_pat, ai_provider, ai_api_key, ai_model=""):
+    """Upsert the CALLER'S OWN remote-run credentials (rpc set_my_credentials,
+    SECURITY DEFINER keyed on auth.uid(); secret values land in Supabase Vault,
+    never in readable columns). Empty org/pat/provider/key leave the stored
+    value unchanged; ai_model always writes (empty = provider default).
+    Returns (ok, message)."""
+    if not configured():
+        return False, "Supabase isn't configured."
+    tok = access_token()
+    if not tok:
+        return False, "Not signed in."
+    try:
+        r = _client().post(f"{SUPABASE_URL}/rest/v1/rpc/set_my_credentials",
+                           headers={"Authorization": f"Bearer {tok}"},
+                           json={"p_azure_org": azure_org or None,
+                                 "p_azure_pat": azure_pat or None,
+                                 "p_ai_provider": ai_provider or None,
+                                 "p_ai_api_key": ai_api_key or None,
+                                 "p_ai_model": "" if ai_model is None else str(ai_model)},
+                           timeout=_TIMEOUT)
+    except Exception as ex:
+        if _diag: _diag.log("auth_supabase.sync_remote_credentials", ex)
+        return False, f"Network error: {str(ex)[:120]}"
+    if r.status_code not in (200, 204):
+        return False, _friendly(r)
+    return True, "Credentials synced — remote runs will execute as you."
+
+
+def remote_credentials_status():
+    """Masked status via rpc get_my_credentials_status: {azure_org,
+    ai_provider, ai_model, has_pat, has_key, updated_at} — never secret
+    values. None when signed out / nothing stored / on any error."""
+    if not configured():
+        return None
+    tok = access_token()
+    if not tok:
+        return None
+    try:
+        r = _client().post(f"{SUPABASE_URL}/rest/v1/rpc/get_my_credentials_status",
+                           headers={"Authorization": f"Bearer {tok}"},
+                           json={}, timeout=_TIMEOUT)
+        if r.status_code != 200:
+            return None
+        rows = r.json()
+        return rows[0] if isinstance(rows, list) and rows else None
+    except Exception as ex:
+        if _diag: _diag.log("auth_supabase.remote_credentials_status", ex)
+        return None

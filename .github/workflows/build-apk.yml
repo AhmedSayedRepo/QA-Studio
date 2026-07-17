@@ -1,0 +1,55 @@
+# Build the QA Studio Android APK on GitHub Actions (MOBILE_PLAN.md Phase 1) —
+# no local Flutter/Android SDK needed. Trigger manually:
+#
+#   gh workflow run build-apk.yml
+#
+# The APK lands as a downloadable artifact on the run page (sideload it onto
+# an Android phone: download → open → allow "install unknown apps").
+#
+# EXPERIMENTAL: first `flet build` runs commonly need an iteration or two on
+# toolchain quirks. The app is staged into a CLEAN directory with a MINIMAL
+# requirements.txt on purpose — the desktop requirements bundle export
+# libraries (docx/xlsx/pdf) that are imported lazily on desktop only; pulling
+# them into the mobile bundle would bloat it and risk non-pure wheels failing
+# the cross-compile. Engine/auth need `requests` only.
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Install flet CLI
+        run: pip install --quiet "flet[all]==0.85.3"
+
+      - name: Stage mobile app (clean dir, minimal requirements)
+        run: |
+          mkdir -p /tmp/mobile
+          cp *.py /tmp/mobile/
+          cp app.ico /tmp/mobile/ 2>/dev/null || true
+          printf "flet==0.85.3\nrequests\n" > /tmp/mobile/requirements.txt
+
+      - name: Build APK
+        working-directory: /tmp/mobile
+        run: |
+          flet build apk --project "QA Studio" --org com.qastudio --verbose
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-studio-apk
+          path: /tmp/mobile/build/apk/*.apk
+          if-no-files-found: error
