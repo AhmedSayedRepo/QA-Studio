@@ -189,10 +189,18 @@ def open_onboarding(app):
                vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=8),
         padding=ft.Padding.only(left=20, right=20, top=4, bottom=2))
     _paint()
+    # Fixed width=600 assumes a desktop window. Flet's AlertDialog otherwise
+    # sizes itself to content, so on a ~390px phone this forced the whole
+    # panel (including the footer's Next/Get started button) wider than the
+    # viewport — the button wasn't actually broken, it was rendered past the
+    # visible edge with no way to reach it, which is what "Next doesn't
+    # work" looked like. Let content size itself to the viewport on mobile.
+    import platform_caps as _pc_onb
+    _dlg_width = None if _pc_onb.is_mobile() else 600
     dlg = ft.AlertDialog(
         modal=True, bgcolor=T.CARD,
         shape=ft.RoundedRectangleBorder(radius=T.R_LG),
-        content=ft.Container(width=600, padding=0, content=ft.Column([
+        content=ft.Container(width=_dlg_width, padding=0, content=ft.Column([
             body,
             ft.Container(height=14),
             footer,

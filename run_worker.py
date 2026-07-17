@@ -73,10 +73,48 @@ def _patch_run(fields):
 _ENGINE = None
 _RUN = None
 
+# In-memory activity log for the completion email — mirrors main.py's
+# self._log_lines exactly (same "story"/"log" cb handling, including the
+# heartbeat-line collapse and replace_wip removal) so build_report_email()'s
+# log_lines= section renders identically to a local run's report. Kept
+# SEPARATE from _ev_buf/remote_run_events (that feed is batched+cleared for
+# Supabase Realtime; this one accumulates for the whole run so the final
+# email has the complete log, not just whatever hadn't been flushed yet).
+_log_lines = []
+
+
+def _append_log_line(kind, payload):
+    if kind == "story" and isinstance(payload, dict):
+        _log_lines.append({"tone": "story", "ico": "▸",
+                           "msg": f"Story {payload.get('id')} · {payload.get('title')}",
+                           "ar": True})
+    elif kind == "log" and isinstance(payload, dict):
+        rw = payload.get("replace_wip")
+        if rw is not None:
+            _log_lines[:] = [l for l in _log_lines
+                             if l.get("wip_id") != rw and l.get("hb_id") != rw]
+        hb = payload.get("hb_id")
+        if hb is not None:
+            for l in _log_lines:
+                if l.get("hb_id") == hb:
+                    l.clear(); l.update(payload)
+                    return
+            _log_lines.append(dict(payload))
+            return
+        _log_lines.append(dict(payload))
+        if payload.get("detail"):
+            _log_lines.append({"tone": "dim", "indent": True, "msg": payload["detail"]})
+
 
 def _apply_credentials(E, run):
     """Per-user credentials (Supabase Vault, service-role-only RPC) when the
     run carries created_by; env-var fallback otherwise (local debugging).
+    Also applies Gmail sender/app-password (worker_get_credentials now
+    returns those too — see the remote_run_email_and_gmail_vault migration)
+    so _email_report() can send the completion report the same way a local
+    run's Setup → Connection Gmail App Password does. Gmail is OPTIONAL:
+    a user who never synced it just gets no email, same as a local run with
+    no App Password configured — it never blocks the actual test-case run.
     Returns a short description for the activity feed."""
     uid = str(run.get("created_by") or "").strip()
     if uid:
@@ -89,7 +127,10 @@ def _apply_credentials(E, run):
         E.reset_session_credentials(c.get("azure_org") or "", c["azure_pat"])
         E.set_credentials(provider=c.get("ai_provider") or "anthropic",
                           api_key=c["ai_api_key"],
-                          model=(c.get("ai_model") or "") or None)
+                          model=(c.get("ai_model") or "") or None,
+                          gmail=(c.get("gmail_app_pass") or "") or None,
+                          gmail_sender=(c.get("gmail_sender") or "") or None,
+                          gmail_sender_name=c.get("gmail_sender_name"))
         return f"user {uid[:8]}… · {c.get('ai_provider') or 'anthropic'}"
     E.reset_session_credentials(os.environ["AZURE_ORG"], os.environ["AZURE_PAT"])
     E.set_credentials(provider=os.environ.get("QA_AI_PROVIDER", "anthropic"),
@@ -209,6 +250,70 @@ def _on_ai_error(msg):
     return "retry"
 
 
+def _email_report(E, run, status, summary, rpt):
+    """Mirrors main.py's post-run email block (~4882-4949) as closely as
+    possible — same build_report_email()/send_report() call, same stats
+    shape, same structured log — so a remote run's report looks identical to
+    a local run's ('every recipients should get mail based on the mail
+    reports design same like in desktop app'). One send with every recipient
+    on the To: line (send_report's existing to_addrs=list semantics), same
+    as the desktop. Best-effort end to end: any failure here is logged and
+    swallowed — it must never touch the run's already-decided status,
+    summary, or exit code."""
+    to = [str(e).strip() for e in (run.get("email_recipients") or []) if str(e).strip()]
+    if not to:
+        _cb("log", {"tone": "dim",
+                    "msg": "No report email sent — no recipients on this run."})
+        return
+    if E is None or not (getattr(E, "GMAIL_APP_PASS", "") or "").strip():
+        _cb("log", {"tone": "warn",
+                    "msg": "No email sent — Gmail App Password not synced "
+                           "(Settings → Remote runs → Sync now)."})
+        return
+    try:
+        tool_name = "Test Case Steps" if run.get("kind") == "steps" else "Test Case Titles"
+        rpt = rpt or {}
+        _secs = rpt.get("total_secs")
+        if run.get("kind") == "steps":
+            stats = {"Created": rpt.get("created", 0), "Updated": rpt.get("updated", 0),
+                     "Skipped": rpt.get("skipped", 0), "Failed": rpt.get("errors", 0),
+                     "Stories": f"{rpt.get('stories_done', 0)}/{rpt.get('total_stories', 0)}"}
+        else:
+            stats = {"Created": rpt.get("created", 0), "Skipped": rpt.get("skipped", 0),
+                     "Failed": rpt.get("errors", 0),
+                     "Stories": f"{rpt.get('stories_done', 0)}/{rpt.get('total_stories', 0)}"}
+        if _secs not in (None, "", 0):
+            stats["Time"] = E._fmt_secs(_secs)
+        plan_url = None
+        if run.get("project") and run.get("plan_id"):
+            plan_url = (f"https://dev.azure.com/{E.AZURE_ORG}/{run['project']}"
+                        f"/_testPlans/define?planId={run['plan_id']}")
+        # Same structured-log shape as the desktop's email_log build (icon ·
+        # id · title · detail, not raw text) so the report reads the same.
+        email_log = []
+        for ln in _log_lines:
+            msg = ln.get("msg", "")
+            if not msg:
+                continue
+            email_log.append({
+                "msg": msg, "id": ln.get("id", ""), "ico": ln.get("ico", ""),
+                "detail": ln.get("detail", ""), "tone": ln.get("tone", "dim"),
+                "indent": bool(ln.get("indent")), "ar": bool(ln.get("ar"))})
+        html = E.build_report_email(
+            tool_name, rpt.get("summary") or summary or status, stats,
+            rpt.get("action_items", []), rpt.get("skipped_items", []),
+            per_story=rpt.get("per_story", []), plan_url=plan_url,
+            total_secs=_secs, log_lines=email_log,
+            org=E.AZURE_ORG, project=run.get("project"))
+        ok, err = E.send_report(to, f"QA Studio — {tool_name} report", html)
+        if ok:
+            _cb("log", {"tone": "ok", "msg": f"Report emailed to {', '.join(to)}"})
+        else:
+            _cb("log", {"tone": "warn", "ico": "✉", "msg": f"Report not emailed — {err}"})
+    except Exception as ex:
+        _cb("log", {"tone": "warn", "msg": f"Report email failed: {str(ex)[:160]}"})
+
+
 def main():
     run = _get_run()
     if run.get("status") not in ("queued", "running"):
@@ -223,6 +328,7 @@ def main():
     def cb(kind, payload):
         if kind == "done" and isinstance(payload, dict):
             done_box.update(payload)
+        _append_log_line(kind, payload)
         _cb(kind, payload)
 
     status, summary = "done", None
@@ -267,6 +373,20 @@ def main():
         time.sleep(1.5)          # let the flusher drain
         _ctrl_stop.set()
         _flush_events()
+        # Email BEFORE the status write, not after: status/summary are
+        # already final at this point (every branch above sets them before
+        # falling into finally), and _ENGINE (module global, set right after
+        # `import engine as E` above) survives even if the try block failed
+        # before that import somehow completed. Runs while _cb still logs to
+        # stdout AND remote_run_events (the second _flush_events() below
+        # catches the "Report emailed to…" line this adds), so the live
+        # viewer's activity feed shows the email attempt too, not just the
+        # Actions job log.
+        try:
+            _email_report(_ENGINE, run, status, summary, done_box)
+        except Exception as ex:
+            print(f"[worker] email report failed: {ex}", file=sys.stderr)
+        _flush_events()
         try:
             _patch_run({"status": status, "summary": summary,
                         "finished_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -274,6 +394,20 @@ def main():
         except Exception as ex:
             print(f"[worker] final status write failed: {ex}", file=sys.stderr)
     print(f"[worker] finished: {status} — {summary or 'ok'}")
+    # Only 'done'/'stopped' are real, expected outcomes — 'error' means the
+    # run never actually produced test cases (a crashed import, bad creds,
+    # provider failure the pause/resume loop couldn't recover, etc.). Every
+    # non-SystemExit failure above is caught by `except BaseException` so the
+    # row always gets a final status/summary — but that same catch meant
+    # main() always returned normally and the process exited 0, so the
+    # Actions job showed a green "succeeded" checkmark no matter what
+    # actually happened inside. Confirmed live: the missing-azure-module
+    # crash below looked identical, from the Actions UI, to a real success.
+    # Exiting nonzero here makes a genuine failure show up as a failed job —
+    # the same "loud, not silent" pattern build-apk.yml already uses for a
+    # missing signing secret.
+    if status == "error":
+        sys.exit(1)
 
 
 if __name__ == "__main__":

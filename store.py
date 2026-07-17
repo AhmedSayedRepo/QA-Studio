@@ -23,6 +23,11 @@ try:
 except Exception:
     _diag = None
 
+try:
+    import secure_store_mobile as _mobile
+except Exception:
+    _mobile = None
+
 CRED_DIR  = os.path.join(os.path.expanduser("~"), ".qa_tool")
 _DEFAULT_FILE = os.path.join(CRED_DIR, "creds.dat")
 # Active credential file. Switched to a per-user file via set_user() so different
@@ -42,6 +47,16 @@ def set_user(user_id):
         CRED_FILE = os.path.join(CRED_DIR, f"creds_{safe}.dat")
     else:
         CRED_FILE = _DEFAULT_FILE
+    # Mobile (see secure_store_mobile.py): keep the OS-keychain-backed store
+    # in sync with the same per-user split, so multiple signed-in accounts on
+    # one device never share credentials there either. No-op on desktop —
+    # _mobile.set_user() only does anything once secure_store_mobile.init()
+    # has actually run, which only happens when platform_caps.is_mobile().
+    if _mobile is not None:
+        try:
+            _mobile.set_user(uid)
+        except Exception:
+            pass
     return CRED_FILE
 
 _DPAPI_MAGIC = b"DPAPI1\n"   # marks a DPAPI-encrypted file (vs legacy base64)
@@ -182,7 +197,10 @@ def _decrypt(raw):
     return base64.b64decode(raw)              # legacy base64 file
 
 
-def load():
+def _load_from_file():
+    """The original DPAPI/Fernet/base64 file-based read. Split out from
+    load() so secure_store_mobile.py can read the legacy file directly (to
+    migrate it) without re-entering load()'s own mobile-first dispatch."""
     try:
         with open(CRED_FILE, "rb") as f:
             d = json.loads(_decrypt(f.read()).decode("utf-8"))
@@ -195,7 +213,41 @@ def load():
     return d
 
 
+def load():
+    # Mobile: prefer the OS-keychain-backed store (secure_store_mobile.py)
+    # once its async bootstrap has landed. Returns None before that (first
+    # launch, or the brief window right after a set_user() switch) — fall
+    # through to the file path exactly like before; the caller (main.py)
+    # gets a refresh callback once the real value arrives. Desktop never
+    # takes this branch: _mobile.load() only returns non-None once
+    # secure_store_mobile.init() ran, which only happens when
+    # platform_caps.is_mobile().
+    if _mobile is not None:
+        try:
+            cached = _mobile.load()
+        except Exception:
+            cached = None
+        if cached is not None:
+            d = dict(cached)
+            d.setdefault("keys", {})
+            d.setdefault("models", {})
+            d.setdefault("pat", "")
+            d.setdefault("gmail", "")
+            return d
+    return _load_from_file()
+
+
 def save(d):
+    # Mobile: write-through the in-memory cache immediately and dispatch the
+    # real OS-keychain write in the background (see secure_store_mobile.py
+    # for why this can never block). Returns True/False the same as the file
+    # path so callers don't need to know which backend is active.
+    if _mobile is not None:
+        try:
+            if _mobile.save(d):
+                return True
+        except Exception:
+            pass
     try:
         os.makedirs(CRED_DIR, exist_ok=True)
         blob = _encrypt(json.dumps(d).encode("utf-8"))

@@ -726,11 +726,14 @@ def user_id():
     return str(u.get("id") or "")
 
 
-def sync_remote_credentials(azure_org, azure_pat, ai_provider, ai_api_key, ai_model=""):
+def sync_remote_credentials(azure_org, azure_pat, ai_provider, ai_api_key, ai_model="",
+                            gmail_sender="", gmail_sender_name="", gmail_app_pass=""):
     """Upsert the CALLER'S OWN remote-run credentials (rpc set_my_credentials,
     SECURITY DEFINER keyed on auth.uid(); secret values land in Supabase Vault,
-    never in readable columns). Empty org/pat/provider/key leave the stored
-    value unchanged; ai_model always writes (empty = provider default).
+    never in readable columns). Empty org/pat/provider/key/gmail_* leave the
+    stored value unchanged; ai_model always writes (empty = provider default).
+    gmail_sender_name always writes too (empty is a valid choice — falls back
+    to the bare address, same as the desktop's own blank-name behavior).
     Returns (ok, message)."""
     if not configured():
         return False, "Supabase isn't configured."
@@ -744,7 +747,11 @@ def sync_remote_credentials(azure_org, azure_pat, ai_provider, ai_api_key, ai_mo
                                  "p_azure_pat": azure_pat or None,
                                  "p_ai_provider": ai_provider or None,
                                  "p_ai_api_key": ai_api_key or None,
-                                 "p_ai_model": "" if ai_model is None else str(ai_model)},
+                                 "p_ai_model": "" if ai_model is None else str(ai_model),
+                                 "p_gmail_sender": gmail_sender or None,
+                                 "p_gmail_sender_name": "" if gmail_sender_name is None
+                                                        else str(gmail_sender_name),
+                                 "p_gmail_app_pass": gmail_app_pass or None},
                            timeout=_TIMEOUT)
     except Exception as ex:
         if _diag: _diag.log("auth_supabase.sync_remote_credentials", ex)
@@ -755,11 +762,16 @@ def sync_remote_credentials(azure_org, azure_pat, ai_provider, ai_api_key, ai_mo
 
 
 def enqueue_remote_run(kind, project, plan_id, story_ids, existing_mode="skip",
-                       output_lang="ar"):
+                       output_lang="ar", email_recipients=None):
     """INSERT a remote_runs row AS the signed-in user (created_by = auth uid →
     the worker resolves THIS user's vault credentials). The DB trigger
     auto-dispatches the GitHub Actions workflow within seconds. Returns
-    (ok, run_id_or_error_message)."""
+    (ok, run_id_or_error_message).
+
+    email_recipients — same recipient list the desktop's local-run report
+    email uses (Setup's "Report Emails" field); the worker sends the exact
+    same build_report_email() report to every address once the run finishes,
+    same as a local run does today."""
     if not configured():
         return False, "Supabase isn't configured."
     tok = access_token()
@@ -771,6 +783,7 @@ def enqueue_remote_run(kind, project, plan_id, story_ids, existing_mode="skip",
            "story_ids": [int(s) for s in (story_ids or [])],
            "existing_mode": existing_mode or "skip",
            "output_lang": output_lang or "ar",
+           "email_recipients": [e.strip() for e in (email_recipients or []) if e.strip()],
            "created_by": uid}
     try:
         r = _client().post(f"{SUPABASE_URL}/rest/v1/remote_runs",
@@ -786,6 +799,128 @@ def enqueue_remote_run(kind, project, plan_id, story_ids, existing_mode="skip",
         return True, (r.json() or [{}])[0].get("id", "")
     except Exception:
         return True, ""
+
+
+def list_remote_runs(limit=30):
+    """The signed-in user's own remote runs, newest first — RLS already
+    scopes this to created_by = auth.uid() (remote_runs_select policy), so
+    no explicit filter is needed here; a signed-out/misconfigured caller
+    just gets []. Powers the Remote Runs list screen."""
+    if not configured():
+        return []
+    tok = access_token()
+    if not tok:
+        return []
+    try:
+        r = _client().get(f"{SUPABASE_URL}/rest/v1/remote_runs",
+                          headers={"Authorization": f"Bearer {tok}"},
+                          params={"select": "*", "order": "created_at.desc",
+                                  "limit": str(int(limit))},
+                          timeout=_TIMEOUT)
+        if r.status_code != 200:
+            return []
+        return r.json() or []
+    except Exception:
+        return []
+
+
+def get_remote_run(run_id):
+    """Full row for one run (status/control/summary/timestamps/kind/project/
+    plan_id/story_ids/email_recipients) — the detail view's poll target."""
+    if not configured() or not run_id:
+        return None
+    tok = access_token()
+    if not tok:
+        return None
+    try:
+        r = _client().get(f"{SUPABASE_URL}/rest/v1/remote_runs",
+                          headers={"Authorization": f"Bearer {tok}"},
+                          params={"id": f"eq.{run_id}", "select": "*"},
+                          timeout=_TIMEOUT)
+        if r.status_code != 200:
+            return None
+        rows = r.json()
+        return rows[0] if rows else None
+    except Exception:
+        return None
+
+
+def get_remote_run_events(run_id, after_seq=0, limit=500):
+    """Activity feed for one run, seq > after_seq — the detail view polls
+    this every ~2s while the run is live and appends only the new rows,
+    same incremental pattern run_worker.py's own control poller uses.
+    RLS (remote_run_events_select) already scopes this to events on a run
+    this user owns. Returns [] on any failure (never raises into the UI
+    poll loop)."""
+    if not configured() or not run_id:
+        return []
+    tok = access_token()
+    if not tok:
+        return []
+    try:
+        r = _client().get(f"{SUPABASE_URL}/rest/v1/remote_run_events",
+                          headers={"Authorization": f"Bearer {tok}"},
+                          params={"run_id": f"eq.{run_id}",
+                                  "seq": f"gt.{int(after_seq)}",
+                                  "select": "seq,kind,payload,created_at",
+                                  "order": "seq.asc", "limit": str(int(limit))},
+                          timeout=_TIMEOUT)
+        if r.status_code != 200:
+            return []
+        return r.json() or []
+    except Exception:
+        return []
+
+
+def set_remote_run_control(run_id, control):
+    """PATCH remote_runs.control (pause/resume/stop) — the worker's
+    _gate()/_control_poller() picks this up within ~2s. RLS
+    (remote_runs_update_control) restricts this to the run's own owner, same
+    as every other remote_runs write. `control=None` clears it (rarely
+    needed from the UI — the worker clears it itself on Resume). Returns
+    (ok, message)."""
+    if not configured() or not run_id:
+        return False, "Not signed in."
+    tok = access_token()
+    if not tok:
+        return False, "Not signed in."
+    if control not in ("pause", "resume", "stop", None):
+        return False, f"Invalid control value: {control!r}"
+    try:
+        r = _client().patch(f"{SUPABASE_URL}/rest/v1/remote_runs?id=eq.{run_id}",
+                            headers={"Authorization": f"Bearer {tok}",
+                                     "Prefer": "return=minimal"},
+                            json={"control": control}, timeout=_TIMEOUT)
+    except Exception as ex:
+        if _diag: _diag.log("auth_supabase.set_remote_run_control", ex)
+        return False, f"Network error: {str(ex)[:120]}"
+    if r.status_code not in (200, 204):
+        return False, _friendly(r)
+    return True, ""
+
+
+def get_remote_run_status(run_id):
+    """GET remote_runs.status for one run — used to gate the Start Run button
+    against duplicate dispatches of the SAME queued run until it reaches a
+    terminal state (done/stopped/error). Returns None on any failure (signed
+    out, network blip, row not found) so the caller fails OPEN — a status
+    check that can't complete must never permanently lock the button."""
+    if not configured() or not run_id:
+        return None
+    tok = access_token()
+    if not tok:
+        return None
+    try:
+        r = _client().get(f"{SUPABASE_URL}/rest/v1/remote_runs",
+                          headers={"Authorization": f"Bearer {tok}"},
+                          params={"id": f"eq.{run_id}", "select": "status"},
+                          timeout=_TIMEOUT)
+        if r.status_code != 200:
+            return None
+        rows = r.json()
+        return (rows[0].get("status") if rows else None)
+    except Exception:
+        return None
 
 
 def remote_credentials_status():

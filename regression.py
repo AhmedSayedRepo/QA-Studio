@@ -3534,6 +3534,42 @@ def _create_screen(app):
                             border_radius=T.R, keyboard_type=ft.KeyboardType.NUMBER,
                             content_padding=ft.Padding.symmetric(vertical=12, horizontal=10)))
 
+    _estimate_info_box = ft.Container(
+        ft.Row([
+            ft.Icon(ft.Icons.AUTO_GRAPH, size=16, color=T.VIOLET_INK),
+            ft.Column([
+                ft.Text("Estimates are complexity-based",
+                        size=11.5, weight=ft.FontWeight.BOLD, color=T.VIOLET_INK),
+                _txt("Each story's hours come from its content size "
+                     "(acceptance criteria + description) weighted by priority, "
+                     "scaled into this Min–Max range — bigger / higher-priority "
+                     "stories get more. Workload is then balanced by hours across "
+                     "resources. Hours & assignees stay editable below.",
+                     color=T.INK_2, size=11.5, no_wrap=False),
+            ], spacing=2, tight=True, expand=True),
+        ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.START),
+        expand=True, padding=12,
+        bgcolor=getattr(T, "VIOLET_SOFT", T.CARD_2), border_radius=T.R,
+        border=ft.Border.all(1, "#D9D2FF"))
+    _min_max_row = ft.Row([
+        ft.Column([field_label("Min h / story"), _num(app._cp_est_min, _on_min)],
+                  spacing=6),
+        ft.Column([field_label("Max h / story"), _num(app._cp_est_max, _on_max)],
+                  spacing=6),
+    ], spacing=14, vertical_alignment=ft.CrossAxisAlignment.START)
+    import platform_caps as _pc_est
+    if _pc_est.is_mobile():
+        # Min h/story + Max h/story (two fixed-width=92 fields) + the
+        # explanation box used to fight for space in a single 3-way Row —
+        # on a ~390px phone that left the info box a barely-readable sliver
+        # (the same squeeze pattern as card2/card3 above). Min/Max are narrow
+        # enough to stay paired; the info box drops to its own full-width row.
+        estimate_row = ft.Column([_min_max_row, ft.Container(height=10),
+                                   _estimate_info_box], spacing=0)
+    else:
+        estimate_row = ft.Row([_min_max_row, _estimate_info_box], spacing=14,
+                              vertical_alignment=ft.CrossAxisAlignment.START)
+
     card2 = card(ft.Column([
         sec_head("2", "Resources & estimate"),
         ft.Container(height=10),
@@ -3543,29 +3579,7 @@ def _create_screen(app):
         ], spacing=14, vertical_alignment=ft.CrossAxisAlignment.START),
         warn,
         ft.Container(height=14),
-        ft.Row([
-            ft.Column([field_label("Min h / story"), _num(app._cp_est_min, _on_min)],
-                      spacing=6),
-            ft.Column([field_label("Max h / story"), _num(app._cp_est_max, _on_max)],
-                      spacing=6),
-            ft.Container(
-                ft.Row([
-                    ft.Icon(ft.Icons.AUTO_GRAPH, size=16, color=T.VIOLET_INK),
-                    ft.Column([
-                        ft.Text("Estimates are complexity-based",
-                                size=11.5, weight=ft.FontWeight.BOLD, color=T.VIOLET_INK),
-                        _txt("Each story's hours come from its content size "
-                             "(acceptance criteria + description) weighted by priority, "
-                             "scaled into this Min–Max range — bigger / higher-priority "
-                             "stories get more. Workload is then balanced by hours across "
-                             "resources. Hours & assignees stay editable below.",
-                             color=T.INK_2, size=11.5, no_wrap=False),
-                    ], spacing=2, tight=True, expand=True),
-                ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.START),
-                expand=True, padding=12,
-                bgcolor=getattr(T, "VIOLET_SOFT", T.CARD_2), border_radius=T.R,
-                border=ft.Border.all(1, "#D9D2FF")),
-        ], spacing=14, vertical_alignment=ft.CrossAxisAlignment.START),
+        estimate_row,
     ], spacing=0))
 
     # ── Assign & Estimate button ──
@@ -5506,11 +5520,24 @@ def screen(app):
                                          # progress (the _work closure may predate the
                                          # busy re-render, so target the latest one)
 
+    # card2 (Sprint Capacity) + card3 (Effort mode — its "on" body carries
+    # formula pills, a dropdown and numeric fields, see the comment above
+    # _build_card3_body) were always laid out side-by-side via expand=1/expand=1,
+    # which is fine at desktop widths but on a ~390px phone splits into two
+    # ~185px columns and squeezes card3's content down to a barely-readable
+    # sliver. Stack them vertically on mobile instead — same cards, same
+    # content, just one per row so nothing has to shrink below its own
+    # minimum content width. Desktop keeps the original side-by-side Row.
+    import platform_caps as _pc_cards
+    if _pc_cards.is_mobile():
+        _cards_row = ft.Column([card2, ft.Container(height=14), card3], spacing=0)
+    else:
+        _cards_row = ft.Row([ft.Container(card2, expand=1),
+                              ft.Container(card3, expand=1)],
+                             spacing=14,
+                             vertical_alignment=ft.CrossAxisAlignment.START)
     body_children = [card1, ft.Container(height=14),
-                     ft.Row([ft.Container(card2, expand=1),
-                             ft.Container(card3, expand=1)],
-                            spacing=14,
-                            vertical_alignment=ft.CrossAxisAlignment.START),
+                     _cards_row,
                      ft.Container(height=16), calc_btn, gen_spinner, calc_note_wrap]
     if results is not None:
         body_children += [ft.Container(height=16), results]

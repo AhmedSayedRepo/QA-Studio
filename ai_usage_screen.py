@@ -266,12 +266,26 @@ def _report_body(app, is_admin):
             content_padding=ft.Padding.symmetric(vertical=6, horizontal=10))),
     ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
-    tiles = ft.Row([
+    _stat_tiles = [
         stat_tile("Calls", t.get("calls", 0), tone="violet"),
         stat_tile("Input Tokens", t.get("input_tokens", 0)),
         stat_tile("Output Tokens", t.get("output_tokens", 0)),
         stat_tile("Est. Cost", f'${t.get("cost_usd", 0):.2f}', tone="green"),
-    ], spacing=10)
+    ]
+    import platform_caps as _pc_tiles
+    if _pc_tiles.is_mobile():
+        # stat_tile() is expand=True and built for a Row of ~4 sharing a wide
+        # desktop card — cramming all 4 into one Row on a ~390px phone left
+        # each tile a sliver too narrow for its own number ("Input Tokens"
+        # can run 5-6 digits), truncating the label/value. 2x2 grid instead:
+        # same tiles, twice the width each.
+        tiles = ft.Column([
+            ft.Row(_stat_tiles[0:2], spacing=10),
+            ft.Container(height=10),
+            ft.Row(_stat_tiles[2:4], spacing=10),
+        ], spacing=0)
+    else:
+        tiles = ft.Row(_stat_tiles, spacing=10)
 
     unpriced_note = (ft.Container(
         ft.Row([ft.Icon(ft.Icons.INFO_OUTLINE, size=15, color=T.AMBER),

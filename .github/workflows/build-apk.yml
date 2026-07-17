@@ -48,7 +48,14 @@ jobs:
           # engine.local_version() (reads this file) against the repo's copy —
           # without it local_version() returns 0.0.0 and every launch nags.
           cp VERSION /tmp/mobile/ 2>/dev/null || true
-          printf "flet==0.85.3\nrequests\n" > /tmp/mobile/requirements.txt
+          # flet-secure-storage: Flet's own first-party wrapper around
+          # Flutter's flutter_secure_storage plugin (Android Keystore / iOS
+          # Keychain backed). Unlike `cryptography` (deliberately excluded
+          # above - a Rust/OpenSSL-backed wheel, real cross-compile risk),
+          # this ships as a pure-Python (py3-none-any) wheel; the native code
+          # lives in the bundled Flutter/Dart plugin, which `flet build apk`
+          # compiles the normal Flutter-plugin way, not via pip.
+          printf "flet==0.85.3\nrequests\nflet-secure-storage==0.85.3\n" > /tmp/mobile/requirements.txt
 
       # INCIDENT this step guards against: with no signing config, each CI run
       # got a fresh, random debug-style key from the ephemeral runner (a new

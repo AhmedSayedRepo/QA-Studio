@@ -126,9 +126,11 @@ def screen(app):
             ft.Text("REMOTE RUNS", size=11, weight=ft.FontWeight.BOLD, color=T.INK_3),
             ft.Container(height=4),
             srow("Credentials for remote & mobile runs",
-                 "Stores your Azure PAT and AI key in your private encrypted "
-                 "vault (Supabase) so runs can execute server-side as you. "
-                 "Re-sync after changing provider or rotating a key.",
+                 "Stores your Azure PAT, AI key, and Gmail App Password in "
+                 "your private encrypted vault (Supabase) so runs can "
+                 "execute server-side as you and email you the report on "
+                 "completion, same as a local run. Re-sync after changing "
+                 "provider, rotating a key, or updating your App Password.",
                  ghost_btn("Sync now", icon=_ic("CLOUD_SYNC_OUTLINED", "SYNC"),
                            on_click=(None if ro else
                                      (lambda e: app._sync_remote_creds(_remote_status))))),

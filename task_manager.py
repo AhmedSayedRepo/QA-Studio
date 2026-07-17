@@ -1473,14 +1473,32 @@ def screen(app):
                     focused_border_color=T.VIOLET, border_radius=T.R, width=110, disabled=_ro,
                     hint_text="hours", keyboard_type=ft.KeyboardType.NUMBER,
                     content_padding=ft.Padding.symmetric(vertical=8, horizontal=10))
-                fields_row = ft.Row([
-                    ft.Container(width=80),
-                    due_field,
-                    ft.Column([ft.Text("Original estimate", size=10.5, weight=ft.FontWeight.BOLD,
-                                      color=T.INK_3), hover_field(est_tf)], spacing=6, tight=True),
-                    ft.Column([ft.Text("Completed work", size=10.5, weight=ft.FontWeight.BOLD,
-                                      color=T.INK_3), hover_field(comp_tf)], spacing=6, tight=True),
-                ], spacing=14, vertical_alignment=ft.CrossAxisAlignment.END)
+                est_block = ft.Column([ft.Text("Original estimate", size=10.5,
+                                              weight=ft.FontWeight.BOLD, color=T.INK_3),
+                                       hover_field(est_tf)], spacing=6, tight=True)
+                comp_block = ft.Column([ft.Text("Completed work", size=10.5,
+                                                weight=ft.FontWeight.BOLD, color=T.INK_3),
+                                        hover_field(comp_tf)], spacing=6, tight=True)
+                import platform_caps as _pc_tm
+                if _pc_tm.is_mobile():
+                    # Desktop packs due_field(150) + a leading 80px alignment spacer
+                    # + two 110-wide estimate boxes into one Row — 492px minimum
+                    # before spacing, well past a ~390px phone, which is why Due
+                    # date/Original estimate were getting clipped. Mobile drops the
+                    # purely-cosmetic alignment spacer and wraps to two rows: Due
+                    # date alone, then the two 110px estimate boxes together
+                    # (220px + spacing comfortably fits).
+                    fields_row = ft.Column([
+                        due_field,
+                        ft.Container(height=10),
+                        ft.Row([est_block, comp_block], spacing=14,
+                               vertical_alignment=ft.CrossAxisAlignment.END),
+                    ], spacing=0)
+                else:
+                    fields_row = ft.Row([
+                        ft.Container(width=80),
+                        due_field, est_block, comp_block,
+                    ], spacing=14, vertical_alignment=ft.CrossAxisAlignment.END)
 
                 row_blocks.append(ft.Container(
                     ft.Column([title_row, ft.Container(height=10), fields_row], spacing=0),

@@ -30,6 +30,7 @@ import task_manager
 import auth_supabase as auth
 import users_screen
 import ai_usage_screen
+import remote_runs_screen
 import useful_links
 import settings
 import run
@@ -82,6 +83,19 @@ class QAStudio:
         # renders can still BUILD their control trees fully in parallel and
         # only briefly wait on each other at the actual hand-off to Flet.
         self._render_lock = threading.Lock()
+        # Mobile only (no-op on desktop — see secure_store_mobile.py): kick
+        # off the async OS-keychain read BEFORE the first store.load() below,
+        # so the moment its bootstrap lands, _on_secure_creds_ready() has a
+        # real page/render to refresh. store.load() itself never blocks on
+        # this — it falls back to the legacy file until the callback fires.
+        if platform_caps.is_mobile():
+            try:
+                import secure_store_mobile
+                secure_store_mobile.init(
+                    self.page,
+                    on_ready=lambda: self.ui_safe(self._on_secure_creds_ready))
+            except Exception:
+                pass
         self.creds = store.load()
         self._migrate_key_slots()      # legacy per-provider keys → per-model slots
         # Restore the last-selected AI provider so it persists across app restarts.
@@ -439,7 +453,8 @@ class QAStudio:
                 "titles": "nav.sprint_report", "automation": "nav.automation",
                 "task_manager": "nav.task_manager",
                 "links": "nav.links", "settings": "nav.settings",
-                "users": "nav.users", "ai_usage": "nav.ai_usage"}.get(screen)
+                "users": "nav.users", "ai_usage": "nav.ai_usage",
+                "remote_runs": "nav.run"}.get(screen)
 
     def _screen_action_cap(self, screen):
         """Capability needed to ACT on a screen (None = the screen has no actions).
@@ -488,6 +503,50 @@ class QAStudio:
             self._bg(_work)
         except Exception:
             threading.Thread(target=_work, daemon=True).start()
+
+    def _on_secure_creds_ready(self):
+        """Mobile only: fired by secure_store_mobile once its async OS-
+        keychain read lands — the first launch, and again after every
+        _switch_user_creds() (which calls store.set_user() → re-bootstraps
+        for the new account). Deliberately narrow: refreshes ONLY the
+        credential-derived state store.load() populates, not a full
+        _switch_user_creds()-style reset — that would wipe out project/plan/
+        run state the user may have already touched in the brief window
+        before this callback fires.
+
+        Also re-applies theme and re-checks onboarding — both __init__'s
+        T.apply_theme(self.creds...) and the startup _maybe_show_onboarding()
+        call run BEFORE this callback ever fires (they're synchronous, this
+        is an async keychain read), so on mobile they always saw the empty/
+        default dict store.load() falls back to pre-bootstrap: theme came up
+        "light" regardless of the saved preference, and onboarding looked
+        never-completed (onboarded missing) EVERY launch even for a user who
+        finished it days ago. Redoing both here, once the real values exist,
+        fixes both without touching desktop (this callback is only ever
+        wired up when platform_caps.is_mobile())."""
+        self.creds = store.load()
+        self._migrate_key_slots()
+        _sp = self.creds.get("provider")
+        self._provider_choice = (_sp if _sp in E.AI_CONFIG
+                                 else (E.active_providers()[:1] or ["anthropic"])[0])
+        try:
+            T.apply_theme(self.creds.get("theme", "light"))
+            self.page.theme_mode = (ft.ThemeMode.DARK if T.MODE == "dark"
+                                    else ft.ThemeMode.LIGHT)
+        except Exception:
+            pass
+        self.render()
+        # One-shot: only the FIRST bootstrap of the app process drives the
+        # auto-onboarding check (matches desktop's single at-launch check).
+        # Later bootstraps (a mid-session account switch via
+        # _switch_user_creds) refresh theme/creds above but deliberately
+        # don't reopen onboarding on top of whatever the user is doing.
+        if not getattr(self, "_onboarding_auto_checked", False):
+            self._onboarding_auto_checked = True
+            try:
+                self._maybe_show_onboarding()
+            except Exception:
+                pass
 
     def _switch_user_creds(self):
         """Load the signed-in user's OWN credential store (per-user), so accounts on
@@ -888,6 +947,30 @@ class QAStudio:
                     on_hover=(self._rail_btn_hover(ft.Colors.with_opacity(0.04, "#FFFFFF"))
                               if self.active != "settings" else None))
                  if self.can("nav.settings") else ft.Container(height=0)),
+                # Remote Runs — GitHub-executed runs live status/activity viewer
+                # (REMOTE_RUNS.md). Shown only when Supabase sign-in is actually
+                # configured (remote runs don't exist otherwise) and the user can
+                # start runs at all (same cap "Run remotely" itself is gated on).
+                (ft.Container(
+                    ft.Row([
+                        ft.Icon(ft.Icons.CLOUD_QUEUE_OUTLINED, size=16,
+                                color=("#FFFFFF" if self.active == "remote_runs" else T.RAIL_INK)),
+                        ft.Text("Remote Runs", size=12, weight=ft.FontWeight.BOLD,
+                                color=("#FFFFFF" if self.active == "remote_runs" else T.RAIL_INK)),
+                        ft.Container(expand=True),
+                    ], spacing=9),
+                    on_click=lambda e: self.goto("remote_runs"),
+                    tooltip="Status & activity for runs executing on GitHub Actions",
+                    ink=True, padding=ft.Padding.symmetric(vertical=10, horizontal=12),
+                    margin=ft.Margin.only(left=10, right=10, bottom=4),
+                    border_radius=10,
+                    bgcolor=(ft.Colors.with_opacity(0.16, T.VIOLET) if self.active == "remote_runs"
+                             else ft.Colors.with_opacity(0.04, "#FFFFFF")),
+                    border=ft.Border.all(1, T.RAIL_LINE),
+                    offset=ft.Offset(0, 0), animate_offset=140,
+                    on_hover=(self._rail_btn_hover(ft.Colors.with_opacity(0.04, "#FFFFFF"))
+                              if self.active != "remote_runs" else None))
+                 if auth.configured() and self.can(auth.CAP_RUN) else ft.Container(height=0)),
                 # theme toggle (light default · dark secondary)
                 ft.Container(
                     ft.Row([
@@ -1107,15 +1190,45 @@ class QAStudio:
         else:
             head = title_ctl
         left = [head]
+        sub_ctl = None
         if sub:
-            left.append(ft.Text(sub, size=14, color=T.INK_2, weight=ft.FontWeight.W_500))
-        row = [ft.Column(left, spacing=3, tight=True), ft.Container(expand=True)]
+            sub_ctl = ft.Text(sub, size=14, color=T.INK_2, weight=ft.FontWeight.W_500)
+            left.append(sub_ctl)
+        title_col = ft.Column(left, spacing=3, tight=True)
+        _mobile = platform_caps.is_mobile()
+        if _mobile:
+            # Mobile header-overflow fix: `tight=True` sizes this column to
+            # its content's INTRINSIC width — for a Text with no wrap/width
+            # constraint that's "as wide as the whole string on one line",
+            # so any subtitle longer than a few words (e.g. "Manage who can
+            # access QA Studio and grant/revoke individual tabs and
+            # actions.") rendered straight past the physical screen edge
+            # instead of wrapping or truncating (confirmed live: Users, AI
+            # Usage, Regression Plan, Task Manager headers all cut off
+            # mid-word). Fix: let this column take the Row's real remaining
+            # width (expand=True) instead of a separate always-expand spacer
+            # fighting it for space, and ellipsize both lines at that width.
+            title_col.tight = False
+            title_col.expand = True
+            try:
+                title_ctl.overflow = ft.TextOverflow.ELLIPSIS
+            except Exception:
+                pass
+            if sub_ctl is not None:
+                try:
+                    sub_ctl.no_wrap = True
+                    sub_ctl.overflow = ft.TextOverflow.ELLIPSIS
+                except Exception:
+                    pass
+            row = [title_col]
+        else:
+            row = [title_col, ft.Container(expand=True)]
         if right:
             row.append(right)
         _acct = self._account_chip()
         if _acct is not None:
             row.append(_acct)
-        if platform_caps.is_mobile():
+        if _mobile:
             # Phone header (mobile Phase 2): hamburger opens the nav drawer —
             # shell() skips the permanent rail on mobile (it ate half the
             # width) — and the title shrinks so the row fits.
@@ -1249,12 +1362,67 @@ class QAStudio:
             if 0 <= i < len(ids) and ids[i] != getattr(self, "active", None):
                 self.goto(ids[i])
 
+        def _drawer_action(fn):
+            def _run(e):
+                self._close_nav_drawer()
+                fn()
+            return _run
+
+        # Everything below the nav list on desktop's rail() — Help & guide,
+        # Settings, the theme toggle, and the connection-status footer —
+        # never made it into the mobile drawer (confirmed live: only the
+        # T.NAV screen destinations showed). Same items, same handlers,
+        # just as ListTiles instead of rail()'s bespoke Containers — Flutter's
+        # NavigationDrawer only assigns selected_index among the actual
+        # NavigationDrawerDestination children, so mixing in plain
+        # tiles/dividers here is exactly what the leading spacer Container
+        # already did safely above.
+        _conn_color = T.GREEN if self.connected else T.INK_3
+        _prov = self.current_provider()
+        _conn_text = ((T.disp_name(_prov) + " · Claude") if (self.connected and _prov == "anthropic")
+                     else (T.disp_name(_prov) if self.connected else "Not connected"))
+        _conn_sub = "Connected" if self.connected else "Enter credentials"
+        extra = [
+            ft.Divider(height=1),
+            ft.ListTile(
+                leading=ft.Icon(ft.Icons.HELP_OUTLINE),
+                title=ft.Text("Help & guide", weight=ft.FontWeight.BOLD),
+                on_click=_drawer_action(self._open_help_guide)),
+        ]
+        if self.can("nav.settings"):
+            extra.append(ft.ListTile(
+                leading=ft.Icon(ft.Icons.SETTINGS_OUTLINED),
+                title=ft.Text("Settings", weight=ft.FontWeight.BOLD),
+                on_click=_drawer_action(lambda: self.goto("settings"))))
+        if auth.configured() and self.can(auth.CAP_RUN):
+            extra.append(ft.ListTile(
+                leading=ft.Icon(ft.Icons.CLOUD_QUEUE_OUTLINED),
+                title=ft.Text("Remote Runs", weight=ft.FontWeight.BOLD),
+                on_click=_drawer_action(lambda: self.goto("remote_runs"))))
+        extra.append(ft.ListTile(
+            leading=ft.Icon(ft.Icons.DARK_MODE_OUTLINED if T.MODE == "light"
+                            else ft.Icons.LIGHT_MODE_OUTLINED),
+            title=ft.Text("Dark mode" if T.MODE == "light" else "Light mode",
+                          weight=ft.FontWeight.BOLD),
+            trailing=ft.Text(T.MODE.upper(), size=10, weight=ft.FontWeight.BOLD,
+                             font_family=T.F_MONO),
+            on_click=_drawer_action(self._toggle_theme)))
+        extra.append(ft.Container(
+            ft.Row([
+                ft.Container(width=8, height=8, bgcolor=_conn_color, border_radius=4),
+                ft.Column([
+                    ft.Text(_conn_text, size=12, weight=ft.FontWeight.BOLD),
+                    ft.Text(_conn_sub, size=10.5, color=T.INK_3, weight=ft.FontWeight.BOLD),
+                ], spacing=1, tight=True),
+            ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=ft.Padding.symmetric(vertical=12, horizontal=16)))
+
         drawer = ft.NavigationDrawer(
             controls=[ft.Container(height=12)] + [
                 ft.NavigationDrawerDestination(
                     icon=getattr(ft.Icons, n.get("icon", "CIRCLE"), ft.Icons.CIRCLE),
                     label=n.get("label", n["id"]))
-                for n in items],
+                for n in items] + extra,
             selected_index=sel, on_change=_pick)
         self.page.drawer = drawer
         self._show_nav_drawer()
@@ -1553,6 +1721,9 @@ class QAStudio:
             *((("Go to Automation", ft.Icons.CODE, "automation selenium tests",
                 nav("automation")),) if platform_caps.has_automation() else ()),
             ("Go to Useful Links", _ic("BOOKMARK_BORDER","BOOKMARKS"), "links bookmarks", nav("links")),
+            *((("Go to Remote Runs", ft.Icons.CLOUD_QUEUE_OUTLINED,
+                "remote run github actions status activity", nav("remote_runs")),)
+              if auth.configured() and self.can(auth.CAP_RUN) else ()),
             ("Open Settings", ft.Icons.SETTINGS_OUTLINED, "settings preferences", nav("settings")),
             (("Switch to dark mode" if T.MODE == "light" else "Switch to light mode"),
              ft.Icons.DARK_MODE_OUTLINED, "theme dark light toggle",
@@ -1684,6 +1855,13 @@ class QAStudio:
         if screen == "ai_usage" and self.active != "ai_usage":
             self._usage_report = None
             self._usage_msg = None
+        # Remote Runs' detail view polls in a background loop (~every 2.5s)
+        # while a run is live. Leaving the screen via nav (Back button inside
+        # it already does this itself) must stop that loop too, or it keeps
+        # firing background re-renders of whatever screen the user moved to.
+        if self.active == "remote_runs" and screen != "remote_runs":
+            self._rr_poll_stop = True
+            self._rr_view_id = None
         self.active = screen
         self.render()
         # Opportunistically check for a newer version when the user navigates.
@@ -1764,6 +1942,8 @@ class QAStudio:
                 view = users_screen.screen(self)
             elif self.active == "ai_usage":
                 view = ai_usage_screen.screen(self)
+            elif self.active == "remote_runs":
+                view = remote_runs_screen.screen(self)
             elif self.active == "links":
                 view = self.useful_links_screen()
             elif self.active == "settings":
@@ -1996,11 +2176,19 @@ class QAStudio:
             self._check_mobile_update()
         except Exception:
             pass
-        # First-run onboarding (once, until "onboarded" is saved).
-        try:
-            self._maybe_show_onboarding()
-        except Exception:
-            pass
+        # First-run onboarding (once, until "onboarded" is saved). Mobile
+        # skips this synchronous check — at this point self.creds is still
+        # the pre-bootstrap default store.load() falls back to before the
+        # OS-keychain read lands (see secure_store_mobile.py / __init__),
+        # so "onboarded" always reads as missing there even for a user who
+        # finished onboarding days ago. _on_secure_creds_ready() runs this
+        # same check once the real value is in, exactly once per process.
+        if not platform_caps.is_mobile():
+            self._onboarding_auto_checked = True
+            try:
+                self._maybe_show_onboarding()
+            except Exception:
+                pass
         # Check for a newer version in the background (never blocks startup)
         self._kickoff_update_check()
 
@@ -2125,6 +2313,19 @@ class QAStudio:
             pass
 
     def _run_update_check(self):
+        # Desktop-only: this feeds the floating top-centre banner whose "Update
+        # now" button runs the zipball/.exe self-update (apply_update) — that
+        # mechanism doesn't exist on Android (an installed APK is immutable,
+        # which is why has_self_update() is False there; see platform_caps).
+        # Without this gate, _kickoff_update_check()'s startup+periodic loop
+        # and _maybe_check_update_on_nav()'s per-nav check both ran unconditionally
+        # on mobile too, popping this same desktop banner (sometimes more than
+        # once as nav-triggered re-renders repainted it) ON TOP OF the separate,
+        # intentional mobile-only notice (_check_mobile_update's centered
+        # dialog) — the "2 at the top + 1 in the middle" duplicate popups the
+        # user hit. Mobile's sole update path is now _check_mobile_update().
+        if not platform_caps.has_self_update():
+            return
         try:
             info = E.check_for_update()
             self._update_info = info
@@ -3836,7 +4037,8 @@ class QAStudio:
             # same activity log/stats state and Azure calls, so this isn't just
             # a UX nicety — starting a second run while one is live isn't safe.
             _run_busy = bool(getattr(self, "_run_active", False)
-                             or getattr(self, "_auto_running", False))
+                             or getattr(self, "_auto_running", False)
+                             or getattr(self, "_remote_run_active", False))
             return card(ft.Column([
                 ft.Text("THIS RUN", size=11, weight=ft.FontWeight.BOLD, color=T.VIOLET_INK),
                 ft.Container(height=13),
@@ -4459,7 +4661,8 @@ class QAStudio:
         # directly (e.g. a stray double-click event queued before the button
         # re-rendered disabled) — refuse here too rather than trusting the
         # UI alone to prevent a second run from starting.
-        if bool(getattr(self, "_run_active", False) or getattr(self, "_auto_running", False)):
+        if bool(getattr(self, "_run_active", False) or getattr(self, "_auto_running", False)
+               or getattr(self, "_remote_run_active", False)):
             self._err("A run is already in progress. Wait for it to finish or stop it first.")
             return
         # RBAC: Viewers (or any role without RUN) can't start a run.
@@ -6021,12 +6224,32 @@ class QAStudio:
                 ok, res = auth.enqueue_remote_run(
                     self.tool, self.project, self.plan_id, self.story_ids,
                     existing_mode=getattr(self, "existing_mode", "skip"),
-                    output_lang=E.OUTPUT_LANG)
+                    output_lang=E.OUTPUT_LANG,
+                    email_recipients=[e.strip() for e in
+                                      (getattr(self, "emails", "") or "").split(",")
+                                      if e.strip()])
                 self._unbusy()
                 if ok:
                     self._toast(f"Remote run queued ({str(res)[:8]}…) — executing "
                                 "on GitHub as you. Watch it in the repo's Actions tab; "
                                 "you can close the app.")
+                    # BUG FIX: enqueue is just a fast INSERT (the DB trigger
+                    # dispatches the workflow async) — _busy()/_unbusy() only
+                    # covered that brief round-trip, so the Start Run button
+                    # went right back to enabled while the actual remote job
+                    # was still queued/running for minutes on GitHub. Nothing
+                    # stopped tapping Start Run again for the identical
+                    # selection — confirmed live: two remote_runs rows for
+                    # the same project/plan/story 35 seconds apart, both
+                    # dispatched. _run_active/_auto_running (the local-run
+                    # busy flags _run_start_btn already checks) never applied
+                    # to the remote path at all. _remote_run_active now gates
+                    # the same button until this run reaches a terminal
+                    # status, polled via get_remote_run_status (no live
+                    # viewer yet — this is just enough to stop duplicates).
+                    self._remote_run_active = True
+                    self.ui_safe(self.render)
+                    self._poll_remote_run_done(res)
                 else:
                     self._err(f"Couldn't queue the remote run: {res}")
             except Exception as ex:
@@ -6034,6 +6257,33 @@ class QAStudio:
                 self._err(f"Couldn't queue the remote run: {str(ex)[:120]}")
         self._busy("Queuing remote run…")
         self._bg(work)
+
+    def _poll_remote_run_done(self, run_id):
+        """Background poll (every 5s) until `run_id` reaches a terminal
+        status (done/stopped/error) or a hard cap is hit, then clears
+        _remote_run_active so Start Run is usable again. Capped at 30 min of
+        polling (a stuck/lost row must never wedge the button shut forever —
+        fails OPEN); a status check that errors out just retries next tick
+        rather than counting toward the cap, since get_remote_run_status()
+        already returns None on transient failures."""
+        def work():
+            import time as _t
+            max_ticks = 360   # 360 * 5s = 30 min wall clock, regardless of
+                              # how many individual lookups come back None —
+                              # a network blip must count against the same
+                              # 30-minute cap, not reset it, or a sustained
+                              # outage would poll forever.
+            for _ in range(max_ticks):
+                _t.sleep(5)
+                status = auth.get_remote_run_status(run_id)
+                if status in ("done", "stopped", "error"):
+                    break
+            self._remote_run_active = False
+            self.ui_safe(self.render)
+        try:
+            self._bg(work)
+        except Exception:
+            self._remote_run_active = False
 
     def _check_mobile_update(self):
         """Mobile-only UPDATE NOTICE (option 1 of the mobile update plan):
@@ -6104,11 +6354,15 @@ class QAStudio:
 
     def _sync_remote_creds(self, status_ctl=None):
         """Settings → Remote runs: push the credentials THIS app is currently
-        using (Azure org/PAT + the active AI provider's key/model) to the
-        per-user Supabase vault (rpc set_my_credentials), so remote runs —
-        GitHub Actions worker, later the mobile app — execute AS this user.
-        No new form: the values were already entered in Setup; this is a
-        one-click sync of exactly what the app is connected with."""
+        using (Azure org/PAT + the active AI provider's key/model + Gmail app
+        password/sender) to the per-user Supabase vault (rpc
+        set_my_credentials), so remote runs — GitHub Actions worker, later
+        the mobile app — execute AS this user, AND can email the same report
+        the desktop's local runs already send. No new form: the values were
+        already entered in Setup; this is a one-click sync of exactly what
+        the app is connected with. Gmail is OPTIONAL here (unlike PAT/AI key)
+        — remote runs still work without it, they just won't be able to
+        email a report, same as a local run with no Gmail App Password set."""
         def work():
             try:
                 prov = E.AI_PROVIDER
@@ -6123,7 +6377,11 @@ class QAStudio:
                         "Connect Azure DevOps and the AI provider in Setup first — "
                         "Sync sends the credentials the app is currently using."))
                     return
-                ok, msg = auth.sync_remote_credentials(org, pat, prov, key, model)
+                ok, msg = auth.sync_remote_credentials(
+                    org, pat, prov, key, model,
+                    gmail_sender=(E.GMAIL_SENDER or "").strip(),
+                    gmail_sender_name=(E.GMAIL_SENDER_NAME or "").strip(),
+                    gmail_app_pass=(E.GMAIL_APP_PASS or "").strip())
                 st = auth.remote_credentials_status() if ok else None
                 def _apply():
                     (self._toast if ok else self._err)(msg)
@@ -6132,7 +6390,8 @@ class QAStudio:
                             f"Synced ✓ · {E.T_disp(st.get('ai_provider') or '')}"
                             + (f" · {st.get('ai_model')}" if st.get("ai_model") else "")
                             + f" · PAT {'✓' if st.get('has_pat') else '—'}"
-                            + f" · AI key {'✓' if st.get('has_key') else '—'}")
+                            + f" · AI key {'✓' if st.get('has_key') else '—'}"
+                            + f" · Gmail {'✓' if st.get('has_gmail') else '—'}")
                         status_ctl.color = T.GREEN
                         try:
                             status_ctl.update()
