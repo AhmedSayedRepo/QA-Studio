@@ -14,13 +14,19 @@ A fatal provider error takes the SAME path as the desktop's pause-on-error
 (engine's on_ai_error callback): status flips to 'paused', and the run waits
 for control='resume' (retry the failed item) or 'stop'.
 
-Environment (all provided by the GitHub Actions workflow from repo secrets):
+Credentials are PER USER: when the run row carries `created_by` (the app
+user's auth uid), the worker resolves that user's Azure PAT + AI provider/key
+via the `worker_get_credentials` RPC — a SECURITY DEFINER function backed by
+Supabase Vault that ONLY the service role may execute (verified: no anon/
+authenticated grants). They're re-fetched on every Resume after a provider
+error, so switching provider/key in the app rescues a paused remote run.
+
+Environment (from repo secrets):
     RUN_ID                       remote_runs.id to execute
     SUPABASE_URL                 https://<ref>.supabase.co
     SUPABASE_SERVICE_ROLE_KEY    service key (worker only — bypasses RLS)
-    AZURE_ORG / AZURE_PAT        Azure DevOps
-    QA_AI_PROVIDER / QA_AI_API_KEY / QA_AI_MODEL   AI provider (same names the
-                                 generated test projects already use)
+    AZURE_ORG / AZURE_PAT / QA_AI_*   OPTIONAL fallback used only when the run
+                                 has no created_by (local debugging).
 
 Run locally for debugging with the same env vars:  python run_worker.py
 """
@@ -56,6 +62,35 @@ def _get_run():
 
 def _patch_run(fields):
     _sb("PATCH", f"remote_runs?id=eq.{RUN_ID}", payload=fields)
+
+
+# Set by main() so _on_ai_error can re-apply credentials on Resume.
+_ENGINE = None
+_RUN = None
+
+
+def _apply_credentials(E, run):
+    """Per-user credentials (Supabase Vault, service-role-only RPC) when the
+    run carries created_by; env-var fallback otherwise (local debugging).
+    Returns a short description for the activity feed."""
+    uid = str(run.get("created_by") or "").strip()
+    if uid:
+        rows = _sb("POST", "rpc/worker_get_credentials", payload={"p_user_id": uid}) or []
+        c = rows[0] if rows else None
+        if (not c or not (c.get("azure_pat") or "").strip()
+                or not (c.get("ai_api_key") or "").strip()):
+            raise SystemExit(f"user {uid} has no complete credentials on file — "
+                             "set the Azure PAT and AI key in the app first")
+        E.reset_session_credentials(c.get("azure_org") or "", c["azure_pat"])
+        E.set_credentials(provider=c.get("ai_provider") or "anthropic",
+                          api_key=c["ai_api_key"],
+                          model=(c.get("ai_model") or "") or None)
+        return f"user {uid[:8]}… · {c.get('ai_provider') or 'anthropic'}"
+    E.reset_session_credentials(os.environ["AZURE_ORG"], os.environ["AZURE_PAT"])
+    E.set_credentials(provider=os.environ.get("QA_AI_PROVIDER", "anthropic"),
+                      api_key=os.environ.get("QA_AI_API_KEY", ""),
+                      model=os.environ.get("QA_AI_MODEL", "") or None)
+    return "environment credentials (no created_by on the run)"
 
 
 # ── event feed: buffered, batched, never allowed to kill the run ────────────
@@ -146,15 +181,25 @@ def _gate():
 def _on_ai_error(msg):
     """Fatal-provider-error pause — the engine already logged the error and
     the 'Paused on provider error…' line before calling this. Waits for
-    control='resume' (→ 'retry') or 'stop'. Provider/key changes for a remote
-    run mean updating the repo secrets, so 'resume' here mostly makes sense
-    after a rate-limit/credit top-up on the SAME provider."""
+    control='resume' (→ 'retry', with the user's credentials RE-FETCHED so a
+    provider/key change made in the app takes effect) or 'stop'."""
     _patch_run({"status": "paused"})
     while _ctrl["value"] not in ("resume", "stop"):
         time.sleep(1.0)
     if _ctrl["value"] == "stop":
         return "stop"
     _clear_control()
+    # Re-fetch the user's credentials before retrying — the whole point of a
+    # remote Resume is usually that they just switched provider / topped up
+    # credits / rotated a key in the app. Failure here is non-fatal: the
+    # engine re-reads the active provider on every attempt anyway.
+    try:
+        if _ENGINE is not None and _RUN is not None:
+            src = _apply_credentials(_ENGINE, _RUN)
+            _cb("log", {"msg": f"Credentials refreshed for retry — {src}", "tone": "dim"})
+    except BaseException as ex:  # noqa: BLE001 — never kill the pause gate
+        _cb("log", {"msg": f"Credential refresh failed ({str(ex)[:120]}) — "
+                           "retrying with the previous credentials", "tone": "warn"})
     _patch_run({"status": "running"})
     return "retry"
 
@@ -168,14 +213,6 @@ def main():
     threading.Thread(target=_event_flusher, daemon=True).start()
     threading.Thread(target=_control_poller, daemon=True).start()
 
-    import engine as E
-    E.set_output_lang(run.get("output_lang") or "ar")
-    E.reset_session_credentials(os.environ["AZURE_ORG"], os.environ["AZURE_PAT"])
-    E.set_credentials(provider=os.environ.get("QA_AI_PROVIDER", "anthropic"),
-                      api_key=os.environ.get("QA_AI_API_KEY", ""),
-                      model=os.environ.get("QA_AI_MODEL", "") or None)
-    E.clear_stop()
-
     done_box = {}
 
     def cb(kind, payload):
@@ -183,9 +220,20 @@ def main():
             done_box.update(payload)
         _cb(kind, payload)
 
-    story_ids = [int(s) for s in (run.get("story_ids") or [])]
     status, summary = "done", None
     try:
+        # Setup lives INSIDE the guarded block: a credentials/config failure
+        # here must still reach the `finally` status write — otherwise the
+        # row would sit as a zombie 'running' forever (it was patched to
+        # 'running' above, before anything could fail).
+        import engine as E
+        global _ENGINE, _RUN
+        _ENGINE, _RUN = E, run
+        E.set_output_lang(run.get("output_lang") or "ar")
+        cred_src = _apply_credentials(E, run)
+        _cb("log", {"msg": f"Remote run starting — credentials: {cred_src}", "tone": "dim"})
+        E.clear_stop()
+        story_ids = [int(s) for s in (run.get("story_ids") or [])]
         if run["kind"] == "titles":
             E.run_titles(run["project"], run["plan_id"], story_ids, cb,
                          should_stop=_should_stop, on_ai_error=_on_ai_error,
@@ -200,7 +248,11 @@ def main():
             status = "stopped"
         elif done_box.get("reason") in ("credit", "auth", "bad_model", "not_found", "network"):
             status = "error"
-    except SystemExit:
+    except SystemExit as ex:
+        # Deliberate abort (e.g. "user has no complete credentials on file"):
+        # mark the row 'error' with the message, then let the job exit nonzero.
+        status, summary = "error", str(ex)[:300]
+        _cb("log", {"msg": summary, "tone": "err"})
         raise
     except BaseException as ex:  # noqa: BLE001 — final status must always be written
         status, summary = "error", f"{type(ex).__name__}: {str(ex)[:300]}"

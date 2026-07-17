@@ -27,16 +27,12 @@ control: UPDATE control=            control: pause / resume / stop  ────
    RLS (authenticated app users read/write runs + read events; the worker uses
    the service-role key), both tables in the Realtime publication.
 2. **Repo secrets** (GitHub → Settings → Secrets and variables → Actions), on
-   `AhmedSayedRepo/qa-studio`:
+   `AhmedSayedRepo/qa-studio` — only TWO are required:
    | Secret | Value |
    |---|---|
    | `SUPABASE_URL` | `https://psiyktcrggmgralyswua.supabase.co` |
    | `SUPABASE_SERVICE_ROLE_KEY` | Supabase → Project Settings → API → service_role |
-   | `AZURE_ORG` | your Azure DevOps org |
-   | `AZURE_PAT` | a PAT scoped to work items + test management |
-   | `QA_AI_PROVIDER` | e.g. `anthropic` |
-   | `QA_AI_API_KEY` | that provider's key |
-   | `QA_AI_MODEL` | optional; provider default used if empty |
+   | `AZURE_ORG`/`AZURE_PAT`/`QA_AI_*` | OPTIONAL — env fallback used only for runs enqueued WITHOUT `created_by` (debugging) |
 3. **Push** this folder (the workflow only exists on GitHub once
    `.github/workflows/remote-run.yml` is pushed to `main`).
 
@@ -63,6 +59,34 @@ control: UPDATE control=            control: pause / resume / stop  ────
    ```
 4. Final state lands on the row: `status` (`done|stopped|error`), `summary`,
    `finished_at`.
+
+## Per-user credentials (migration `user_credentials_vault` — applied)
+Every user runs with THEIR OWN Azure PAT and AI provider/key, entered once in
+the app (mobile or desktop) and synced via Supabase:
+- **Storage**: secret values live in **Supabase Vault** (encrypted at rest);
+  `public.user_credentials` holds only vault secret IDs + non-secret metadata
+  (org, provider, model, timestamps).
+- **Access model (verified against pg catalogs after applying)**: the table
+  has NO client grants at all (RLS on; ACL = postgres + service_role only).
+  Clients use two SECURITY DEFINER RPCs — `set_my_credentials(...)` (writes
+  the caller's own row only, via `auth.uid()`) and
+  `get_my_credentials_status()` (masked: org/provider/model + has_pat/has_key
+  booleans, never values). The decrypting `worker_get_credentials(uuid)` is
+  executable by **service_role only** — unreachable from any app client.
+- **Worker resolution**: a run enqueued with `created_by = auth user id` makes
+  the worker fetch that user's credentials at start, and RE-FETCH them on
+  every Resume after a provider-error pause — so switching provider or
+  topping up credits in the app, then setting `control='resume'`, rescues a
+  paused remote run with the new credentials.
+- **Trust statement**: the service-role key (repo secret) can decrypt stored
+  credentials, and repo admins control the workflow that holds it — protect
+  `main` with branch protection; that key + repo write access is the root of
+  trust for this system.
+- **App integration**: the Setup/credentials screen calls
+  `rpc/set_my_credentials` with whatever the user typed (empty fields leave
+  the stored value unchanged) and renders state from
+  `rpc/get_my_credentials_status`. Runs are enqueued with
+  `created_by = <auth uid>`.
 
 ## Semantics & limits (deliberate)
 - **Pause-on-provider-error** works exactly like the desktop (engine
