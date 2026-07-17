@@ -61,3 +61,48 @@ def open_folder(path):
     except Exception:
         pass
     return False
+
+
+def reveal_export(page, path):
+    """MOBILE_PLAN.md Phase 0: every export writer (Regression/Sprint Plan/
+    AI Usage/Task Manager) hands back a path under a local app-data folder.
+    On desktop that's real and open_folder() pops Explorer at it. On mobile
+    that path is inside the app's sandboxed storage — there is no Explorer,
+    the user has no filesystem access to it at all, and a toast that just
+    prints the path is meaningless. The only way the file actually leaves
+    the device is the OS share sheet (ft.Share/ft.ShareFile — confirmed part
+    of core flet==0.85.3, no new native dependency, same posture as
+    mobile_wakelock.py).
+
+    Fire-and-forget via page.run_task(), same async-bridging shape used
+    throughout this codebase's mobile modules (see secure_store_mobile.py's
+    docstring for why: share_files() is `async def`, and blocking the
+    event-loop thread from a sync on_click handler would deadlock).
+    Desktop path is untouched — this only ever does something when
+    is_mobile() is True.
+    """
+    if not is_mobile() or page is None:
+        return False
+    try:
+        import flet as ft
+        if not hasattr(ft, "Share"):
+            return False
+    except Exception:
+        return False
+
+    async def _do():
+        try:
+            svc = ft.Share()
+            page.services.append(svc)
+            page.update()
+            await svc.share_files(
+                [ft.ShareFile.from_path(path, name=os.path.basename(path))],
+                title="Save or send file")
+        except Exception:
+            pass
+
+    try:
+        page.run_task(_do)
+        return True
+    except Exception:
+        return False

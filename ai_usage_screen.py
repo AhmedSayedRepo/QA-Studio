@@ -100,12 +100,16 @@ def _export(app, fmt):
         def work():
             try:
                 path = _EXPORTERS[fmt](report)
-                app.ui_safe(lambda p=path: app._toast(f"Saved {fmt.upper()}: {p}"))
                 try:
                     import platform_caps as _pc
-                    _pc.open_folder(os.path.dirname(path))   # Windows-only; safe no-op elsewhere
+                    if _pc.is_mobile():
+                        _pc.reveal_export(app.page, path)
+                        app.ui_safe(lambda: app._toast(f"{fmt.upper()} ready — choose where to save or send it."))
+                    else:
+                        app.ui_safe(lambda p=path: app._toast(f"Saved {fmt.upper()}: {p}"))
+                        _pc.open_folder(os.path.dirname(path))
                 except Exception:
-                    pass
+                    app.ui_safe(lambda p=path: app._toast(f"Saved {fmt.upper()}: {p}"))
             except Exception as ex:
                 app.ui_safe(lambda ex=ex: app._err(f"Export failed: {ex}"))
         threading.Thread(target=work, daemon=True).start()

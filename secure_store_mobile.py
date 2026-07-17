@@ -75,14 +75,40 @@ def init(page, on_ready=None):
     _page = page
     _on_ready = on_ready
     try:
-        # enforce_biometrics deliberately left False (the default): this
-        # feature exists so credentials DON'T need re-entering each launch —
-        # requiring a fingerprint/PIN prompt on every read would defeat that,
-        # and would throw on any device with no biometric enrolled. Keystore-
-        # backed encryption still applies either way.
+        # enforce_biometrics: opt-in via Settings (mobile_prefs.require_biometric,
+        # read synchronously below — see mobile_prefs.py). Left False by
+        # default: this feature exists so credentials DON'T need re-entering
+        # each launch — requiring a fingerprint/PIN prompt on every read
+        # would defeat that, and the plugin THROWS on any device with no
+        # biometric/PIN enrolled if forced on. Keystore-backed encryption
+        # still applies either way; this only gates whether unlocking it
+        # additionally needs a biometric/PIN check.
+        try:
+            import mobile_prefs as _mp
+            _want_bio = bool(_mp.get("require_biometric", False))
+        except Exception:
+            _want_bio = False
         _storage = fss.SecureStorage(
             android_options=fss.AndroidOptions(
-                reset_on_error=True, migrate_on_algorithm_change=True))
+                reset_on_error=True, migrate_on_algorithm_change=True,
+                enforce_biometrics=_want_bio),
+            ios_options=fss.IOSOptions())
+    except Exception:
+        _storage = None
+        return
+    # CRITICAL: SecureStorage (like every flet_secure_storage/flet control
+    # deriving from Service) does nothing until it's actually attached to
+    # the page — Service._invoke_method raises "Control must be added to
+    # the page first" if self.page is unset, which only happens once the
+    # control is mounted. Constructing it bare (the original bug here) left
+    # `page` never set, so the very first get()/set() call below would have
+    # raised on a real device — the sandboxed FakePage test harness used to
+    # verify this module doesn't model that requirement, which is how this
+    # slipped through. Same page.services.append(...) + page.update()
+    # pattern this app already uses for page.overlay (see dialogs.py).
+    try:
+        page.services.append(_storage)
+        page.update()
     except Exception:
         _storage = None
         return

@@ -55,7 +55,34 @@ jobs:
           # this ships as a pure-Python (py3-none-any) wheel; the native code
           # lives in the bundled Flutter/Dart plugin, which `flet build apk`
           # compiles the normal Flutter-plugin way, not via pip.
-          printf "flet==0.85.3\nrequests\nflet-secure-storage==0.85.3\n" > /tmp/mobile/requirements.txt
+          #
+          # azure-core/azure-devops/msrest: MOBILE_PLAN.md's header claimed
+          # "engine.py is pure-HTTP since the SDK removal" — false. engine.py
+          # still does `from azure.devops...` lazily inside create_test_case()
+          # and update_test_case_with_steps() (run_titles'/run_steps' actual
+          # Azure DevOps write calls), so without these packages every
+          # on-device Run crashes past Setup with "ModuleNotFoundError: No
+          # module named 'azure'" the moment it tries to create/update a test
+          # case — this build's minimal requirements never carried them.
+          # Found via the SAME bug in remote-run.yml's worker (every queued
+          # remote run failed identically, confirmed live against the
+          # remote_runs table) — pinned to the same versions as the desktop
+          # build's requirements.txt for consistency.
+          printf "flet==0.85.3\nrequests\nflet-secure-storage==0.85.3\nazure-core==1.41.0\nazure-devops==7.1.0b4\nmsrest==0.7.1\n" > /tmp/mobile/requirements.txt
+          # App icon: `flet build` only customizes the launcher icon if it
+          # finds <staged-app>/assets/icon.png (see flet_cli's customize_icons()
+          # — assets_path.exists() gates the whole step). This directory was
+          # never staged, so every APK build has shipped Flutter's own default
+          # template icon instead of the QA Studio logo — the reported
+          # "missing" app icon. Fixed by staging the same canonical brand
+          # asset every other surface already uses (qa-logo.png, falling back
+          # to app.png — see DEV_ROADMAP.md's app-icon entry for why those two
+          # are kept identical) as assets/icon.png, which flutter_launcher_icons
+          # then uses for both the regular launcher icon and, as a fallback,
+          # the Android adaptive-icon foreground.
+          mkdir -p /tmp/mobile/assets
+          cp qa-logo.png /tmp/mobile/assets/icon.png 2>/dev/null \
+            || cp app.png /tmp/mobile/assets/icon.png
 
       # INCIDENT this step guards against: with no signing config, each CI run
       # got a fresh, random debug-style key from the ephemeral runner (a new
@@ -92,7 +119,14 @@ jobs:
         run: |
           # `yes |` auto-answers any residual interactive confirm (e.g. flet
           # offering to install its own Flutter) — CI has no stdin.
-          yes | flet build apk --project "QA Studio" --org com.qastudio --verbose
+          # --android-adaptive-icon-background: qa-logo.png is a soft glow
+          # fading to transparent, not a filled square — without an explicit
+          # background Android's adaptive-icon mask can composite it onto a
+          # black system default depending on launcher/OEM. White matches the
+          # glow's own fade and every other white-card surface the logo
+          # already sits on in-app.
+          yes | flet build apk --project "QA Studio" --org com.qastudio \
+            --android-adaptive-icon-background "#FFFFFF" --verbose
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4

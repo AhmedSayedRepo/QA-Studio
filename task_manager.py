@@ -814,10 +814,14 @@ def _tm_export_row(app, res):
                         path = dest
                     try:
                         import platform_caps as _pc
-                        _pc.open_folder(os.path.dirname(path))   # Windows-only; safe no-op elsewhere
+                        if _pc.is_mobile():
+                            _pc.reveal_export(app.page, path)
+                            _notify("ok", f"{fmt.upper()} ready — choose where to save or send it.")
+                        else:
+                            _pc.open_folder(os.path.dirname(path))
+                            _notify("ok", f"Saved: {path}")
                     except Exception:
-                        pass
-                    _notify("ok", f"Saved: {path}")
+                        _notify("ok", f"Saved: {path}")
                 except ModuleNotFoundError as md:
                     _notify("err", f"Missing dependency: {md.name}")
                 except Exception as ex:

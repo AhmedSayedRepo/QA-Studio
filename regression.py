@@ -1658,10 +1658,18 @@ def _export_row(app, set_status=None):
                         path = dest
                     try:
                         import platform_caps as _pc
-                        _pc.open_folder(os.path.dirname(path))   # Windows-only; safe no-op elsewhere
+                        if _pc.is_mobile():
+                            # dest was never real here (_ask_save_path's tkinter
+                            # dialog doesn't exist on mobile, returns False) —
+                            # path is a sandboxed app-data file. Share sheet is
+                            # the only way it actually leaves the device.
+                            _pc.reveal_export(app.page, path)
+                            _notify("ok", f"{fmt.upper()} ready — choose where to save or send it.")
+                        else:
+                            _pc.open_folder(os.path.dirname(path))
+                            _notify("ok", f"Saved: {path}")
                     except Exception:
-                        pass
-                    _notify("ok", f"Saved: {path}")
+                        _notify("ok", f"Saved: {path}")
                 except ModuleNotFoundError:
                     _notify("err", f"Missing dependency: {_MISSING_DEP.get(fmt, fmt)}")
                 except Exception as ex:
@@ -4600,12 +4608,16 @@ def screen(app):
                 _perf_log(f"export {fmt} FAILED (save to {dest}):\n{_tb.format_exc()}")
                 app._reg_export_msg = ("err", f"Couldn't save there: {ex}")
                 return None
-        app._reg_export_msg = ("ok", f"Saved {fmt.upper()}: {path}")
         try:
             import platform_caps as _pc
-            _pc.open_folder(os.path.dirname(path))   # Windows-only; safe no-op elsewhere
+            if _pc.is_mobile():
+                _pc.reveal_export(app.page, path)
+                app._reg_export_msg = ("ok", f"{fmt.upper()} ready — choose where to save or send it.")
+            else:
+                _pc.open_folder(os.path.dirname(path))
+                app._reg_export_msg = ("ok", f"Saved {fmt.upper()}: {path}")
         except Exception:
-            pass
+            app._reg_export_msg = ("ok", f"Saved {fmt.upper()}: {path}")
         return path
 
     # Mutable status ref for in-place export/email banner updates.

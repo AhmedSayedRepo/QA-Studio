@@ -7,6 +7,7 @@ Appearance / Data & Diagnostics / Help & Reset cards; the segment builders
 import flet as ft
 import theme as T
 import regression
+import platform_caps
 from ui import _ic, card, ghost_btn, danger_btn
 
 
@@ -137,6 +138,39 @@ def screen(app):
             ft.Container(_remote_status, padding=ft.Padding.only(bottom=10)),
         ], spacing=0))
 
+        # ── Device security (mobile only) — biometric/PIN unlock for the
+        # OS-keychain credential store. Opt-in and off by default: forcing
+        # it on would throw on any device with no biometric/PIN enrolled
+        # (flet_secure_storage's own documented behavior), so this is a
+        # deliberate choice, not a default. Takes effect on next launch —
+        # the SecureStorage service for THIS session was already constructed
+        # with whatever the setting was at startup (see secure_store_mobile.
+        # init()), so flipping it live can't retroactively change that.
+        device_security = None
+        if platform_caps.is_mobile():
+            import mobile_prefs
+            _bio_on = bool(mobile_prefs.get("require_biometric", False))
+            _bio_note = ft.Text(
+                "Applies next time you open the app.",
+                size=11, color=T.INK_3, weight=ft.FontWeight.W_500)
+
+            def _bio_change(e):
+                mobile_prefs.set("require_biometric", bool(e.control.value))
+                app._toast("Saved — applies next time you open the app.")
+
+            device_security = card(ft.Column([
+                ft.Text("DEVICE SECURITY", size=11, weight=ft.FontWeight.BOLD, color=T.INK_3),
+                ft.Container(height=4),
+                srow("Require biometric/PIN unlock",
+                     "Adds a fingerprint/face/PIN prompt before this device's "
+                     "stored credentials can be read. Off by default so "
+                     "reopening the app never needs re-entering them; needs "
+                     "a biometric or PIN already set up on this device.",
+                     ft.Switch(value=_bio_on, active_color=T.VIOLET, disabled=ro,
+                               on_change=(None if ro else _bio_change))),
+                ft.Container(_bio_note, padding=ft.Padding.only(bottom=6)),
+            ], spacing=0))
+
         reset = card(ft.Column([
             ft.Text("HELP & RESET", size=11, weight=ft.FontWeight.BOLD, color=T.INK_3),
             ft.Container(height=4),
@@ -152,7 +186,8 @@ def screen(app):
                             on_click=lambda e: app._reset_prefs())),
         ], spacing=0))
 
-        cards = [appearance, data, remote] + ([security] if security else []) + [reset]
+        cards = ([appearance, data, remote] + ([security] if security else [])
+                 + ([device_security] if device_security else []) + [reset])
         body = ft.Column(cards, spacing=16, scroll=ft.ScrollMode.AUTO, expand=True)
         return app.shell("Settings", "Preferences for this device", body)
 

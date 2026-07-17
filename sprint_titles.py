@@ -918,12 +918,16 @@ def screen(app):
             def _w():
                 try:
                     p = _export_docx(app)
-                    app.ui_safe(lambda: app._toast(f"Saved Word document: {p}"))
                     try:
                         import platform_caps as _pc
-                        _pc.open_folder(os.path.dirname(p))   # Windows-only; safe no-op elsewhere
+                        if _pc.is_mobile():
+                            _pc.reveal_export(app.page, p)
+                            app.ui_safe(lambda: app._toast("Word document ready — choose where to save or send it."))
+                        else:
+                            _pc.open_folder(os.path.dirname(p))
+                            app.ui_safe(lambda: app._toast(f"Saved Word document: {p}"))
                     except Exception:
-                        pass
+                        app.ui_safe(lambda: app._toast(f"Saved Word document: {p}"))
                 except ImportError:
                     app.ui_safe(lambda: app._err("Word export needs python-docx."))
                 except Exception as ex:

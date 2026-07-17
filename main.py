@@ -96,6 +96,16 @@ class QAStudio:
                     on_ready=lambda: self.ui_safe(self._on_secure_creds_ready))
             except Exception:
                 pass
+            # MOBILE_PLAN.md Phase 3 Step 1 — keep-screen-awake during an
+            # active run. Attaching the Wakelock service now (cheap,
+            # side-effect-free until enable() is actually called) means
+            # _set_run_active() below never needs to touch page.services
+            # from inside a run's hot path.
+            try:
+                import mobile_wakelock
+                mobile_wakelock.init(self.page)
+            except Exception:
+                pass
         self.creds = store.load()
         self._migrate_key_slots()      # legacy per-provider keys → per-model slots
         # Restore the last-selected AI provider so it persists across app restarts.
@@ -2063,6 +2073,18 @@ class QAStudio:
             self.page.on_keyboard_event = self._on_key
         except Exception:
             pass
+        # MOBILE_PLAN.md Phase 3 Step 1: "warn on background attempt". A run
+        # is worker threads calling Azure + AI for minutes — phones suspend
+        # backgrounded apps (iOS kills the sockets outright), so there's
+        # nothing to actually DO here except make sure the user finds out,
+        # rather than silently losing progress with no explanation. See
+        # _on_app_lifecycle_change's docstring for why the warning fires on
+        # RETURN, not on the way out.
+        if platform_caps.is_mobile():
+            try:
+                self.page.on_app_lifecycle_state_change = self._on_app_lifecycle_change
+            except Exception:
+                pass
         # Client-side (Flutter) render errors were previously INVISIBLE: a
         # widget subtree that fails to build on the Dart side just paints a
         # flat grey placeholder with nothing surfacing back to Python, so a
@@ -2228,6 +2250,55 @@ class QAStudio:
                 self.page.update()
         except Exception:
             pass
+        # MOBILE_PLAN.md Phase 3 Step 1: keep the screen awake for the
+        # duration of a LOCAL run (worker threads calling Azure + AI for
+        # minutes) — phones suspend backgrounded apps and iOS kills sockets
+        # mid-run, so "stay open and awake" is the whole v1 contract here.
+        # Remote runs don't need this: they execute on GitHub, which is the
+        # entire point of "you can close the app" for that path.
+        if platform_caps.is_mobile():
+            try:
+                import mobile_wakelock
+                (mobile_wakelock.enable if active else mobile_wakelock.disable)()
+            except Exception:
+                pass
+
+    def _on_app_lifecycle_change(self, e):
+        """Mobile-only (see _build()'s wiring): MOBILE_PLAN.md Phase 3 Step 1's
+        "warn on background attempt". The warning deliberately fires on the
+        way BACK (RESUME/RESTART/SHOW), not the way OUT (PAUSE/HIDE/INACTIVE)
+        — a toast queued right as the OS is suspending the app has no
+        reliable chance to actually render before the process freezes, so
+        warning on return is the only version of this that a user can
+        actually see. A best-effort log line is still appended immediately
+        on the way out too (cheap, and occasionally does make it through),
+        purely as a timestamped breadcrumb in the run's own activity log."""
+        try:
+            state = str(getattr(e, "state", "") or "")
+        except Exception:
+            return
+        state = state.lower().rsplit(".", 1)[-1]   # enum str() vs .value, either shape
+        running = bool(getattr(self, "_run_active", False)
+                       or getattr(self, "_auto_running", False))
+        if state in ("pause", "hide", "inactive"):
+            if running:
+                self._mobile_bg_during_run = True
+                try:
+                    self._log_lines.append({
+                        "tone": "warn", "ico": "⏸",
+                        "msg": "App backgrounded — Azure/AI calls in flight may be "
+                               "interrupted if the OS suspends the process."})
+                except Exception:
+                    pass
+            return
+        if state in ("resume", "restart", "show") and getattr(self, "_mobile_bg_during_run", False):
+            self._mobile_bg_during_run = False
+            try:
+                self._toast("Welcome back — the app was backgrounded during a run; "
+                           "check the activity log for anything that may have been "
+                           "interrupted.")
+            except Exception:
+                pass
 
     def _on_window_event(self, e):
         """Best-effort confirm-on-close while a run is active. If a run is NOT
@@ -5066,7 +5137,17 @@ class QAStudio:
                         ft.Text("Preparing stories…", size=12.5, color=T.INK_3,
                                 weight=ft.FontWeight.BOLD)], spacing=10),
                 padding=14)]
-        # 2-column grid
+        # MOBILE_PLAN.md Phase 2 explicitly called this out: "the Run
+        # screen's story grid + stats row need to collapse to a vertical
+        # list" — the stats row already wraps (see run.py), but this grid
+        # never got the same treatment. A card packs a 46px progress ring +
+        # an expanding title/id column + a status/count column; halving its
+        # width in a 2-column grid on a ~390px phone squeezes all three into
+        # the same "1-char-wide" pattern fixed elsewhere this session
+        # (Regression/Sprint Plan/AI Usage). One card per row on mobile.
+        if platform_caps.is_mobile():
+            return [ft.Container(c, padding=ft.Padding.only(bottom=12)) for c in cards]
+        # 2-column grid (desktop)
         rows = []
         for i in range(0, len(cards), 2):
             pair = cards[i:i+2]
