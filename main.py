@@ -293,8 +293,20 @@ class QAStudio:
         # the app open straight into the signed-in UI — no flash of a sign-in
         # screen. The just-issued token is unexpired, so this is a local read (no
         # network). The async restore below still covers the token-refresh case.
+        #
+        # Mobile + "Require biometric/PIN unlock": skip this entirely. The
+        # cached-session file (auth_supabase.py's _load_session/_save_session)
+        # is a plain encrypted FILE, unrelated to secure_store_mobile's OS-
+        # keychain vault — silently restoring straight from it would let
+        # anyone with the phone unlocked skip past the sign-in screen with no
+        # fingerprint/PIN check at all, defeating the whole point of turning
+        # that setting on ("I need it to be used in login"). Deferred instead
+        # to _on_secure_creds_ready(), gated on secure_store_mobile's own
+        # enforce_biometrics=True read actually succeeding THIS launch — see
+        # that method's biometric-gate block and secure_store_mobile.py's
+        # bio_required()/bio_gate_passed().
         try:
-            if auth.configured():
+            if auth.configured() and not self._biometric_login_gate_active():
                 _u0 = auth.acquire_silent()
                 if _u0:
                     self.user = _u0
@@ -446,6 +458,13 @@ class QAStudio:
         """Silently restore a signed-in session on startup (off the UI thread)."""
         if not auth.configured():
             return
+        # Same biometric gate as __init__'s synchronous restore above — this
+        # background path calls acquire_silent() unconditionally otherwise,
+        # which would silently sign the user back in (bypassing biometrics
+        # entirely) moments after the sync path deliberately skipped it.
+        # _on_secure_creds_ready() performs the actual gated restore instead.
+        if self._biometric_login_gate_active():
+            return
         def work():
             try:
                 u = auth.acquire_silent()
@@ -459,6 +478,20 @@ class QAStudio:
             self._bg(work)
         except Exception:
             threading.Thread(target=work, daemon=True).start()
+
+    def _biometric_login_gate_active(self):
+        """True when a returning user's cached session must NOT be silently
+        restored yet — mobile only, only while "Require biometric/PIN
+        unlock" is on (Settings > DEVICE SECURITY). mobile_prefs is
+        synchronous/durable (see mobile_prefs.py) so this is safe to call
+        from __init__ before anything async has landed."""
+        if not platform_caps.is_mobile():
+            return False
+        try:
+            import mobile_prefs
+            return bool(mobile_prefs.get("require_biometric", False))
+        except Exception:
+            return False
 
     def can(self, capability):
         """True if the current user may use `capability`. When auth is unconfigured
@@ -570,6 +603,26 @@ class QAStudio:
                              "“Require biometric/PIN unlock” was turned back off.")
         except Exception:
             pass
+        # Biometric-gated login: __init__/_restore_session_async both
+        # deliberately skipped auto-restoring a cached Supabase session when
+        # _biometric_login_gate_active() was true, so the login screen shows
+        # FIRST instead of silently signing the user in. This is the moment
+        # that gate gets resolved — secure_store_mobile's OS-keychain read
+        # (built with enforce_biometrics=True whenever this setting is on,
+        # see its init()) has now either succeeded, meaning the user just
+        # passed a real fingerprint/PIN/Face check, or failed and already
+        # auto-reverted the setting above. Only restore the session in the
+        # SUCCESS case — a failed/canceled/reverted check must fall through
+        # to the ordinary email+password sign-in screen, never silently in.
+        if self.user is None:
+            try:
+                import secure_store_mobile as _ssm
+                if _ssm.bio_required() and _ssm.bio_gate_passed():
+                    _u0 = auth.acquire_silent()
+                    if _u0:
+                        self.user = _u0
+            except Exception:
+                pass
         if getattr(self, "_theme_touched", False):
             # The user already toggled the theme locally (e.g. tapped it on
             # the login screen) since launch, possibly WHILE this bootstrap

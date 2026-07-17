@@ -51,6 +51,13 @@ _on_ready = None             # callback re-invoked after every (re)bootstrap
 _bio_reverted = False        # set True when a biometric-gated read failed and
                               # require_biometric got auto-turned back off —
                               # main.py polls/consumes this to toast the user
+_bio_required = False         # snapshot of require_biometric at init() time —
+                              # main.py's login-gate check (_on_secure_creds_
+                              # ready) uses this to know whether a gate was
+                              # even in play for THIS launch
+_bio_gate_passed = False      # True once this launch's biometric/PIN check
+                              # has actually succeeded (or immediately, if
+                              # biometrics wasn't required — nothing to gate)
 
 
 def available():
@@ -68,7 +75,7 @@ def init(page, on_ready=None):
     right where store.load() is first called. Registers on_ready (invoked
     every time a (re)bootstrap completes, including later set_user() calls)
     and kicks off the first read."""
-    global _storage, _page, _on_ready
+    global _storage, _page, _on_ready, _bio_required, _bio_gate_passed
     if not available():
         return
     try:
@@ -91,6 +98,8 @@ def init(page, on_ready=None):
             _want_bio = bool(_mp.get("require_biometric", False))
         except Exception:
             _want_bio = False
+        _bio_required = _want_bio
+        _bio_gate_passed = not _want_bio   # nothing to gate → treat as passed
         _storage = fss.SecureStorage(
             android_options=fss.AndroidOptions(
                 # reset_on_error=True is flet_secure_storage's own recovery
@@ -156,7 +165,7 @@ def set_user(uid):
 
 
 async def _bootstrap():
-    global _cache, _bio_reverted
+    global _cache, _bio_reverted, _bio_gate_passed
     key = _key
     try:
         raw = await _storage.get(key)
@@ -167,6 +176,13 @@ async def _bootstrap():
                 await _storage.set(key, json.dumps(data))
         if _key == key:      # a later set_user() may have moved on already
             _cache = data if data is not None else {}
+        if _bio_required:
+            # A biometric-gated get() just returned successfully, which on
+            # Android only happens after the user actually passes the native
+            # fingerprint/PIN/Face prompt — this is the real "login gate"
+            # signal main.py's _on_secure_creds_ready() waits on before it's
+            # willing to silently restore a cached Supabase session.
+            _bio_gate_passed = True
     except Exception:
         if _key == key:
             _cache = _cache or {}
@@ -202,6 +218,23 @@ def consume_bio_revert():
     was = _bio_reverted
     _bio_reverted = False
     return was
+
+
+def bio_required():
+    """True if 'Require biometric/PIN unlock' was on when init() ran THIS
+    launch — a snapshot, not a live re-read, so it can't change mid-session
+    out from under the login-gate check that consumes it."""
+    return _bio_required
+
+
+def bio_gate_passed():
+    """True once this launch's biometric/PIN check has actually succeeded —
+    or immediately, if biometrics wasn't required (nothing to gate). Not
+    reset on set_user()'s later per-account re-bootstraps: a user who has
+    already unlocked the device once this launch shouldn't be re-prompted
+    just for switching accounts (biometrics protects the DEVICE'S vault
+    access, not each individual account's own slot within it)."""
+    return _bio_gate_passed
 
 
 def _migrate_legacy_file():

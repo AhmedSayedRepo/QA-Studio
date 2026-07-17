@@ -180,10 +180,14 @@ def screen(app):
                 ft.Text("DEVICE SECURITY", size=11, weight=ft.FontWeight.BOLD, color=T.INK_3),
                 ft.Container(height=4),
                 srow("Require biometric/PIN unlock",
-                     "Adds a fingerprint/face/PIN prompt before this device's "
-                     "stored credentials can be read. Off by default so "
-                     "reopening the app never needs re-entering them; needs "
-                     "a biometric or PIN already set up on this device.",
+                     "Adds a fingerprint/face/PIN prompt to open the app: "
+                     "with this on, a saved sign-in no longer skips straight "
+                     "past the login screen — you'll unlock with biometrics/"
+                     "PIN first, or fall back to your email and password. "
+                     "Also gates this device's stored credentials. Off by "
+                     "default so reopening the app never needs re-entering "
+                     "them; needs a biometric or PIN already set up on this "
+                     "device.",
                      ft.Switch(value=_bio_on, active_color=T.VIOLET, disabled=ro,
                                on_change=(None if ro else _bio_change))),
                 ft.Container(_bio_note, padding=ft.Padding.only(bottom=6)),
