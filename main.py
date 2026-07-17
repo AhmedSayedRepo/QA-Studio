@@ -1974,6 +1974,11 @@ class QAStudio:
             except Exception:
                 pass
         self.render()
+        # Mobile: one-shot update NOTICE (self-gates; no-op on desktop).
+        try:
+            self._check_mobile_update()
+        except Exception:
+            pass
         # First-run onboarding (once, until "onboarded" is saved).
         try:
             self._maybe_show_onboarding()
@@ -6011,6 +6016,73 @@ class QAStudio:
                 self._unbusy()
                 self._err(f"Couldn't queue the remote run: {str(ex)[:120]}")
         self._busy("Queuing remote run…")
+        self._bg(work)
+
+    def _check_mobile_update(self):
+        """Mobile-only UPDATE NOTICE (option 1 of the mobile update plan):
+        Android can't self-update (an installed APK is immutable — which is
+        why has_self_update() is gated off there), so instead of the desktop's
+        zipball updater we compare the bundled VERSION against the repo's
+        (E.check_for_update — the same source the desktop trusts) and offer
+        the latest GitHub Release's APK for download; opening the downloaded
+        APK updates in place (same package id). Fail-silent end to end: no
+        network / no release / API hiccups must never disturb startup."""
+        if not platform_caps.is_mobile():
+            return
+
+        def work():
+            try:
+                res = E.check_for_update() or {}
+                if not res.get("update"):
+                    return
+                url = "https://github.com/AhmedSayedRepo/QA-Studio/releases/latest"
+                try:
+                    import requests as _rq
+                    r = _rq.get("https://api.github.com/repos/AhmedSayedRepo/"
+                                "QA-Studio/releases/latest",
+                                headers={"Accept": "application/vnd.github+json"},
+                                timeout=8)
+                    if r.status_code == 200:
+                        j = r.json() or {}
+                        url = next((a.get("browser_download_url")
+                                    for a in (j.get("assets") or [])
+                                    if str(a.get("name", "")).lower().endswith(".apk")),
+                                   j.get("html_url") or url)
+                except Exception:
+                    pass
+
+                def _open(u):
+                    # launch_url is async on some Flet builds (same class of
+                    # bug as the scroll_to saga) — schedule it properly then.
+                    try:
+                        import inspect as _insp
+                        if _insp.iscoroutinefunction(self.page.launch_url):
+                            self.page.run_task(self.page.launch_url, u)
+                        else:
+                            self.page.launch_url(u)
+                    except Exception:
+                        pass
+
+                def _show():
+                    dlg = ft.AlertDialog(
+                        modal=False,
+                        title=ft.Text("Update available", size=15,
+                                      weight=ft.FontWeight.BOLD, color=T.INK),
+                        content=ft.Text(
+                            f"QA Studio v{res.get('remote')} is out — you have "
+                            f"v{res.get('local')}. Download the new APK and open "
+                            "it to update in place.", size=12.5, color=T.INK_2),
+                        actions=[
+                            ghost_btn("Later",
+                                      on_click=lambda e: self._close_dialog()),
+                            green_btn("Download",
+                                      on_click=lambda e, u=url: (
+                                          _open(u), self._close_dialog())),
+                        ])
+                    self._show_dialog(dlg)
+                self.ui_safe(_show)
+            except Exception:
+                pass
         self._bg(work)
 
     def _sync_remote_creds(self, status_ctl=None):

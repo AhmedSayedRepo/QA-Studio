@@ -113,6 +113,22 @@ if not "%CREATE_RC%"=="0" (
   exit /b 1
 )
 
+rem --- attach the Android APK when one has been built (build-apk.bat) --------
+rem Stable asset name (qa-studio.apk) so the mobile update notice can always
+rem find it on the latest release. Missing APK is a soft [info], not a fail:
+rem desktop-only releases stay valid.
+set APK=
+for /f "delims=" %%i in ('dir /b /s apk-out\*.apk 2^>nul') do set APK=%%i
+if "%APK%"=="" (
+  echo [info] No apk-out\*.apk found - Android APK not attached to v%VER%.
+  echo        Run build-apk.bat first when you want the phone app included.
+) else (
+  copy /y "%APK%" "apk-out\qa-studio.apk" >nul
+  echo Attaching Android APK to v%VER%...
+  gh release upload v%VER% "apk-out\qa-studio.apk" --clobber
+  if errorlevel 1 echo [warn] APK upload failed - attach manually: gh release upload v%VER% apk-out\qa-studio.apk --clobber
+)
+
 rem --- verify: don't trust the exit code above alone, confirm the release is
 rem     actually visible on GitHub before calling this a success. ---
 echo.

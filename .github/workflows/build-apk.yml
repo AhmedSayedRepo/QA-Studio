@@ -44,6 +44,10 @@ jobs:
           mkdir -p /tmp/mobile
           cp *.py /tmp/mobile/
           cp app.ico /tmp/mobile/ 2>/dev/null || true
+          # VERSION must ship in the bundle: the mobile update NOTICE compares
+          # engine.local_version() (reads this file) against the repo's copy —
+          # without it local_version() returns 0.0.0 and every launch nags.
+          cp VERSION /tmp/mobile/ 2>/dev/null || true
           printf "flet==0.85.3\nrequests\n" > /tmp/mobile/requirements.txt
 
       - name: Build APK
