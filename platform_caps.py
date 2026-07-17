@@ -16,9 +16,17 @@ _FLET_PLATFORM = ""   # "windows" | "macos" | "linux" | "android" | "ios"
 
 
 def set_flet_platform(p):
-    """Record the Flet page platform once at startup (main.py's main())."""
+    """Record the Flet page platform once at startup (main.py's main()).
+
+    `page.platform` is a PagePlatform ENUM, not a string — str() gives
+    'PagePlatform.ANDROID', so the old str().lower() produced
+    'pageplatform.android' and never matched 'android' (confirmed live: the
+    desktop rail rendered on a phone because is_mobile() stayed False).
+    Normalize to a bare token: prefer the enum's .value, else the part after
+    the last '.', lowercased."""
     global _FLET_PLATFORM
-    _FLET_PLATFORM = str(p or "").lower()
+    s = getattr(p, "value", None) or str(p or "")
+    _FLET_PLATFORM = s.split(".")[-1].strip().lower()
 
 
 def is_windows():
