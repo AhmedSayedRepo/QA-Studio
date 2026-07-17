@@ -50,8 +50,38 @@ jobs:
           cp VERSION /tmp/mobile/ 2>/dev/null || true
           printf "flet==0.85.3\nrequests\n" > /tmp/mobile/requirements.txt
 
+      # INCIDENT this step guards against: with no signing config, each CI run
+      # got a fresh, random debug-style key from the ephemeral runner (a new
+      # keystore every dispatch — nothing persists between runs). Android
+      # refuses to install an APK over an existing install signed with a
+      # DIFFERENT certificate ("App not installed as package conflicts with an
+      # existing package") — so every single build after the first broke
+      # in-place updates on-device, forcing an uninstall every time. Fixed by
+      # signing every build with the SAME persistent keystore (repo secret),
+      # so successive releases share one certificate and install over each
+      # other normally, like any real Android app.
+      - name: Decode Android signing keystore
+        working-directory: /tmp/mobile
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE_B64" ]; then
+            echo "::error::ANDROID_KEYSTORE_BASE64 repo secret is not set. Building without it"
+            echo "::error::reproduces the 'conflicts with an existing package' bug on every"
+            echo "::error::future update (each build gets a different throwaway key). Add the"
+            echo "::error::four ANDROID_* secrets (see qa-studio-signing/SETUP.md) before"
+            echo "::error::re-running this workflow."
+            exit 1
+          fi
+          echo "$KEYSTORE_B64" | base64 -d > qa-studio-release.jks
+
       - name: Build APK
         working-directory: /tmp/mobile
+        env:
+          FLET_ANDROID_SIGNING_KEY_STORE: /tmp/mobile/qa-studio-release.jks
+          FLET_ANDROID_SIGNING_KEY_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          FLET_ANDROID_SIGNING_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          FLET_ANDROID_SIGNING_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
           # `yes |` auto-answers any residual interactive confirm (e.g. flet
           # offering to install its own Flutter) — CI has no stdin.
