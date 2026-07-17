@@ -173,8 +173,33 @@ def screen(app):
                 size=11, color=T.INK_3, weight=ft.FontWeight.W_500)
 
             def _bio_change(e):
-                mobile_prefs.set("require_biometric", bool(e.control.value))
-                app._toast("Saved — applies next time you open the app.")
+                # Migrate the vault under the new key policy RIGHT NOW (see
+                # secure_store_mobile.apply_biometric_setting) instead of just
+                # flipping a next-launch pref — the old approach lost the
+                # saved credentials because they'd been written under the
+                # non-biometric key. The pref is persisted only on success.
+                want = bool(e.control.value)
+                import secure_store_mobile as _ss
+
+                def _done(ok, err):
+                    def _apply():
+                        if ok:
+                            app._toast("Fingerprint/PIN unlock is on — you'll be "
+                                       "asked next time you open the app."
+                                       if want else
+                                       "Biometric unlock turned off.")
+                        else:
+                            app._err("Couldn't enable biometric unlock: "
+                                     + (err or "check that a fingerprint or PIN "
+                                        "is set up on this device."))
+                        app.render()   # reflect the real (possibly reverted) state
+                    try:
+                        app.ui_safe(_apply)
+                    except Exception:
+                        _apply()
+
+                app._toast("Applying…")
+                _ss.apply_biometric_setting(want, on_done=_done)
 
             device_security = card(ft.Column([
                 ft.Text("DEVICE SECURITY", size=11, weight=ft.FontWeight.BOLD, color=T.INK_3),

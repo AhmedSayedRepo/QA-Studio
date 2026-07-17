@@ -209,6 +209,87 @@ async def _bootstrap():
             pass
 
 
+def apply_biometric_setting(want_bio, on_done=None):
+    """Turn 'Require biometric/PIN unlock' on/off and take effect IMMEDIATELY,
+    without losing the vault. This is the fix for the reported flow: enabling
+    biometrics only set the pref for next launch, but this session's
+    credentials were still written under the OLD non-biometric Keystore key —
+    so next launch, constructing storage with enforce_biometrics=True (a
+    different Android key alias), couldn't decrypt them: credentials lost AND
+    the biometric gate never engaged.
+
+    Instead, RE-ENCRYPT the credentials we currently hold in the clear
+    (_cache) under a fresh storage instance matching the new setting, so the
+    ciphertext lands under the key alias next launch will actually read.
+    With enforce_biometrics the write prompts the fingerprint/PIN right now —
+    which also confirms enrollment works before we commit the change.
+
+    on_done(ok: bool, err: str|None) is invoked (on the event loop) when the
+    migration finishes; the mobile_prefs flag is written ONLY on success, so a
+    failed/cancelled prompt leaves the toggle effectively off with nothing
+    changed. Desktop / no-secure-storage: just persists the pref."""
+    global _storage
+    if not available() or _page is None or _storage is None:
+        try:
+            import mobile_prefs as _mp
+            _mp.set("require_biometric", bool(want_bio))
+        except Exception:
+            pass
+        if on_done:
+            on_done(True, None)
+        return
+    if _cache is None:
+        # Bootstrap for the current key hasn't landed yet — migrating now
+        # would risk writing an empty vault over real creds. Make the caller
+        # retry rather than gamble.
+        if on_done:
+            on_done(False, "Still loading your saved credentials — try again in a moment.")
+        return
+
+    plaintext = dict(_cache)   # what we hold, decrypted, right now
+    want_bio = bool(want_bio)
+
+    async def _do():
+        global _storage, _bio_required, _bio_gate_passed
+        try:
+            import flet_secure_storage as fss
+            new_store = fss.SecureStorage(
+                android_options=fss.AndroidOptions(
+                    reset_on_error=not want_bio,
+                    migrate_on_algorithm_change=True,
+                    enforce_biometrics=want_bio),
+                ios_options=fss.IOSOptions())
+            _page.services.append(new_store)
+            _page.update()
+            # Write under the NEW key policy (prompts biometrics now when
+            # enabling), then verify it reads back before committing.
+            await new_store.set(_key, json.dumps(plaintext))
+            back = await new_store.get(_key)
+            if not back:
+                raise RuntimeError("verification read came back empty")
+            _storage = new_store
+            _bio_required = want_bio
+            _bio_gate_passed = True   # just passed it (or none needed)
+            try:
+                import mobile_prefs as _mp
+                _mp.set("require_biometric", want_bio)
+            except Exception:
+                pass
+            if on_done:
+                on_done(True, None)
+        except Exception as ex:
+            # Nothing swapped, pref untouched — the OLD storage/_cache are
+            # still valid, so the vault is intact; the toggle just didn't take.
+            if on_done:
+                on_done(False, str(ex)[:140] or "biometric change failed")
+
+    try:
+        _page.run_task(_do)
+    except Exception as ex:
+        if on_done:
+            on_done(False, str(ex)[:140])
+
+
 def consume_bio_revert():
     """One-shot flag: True exactly once, the first time main.py checks after
     a biometric-gated read failed and the preference got auto-reverted.

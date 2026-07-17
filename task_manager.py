@@ -1246,12 +1246,19 @@ def screen(app):
                         _do, yes_label="Remove")
                 return _d
 
+            # TASK column: expand=True on desktop (fills the wide window), a
+            # FIXED width on mobile so it doesn't collapse to 0 inside the
+            # horizontal-scroll wrapper below (which is what char-wrapped the
+            # "TASK" header to "T/A/S/K"). Header uses the same width.
+            import platform_caps as _pc_tm
+            _task_w = 220 if _pc_tm.is_mobile() else None
             rows = [ft.Container(
                 ft.Row([
                     R._id_link(app, t["id"], tooltip=f"Open task {t['id']} in Azure DevOps",
                               color=T.VIOLET_INK, weight=ft.FontWeight.BOLD,
                               width=70, font_family=T.F_MONO, size=12.5),
-                    ft.Text(t["title"] or "—", size=12.5, color=T.INK, expand=True,
+                    ft.Text(t["title"] or "—", size=12.5, color=T.INK,
+                           expand=(None if _task_w else True), width=_task_w,
                            max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
                     ft.Text(t.get("parent_title") or "—", size=12, color=T.INK_3, width=180,
                            max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
@@ -1275,7 +1282,8 @@ def screen(app):
             hdr = ft.Container(
                 ft.Row([
                     ft.Text("ID", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_2, width=70),
-                    ft.Text("TASK", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_2, expand=True),
+                    ft.Text("TASK", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_2,
+                           expand=(None if _task_w else True), width=_task_w),
                     ft.Text("STORY", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_2, width=180),
                     ft.Text("STATE", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_2, width=90),
                     ft.Text("ORIG. EST.", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_2,
@@ -1348,7 +1356,10 @@ def screen(app):
             ]
             if bench_remaining is not None:
                 _kpi_tiles.append(R._kpi_tile("REMAINING (170H/MO)", f"{bench_remaining:g} h"))
-            kpi_strip = ft.Row(_kpi_tiles, spacing=14)
+            # Responsive: equal-share on desktop; fixed-width wrapping tiles on
+            # a phone (the plain expand Row char-wrapped every label). See
+            # R.kpi_row.
+            kpi_strip = R.kpi_row(_kpi_tiles, spacing=14)
             # Small caption naming exactly what period the 170h/month tile
             # above was prorated over — without this, "REMAINING (170H/MO)"
             # alone doesn't say whether that's this sprint, this week, or
@@ -1381,10 +1392,13 @@ def screen(app):
                 border_radius=T.R, margin=ft.Margin.only(top=14))
             parts.append(ft.Container(ft.Column([kpi_strip, bench_caption, progress], spacing=0),
                                       margin=ft.Margin.only(top=14)))
+            # Column widths: 70 + TASK(220) + 180 + 90 + 90 + 90 + 34, plus
+            # 6×10 spacing + 2×12 padding ≈ 838. On mobile the whole table
+            # scrolls sideways at that width so no column is crushed.
+            _rows_col = ft.Column(rows, spacing=0, scroll=ft.ScrollMode.AUTO,
+                                  height=min(360, 48 * len(rows) + 20))
             parts.append(ft.Container(
-                ft.Column([hdr,
-                          ft.Column(rows, spacing=0, scroll=ft.ScrollMode.AUTO,
-                                   height=min(360, 48 * len(rows) + 20))], spacing=0),
+                R.hscroll_table(hdr, _rows_col, 838),
                 margin=ft.Margin.only(top=14), border=ft.Border.all(1, T.BORDER),
                 border_radius=T.R, clip_behavior=ft.ClipBehavior.ANTI_ALIAS))
 

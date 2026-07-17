@@ -845,11 +845,12 @@ def screen(app):
         # gradient mono numbers on a shadowed card, instead of this screen's
         # own flatter, unshadowed `_stat` tile — so all three "plan" screens
         # share one visual language for a labeled headline number.
-        bug_stats = _drow([
+        import platform_caps as _pc_sr
+        bug_stats = _drow(R.kpi_tiles_mobile([
             R._kpi_tile(L["total_bugs"].upper(), str(r["total_bugs"]), T.VIOLET_INK),
             R._kpi_tile(L["regression_bugs"].upper(), str(r["regression_bugs"]), T.RED),
             R._kpi_tile(L["sprint_bugs"].upper(), str(r["sprint_bugs"]), T.AMBER),
-        ], spacing=10)
+        ]), spacing=10, wrap=_pc_sr.is_mobile(), run_spacing=10)
 
         def _state_pair(st):
             s = (st or "").lower()

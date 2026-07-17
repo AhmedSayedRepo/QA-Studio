@@ -1397,7 +1397,13 @@ class QAStudio:
             row = [title_col]
         else:
             row = [title_col, ft.Container(expand=True)]
-        if right:
+        # The `right` element is a decorative per-screen status tag ("Credentials
+        # saved on this device", "Completed", …). On a phone it competes with
+        # the hamburger + title + avatar for a ~390px header and shoved the
+        # rightmost item (the avatar) off the physical edge — reported live,
+        # worst on Setup whose tag is the widest. Drop it on mobile; it's
+        # supplementary and the info it conveys is available on-screen anyway.
+        if right and not _mobile:
             row.append(right)
         _acct = self._account_chip()
         if _acct is not None:
@@ -1429,9 +1435,11 @@ class QAStudio:
                 begin=ft.Alignment.TOP_CENTER, end=ft.Alignment.BOTTOM_CENTER,
                 colors=[T.CARD, T.CARD_2])
         bar = ft.Container(
-            ft.Row(row, spacing=14, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            ft.Row(row, spacing=(8 if _mobile else 14),
+                   vertical_alignment=ft.CrossAxisAlignment.CENTER),
             height=94,
-            padding=ft.Padding.symmetric(vertical=0, horizontal=24),
+            # Tighter side padding on a phone so the avatar clears the edge.
+            padding=ft.Padding.symmetric(vertical=0, horizontal=(12 if _mobile else 24)),
             alignment=ft.Alignment.CENTER_LEFT,
             border=ft.Border.only(
                 bottom=ft.BorderSide(1, ft.Colors.with_opacity(0.65, T.BORDER))),
@@ -1641,6 +1649,19 @@ class QAStudio:
                 for n in items] + extra,
             selected_index=sel, on_change=_pick)
         self.page.drawer = drawer
+        # Sync the freshly-assigned drawer down to the Flutter client BEFORE
+        # asking it to open. Without this, the very first hamburger tap of a
+        # launch set page.drawer and immediately scheduled show_drawer() in
+        # the same tick — the client hadn't registered the new drawer control
+        # yet, so that first show_drawer() no-op'd (reported live: "first
+        # click does nothing, second opens it"). page.update() forces the
+        # control to be acknowledged first; the scheduled show_drawer then
+        # finds it. Same "attach/sync a Service-style control before invoking
+        # a method on it" rule already applied to secure_store/url_launcher.
+        try:
+            self.page.update()
+        except Exception:
+            pass
         self._show_nav_drawer()
 
     def shell(self, title, sub, body, right=None, badge=None):
@@ -2063,6 +2084,23 @@ class QAStudio:
             self.goto("setup")
 
     def _open_onboarding(self):
+        # Match the walkthrough card to the theme actually on screen. At
+        # first run it opens OVER the login gate, which renders in its own
+        # theme (login.py's _login_theme, defaults dark) while global T —
+        # what this dialog is built from — is still at its "light" default,
+        # producing a light card over a dark login (reported live: "not
+        # taking the current theme"). Before signing in, sync global T to
+        # the login theme so the two agree.
+        try:
+            _lt = getattr(self, "_login_theme", None)
+            if self.user is None and _lt in ("dark", "light") and T.MODE != _lt:
+                T.apply_theme(_lt)
+                self.page.theme_mode = (ft.ThemeMode.DARK if _lt == "dark"
+                                        else ft.ThemeMode.LIGHT)
+                self.creds["theme"] = _lt
+                self.render()
+        except Exception:
+            pass
         # Flet 0.85's page.show_dialog() pushes onto a real dialog STACK
         # (not a single page.dialog slot), so a second dialog opened while
         # this one is still up renders layered on top of it instead of
@@ -6653,18 +6691,20 @@ class QAStudio:
                 res = E.check_for_update() or {}
                 if not res.get("update"):
                     return
-                # Stable download URL — a dedicated, permanent "android-apk"
-                # release that build-apk.yml's CI job re-publishes on every
-                # successful build (see that workflow's "Publish to rolling
-                # Android release" step). NOT releases/latest: that's the
-                # desktop's own versioned release, published manually via
-                # release.bat, which drifted for months (stuck at v2.1.1
-                # while VERSION climbed past 3.x) — querying it here either
-                # found no .apk asset at all or served a stale one, which is
-                # why Download silently did nothing / installed an APK
-                # signed before the persistent-keystore fix existed.
+                # Open the "android-apk" release PAGE, not the direct .apk
+                # binary. Reported live: tapping Download did nothing —
+                # a direct binary link either 404s (if the CI-published asset
+                # name/release drifted) or gets opened in an in-app browser
+                # tab that silently refuses to download an .apk. The release
+                # page always renders, lists the current asset, and a tap on
+                # it hands the download to Android's own download manager,
+                # which reliably fetches the APK for the user to install.
+                # (The rolling "android-apk" release is (re)published by
+                # build-apk.yml's "Publish to rolling Android release" step on
+                # every successful build — NOT releases/latest, which is the
+                # desktop's manually-cut versioned release.)
                 url = ("https://github.com/AhmedSayedRepo/QA-Studio/releases/"
-                       "download/android-apk/qa-studio.apk")
+                       "tag/android-apk")
 
                 def _open(u):
                     # Route through the persistent UrlLauncher (see

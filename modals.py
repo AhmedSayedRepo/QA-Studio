@@ -98,8 +98,23 @@ def open_onboarding(app):
     ]
 
     import threading
+    import platform_caps as _pc_onb0
+    # Body height 380 is fine in portrait, but on a LANDSCAPE phone the whole
+    # viewport is only ~360-400px tall — a fixed 380px body pushed the footer
+    # (dots + Next) off the bottom, unreachable again (reported live). Cap the
+    # scrollable body to leave room for header chrome + footer when the
+    # viewport is short. The body's content already scrolls (see _paint), so
+    # a smaller box just means the steps scroll within it.
+    _body_h = 380
+    if _pc_onb0.is_mobile():
+        try:
+            _ph = app.page.height or 0
+            if _ph and _ph < 560:
+                _body_h = max(210, int(_ph) - 210)
+        except Exception:
+            pass
     body = ft.Container(
-        height=380,
+        height=_body_h,
         animate_opacity=ft.Animation(260, ft.AnimationCurve.EASE_OUT),
         animate_offset=ft.Animation(260, ft.AnimationCurve.EASE_OUT),
         clip_behavior=ft.ClipBehavior.HARD_EDGE, border_radius=T.R_DLG)
@@ -184,11 +199,29 @@ def open_onboarding(app):
         _paint()
 
     skip = ft.TextButton("Skip", on_click=lambda e: app._finish_onboarding())
-    footer = ft.Container(
-        ft.Row([skip, ft.Container(expand=True), dots,
-                ft.Container(width=14), back_holder, next_holder],
-               vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=8),
-        padding=ft.Padding.only(left=20, right=20, top=4, bottom=2))
+    import platform_caps as _pc_foot
+    if _pc_foot.is_mobile():
+        # Phone: Skip + 4 dots + Back + Next in ONE row overflowed a ~390px
+        # width, pushing the Next button off the right edge (unreachable —
+        # reported as "Next out of frame, not clickable"). Stack: dots on
+        # their own centered line, then a full-width nav row (Skip left,
+        # Back/Next right) that always fits.
+        footer = ft.Container(
+            ft.Column([
+                ft.Row([ft.Container(expand=True), dots, ft.Container(expand=True)],
+                       vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                ft.Container(height=10),
+                ft.Row([skip, ft.Container(expand=True), back_holder,
+                        ft.Container(width=8), next_holder],
+                       vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=0),
+            ], spacing=0, tight=True),
+            padding=ft.Padding.only(left=16, right=16, top=4, bottom=2))
+    else:
+        footer = ft.Container(
+            ft.Row([skip, ft.Container(expand=True), dots,
+                    ft.Container(width=14), back_holder, next_holder],
+                   vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=8),
+            padding=ft.Padding.only(left=20, right=20, top=4, bottom=2))
     _paint()
     # Fixed width=600 assumes a desktop window. Flet's AlertDialog otherwise
     # sizes itself to content, so on a ~390px phone this forced the whole
@@ -197,7 +230,20 @@ def open_onboarding(app):
     # visible edge with no way to reach it, which is what "Next doesn't
     # work" looked like. Let content size itself to the viewport on mobile.
     import platform_caps as _pc_onb
-    _dlg_width = None if _pc_onb.is_mobile() else 600
+    # Portrait phone: width=None sizes to the (narrow) viewport — the #71 fix.
+    # LANDSCAPE phone / tablet: width=None instead let the card stretch across
+    # the whole ~800px+ width, looking awkwardly wide (reported live). Cap it
+    # at 560 once the viewport is wide enough that a cap is what we want.
+    if _pc_onb.is_mobile():
+        _dlg_width = None
+        try:
+            _pw = app.page.width or 0
+            if _pw > 620:
+                _dlg_width = 560
+        except Exception:
+            pass
+    else:
+        _dlg_width = 600
     dlg = ft.AlertDialog(
         modal=True, bgcolor=T.CARD,
         shape=ft.RoundedRectangleBorder(radius=T.R_LG),

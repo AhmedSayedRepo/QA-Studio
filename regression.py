@@ -1878,6 +1878,54 @@ def _kpi_tile(label, value, accent=None, sub=None):
                             color=ft.Colors.with_opacity(0.08, "#1B1F3A")))
 
 
+def kpi_tiles_mobile(tiles, width=152):
+    """On mobile, swap each _kpi_tile's expand=True for a FIXED width so a
+    wrap Row can hold them (Flutter's Wrap rejects Expanded children). No-op
+    on desktop. Use this INSIDE a tile-builder whose result feeds an
+    in-place-refreshed strip (kpi_strip.controls = builder()), so the mobile
+    sizing survives every refresh; pair it with wrap=is_mobile() on the Row."""
+    import platform_caps as _pc
+    if _pc.is_mobile():
+        for t in tiles:
+            try:
+                t.expand = None
+                t.width = width
+            except Exception:
+                pass
+    return tiles
+
+
+def kpi_row(tiles, spacing=14):
+    """Responsive KPI/stat strip for a strip built ONCE (no in-place refresh).
+    Desktop: an equal-share Row (tiles keep their built-in expand=True).
+    Mobile: fixed-width tiles that WRAP to multiple lines — the plain expand
+    Row char-wrapped every label to slivers ("ORI/GIN/AL/ESTI/MAT/E") on a
+    ~390px phone. All tiles stay visible; no horizontal scroll needed."""
+    import platform_caps as _pc
+    if not _pc.is_mobile():
+        return ft.Row(tiles, spacing=spacing)
+    return ft.Row(kpi_tiles_mobile(tiles), spacing=10, wrap=True, run_spacing=10)
+
+
+def hscroll_table(header, rows_col, min_width, mobile=None):
+    """Wrap a fixed-column-width table (header row + rows column) in a
+    HORIZONTAL scroll on mobile. Data tables can't wrap or stack, and their
+    last flexible column otherwise collapses to a char-wrapping sliver on a
+    phone (the "T/A/S/K" header bug) — so every column must carry a FIXED
+    width and the whole block scrolls sideways within the card, exactly the
+    pattern AI Usage's results table already uses. `min_width` = the sum of
+    the column widths + spacing/padding. Desktop: returned unchanged (the
+    wide window fits it)."""
+    import platform_caps as _pc
+    m = _pc.is_mobile() if mobile is None else mobile
+    block = ft.Column([header, rows_col], spacing=0,
+                      width=(min_width if m else None))
+    if not m:
+        return block
+    return ft.Row([block], scroll=ft.ScrollMode.AUTO, spacing=0,
+                  vertical_alignment=ft.CrossAxisAlignment.START)
+
+
 def locked_state(app, title, sub, msg, icon=None, steps=None):
     """Shared centered 'connect / select first' screen (also used by Automation).
 
@@ -3712,11 +3760,11 @@ def _create_screen(app):
         # --- live, in-place builders (no full re-render → scroll is preserved) ---
         def _kpis():
             d2 = plan_payload(app)
-            return [
+            return kpi_tiles_mobile([
                 _kpi_tile("STORIES", str(d2["total_stories"])),
                 _kpi_tile("TOTAL EFFORT", f"{d2['total_hours']} h"),
                 _kpi_tile("PER PERSON", f"{d2['hours_per_person']} h", T.GREEN),
-            ]
+            ])
 
         def _workload():
             d2 = plan_payload(app)
@@ -3790,10 +3838,16 @@ def _create_screen(app):
                     _do, yes_label="Remove")
             return _d
 
+        import platform_caps as _pc_plan
+        _m_plan = _pc_plan.is_mobile()
+        # TITLE: fills the window on desktop; a fixed width on mobile so it
+        # can't collapse to 0 inside the sideways-scrolling table.
+        _title_w = 200 if _m_plan else None
         hdr = ft.Container(
             ft.Row([ft.Container(width=34),
                     _txt("STORY", color=T.INK_2, size=10.5, weight=ft.FontWeight.BOLD, width=84),
-                    _txt("TITLE", color=T.INK_2, size=10.5, weight=ft.FontWeight.BOLD, expand=True),
+                    _txt("TITLE", color=T.INK_2, size=10.5, weight=ft.FontWeight.BOLD,
+                         expand=(None if _m_plan else True), width=_title_w),
                     _txt("P", color=T.INK_2, size=10.5, weight=ft.FontWeight.BOLD, width=44),
                     _txt("HOURS", color=T.INK_2, size=10.5, weight=ft.FontWeight.BOLD, width=110),
                     _txt("ASSIGNEE", color=T.INK_2, size=10.5, weight=ft.FontWeight.BOLD, width=180)],
@@ -3834,7 +3888,8 @@ def _create_screen(app):
                         _id_link(app, r["id"], color=T.VIOLET_INK,
                                  weight=ft.FontWeight.BOLD, width=84,
                                  font_family=T.F_MONO),
-                        _txt(r["title"] or "—", color=T.INK, expand=True),
+                        _txt(r["title"] or "—", color=T.INK,
+                             expand=(None if _m_plan else True), width=_title_w),
                         ft.Container(_pri_pill(r.get("priority", DEFAULT_PRIORITY)), width=44),
                         ft.Container(hover_field(hours_f), width=110),
                         ft.Container(assignee_cell, width=180)],
@@ -3929,9 +3984,18 @@ def _create_screen(app):
                                           padding=ft.Padding.symmetric(vertical=10))]
             return out
 
-        kpi_strip = ft.Row(_kpis(), spacing=14)
-        plan_col = ft.Column([hdr] + _trows(), spacing=0)
-        table = ft.Container(plan_col, border=ft.Border.all(1, T.BORDER),
+        kpi_strip = ft.Row(_kpis(), spacing=(10 if _m_plan else 14),
+                           wrap=_m_plan, run_spacing=10)
+        # Keep plan_col a Column (its identity + .controls refresh is reused by
+        # _toggle_cp_feature's collapse). On mobile give it a fixed min-width
+        # (so TITLE, a fixed width there too, doesn't collapse) and scroll the
+        # whole table sideways at the CONTAINER level — 34+84+200+44+110+180 +
+        # 5×10 spacing + 24 padding ≈ 726.
+        plan_col = ft.Column([hdr] + _trows(), spacing=0,
+                             width=(726 if _m_plan else None))
+        _plan_inner = (ft.Row([plan_col], scroll=ft.ScrollMode.AUTO, spacing=0)
+                       if _m_plan else plan_col)
+        table = ft.Container(_plan_inner, border=ft.Border.all(1, T.BORDER),
                              border_radius=T.R, clip_behavior=ft.ClipBehavior.HARD_EDGE)
         workload_holder = ft.Container(content=_workload())
         workload_ui = workload_holder
@@ -5202,9 +5266,15 @@ def screen(app):
             return _cell(w, _txt(s, size=10.5, weight=ft.FontWeight.BOLD,
                                  color=T.INK_3), expand=expand)
 
+        import platform_caps as _pc_rev
+        _m_rev = _pc_rev.is_mobile()
+        # TITLE fills the window on desktop; fixed width on mobile so it can't
+        # collapse to 0 inside the sideways-scrolling table (below).
+        _rev_title_w = 200 if _m_rev else 0
         header = ft.Container(
             ft.Row([ft.Container(width=34),
-                    _hd("STORY", 64), _hd("TITLE", 0, expand=True), _hd("STATE", 84),
+                    _hd("STORY", 64), _hd("TITLE", _rev_title_w, expand=not _m_rev),
+                    _hd("STATE", 84),
                     _hd("PRI", 44), _hd("CASES", 52), _hd("HOURS", 128),
                     _hd("ASSIGNEE", 140)], spacing=4),
             padding=ft.Padding.symmetric(vertical=9, horizontal=8), bgcolor=T.CARD_2,
@@ -5244,8 +5314,8 @@ def screen(app):
                                              shape=ft.RoundedRectangleBorder(radius=8)))),
                     _cell(64, _id_link(app, s["id"], font_family=T.F_MONO,
                                        color=T.VIOLET_INK, weight=ft.FontWeight.BOLD)),
-                    _cell(0, _txt(s["title"] or "—", color=T.INK, no_wrap=False),
-                          expand=True),
+                    _cell(_rev_title_w, _txt(s["title"] or "—", color=T.INK, no_wrap=False),
+                          expand=not _m_rev),
                     _cell(84, _state_pill(s["state"])),
                     _cell(44, _pri_pill(s["priority"])),
                     _cell(52, cases_ctl),
@@ -5345,8 +5415,14 @@ def screen(app):
                 return
             _keep_scroll(app, _off)
 
+        # Mobile: scroll the whole table sideways (columns 34+64+200+84+44+52+
+        # 128+140 + 7×4 spacing + 16 padding ≈ 790) so no column is crushed;
+        # table_body_col stays a Column so its in-place .update() refresh works.
+        _rev_tbl = ft.Column([header, table_body_col], spacing=0,
+                             width=(790 if _m_rev else None))
         table = ft.Container(
-            ft.Column([header, table_body_col], spacing=0),
+            (ft.Row([_rev_tbl], scroll=ft.ScrollMode.AUTO, spacing=0)
+             if _m_rev else _rev_tbl),
             border=ft.Border.all(1, T.BORDER), border_radius=T.R,
             clip_behavior=ft.ClipBehavior.HARD_EDGE)
 
@@ -5362,14 +5438,16 @@ def screen(app):
             effort_sub = f"≈ {dd['total_days']} workdays" if _e else None
             person_val = f"{dd['hours_per_person']} h" if _e else "—"
             person_sub = f"≈ {dd['hours_per_person_days']} workdays" if _e else None
-            return [
+            return kpi_tiles_mobile([
                 _kpi_tile("STORIES", str(dd["total_stories"])),
                 _kpi_tile("TEST CASES", cases_val),
                 _kpi_tile("TOTAL EFFORT", effort_val, T.VIOLET, sub=effort_sub),
                 _kpi_tile("PER PERSON", person_val, T.GREEN, sub=person_sub),
-            ]
+            ])
 
-        kpi_strip = ft.Row(_kpi_tiles_for(d), spacing=10)
+        import platform_caps as _pc_sp
+        kpi_strip = ft.Row(_kpi_tiles_for(d), spacing=10,
+                           wrap=_pc_sp.is_mobile(), run_spacing=10)
 
         def _mk_workload(_d):
             if not _d["workload"]:
