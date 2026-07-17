@@ -5525,25 +5525,43 @@ class QAStudio:
 
     def _open_url(self, url):
         """Open a URL in the default browser, brought to the FRONT (over the app).
-        In Flet 0.90 launch_url is async, so we use the OS browser directly."""
-        # Windows: ShellExecute 'open' (os.startfile) foregrounds the browser window
-        # over the app, instead of opening it behind us like webbrowser.open can.
+        In Flet 0.90 launch_url is async, so we use the OS browser directly.
+
+        Mobile (every "link" in the app funnels through here — useful_links.py's
+        Links screen, work-item/story links in regression.py and report.py,
+        "Open plan in Azure"): os.startfile is Windows-only and already
+        correctly skipped, but webbrowser.open() is ALSO desktop-oriented —
+        it shells out looking for a system browser controller, which doesn't
+        exist in Flet's embedded Android/iOS runtime. Reported live as
+        "links not working": webbrowser.open() can return True there without
+        having opened anything at all (no exception, no real failure signal),
+        which made this function return immediately and never reach the
+        page.launch_url fallback below — the one mechanism that actually
+        works on mobile (Flutter's own url_launcher plugin), already proven
+        live elsewhere in this file (_check_mobile_update's Download button).
+        Skip straight to it on mobile instead of trusting webbrowser's
+        unreliable return value there."""
         try:
             import os as _os
             if _os.name == "nt":
+                # Windows: ShellExecute 'open' (os.startfile) foregrounds the
+                # browser window over the app, instead of opening it behind
+                # us like webbrowser.open can.
                 _os.startfile(url)   # noqa: S606 — trusted, user-initiated links
                 return
         except Exception:
             pass
-        opened = False
-        try:
-            import webbrowser
-            opened = webbrowser.open(url)
-        except Exception:
+        if not platform_caps.is_mobile():
             opened = False
-        if opened:
-            return
-        # Fallback: schedule Flet's async launcher on the event loop
+            try:
+                import webbrowser
+                opened = webbrowser.open(url)
+            except Exception:
+                opened = False
+            if opened:
+                return
+        # Mobile, or the desktop webbrowser path above didn't pan out:
+        # schedule Flet's async launcher on the event loop.
         try:
             rt = getattr(self.page, "run_task", None)
             if callable(rt):
