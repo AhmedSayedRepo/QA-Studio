@@ -59,6 +59,19 @@ _bio_gate_passed = False      # True once this launch's biometric/PIN check
                               # has actually succeeded (or immediately, if
                               # biometrics wasn't required — nothing to gate)
 
+# Biometric LOGIN-GATE sentinel. A fixed (NOT per-user) entry written under an
+# enforce_biometrics storage when the toggle is enabled. Reading it back at
+# launch is what actually pops the OS fingerprint/PIN prompt — deliberately
+# decoupled from the per-user creds vault, which (a) we don't know the key for
+# until AFTER sign-in, and (b) we no longer put behind biometrics at all, so it
+# can never be Android-Keystore-invalidated and wiped by toggling the setting.
+# The OLD design gated on reading the creds vault itself: at launch that vault
+# is the default (empty) slot, so the read returned nothing, never prompted,
+# and silently let the user in — exactly the reported "biometrics not working
+# for login".
+_SENTINEL_KEY = "qa_studio_bio_gate"
+_SENTINEL_VAL = "1"
+
 
 def available():
     """True only where flet_secure_storage actually imports — i.e. only ever
@@ -100,30 +113,21 @@ def init(page, on_ready=None):
             _want_bio = False
         _bio_required = _want_bio
         _bio_gate_passed = not _want_bio   # nothing to gate → treat as passed
+        # The CREDS vault is NEVER put behind biometrics anymore. Enforcing
+        # biometrics on it was the direct cause of the recurring "enabling
+        # biometrics wiped my saved credentials" bug: adding
+        # setUserAuthenticationRequired(true) invalidates the Android Keystore
+        # key the existing ciphertext was written under, so the next read
+        # either threw (creds unreadable) or, under reset_on_error, silently
+        # wiped them. Biometrics is now a pure LOGIN GATE driven by a separate
+        # sentinel entry (see _bio_gate_check), so the creds vault stays plain
+        # Keystore-encrypted and ALWAYS readable (reset_on_error=True) — it can
+        # never be invalidated or cleared by toggling the setting.
         _storage = fss.SecureStorage(
             android_options=fss.AndroidOptions(
-                # reset_on_error=True is flet_secure_storage's own recovery
-                # path for an Android-Keystore-invalidated encryption key
-                # (device lock reset, factory reset, etc.) — but newly
-                # ENABLING enforce_biometrics on an already-populated vault
-                # is itself one of the documented triggers for exactly that
-                # invalidation (Android regenerates the AES key's auth
-                # requirements the moment setUserAuthenticationRequired(true)
-                # is added, which invalidates ciphertext written under the
-                # OLD, non-biometric key). Toggling the Settings switch used
-                # to walk straight into reset_on_error silently wiping every
-                # stored credential on the very next launch — reported live
-                # as "biometrics enabled and clears the setup credentials,
-                # next login without asking for biometrics at any stage"
-                # (nothing was left to unlock, so the prompt never had
-                # anything to guard). Off whenever biometrics is being
-                # enforced: a failed decrypt now surfaces as a caught
-                # exception in _bootstrap() below (existing OS-keystore data
-                # preserved, see the auto-revert handling there) instead of
-                # an irreversible wipe.
-                reset_on_error=not _want_bio,
+                reset_on_error=True,
                 migrate_on_algorithm_change=True,
-                enforce_biometrics=_want_bio),
+                enforce_biometrics=False),
             ios_options=fss.IOSOptions())
     except Exception:
         _storage = None
@@ -148,6 +152,17 @@ def init(page, on_ready=None):
         page.run_task(_bootstrap)
     except Exception:
         pass
+    # When the login gate is on, read the biometric SENTINEL — THIS is what
+    # pops the OS fingerprint/PIN prompt at launch. Kept separate from the
+    # creds bootstrap above so the prompt fires regardless of whether this
+    # device has any creds saved yet (a returning user on a fresh reinstall
+    # has a cached Supabase session but an empty creds vault — the old code
+    # read that empty vault, never prompted, and silently signed them in).
+    if _want_bio:
+        try:
+            page.run_task(_bio_gate_check)
+        except Exception:
+            pass
 
 
 def set_user(uid):
@@ -165,7 +180,10 @@ def set_user(uid):
 
 
 async def _bootstrap():
-    global _cache, _bio_reverted, _bio_gate_passed
+    """Read the per-user CREDS vault (plain Keystore-encrypted, no biometrics).
+    The login gate lives entirely in _bio_gate_check() now, so this never
+    prompts and never risks wiping creds."""
+    global _cache
     key = _key
     try:
         raw = await _storage.get(key)
@@ -176,32 +194,9 @@ async def _bootstrap():
                 await _storage.set(key, json.dumps(data))
         if _key == key:      # a later set_user() may have moved on already
             _cache = data if data is not None else {}
-        if _bio_required:
-            # A biometric-gated get() just returned successfully, which on
-            # Android only happens after the user actually passes the native
-            # fingerprint/PIN/Face prompt — this is the real "login gate"
-            # signal main.py's _on_secure_creds_ready() waits on before it's
-            # willing to silently restore a cached Supabase session.
-            _bio_gate_passed = True
     except Exception:
         if _key == key:
             _cache = _cache or {}
-        # A biometric-gated read can fail for reasons that will keep
-        # failing on every future launch too — no biometric/PIN actually
-        # enrolled on this device (flet_secure_storage throws in that case
-        # per its own docs), or the Keystore key invalidation described in
-        # init()'s AndroidOptions comment. Rather than leave the app stuck
-        # silently retrying a broken read forever, auto-revert the
-        # preference so the next launch goes back to a working, unprotected
-        # read — main.py surfaces this via consume_bio_revert() so the user
-        # actually sees why the toggle turned itself back off.
-        try:
-            import mobile_prefs as _mp
-            if _mp.get("require_biometric", False):
-                _mp.set("require_biometric", False)
-                _bio_reverted = True
-        except Exception:
-            pass
     if _on_ready:
         try:
             _on_ready()
@@ -209,27 +204,77 @@ async def _bootstrap():
             pass
 
 
+async def _bio_gate_check():
+    """Launch-time LOGIN GATE: read the biometric sentinel under an
+    enforce_biometrics storage. On Android this get() only returns after the
+    user passes the native fingerprint/PIN/Face prompt, so a successful read of
+    the expected value is proof the gate was cleared. Anything else — nothing
+    enrolled (the plugin throws), a cancelled prompt, or a missing sentinel —
+    reverts the setting via _revert_bio() so the app can never get stuck unable
+    to sign in. Re-fires on_ready when done so main.py's _on_secure_creds_
+    ready() can complete the now-authorized silent session restore."""
+    global _bio_gate_passed
+    try:
+        import flet_secure_storage as fss
+        gate = fss.SecureStorage(
+            android_options=fss.AndroidOptions(
+                reset_on_error=False, migrate_on_algorithm_change=True,
+                enforce_biometrics=True),
+            ios_options=fss.IOSOptions())
+        try:
+            _page.services.append(gate)
+            _page.update()
+        except Exception:
+            pass
+        val = await gate.get(_SENTINEL_KEY)   # ← native biometric prompt here
+        if val == _SENTINEL_VAL:
+            _bio_gate_passed = True
+        else:
+            # Sentinel absent/blank: can't confirm a real check happened
+            # (never written, or biometrics got un-enrolled since). Fail safe.
+            _revert_bio()
+    except Exception:
+        _revert_bio()
+    if _on_ready:
+        try:
+            _on_ready()
+        except Exception:
+            pass
+
+
+def _revert_bio():
+    """Turn the login gate back OFF after a failed/blocked biometric check so
+    the user falls through to ordinary email+password sign-in instead of a
+    permanently stuck launch. _bio_gate_passed is set True too: the gate no
+    longer blocks (there's nothing protecting the vault now), so the normal
+    silent restore may proceed; main.py surfaces the revert via
+    consume_bio_revert() so the user sees why the toggle turned itself off."""
+    global _bio_reverted, _bio_gate_passed
+    try:
+        import mobile_prefs as _mp
+        if _mp.get("require_biometric", False):
+            _mp.set("require_biometric", False)
+    except Exception:
+        pass
+    _bio_reverted = True
+    _bio_gate_passed = True
+
+
 def apply_biometric_setting(want_bio, on_done=None):
-    """Turn 'Require biometric/PIN unlock' on/off and take effect IMMEDIATELY,
-    without losing the vault. This is the fix for the reported flow: enabling
-    biometrics only set the pref for next launch, but this session's
-    credentials were still written under the OLD non-biometric Keystore key —
-    so next launch, constructing storage with enforce_biometrics=True (a
-    different Android key alias), couldn't decrypt them: credentials lost AND
-    the biometric gate never engaged.
+    """Turn the biometric/PIN LOGIN GATE on or off, effective immediately.
 
-    Instead, RE-ENCRYPT the credentials we currently hold in the clear
-    (_cache) under a fresh storage instance matching the new setting, so the
-    ciphertext lands under the key alias next launch will actually read.
-    With enforce_biometrics the write prompts the fingerprint/PIN right now —
-    which also confirms enrollment works before we commit the change.
+    Enabling writes a small SENTINEL entry under an enforce_biometrics storage
+    — the write triggers the OS prompt right now, which both confirms a
+    biometric/PIN is actually enrolled (the plugin throws otherwise) and lands
+    the entry that _bio_gate_check() reads at every future launch to re-prompt.
+    Disabling removes the sentinel. The per-user creds vault is NEVER touched
+    either way (it's no longer behind biometrics — see init()), so toggling
+    this can never lose saved credentials, which was the whole recurring bug.
 
-    on_done(ok: bool, err: str|None) is invoked (on the event loop) when the
-    migration finishes; the mobile_prefs flag is written ONLY on success, so a
-    failed/cancelled prompt leaves the toggle effectively off with nothing
-    changed. Desktop / no-secure-storage: just persists the pref."""
-    global _storage
-    if not available() or _page is None or _storage is None:
+    on_done(ok: bool, err: str|None) fires on the event loop; the mobile_prefs
+    flag is written ONLY on success, so a cancelled/failed prompt leaves
+    everything unchanged. Desktop / no-secure-storage: just persists the pref."""
+    if not available() or _page is None:
         try:
             import mobile_prefs as _mp
             _mp.set("require_biometric", bool(want_bio))
@@ -238,38 +283,43 @@ def apply_biometric_setting(want_bio, on_done=None):
         if on_done:
             on_done(True, None)
         return
-    if _cache is None:
-        # Bootstrap for the current key hasn't landed yet — migrating now
-        # would risk writing an empty vault over real creds. Make the caller
-        # retry rather than gamble.
-        if on_done:
-            on_done(False, "Still loading your saved credentials — try again in a moment.")
-        return
 
-    plaintext = dict(_cache)   # what we hold, decrypted, right now
     want_bio = bool(want_bio)
 
     async def _do():
-        global _storage, _bio_required, _bio_gate_passed
+        global _bio_required, _bio_gate_passed
         try:
             import flet_secure_storage as fss
-            new_store = fss.SecureStorage(
+            gate = fss.SecureStorage(
                 android_options=fss.AndroidOptions(
-                    reset_on_error=not want_bio,
-                    migrate_on_algorithm_change=True,
+                    reset_on_error=False, migrate_on_algorithm_change=True,
                     enforce_biometrics=want_bio),
                 ios_options=fss.IOSOptions())
-            _page.services.append(new_store)
-            _page.update()
-            # Write under the NEW key policy (prompts biometrics now when
-            # enabling), then verify it reads back before committing.
-            await new_store.set(_key, json.dumps(plaintext))
-            back = await new_store.get(_key)
-            if not back:
-                raise RuntimeError("verification read came back empty")
-            _storage = new_store
+            try:
+                _page.services.append(gate)
+                _page.update()
+            except Exception:
+                pass
+            if want_bio:
+                # Prompts biometrics NOW (also proves enrollment), then verifies
+                # the sentinel reads back before committing the preference.
+                await gate.set(_SENTINEL_KEY, _SENTINEL_VAL)
+                back = await gate.get(_SENTINEL_KEY)
+                if back != _SENTINEL_VAL:
+                    raise RuntimeError("verification read came back empty")
+            else:
+                # Best-effort remove; the pref flip below is what actually
+                # disables the gate, so a failed delete is harmless.
+                for _m in ("remove", "delete"):
+                    _fn = getattr(gate, _m, None)
+                    if _fn:
+                        try:
+                            await _fn(_SENTINEL_KEY)
+                            break
+                        except Exception:
+                            pass
             _bio_required = want_bio
-            _bio_gate_passed = True   # just passed it (or none needed)
+            _bio_gate_passed = True
             try:
                 import mobile_prefs as _mp
                 _mp.set("require_biometric", want_bio)
@@ -278,8 +328,8 @@ def apply_biometric_setting(want_bio, on_done=None):
             if on_done:
                 on_done(True, None)
         except Exception as ex:
-            # Nothing swapped, pref untouched — the OLD storage/_cache are
-            # still valid, so the vault is intact; the toggle just didn't take.
+            # Nothing committed, pref untouched, creds never involved — the
+            # toggle simply didn't take.
             if on_done:
                 on_done(False, str(ex)[:140] or "biometric change failed")
 

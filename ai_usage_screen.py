@@ -103,8 +103,8 @@ def _export(app, fmt):
                 try:
                     import platform_caps as _pc
                     if _pc.is_mobile():
-                        _pc.reveal_export(app.page, path)
-                        app.ui_safe(lambda: app._toast(f"{fmt.upper()} ready — choose where to save or send it."))
+                        app.ui_safe(lambda p=path, f=fmt: app._mobile_download_popup(
+                            p, f"{f.upper()} export ready"))
                     else:
                         app.ui_safe(lambda p=path: app._toast(f"Saved {fmt.upper()}: {p}"))
                         _pc.open_folder(os.path.dirname(path))
@@ -383,12 +383,15 @@ def _report_body(app, is_admin):
             b.opacity = 0.45
         return b
 
-    export_row = ft.Row([
-        _export_btn("JSON", ft.Icons.CODE, "json"),
+    import platform_caps as _pc_exp
+    _export_row_ctls = ([] if _pc_exp.is_mobile()
+                        else [_export_btn("JSON", ft.Icons.CODE, "json")])
+    _export_row_ctls += [
         _export_btn("Excel", ft.Icons.GRID_ON, "xlsx"),
         _export_btn("Word", ft.Icons.DESCRIPTION, "docx"),
         _export_btn("PDF", ft.Icons.PICTURE_AS_PDF, "pdf"),
-    ], spacing=8, wrap=True)
+    ]
+    export_row = ft.Row(_export_row_ctls, spacing=8, wrap=True)
 
     email_btn = green_btn("Email report", icon=ft.Icons.MAIL_OUTLINED,
                           on_click=(None if _ro else _email(app)))

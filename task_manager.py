@@ -815,8 +815,9 @@ def _tm_export_row(app, res):
                     try:
                         import platform_caps as _pc
                         if _pc.is_mobile():
-                            _pc.reveal_export(app.page, path)
-                            _notify("ok", f"{fmt.upper()} ready — choose where to save or send it.")
+                            app.ui_safe(lambda p=path, f=fmt: app._mobile_download_popup(
+                                p, f"{f.upper()} export ready"))
+                            _notify("ok", f"{fmt.upper()} ready — tap Download to save it.")
                         else:
                             _pc.open_folder(os.path.dirname(path))
                             _notify("ok", f"Saved: {path}")
@@ -839,11 +840,15 @@ def _tm_export_row(app, res):
                                  shape=ft.RoundedRectangleBorder(radius=T.R),
                                  padding=ft.Padding.symmetric(horizontal=15, vertical=0)))
 
-    return ft.Row([
+    import platform_caps as _pc_exp
+    _row = [
         _btn("Excel", ft.Icons.TABLE_CHART, T.GREEN, "xlsx"),
         _btn("PDF", ft.Icons.PICTURE_AS_PDF, T.RED, "pdf"),
-        _btn("JSON", ft.Icons.DATA_OBJECT, T.STORY, "json"),
-    ], spacing=8, wrap=True)
+    ]
+    # JSON excluded on mobile (no phone use case); desktop keeps it.
+    if not _pc_exp.is_mobile():
+        _row.append(_btn("JSON", ft.Icons.DATA_OBJECT, T.STORY, "json"))
+    return ft.Row(_row, spacing=8, wrap=True)
 
 
 def _tm_email(app, res):

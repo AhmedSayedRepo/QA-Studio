@@ -222,7 +222,7 @@
 <nav><div class="nav-in">
   <div class="brand">
     <img src="https://ahmedsayedrepo.github.io/QA-Studio/qa-logo.png" alt="QA Studio">
-    <div><b>QA Studio</b> &nbsp;<span id="vernav">v2.8.1</span></div>
+    <div><b>QA Studio</b> &nbsp;<span id="vernav">v3.2.4</span></div>
   </div>
   <a class="nlink" href="https://github.com/AhmedSayedRepo/QA-Studio" target="_blank" rel="noopener">⭐ Star on GitHub</a>
 </div></nav>
@@ -237,13 +237,13 @@
 
 <header><div class="wrap">
   <div class="pillrow fade-up fade-up-1">
-    <div class="pill"><span class="dot"></span> Windows desktop app · <span id="ver">v2.8.1</span></div>
+    <div class="pill"><span class="dot"></span> Windows desktop &amp; Android · <span id="ver">v3.2.4</span></div>
     <div class="pill">🔒 Local-first — keys never leave your device</div>
   </div>
   <h1 class="fade-up fade-up-2">AI test cases for<br><span class="grad">Azure DevOps</span>, in minutes</h1>
   <p class="sub fade-up fade-up-3">QA Studio reads your sprints &amp; stories, generates test-case titles or full steps in
     English or Arabic, plans your regression &amp; sprint coverage, and drives self-healing test
-    automation — one Windows app, your own AI key.</p>
+    automation — on Windows or Android, with your own AI key.</p>
   <div class="cta fade-up fade-up-4">
     <a class="btn btn-primary" href="https://github.com/AhmedSayedRepo/QA-Studio/releases/latest/download/install.bat">↓ Download installer</a>
     <a class="btn btn-ghost" href="https://github.com/AhmedSayedRepo/QA-Studio/releases/download/android-apk/qa-studio.apk">🤖 Android APK</a>
@@ -423,8 +423,11 @@
     </details>
     <details>
       <summary>Is QA Studio only for Windows?</summary>
-      <p>Yes, today it's a Windows 10/11 desktop app. <code>install.bat</code> installs Python
-        automatically if it isn't already on your machine.</p>
+      <p>No — there's a Windows 10/11 desktop app (<code>install.bat</code> installs Python
+        automatically if needed) and an early Android app you can sideload from the
+        <code>qa-studio.apk</code> button above. On Android, test generation runs on the server
+        so it keeps going with the app closed; the automation project generator is desktop-only,
+        since it writes a local project and pushes it with git.</p>
     </details>
     <details>
       <summary>Where do my Azure DevOps and AI credentials live?</summary>
@@ -454,7 +457,7 @@
   </div>
 </div></section>
 
-<footer>QA Studio · <span id="verfoot">v2.8.1</span> · Windows 10/11 · Python auto-installed · keys stay on your device</footer>
+<footer>QA Studio · <span id="verfoot">v3.2.4</span> · Windows 10/11 · Python auto-installed · keys stay on your device</footer>
 
 <script>
   // Supabase email-confirmation redirect handling. When someone clicks the
@@ -537,6 +540,24 @@
   // go stale the moment a new version ships. Fails silently (kept text) if
   // the API call doesn't succeed — never blocks the page.
   (function(){
+    var IDS=['ver','verfoot','vernav'];
+    function paint(v){
+      IDS.forEach(function(id){
+        var el=document.getElementById(id);
+        if(el)el.textContent=v;
+      });
+    }
+    // Kill the version FLASH on refresh: the markup ships a hardcoded fallback
+    // (correct at build time, but one release stale the moment a new version
+    // ships), and the GitHub fetch below only lands ~1s later — so a refresh
+    // briefly showed the old number before snapping to the new one. Reading
+    // the LAST fetched version from localStorage synchronously here paints the
+    // real current version immediately on every subsequent load, so there's
+    // nothing to flash; the fetch then refreshes it in the background.
+    try{
+      var cached=localStorage.getItem('qastudio_ver');
+      if(cached)paint(cached);
+    }catch(e){}
     try{
       fetch('https://api.github.com/repos/AhmedSayedRepo/QA-Studio/releases/latest',
             {headers:{'Accept':'application/vnd.github+json'}})
@@ -545,10 +566,8 @@
           if(!d||!d.tag_name)return;
           var v=d.tag_name;
           if(v.charAt(0)!=='v'&&/^\d/.test(v))v='v'+v;
-          ['ver','verfoot','vernav'].forEach(function(id){
-            var el=document.getElementById(id);
-            if(el)el.textContent=v;
-          });
+          paint(v);
+          try{localStorage.setItem('qastudio_ver',v);}catch(e){}
         })
         .catch(function(){});
     }catch(e){}

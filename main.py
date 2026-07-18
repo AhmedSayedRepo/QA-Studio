@@ -6742,38 +6742,20 @@ class QAStudio:
                 res = E.check_for_update() or {}
                 if not res.get("update"):
                     return
-                # Open the "android-apk" release PAGE, not the direct .apk
-                # binary. Reported live: tapping Download did nothing —
-                # a direct binary link either 404s (if the CI-published asset
-                # name/release drifted) or gets opened in an in-app browser
-                # tab that silently refuses to download an .apk. The release
-                # page always renders, lists the current asset, and a tap on
-                # it hands the download to Android's own download manager,
-                # which reliably fetches the APK for the user to install.
-                # (The rolling "android-apk" release is (re)published by
-                # build-apk.yml's "Publish to rolling Android release" step on
-                # every successful build — NOT releases/latest, which is the
-                # desktop's manually-cut versioned release.)
+                # Download the APK DIRECTLY. Reported live: tapping Download
+                # only landed on the GitHub release page and the user still had
+                # to hunt for the asset — they want the file to just download.
+                # The rolling "android-apk" release now ALWAYS carries a stable,
+                # world-downloadable asset named exactly qa-studio.apk
+                # (build-apk.yml's "Publish to rolling Android release" step
+                # re-uploads it with --clobber on every build — same URL every
+                # time, same one index.html's Android button uses), so the old
+                # 404/asset-drift worry that justified opening the page instead
+                # is gone. Handing this direct URL to the OS launcher opens it
+                # in the real browser (Chrome), whose download manager fetches
+                # the .apk straight to Downloads for the user to tap-install.
                 url = ("https://github.com/AhmedSayedRepo/QA-Studio/releases/"
-                       "tag/android-apk")
-
-                def _open(u):
-                    # Route through the persistent UrlLauncher (see
-                    # mobile_url_launcher.py / _open_url()'s docstring) —
-                    # the deprecated page.launch_url() this used to call
-                    # constructs a throwaway, never-attached UrlLauncher on
-                    # every call and silently fails to reach the Flutter
-                    # client, the same bug that hit every other in-app link.
-                    try:
-                        import mobile_url_launcher
-                        if mobile_url_launcher.open(u):
-                            return
-                    except Exception:
-                        pass
-                    try:
-                        self.page.run_task(self.page.launch_url, u)
-                    except Exception:
-                        pass
+                       "download/android-apk/qa-studio.apk")
 
                 def _show():
                     remote_v = str(res.get("remote") or "")
@@ -6810,27 +6792,54 @@ class QAStudio:
                         ], spacing=1, tight=True),
                     ], spacing=13, tight=True,
                         vertical_alignment=ft.CrossAxisAlignment.CENTER)
+                    # In-app download progress — hidden until Download is tapped.
+                    # NO browser, NO GitHub page: the .apk is streamed straight
+                    # into the app and handed to Android's own installer via the
+                    # OS open sheet, so the user never leaves QA Studio for a web
+                    # page (reported live: "it shouldn't redirect to github").
+                    dl_bar = ft.ProgressBar(value=0, visible=False, color=T.GREEN,
+                                            bgcolor=T.CARD_2, border_radius=6)
+                    dl_status = ft.Text("", size=11.5, color=T.INK_2, visible=False)
                     body = ft.Container(
                         content=ft.Column([
                             version_row,
                             ft.Text(
-                                "Download the new APK and open it to update in "
-                                "place. Your saved credentials, biometric "
-                                "unlock and sign-in all carry over — nothing "
-                                "is cleared by the update.",
+                                "Downloads inside the app, then opens Android's "
+                                "installer to update in place. Your saved "
+                                "credentials, biometric unlock and sign-in all "
+                                "carry over — nothing is cleared by the update.",
                                 size=12.5, color=T.INK_2),
+                            dl_bar, dl_status,
                         ], spacing=14, tight=True),
                         # Cap width so the card reads as a tidy panel on phones
                         # without overflowing the narrowest screens.
                         width=min(340, (self.page.width or 400) - 64))
+
+                    def _start_download(e):
+                        # Reveal the progress UI, disable the button, and stream
+                        # the APK in the background — the dialog stays open so
+                        # the user sees progress rather than being bounced out.
+                        try:
+                            e.control.disabled = True
+                            e.control.update()
+                        except Exception:
+                            pass
+                        dl_bar.visible = True
+                        dl_status.visible = True
+                        dl_status.value = "Starting download…"
+                        try:
+                            dl_bar.update(); dl_status.update()
+                        except Exception:
+                            pass
+                        self._download_mobile_update(url, dl_status, dl_bar)
+
                     dlg = ft.AlertDialog(
                         modal=False, title=header, content=body,
                         actions=[
                             ghost_btn("Later",
                                       on_click=lambda e: self._close_dialog()),
                             green_btn("Download", icon=ft.Icons.DOWNLOAD_ROUNDED,
-                                      on_click=lambda e, u=url: (
-                                          _open(u), self._close_dialog())),
+                                      on_click=_start_download),
                         ])
                     self._show_dialog(dlg)
 
@@ -6855,6 +6864,144 @@ class QAStudio:
             except Exception:
                 pass
         self._bg(work)
+
+    def _download_mobile_update(self, url, status_text=None, bar=None):
+        """Fetch the update APK straight into the app — NO browser, NO GitHub
+        page — and hand it to Android's installer via the OS open sheet.
+        A Flet app can't silently self-install (that needs the system package
+        installer), but this keeps the whole flow in-app up to that final
+        system prompt: stream the .apk to app storage with live progress, then
+        reveal_export() (ft.Share) opens the OS sheet whose 'Package installer'
+        updates in place. Fail-soft: any network/IO error just toasts."""
+        import os
+
+        def _set(msg, val=None):
+            def _apply():
+                try:
+                    if status_text is not None:
+                        status_text.value = msg
+                        status_text.update()
+                    if bar is not None:
+                        bar.value = val
+                        bar.update()
+                except Exception:
+                    pass
+            self.ui_safe(_apply)
+
+        def work():
+            path = None
+            try:
+                import requests
+                dest = os.environ.get("FLET_APP_STORAGE_DATA") or "/tmp"
+                try:
+                    os.makedirs(dest, exist_ok=True)
+                except Exception:
+                    pass
+                path = os.path.join(dest, "qa-studio.apk")
+                # stream=True + iter_content so a ~30-40 MB APK reports live
+                # progress instead of blocking on one big read.
+                with requests.get(url, stream=True, timeout=90, headers={
+                        "Accept": "application/octet-stream"}) as r:
+                    r.raise_for_status()
+                    total = int(r.headers.get("content-length") or 0)
+                    done = 0
+                    with open(path, "wb") as f:
+                        for chunk in r.iter_content(chunk_size=131072):
+                            if not chunk:
+                                continue
+                            f.write(chunk)
+                            done += len(chunk)
+                            if total:
+                                _set(f"Downloading… {int(done * 100 / total)}%",
+                                     done / total)
+                            else:
+                                _set(f"Downloading… {done // 1024} KB", None)
+                _set("Downloaded — opening installer…", 1.0)
+                try:
+                    import platform_caps
+                    platform_caps.reveal_export(self.page, path)
+                except Exception:
+                    pass
+                self.ui_safe(lambda: (
+                    self._close_dialog(),
+                    self._toast("Update downloaded — tap Install to finish.")))
+            except Exception as ex:
+                self.ui_safe(lambda m=str(ex)[:120]:
+                             self._err(f"Update download failed: {m}"))
+        self._bg(work)
+
+    def _mobile_download_popup(self, path, label=None):
+        """Mobile export DELIVERY. Desktop exports 'reveal in Explorer'; a phone
+        has no user-visible app folder, so a file the app just wrote is
+        invisible until it's handed out. This shows a themed popup naming the
+        generated file with a Download button that opens the OS save/share
+        sheet (platform_caps.reveal_export → ft.Share) so the user can save it
+        to Downloads or send it on — reported live: exports 'should open a
+        popup to accept + start download the exported file, not like desktop'."""
+        import os
+        try:
+            name = os.path.basename(path) or "export"
+        except Exception:
+            name = "export"
+        try:
+            sz = os.path.getsize(path)
+            size_str = (f"{sz / 1048576:.1f} MB" if sz >= 1048576
+                        else f"{max(1, sz // 1024)} KB")
+        except Exception:
+            size_str = ""
+        ext = (os.path.splitext(name)[1].lstrip(".").upper() or "FILE")
+
+        def _start(e):
+            try:
+                import platform_caps
+                platform_caps.reveal_export(self.page, path)
+            except Exception:
+                pass
+            self._close_dialog()
+            self._toast("Opening save sheet — pick where to keep the file.")
+
+        header = ft.Row([
+            ft.Container(
+                content=ft.Icon(ft.Icons.FILE_DOWNLOAD_OUTLINED, size=22,
+                                color=T.GREEN),
+                width=42, height=42, bgcolor=T.GREEN_SOFT,
+                border_radius=12, alignment=ft.alignment.center),
+            ft.Column([
+                ft.Text("Export ready", size=16, weight=ft.FontWeight.BOLD,
+                        color=T.INK),
+                ft.Text(label or "Save or send your file", size=11.5,
+                        color=T.INK_2),
+            ], spacing=1, tight=True),
+        ], spacing=13, tight=True,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER)
+        # File chip: format badge + name + size, on the themed card surface.
+        file_chip = ft.Container(
+            content=ft.Row([
+                ft.Container(
+                    content=ft.Text(ext, size=10, weight=ft.FontWeight.W_800,
+                                    color=T.VIOLET_INK),
+                    bgcolor=T.VIOLET_SOFT, border_radius=6,
+                    padding=ft.Padding.symmetric(horizontal=7, vertical=3)),
+                ft.Column([
+                    ft.Text(name, size=12.5, weight=ft.FontWeight.W_700,
+                            color=T.INK, max_lines=1,
+                            overflow=ft.TextOverflow.ELLIPSIS),
+                    ft.Text(size_str, size=10.5, color=T.INK_3),
+                ], spacing=0, tight=True, expand=True),
+            ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            bgcolor=T.CARD_2, border_radius=10,
+            padding=ft.Padding.symmetric(horizontal=12, vertical=10))
+        body = ft.Container(
+            content=ft.Column([file_chip], spacing=12, tight=True),
+            width=min(340, (self.page.width or 400) - 64))
+        dlg = ft.AlertDialog(
+            modal=False, title=header, content=body,
+            actions=[
+                ghost_btn("Close", on_click=lambda e: self._close_dialog()),
+                green_btn("Download", icon=ft.Icons.DOWNLOAD_ROUNDED,
+                          on_click=_start),
+            ])
+        self._show_dialog(dlg)
 
     def _sync_remote_creds(self, status_ctl=None):
         """Settings → Remote runs: push the credentials THIS app is currently

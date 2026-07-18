@@ -38,7 +38,10 @@ def login_parallax(app, e):
         h = (app.page.height or 900) or 900
         mx = (lx or 0) / w - 0.5
         my = (ly or 0) / h - 0.5
-        lay.offset = ft.Offset(-mx * 0.06, -my * 0.06)
+        # Parallax strength (was 0.06 — too subtle to notice). 0.13 is a clearly
+        # stronger shift, still safely within the 1.3x layer's headroom (max
+        # offset 0.15) so an edge is never exposed.
+        lay.offset = ft.Offset(-mx * 0.13, -my * 0.13)
         lay.update()
     except Exception:
         pass
@@ -160,6 +163,18 @@ def login_gate(app):
         # silently falling back to scaleDown.)
         _fit_enum = getattr(ft, "BoxFit", None) or getattr(ft, "ImageFit", None)
         _cover = getattr(_fit_enum, "COVER", None)
+        _contain = getattr(_fit_enum, "CONTAIN", None)
+        # MOBILE fit: the backdrop is a 2160x1215 (16:9) LANDSCAPE image. On a
+        # tall PORTRAIT phone, `cover` scales it ~4x and shows only a narrow
+        # centre slice — the "too zoomed in" report. `contain` fits the whole
+        # image to the screen width instead (nothing cropped); the dark base
+        # fills the slim top/bottom remainder, which blends with the neon theme
+        # and sits behind the frosted card anyway. Desktop (landscape screen +
+        # landscape image) keeps `cover` — its crop is negligible and edge-to-
+        # edge fill looks best there.
+        _mob_bg = platform_caps.is_mobile()
+        _fit = (_contain if (_mob_bg and _contain) else _cover)
+        _fit_str = "contain" if _mob_bg else "cover"
         # HIGH filter quality → the 2752x1536 / 2048x1142 photo is resampled with
         # good interpolation when it's scaled to fill a high-DPI (Retina/4K) window,
         # so it stays crisp instead of looking soft/low-res. Guarded: not every Flet
@@ -196,9 +211,9 @@ def login_gate(app):
             # of the square composition than an exact-aspect image would, but it
             # fills edge-to-edge cleanly with no seams and no gaps, which reads
             # better than either problem the composite introduced.
-            for _kw in ([dict(src=p, fit=_cover, filter_quality=_fq)] if (_cover and _fq) else []) \
-                       + ([dict(src=p, fit=_cover)] if _cover else []) \
-                       + [dict(src=p, fit="cover")]:
+            for _kw in ([dict(src=p, fit=_fit, filter_quality=_fq)] if (_fit and _fq) else []) \
+                       + ([dict(src=p, fit=_fit)] if _fit else []) \
+                       + [dict(src=p, fit=_fit_str)]:
                 try:
                     return ft.Container(expand=True, width=W, height=H,
                                         image=ft.DecorationImage(**_kw), bgcolor=_base)
@@ -209,8 +224,8 @@ def login_gate(app):
                 W = int(app.page.width or 0) or 1440
                 H = int(app.page.height or 0) or 900
                 _ik = dict(src=p, width=W, height=H)
-                if _cover:
-                    _ik["fit"] = _cover
+                if _fit:
+                    _ik["fit"] = _fit
                 if _fq:
                     _ik["filter_quality"] = _fq
                 try:
@@ -232,12 +247,46 @@ def login_gate(app):
             hint_style=ft.TextStyle(size=14, color=FIELD_IC),
             content_padding=ft.Padding.symmetric(vertical=17, horizontal=14),
             border_radius=12)
+        field_ctl = tf
+        # MOBILE keyboard-reopen fix. On Android, dismissing the soft keyboard
+        # (back gesture / tapping away) hides it but leaves the TextField still
+        # "focused" in Flutter's eyes — so tapping the SAME field again is a
+        # no-op (focus never changed) and the keyboard stays down, sometimes
+        # for many taps until focus finally moves elsewhere. Reported live on
+        # the password field. Wrapping the field in a GestureDetector lets us
+        # catch the tap and force a focus CYCLE (blur → focus): the blur makes
+        # the re-focus a real focus change, which is what re-opens the
+        # keyboard. Mobile-only so the desktop login is completely unchanged.
+        if platform_caps.is_mobile():
+            def _refocus(e, _tf=tf):
+                async def _cycle():
+                    try:
+                        _tf.blur()
+                    except Exception:
+                        pass
+                    try:
+                        import asyncio
+                        await asyncio.sleep(0.05)
+                    except Exception:
+                        pass
+                    try:
+                        _tf.focus()
+                    except Exception:
+                        pass
+                try:
+                    app.page.run_task(_cycle)
+                except Exception:
+                    try:
+                        _tf.focus()
+                    except Exception:
+                        pass
+            field_ctl = ft.GestureDetector(content=tf, on_tap=_refocus)
         col = ft.Column([
             ft.Text(cap, size=11, color=CAP, font_family=MONO,
                     weight=ft.FontWeight.W_600,
                     style=ft.TextStyle(letter_spacing=1.8)),
             ft.Container(height=7),
-            tf,
+            field_ctl,
         ], spacing=0)
         return tf, col
 
@@ -535,8 +584,13 @@ def login_gate(app):
     # (left/top/right/bottom=0) is Flet's actual "fill the Stack" idiom —
     # it maps straight to Positioned.fill(), which forces a real tight
     # constraint down through the whole child tree.
+    # Layer scale doubles as parallax headroom (the image must overflow the
+    # viewport so a shift never exposes an edge). Mobile uses a gentler 1.22 so
+    # the `contain` backdrop isn't re-zoomed much (only ~11% side overflow,
+    # enough headroom for the stronger tilt parallax below); desktop keeps 1.3.
     bg_layer = ft.Container(bg, left=0, top=0, right=0, bottom=0,
-                            scale=1.3, offset=ft.Offset(0, 0),
+                            scale=(1.22 if platform_caps.is_mobile() else 1.3),
+                            offset=ft.Offset(0, 0),
                             animate_offset=120, animate_scale=120)
 
     try:
@@ -634,7 +688,10 @@ def login_gate(app):
             # mobile_tilt.py's docstring for why (mx, my) are normalized to
             # the same rough [-0.5, 0.5] range there.
             try:
-                _lay.offset = ft.Offset(-mx * 0.06, -my * 0.06)
+                # Stronger tilt parallax (was 0.06). Horizontal is capped near
+                # the 1.22x layer's ~0.11 side headroom; vertical can go bigger
+                # since the contained image leaves dark bands to move within.
+                _lay.offset = ft.Offset(-mx * 0.10, -my * 0.16)
                 _lay.update()
             except Exception:
                 pass

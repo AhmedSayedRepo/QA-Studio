@@ -71,6 +71,9 @@ FEATURES = [
          "test case IDs logged.",
          "Progress is live — elapsed time, an ETA, and a running log — and you can "
          "Stop at any point; work already written to Azure is kept.",
+         "This local Run screen is DESKTOP ONLY. On mobile the work runs on the "
+         "server instead: flip Setup's \"Run remotely\" toggle and watch progress "
+         "on the Remote Runs screen — the results land in Azure DevOps just the same.",
          "The RECENT ACTIVITY log has Copy and Clear buttons pinned next to its "
          "title, same as Automation's Activity log — copy the whole log to your "
          "clipboard, or clear it, without losing your place elsewhere on screen.",
@@ -101,11 +104,42 @@ FEATURES = [
          "the edge cases rather than re-reading everything.",
          "From here you can email the report to stakeholders or jump straight to the "
          "test plan in Azure DevOps to see the generated cases in context.",
+         "Report is DESKTOP ONLY — it summarizes a local Run. On mobile the "
+         "equivalent live results appear on the Remote Runs screen as the server "
+         "run progresses.",
      ],
      "points": [
          "Created / Skipped / Failed counters and a per-story pass indicator.",
          "'Needs your review' surfaces low-confidence items for a quick check.",
          "Email the report, or open the test plan directly in Azure DevOps.",
+     ]},
+    {"key": "remote_runs", "icon": ft.Icons.CLOUD_QUEUE_OUTLINED, "title": "Remote Runs",
+     "blurb": "Watch test-case generation that runs on the server (GitHub "
+              "Actions) instead of your own machine — this is how runs work on mobile.",
+     "details": [
+         "Remote Runs is the live status and activity viewer for runs executed "
+         "server-side. Instead of your own machine doing the work (that's the "
+         "desktop's local Run screen), the job is dispatched to a GitHub Actions "
+         "worker that executes with your synced credentials and writes the results "
+         "straight into Azure DevOps — so it keeps going even after you close the "
+         "app or lock your phone.",
+         "On mobile this is the primary way to run: Setup's \"Run remotely\" toggle "
+         "queues the job, and Remote Runs streams each test case as it's generated, "
+         "with the same one-line-per-case log the desktop shows. On desktop it's "
+         "optional — you can still run locally on the Run screen, or offload to the "
+         "server from here.",
+         "A remote run needs your credentials synced once first (Settings → Remote "
+         "runs → Sync) so the worker can act as you: your Azure PAT, the AI provider "
+         "and its key, and optionally the Gmail sender used to email the report.",
+     ],
+     "points": [
+         "Server-side execution on GitHub Actions — runs continue with the app "
+         "closed or the phone locked.",
+         "The mobile equivalent of the desktop's local Run + Report, driven by "
+         "Setup's \"Run remotely\" toggle.",
+         "Live per-test-case log and status; also available (optional) on desktop.",
+         "Requires a one-time credential sync (Settings → Remote runs) so the "
+         "worker runs as you.",
      ]},
     {"key": "regression", "icon": ft.Icons.FACT_CHECK_OUTLINED, "title": "Regression Plan",
      "blurb": "Build a regression plan from your existing test plans and their "
@@ -204,6 +238,9 @@ FEATURES = [
      "blurb": "Turns your Azure test cases into a ready-to-run, self-healing UI "
               "test project — Selenium, Playwright, or Cypress — and pushes it to Git.",
      "details": [
+         "Automation is DESKTOP ONLY: it generates a real project into a local "
+         "folder and pushes it with git, which needs a desktop filesystem and "
+         "toolchain — so the screen isn't shown on mobile at all.",
          "Automation has its own Source & stories section (A) — pick one or more "
          "test plans and stories right here. It's independent of Setup's own "
          "selection, so the screen unlocks as soon as you're connected to a "
@@ -367,6 +404,50 @@ FEATURES = [
 ]
 
 
+# Which platform each screen runs on. "both" = mobile & desktop; "desktop" =
+# desktop-only (local Run/Report and Automation need a real filesystem/toolchain
+# — see platform_caps.has_automation() and _nav_items_visible() which hide Run/
+# Report on mobile). Kept as a lookup so the FEATURES entries above stay purely
+# about content; the guide reads this to draw a "Desktop only" / "Mobile &
+# desktop" badge on every feature so it's obvious where each screen is available.
+PLATFORM_OF = {
+    "setup": "both", "run": "desktop", "report": "desktop",
+    "remote_runs": "both", "regression": "both", "testplan": "both",
+    "titles": "both", "task_manager": "both", "automation": "desktop",
+    "links": "both", "users": "both", "settings": "both", "providers": "both",
+}
+
+PLATFORM_META = {
+    "both": ("Mobile & desktop", ft.Icons.DEVICES),
+    "desktop": ("Desktop only", ft.Icons.DESKTOP_WINDOWS_OUTLINED),
+    "mobile": ("Mobile only", ft.Icons.PHONE_IPHONE_OUTLINED),
+}
+
+
+def _platform_of(feat):
+    return PLATFORM_OF.get(feat.get("key"), "both")
+
+
+def _platform_badge(plat, compact=False):
+    """A small themed pill: 'Mobile & desktop' (green) or 'Desktop only'
+    (amber). Amber = the not-everywhere case, so a desktop-only screen visibly
+    stands out from the ones that work everywhere."""
+    label, icon = PLATFORM_META.get(plat, PLATFORM_META["both"])
+    both = (plat == "both")
+    ink = T.GREEN if both else T.AMBER
+    bg = T.GREEN_SOFT if both else T.AMBER_SOFT
+    return ft.Container(
+        content=ft.Row([
+            ft.Icon(icon, size=(11 if compact else 13), color=ink),
+            ft.Text(label, size=(9.5 if compact else 11),
+                    weight=ft.FontWeight.W_800, color=ink),
+        ], spacing=4, tight=True,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        bgcolor=bg, border_radius=6,
+        padding=ft.Padding.symmetric(
+            horizontal=(6 if compact else 8), vertical=(2 if compact else 3)))
+
+
 def _content(feat):
     """Right-pane controls for one feature: title, blurb, bullet points."""
     rows = [
@@ -375,6 +456,8 @@ def _content(feat):
                          width=40, height=40, bgcolor=T.VIOLET_SOFT, border_radius=10,
                          alignment=ft.Alignment.CENTER),
             ft.Text(feat["title"], size=19, weight=ft.FontWeight.BOLD, color=T.INK),
+            ft.Container(expand=True),
+            _platform_badge(_platform_of(feat)),
         ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER),
         ft.Container(height=10),
         ft.Text(feat["blurb"], size=13.5, color=T.INK_2, weight=ft.FontWeight.W_500),
@@ -408,6 +491,13 @@ def show(app, initial=None):
 
     def _nav_item(feat):
         selected = (feat["key"] == app._helpg_sel)
+        # Desktop-only screens get a tiny amber monitor icon on the right of
+        # their nav row, so the "not everywhere" ones are scannable in the
+        # list without opening each — the full badge shows in the detail pane.
+        plat = _platform_of(feat)
+        tail = ([ft.Container(expand=True),
+                 ft.Icon(ft.Icons.DESKTOP_WINDOWS_OUTLINED, size=13, color=T.AMBER)]
+                if plat == "desktop" else [])
         return ft.Container(
             ft.Row([
                 ft.Icon(feat["icon"], size=15,
@@ -415,6 +505,7 @@ def show(app, initial=None):
                 ft.Text(feat["title"], size=12.5,
                         weight=ft.FontWeight.BOLD,
                         color=(T.VIOLET_INK if selected else T.INK_2)),
+                *tail,
             ], spacing=9),
             on_click=lambda e, k=feat["key"]: _select(k),
             ink=True, border_radius=8,

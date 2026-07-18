@@ -1661,10 +1661,11 @@ def _export_row(app, set_status=None):
                         if _pc.is_mobile():
                             # dest was never real here (_ask_save_path's tkinter
                             # dialog doesn't exist on mobile, returns False) —
-                            # path is a sandboxed app-data file. Share sheet is
-                            # the only way it actually leaves the device.
-                            _pc.reveal_export(app.page, path)
-                            _notify("ok", f"{fmt.upper()} ready — choose where to save or send it.")
+                            # path is a sandboxed app-data file. A popup names it
+                            # and starts the save/share so it leaves the device.
+                            app.ui_safe(lambda p=path, f=fmt: app._mobile_download_popup(
+                                p, f"{f.upper()} export ready"))
+                            _notify("ok", f"{fmt.upper()} ready — tap Download to save it.")
                         else:
                             _pc.open_folder(os.path.dirname(path))
                             _notify("ok", f"Saved: {path}")
@@ -1692,12 +1693,17 @@ def _export_row(app, set_status=None):
                 shape=ft.RoundedRectangleBorder(radius=T.R),
                 padding=ft.Padding.symmetric(horizontal=15, vertical=0)))
 
-    btns = ft.Row([
+    import platform_caps as _pc_exp
+    _exp_row = [
         _exp_btn("Word", ft.Icons.DESCRIPTION, T.BRAND_GRAD_1, "docx"),
         _exp_btn("Excel", ft.Icons.TABLE_CHART, T.GREEN, "xlsx"),
         _exp_btn("PDF", ft.Icons.PICTURE_AS_PDF, T.RED, "pdf"),
-        _exp_btn("JSON", ft.Icons.DATA_OBJECT, T.STORY, "json"),
-    ], spacing=8, wrap=True)
+    ]
+    # JSON is a developer/interchange format with no use on a phone (no local
+    # tooling to open it) — excluded on mobile per request; desktop keeps it.
+    if not _pc_exp.is_mobile():
+        _exp_row.append(_exp_btn("JSON", ft.Icons.DATA_OBJECT, T.STORY, "json"))
+    btns = ft.Row(_exp_row, spacing=8, wrap=True)
 
     _m_kind = app._cp_msg[0] if app._cp_msg else "ok"
     _m_text = app._cp_msg[1] if app._cp_msg else ""
@@ -4687,8 +4693,11 @@ def screen(app):
         try:
             import platform_caps as _pc
             if _pc.is_mobile():
-                _pc.reveal_export(app.page, path)
-                app._reg_export_msg = ("ok", f"{fmt.upper()} ready — choose where to save or send it.")
+                # Popup to name the file + start the download/save (no Explorer
+                # on a phone) — must run on the UI thread.
+                app.ui_safe(lambda p=path, f=fmt: app._mobile_download_popup(
+                    p, f"{f.upper()} export ready"))
+                app._reg_export_msg = ("ok", f"{fmt.upper()} ready — tap Download to save it.")
             else:
                 _pc.open_folder(os.path.dirname(path))
                 app._reg_export_msg = ("ok", f"Saved {fmt.upper()}: {path}")
@@ -5538,12 +5547,17 @@ def screen(app):
                         side=ft.BorderSide(1, T.BORDER),
                         shape=ft.RoundedRectangleBorder(radius=T.R),
                         padding=ft.Padding.symmetric(horizontal=15, vertical=0)))
-            exports = ft.Row([
+            import platform_caps as _pc_exp2
+            _exports_row = [
                 _exp_btn("Word", ft.Icons.DESCRIPTION, T.BRAND_GRAD_1, "docx"),
                 _exp_btn("Excel", ft.Icons.TABLE_CHART, T.GREEN, "xlsx"),
                 _exp_btn("PDF", ft.Icons.PICTURE_AS_PDF, T.RED, "pdf"),
-                _exp_btn("JSON", ft.Icons.DATA_OBJECT, T.STORY, "json"),
-            ], spacing=8, wrap=True)
+            ]
+            # JSON excluded on mobile (no phone use case); desktop keeps it.
+            if not _pc_exp2.is_mobile():
+                _exports_row.append(
+                    _exp_btn("JSON", ft.Icons.DATA_OBJECT, T.STORY, "json"))
+            exports = ft.Row(_exports_row, spacing=8, wrap=True)
 
         _s_kind = app._reg_export_msg[0] if app._reg_export_msg else "ok"
         _s_text = app._reg_export_msg[1] if app._reg_export_msg else ""

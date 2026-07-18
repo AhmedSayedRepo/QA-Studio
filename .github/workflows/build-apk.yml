@@ -7,11 +7,12 @@
 # an Android phone: download → open → allow "install unknown apps").
 #
 # EXPERIMENTAL: first `flet build` runs commonly need an iteration or two on
-# toolchain quirks. The app is staged into a CLEAN directory with a MINIMAL
-# requirements.txt on purpose — the desktop requirements bundle export
-# libraries (docx/xlsx/pdf) that are imported lazily on desktop only; pulling
-# them into the mobile bundle would bloat it and risk non-pure wheels failing
-# the cross-compile. Engine/auth need `requests` only.
+# toolchain quirks. The app is staged into a CLEAN directory with a curated
+# requirements.txt (see the "Stage mobile app" step): engine/auth need
+# `requests`, and the export buttons need openpyxl/python-docx/reportlab —
+# these are bundled so Word/Excel/PDF exports work on-device (the docx/pdf
+# libraries carry native components; see the requirements printf's note if a
+# build ever fails resolving a wheel for android-arm64).
 name: Build Android APK
 
 on:
@@ -95,7 +96,23 @@ jobs:
           # remote run failed identically, confirmed live against the
           # remote_runs table) — pinned to the same versions as the desktop
           # build's requirements.txt for consistency.
-          printf "flet==0.85.3\nrequests\nflet-secure-storage==0.85.3\nazure-core==1.41.0\nazure-devops==7.1.0b4\nmsrest==0.7.1\n" > /tmp/mobile/requirements.txt
+          #
+          # EXPORT LIBRARIES (openpyxl/python-docx/reportlab + their deps):
+          # the Regression/Sprint/Task-Manager/AI-Usage export buttons import
+          # these lazily (openpyxl for .xlsx, python-docx for .docx, reportlab
+          # for .pdf). They were deliberately left OUT of the minimal mobile
+          # bundle originally — so every Word/Excel/PDF export on mobile threw
+          # "ModuleNotFoundError / Missing dependency" and did nothing (reported
+          # live: "the exporters not working in the application"). Bundling them
+          # now for full desktop parity, pinned to the desktop requirements.txt
+          # versions. NOTE: unlike the pure-Python deps above, lxml (python-docx)
+          # and reportlab/pillow carry native/C components — if a future
+          # `flet build apk` fails resolving a non-pure wheel for android-arm64,
+          # this block is the first place to look (drop the offending lib and
+          # its exports degrade to a "desktop only" notice rather than failing
+          # the whole build). et_xmlfile is openpyxl's runtime dep; lxml is
+          # python-docx's; pillow is reportlab's image dep.
+          printf "flet==0.85.3\nrequests\nflet-secure-storage==0.85.3\nazure-core==1.41.0\nazure-devops==7.1.0b4\nmsrest==0.7.1\nopenpyxl==3.1.5\net_xmlfile==2.0.0\npython-docx==1.2.0\nlxml==6.1.1\nreportlab==5.0.0\npillow==12.2.0\n" > /tmp/mobile/requirements.txt
           # App icon: `flet build` only customizes the launcher icon if it
           # finds <staged-app>/assets/icon.png (see flet_cli's customize_icons()
           # — assets_path.exists() gates the whole step). This directory was

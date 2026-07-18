@@ -922,8 +922,8 @@ def screen(app):
                     try:
                         import platform_caps as _pc
                         if _pc.is_mobile():
-                            _pc.reveal_export(app.page, p)
-                            app.ui_safe(lambda: app._toast("Word document ready — choose where to save or send it."))
+                            app.ui_safe(lambda pp=p: app._mobile_download_popup(
+                                pp, "Word document ready"))
                         else:
                             _pc.open_folder(os.path.dirname(p))
                             app.ui_safe(lambda: app._toast(f"Saved Word document: {p}"))
@@ -974,11 +974,31 @@ def screen(app):
             return ft.Container(child, padding=14, bgcolor=T.CARD,
                                 border=ft.Border.all(1, T.BORDER), border_radius=T.R)
 
+        # Action row (Copy / Download). On mobile the single row overflowed —
+        # "2 Report" + spacer + Copy + "Download Word" is wider than a phone,
+        # so the green Download button ran off the right edge (reported live).
+        # On mobile: drop the header onto its own line and give the two buttons
+        # their own full-width row, each expanding to split the width evenly.
+        # Desktop keeps the original one-line layout.
+        import platform_caps as _pc_hdr
+        _mob_hdr = _pc_hdr.is_mobile()
+        _copy_btn = ghost_btn("Copy", icon=ft.Icons.CONTENT_COPY, on_click=_copy,
+                              expand=_mob_hdr)
+        _dl_btn = green_btn("Download Word", icon=ft.Icons.DESCRIPTION,
+                            on_click=_download, expand=_mob_hdr)
+        if _mob_hdr:
+            _report_header = ft.Column([
+                sec_head("2", "Report"),
+                ft.Container(height=10),
+                ft.Row([_copy_btn, _dl_btn], spacing=10),
+            ], spacing=0)
+        else:
+            _report_header = ft.Row(
+                [sec_head("2", "Report"), ft.Container(expand=True),
+                 _copy_btn, _dl_btn],
+                vertical_alignment=ft.CrossAxisAlignment.CENTER)
         results = card(ft.Column([
-            ft.Row([sec_head("2", "Report"), ft.Container(expand=True),
-                    ghost_btn("Copy", icon=ft.Icons.CONTENT_COPY, on_click=_copy),
-                    green_btn("Download Word", icon=ft.Icons.DESCRIPTION, on_click=_download)],
-                   vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            _report_header,
             ft.Container(height=12),
             title_band,
             ft.Container(height=14),
