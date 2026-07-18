@@ -1,0 +1,32 @@
+# flet_local_auth — a Flet 0.85 user extension wrapping the official Flutter
+# `local_auth` plugin (Android BiometricPrompt / iOS LocalAuthentication).
+#
+# This is the CORRECT biometric architecture: authentication is a purpose-built
+# check that returns a bool and never touches stored data — unlike binding
+# credentials to a biometric Keystore key (flutter_secure_storage's
+# enforce_biometrics), which invalidates on enrollment change and was the direct
+# cause of the recurring "enabling biometrics wiped my credentials" bug.
+#
+# Structure and build config mirror flet-secure-storage 0.85.3 (a proven Flet
+# 1.0-line Service extension): a hatchling wheel that force-includes the
+# top-level `flutter/` dir so `flet build` detects and compiles the bundled
+# Flutter plugin the normal way.
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "flet-local-auth"
+version = "0.1.0"
+description = "Flet Local Auth (biometric) control"
+requires-python = ">=3.9"
+dependencies = []
+
+[tool.hatch.build.targets.wheel]
+packages = ["flet_local_auth"]
+
+# Ship the Flutter/Dart side at the wheel root (installs to
+# site-packages/flutter/flet_local_auth/), exactly like flet-secure-storage —
+# this is where `flet build` looks for an installed extension's Flutter package.
+[tool.hatch.build.targets.wheel.force-include]
+"flutter" = "flutter"

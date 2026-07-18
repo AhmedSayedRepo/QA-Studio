@@ -524,7 +524,8 @@ def _status_banner(msg, busy):
 
 
 def _tm_out_dir():
-    d = os.path.join(os.path.expanduser("~"), "QA Studio", "Task Manager Reports")
+    import platform_caps as _pc
+    d = os.path.join(_pc.export_base_dir(), "QA Studio", "Task Manager Reports")
     os.makedirs(d, exist_ok=True)
     return d
 

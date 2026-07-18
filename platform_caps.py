@@ -50,6 +50,24 @@ def has_self_update():
     return is_windows() and not is_mobile()
 
 
+def export_base_dir():
+    """Base directory for generated export files (Regression/Sprint/Task
+    Manager/AI Usage reports all build `<base>/QA Studio/<kind>/…`).
+
+    On desktop this is the user's home (~/QA Studio/…), unchanged. On mobile
+    `os.path.expanduser("~")` resolves to a NON-writable location (e.g. /data),
+    so every export died with `[Errno 13] Permission denied: '/data/QA Studio'`.
+    Use Flet's guaranteed-writable app-private data dir (FLET_APP_STORAGE_DATA)
+    there instead — the same durable location mobile_prefs uses. The file is
+    then delivered off-device via reveal_export()'s OS share sheet, since the
+    user has no direct filesystem access to that sandbox."""
+    if is_mobile():
+        base = os.environ.get("FLET_APP_STORAGE_DATA")
+        if base:
+            return base
+    return os.path.expanduser("~")
+
+
 def open_folder(path):
     """Open a folder in the OS file explorer where supported (Windows
     Explorer via os.startfile). Safe no-op elsewhere — returns True only if

@@ -6392,7 +6392,8 @@ def usage_report_all_users(start_date=None, end_date=None):
 
 
 def _usage_out_dir():
-    d = os.path.join(os.path.expanduser("~"), "QA Studio", "AI Usage Reports")
+    import platform_caps as _pc
+    d = os.path.join(_pc.export_base_dir(), "QA Studio", "AI Usage Reports")
     os.makedirs(d, exist_ok=True)
     return d
 

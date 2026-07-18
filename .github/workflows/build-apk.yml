@@ -44,6 +44,23 @@ jobs:
       - name: Install flet CLI
         run: pip install --quiet "flet[all]==0.85.3"
 
+      - name: Build & install flet_local_auth extension
+        run: |
+          # Decoupled biometric-gate extension (Python + a bundled Flutter
+          # local_auth plugin) — see mobile_ext/flet_local_auth/. Build a wheel
+          # (its pyproject force-includes the flutter/ dir at the wheel root, the
+          # same layout flet-secure-storage ships) and install it into THIS CI
+          # env so `flet build` detects and compiles its Flutter side. The wheel
+          # is also copied into the app bundle + added to requirements below so
+          # the Python module ships on-device. If a future build ever fails
+          # resolving the Flutter plugin, this whole extension is optional: the
+          # app falls back to the sentinel-storage gate at runtime, so dropping
+          # this step + the two staging lines below reverts cleanly.
+          pip install --quiet build hatchling
+          python -m build --wheel mobile_ext/flet_local_auth -o /tmp/ext-wheels
+          pip install --quiet /tmp/ext-wheels/flet_local_auth-*.whl
+          ls -la /tmp/ext-wheels
+
       - name: Stage mobile app (clean dir, minimal requirements)
         run: |
           mkdir -p /tmp/mobile
@@ -113,6 +130,34 @@ jobs:
           # the whole build). et_xmlfile is openpyxl's runtime dep; lxml is
           # python-docx's; pillow is reportlab's image dep.
           printf "flet==0.85.3\nrequests\nflet-secure-storage==0.85.3\nazure-core==1.41.0\nazure-devops==7.1.0b4\nmsrest==0.7.1\nopenpyxl==3.1.5\net_xmlfile==2.0.0\npython-docx==1.2.0\nlxml==6.1.1\nreportlab==5.0.0\npillow==12.2.0\n" > /tmp/mobile/requirements.txt
+          # BIOMETRIC PROMPT PREREQUISITES (see BIOMETRICS_FIX_PLAN.md). The
+          # biometric login gate (secure_store_mobile.py, enforce_biometrics=True)
+          # could NEVER pop the OS prompt on any prior build because three Android
+          # requirements were missing. Two are set here declaratively; the third
+          # (host Activity must be FlutterFragmentActivity) is patched after the
+          # build below, since Flet doesn't expose MainActivity.
+          #   * USE_BIOMETRIC / USE_FINGERPRINT: without the manifest permission
+          #     the prompt can't be requested at all (USE_FINGERPRINT is the
+          #     pre-API-28 fallback).
+          #   * min_sdk_version 28: enforce_biometrics=True requires API 28+;
+          #     Flet's default is lower, so the plugin threw / no-op'd.
+          # flet build reads these from pyproject.toml's [tool.flet.*] tables.
+          cat >> /tmp/mobile/pyproject.toml <<'TOML'
+
+          [tool.flet.android.permission]
+          "android.permission.USE_BIOMETRIC" = true
+          "android.permission.USE_FINGERPRINT" = true
+
+          [tool.flet.android]
+          min_sdk_version = 28
+          TOML
+          # Ship the flet_local_auth extension's Python module in the app bundle
+          # (its Flutter side is bundled via the CI-env install above). Absolute
+          # local path so serious-python installs the wheel into the on-device
+          # bundle; the extension's flutter/ dir rides along harmlessly.
+          WHL=$(ls /tmp/ext-wheels/flet_local_auth-*.whl | head -n1)
+          cp "$WHL" /tmp/mobile/
+          echo "/tmp/mobile/$(basename "$WHL")" >> /tmp/mobile/requirements.txt
           # App icon: `flet build` only customizes the launcher icon if it
           # finds <staged-app>/assets/icon.png (see flet_cli's customize_icons()
           # — assets_path.exists() gates the whole step). This directory was
@@ -171,6 +216,58 @@ jobs:
           # already sits on in-app.
           yes | flet build apk --project "QA Studio" --org com.qastudio \
             --android-adaptive-icon-background "#FFFFFF" --verbose
+
+      # BIOMETRIC PROMPT PREREQUISITE #3 (see BIOMETRICS_FIX_PLAN.md): the host
+      # Activity must extend FlutterFragmentActivity, because Android's
+      # BiometricPrompt (used by flutter_secure_storage's enforce_biometrics
+      # path) attaches to a FragmentManager that a plain FlutterActivity doesn't
+      # have. Flet generates a MainActivity extending FlutterActivity and exposes
+      # no option to change it, so patch the generated Kotlin source and rebuild
+      # the APK from the Flutter project Flet already generated. The signing
+      # config Flet wrote from the FLET_ANDROID_SIGNING_* envs (android/
+      # key.properties + the jks) persists in that generated project, so the
+      # rebuilt APK stays signed with the SAME keystore — critical, or in-place
+      # updates break (see the signing step above).
+      #
+      # VERSION-FRAGILE: the generated paths (build/flutter, MainActivity.kt
+      # location) are Flet-0.85.3 / Flutter-3.41.7 specifics. Re-verify this step
+      # whenever either pin changes — it fails loud if the source or output moves.
+      - name: Patch host Activity to FlutterFragmentActivity + rebuild
+        working-directory: /tmp/mobile
+        env:
+          FLET_ANDROID_SIGNING_KEY_STORE: /tmp/mobile/qa-studio-release.jks
+          FLET_ANDROID_SIGNING_KEY_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          FLET_ANDROID_SIGNING_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          FLET_ANDROID_SIGNING_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          MA=$(find build -name 'MainActivity.kt' | head -n1 || true)
+          if [ -z "$MA" ]; then
+            echo "::error::MainActivity.kt not found under build/ — Flet's generated"
+            echo "::error::layout changed; re-verify this patch step against the new"
+            echo "::error::Flet version before trusting the biometric prompt."
+            exit 1
+          fi
+          echo "Patching $MA"
+          sed -i -E 's/import io\.flutter\.embedding\.android\.FlutterActivity/import io.flutter.embedding.android.FlutterFragmentActivity/' "$MA"
+          sed -i -E 's/(:[[:space:]]*)FlutterActivity([^A-Za-z]|$)/\1FlutterFragmentActivity\2/' "$MA"
+          if ! grep -q 'FlutterFragmentActivity' "$MA"; then
+            echo "::error::FragmentActivity patch did not apply — MainActivity.kt"
+            echo "::error::no longer matches the expected FlutterActivity pattern."
+            exit 1
+          fi
+          # Rebuild the (patched) APK in-place from Flet's generated Flutter project.
+          FLUTTER_DIR=$(dirname "$(find build -name 'pubspec.yaml' -path '*flutter*' | head -n1)")
+          echo "Rebuilding signed APK in $FLUTTER_DIR"
+          ( cd "$FLUTTER_DIR" && flutter build apk --release )
+          PATCHED_APK=$(find "$FLUTTER_DIR" -path '*outputs*' -name '*release*.apk' | head -n1)
+          if [ -z "$PATCHED_APK" ]; then
+            echo "::error::patched release APK not produced — check the flutter build output above."
+            exit 1
+          fi
+          mkdir -p build/apk
+          cp "$PATCHED_APK" build/apk/
+          echo "Patched, re-signed APK staged at build/apk/: $(basename "$PATCHED_APK")"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4

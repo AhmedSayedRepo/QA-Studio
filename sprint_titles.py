@@ -624,7 +624,8 @@ def _export_docx(app):
 
     _add_watermark()
 
-    out_dir = os.path.join(os.path.expanduser("~"), "QA Studio", "Sprint Reports")
+    import platform_caps as _pc
+    out_dir = os.path.join(_pc.export_base_dir(), "QA Studio", "Sprint Reports")
     os.makedirs(out_dir, exist_ok=True)
     base = re.sub(r"[^A-Za-z0-9_-]+", "_", r.get("sprint_name", "") or "sprint").strip("_") or "sprint"
     path = os.path.join(out_dir, f"SprintReport_{base}_{datetime.now():%Y%m%d-%H%M}.docx")

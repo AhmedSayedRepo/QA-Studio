@@ -864,6 +864,17 @@ class QAStudio:
             auth.sign_out()
         except Exception:
             pass
+        # Re-arm the biometric login gate (mobile): without this, THIS launch's
+        # gate stayed "passed" from the initial unlock, so a cached-session
+        # silent restore right after logout could sign the user back in with no
+        # fresh biometric check — the reported "biometrics not working when
+        # logging out". No-op on desktop / when biometrics isn't required.
+        if platform_caps.is_mobile():
+            try:
+                import secure_store_mobile as _ssm
+                _ssm.rearm_gate()
+            except Exception:
+                pass
         self.user = None
         self._switch_user_creds()       # revert to the shared default cred file
         # The login screen keeps its OWN theme flag (login.py's app._login_theme —
@@ -2326,7 +2337,27 @@ class QAStudio:
                     _root = self._with_window_chrome(_root)
                 except Exception:
                     pass
-                self.page.add(_root)
+                # Mobile: mount into a 2-level views stack (an empty base view +
+                # this content view) so the Android hardware BACK button fires
+                # page.on_view_pop (see _on_view_pop) instead of exiting the app.
+                # Idempotent per render (trims back to [base] then re-appends the
+                # content view), so a Back that popped the content view is
+                # re-asserted here. Defensive: any failure falls back to the
+                # plain single-root mount (unchanged desktop behavior).
+                _mounted = False
+                if platform_caps.is_mobile() and hasattr(self.page, "views"):
+                    try:
+                        self.page.controls.clear()   # keep the base view empty
+                        _main_view = ft.View("/_qs_main", [_root],
+                                             padding=0, spacing=0)
+                        while len(self.page.views) > 1:
+                            self.page.views.pop()
+                        self.page.views.append(_main_view)
+                        _mounted = True
+                    except Exception:
+                        _mounted = False
+                if not _mounted:
+                    self.page.add(_root)
                 _u0 = _pt.perf_counter()
                 self.page.update()
                 _upd_ms = (_pt.perf_counter() - _u0) * 1000
@@ -2408,6 +2439,15 @@ class QAStudio:
         if platform_caps.is_mobile():
             try:
                 self.page.on_app_lifecycle_state_change = self._on_app_lifecycle_change
+            except Exception:
+                pass
+            # Android hardware BACK button: route it to the Setup screen instead
+            # of closing the app, and require a second press (within ~2s) on
+            # Setup to actually exit. Fires only because render() mounts the
+            # mobile UI as a 2-view stack (see render()) — on_view_pop needs a
+            # views stack to fire at all.
+            try:
+                self.page.on_view_pop = self._on_view_pop
             except Exception:
                 pass
         # Client-side (Flutter) render errors were previously INVISIBLE: a
@@ -2606,6 +2646,9 @@ class QAStudio:
         running = bool(getattr(self, "_run_active", False)
                        or getattr(self, "_auto_running", False))
         if state in ("pause", "hide", "inactive"):
+            # Mark that the app left the foreground so the resume branch can
+            # re-challenge biometrics (see _maybe_bio_relock).
+            self._was_backgrounded = True
             if running:
                 self._mobile_bg_during_run = True
                 try:
@@ -2616,14 +2659,99 @@ class QAStudio:
                 except Exception:
                     pass
             return
-        if state in ("resume", "restart", "show") and getattr(self, "_mobile_bg_during_run", False):
-            self._mobile_bg_during_run = False
+        if state in ("resume", "restart", "show"):
+            # Re-lock behind biometrics if the app was backgrounded/closed while
+            # signed in and the unlock setting is on (cold starts are already
+            # gated at launch; this covers resume-from-background).
             try:
-                self._toast("Welcome back — the app was backgrounded during a run; "
-                           "check the activity log for anything that may have been "
-                           "interrupted.")
+                self._maybe_bio_relock()
             except Exception:
                 pass
+            if getattr(self, "_mobile_bg_during_run", False):
+                self._mobile_bg_during_run = False
+                try:
+                    self._toast("Welcome back — the app was backgrounded during a run; "
+                               "check the activity log for anything that may have been "
+                               "interrupted.")
+                except Exception:
+                    pass
+
+    def _on_view_pop(self, e=None):
+        """Android hardware BACK (mobile only; wired in _build). render() mounts
+        a 2-view stack so Back fires this instead of leaving the app. Behavior:
+        an open onboarding walkthrough closes first; otherwise Back returns to
+        the Setup screen; pressing Back again while already ON Setup within ~2s
+        exits the app. Every branch re-renders, which re-asserts the content
+        view on top of the base so the pop we just received doesn't actually
+        exit."""
+        try:
+            import time as _t
+            now = _t.time()
+        except Exception:
+            now = 0.0
+        # Back dismisses the onboarding walkthrough if it's open.
+        if getattr(self, "_onboarding_open", False):
+            try:
+                self._close_dialog()
+            except Exception:
+                pass
+            self.ui_safe(self.render)
+            return
+        if getattr(self, "active", "setup") != "setup":
+            self.active = "setup"
+            self._back_exit_ts = 0.0
+            self.ui_safe(self.render)
+            return
+        # Already on Setup: second Back within ~2s exits.
+        if now and (now - getattr(self, "_back_exit_ts", 0.0) < 2.0):
+            try:
+                if hasattr(self.page, "window") and self.page.window is not None:
+                    self.page.window.destroy()
+                    return
+            except Exception:
+                pass
+            try:
+                import os as _os
+                _os._exit(0)
+            except Exception:
+                pass
+            return
+        self._back_exit_ts = now
+        try:
+            self._toast("Press back again to exit")
+        except Exception:
+            pass
+        self.ui_safe(self.render)   # re-assert the view stack so we don't exit
+
+    def _maybe_bio_relock(self):
+        """Mobile: require a fresh biometric check when the app returns to the
+        foreground after being backgrounded/closed while signed in — so
+        "closed while logged in → reopen" asks for biometrics again, not just a
+        full cold start. No-op unless mobile + signed in + the unlock setting is
+        on + the app actually left the foreground since the last check. A
+        failed/cancelled re-auth drops the user to the login screen."""
+        if not platform_caps.is_mobile():
+            return
+        if getattr(self, "user", None) is None:
+            return
+        if not getattr(self, "_was_backgrounded", False):
+            return
+        self._was_backgrounded = False
+        try:
+            import mobile_prefs
+            if not mobile_prefs.get("require_biometric", False):
+                return
+        except Exception:
+            return
+        try:
+            import secure_store_mobile as _ssm
+
+            def _res(ok):
+                if not ok:
+                    self.ui_safe(self._sign_out)
+            _ssm.reprompt(_res)
+        except Exception:
+            pass
 
     def _on_window_event(self, e):
         """Best-effort confirm-on-close while a run is active. If a run is NOT

@@ -104,6 +104,9 @@ def login_gate(app):
     # Theme toggle lives in the card header (so it can't overlap the card).
     def _toggle_login_theme(_e=None):
         app._login_theme = "light" if dark else "dark"
+        # Explicit choice — make it authoritative for this session so an async
+        # creds bootstrap landing mid-login can't revert it (see _submit).
+        app._theme_touched = True
         try:
             # keep the GLOBAL palette in sync so global-token UI (the update banner)
             # follows the theme on the login screen too — not just the login's colors
@@ -164,17 +167,18 @@ def login_gate(app):
         _fit_enum = getattr(ft, "BoxFit", None) or getattr(ft, "ImageFit", None)
         _cover = getattr(_fit_enum, "COVER", None)
         _contain = getattr(_fit_enum, "CONTAIN", None)
-        # MOBILE fit: the backdrop is a 2160x1215 (16:9) LANDSCAPE image. On a
-        # tall PORTRAIT phone, `cover` scales it ~4x and shows only a narrow
-        # centre slice — the "too zoomed in" report. `contain` fits the whole
-        # image to the screen width instead (nothing cropped); the dark base
-        # fills the slim top/bottom remainder, which blends with the neon theme
-        # and sits behind the frosted card anyway. Desktop (landscape screen +
-        # landscape image) keeps `cover` — its crop is negligible and edge-to-
-        # edge fill looks best there.
+        # MOBILE fit: use `cover` on mobile too (was `contain`). The backdrop is
+        # a 2160x1215 (16:9) LANDSCAPE image; `contain` on a tall PORTRAIT phone
+        # shrank it into a short horizontal band in the vertical centre with dark
+        # base filling top/bottom — and the frosted card sits right over that
+        # band, so the art read as a dark frame with only thin edge slivers
+        # visible (reported "check the backdrop"). `cover` fills the whole
+        # screen; the crop is acceptable on a phone (the card covers the cropped
+        # centre anyway) and the immersive circuit look actually shows. Desktop
+        # was already `cover`, so both platforms now match.
         _mob_bg = platform_caps.is_mobile()
-        _fit = (_contain if (_mob_bg and _contain) else _cover)
-        _fit_str = "contain" if _mob_bg else "cover"
+        _fit = _cover
+        _fit_str = "cover"
         # HIGH filter quality → the 2752x1536 / 2048x1142 photo is resampled with
         # good interpolation when it's scaled to fill a high-DPI (Retina/4K) window,
         # so it stays crisp instead of looking soft/low-res. Guarded: not every Flet
@@ -280,7 +284,14 @@ def login_gate(app):
                         _tf.focus()
                     except Exception:
                         pass
-            field_ctl = ft.GestureDetector(content=tf, on_tap=_refocus)
+            # on_tap_down (NOT on_tap): down events are delivered to the
+            # detector BEFORE Flutter's gesture arena resolves, so the refocus
+            # fires even when the inner TextField wins the tap for cursor
+            # placement — which is why the old on_tap was flaky (the TextField
+            # almost always won the arena, so on_tap never fired and the
+            # keyboard stayed down). Scrolling the field first biased the arena
+            # even harder toward the field, matching the reported dead taps.
+            field_ctl = ft.GestureDetector(content=tf, on_tap_down=_refocus)
         col = ft.Column([
             ft.Text(cap, size=11, color=CAP, font_family=MONO,
                     weight=ft.FontWeight.W_600,
@@ -343,6 +354,18 @@ def login_gate(app):
                     app._switch_user_creds()   # load this user's own per-user creds
                     try:
                         T.apply_theme(app._login_theme)
+                        # Mark the theme as user-authoritative for THIS session so
+                        # the login screen's choice wins. On mobile
+                        # _switch_user_creds() above kicks off an async keychain
+                        # re-bootstrap that (on a fresh install) reads the empty
+                        # vault and wipes this just-saved theme from cache; when
+                        # _on_secure_creds_ready() then fires with
+                        # _theme_touched False it re-applies the default "light",
+                        # flipping the app to the OPPOSITE of the login screen
+                        # (reported: login dark → app opens light, and vice
+                        # versa). Setting this True routes that callback down its
+                        # "keep what's on screen" branch instead.
+                        app._theme_touched = True
                         app.creds["theme"] = app._login_theme
                         store.save(app.creds)
                         app.page.bgcolor = T.RAIL
@@ -585,11 +608,12 @@ def login_gate(app):
     # it maps straight to Positioned.fill(), which forces a real tight
     # constraint down through the whole child tree.
     # Layer scale doubles as parallax headroom (the image must overflow the
-    # viewport so a shift never exposes an edge). Mobile uses a gentler 1.22 so
-    # the `contain` backdrop isn't re-zoomed much (only ~11% side overflow,
-    # enough headroom for the stronger tilt parallax below); desktop keeps 1.3.
+    # viewport so a shift never exposes an edge). Now that mobile uses `cover`
+    # (fills the screen, like desktop) both platforms use 1.3 — 15% overhang on
+    # every side, ample headroom for the tilt parallax below. (Was 1.22 for the
+    # old `contain` mobile fit, which no longer applies.)
     bg_layer = ft.Container(bg, left=0, top=0, right=0, bottom=0,
-                            scale=(1.22 if platform_caps.is_mobile() else 1.3),
+                            scale=1.3,
                             offset=ft.Offset(0, 0),
                             animate_offset=120, animate_scale=120)
 
@@ -688,10 +712,12 @@ def login_gate(app):
             # mobile_tilt.py's docstring for why (mx, my) are normalized to
             # the same rough [-0.5, 0.5] range there.
             try:
-                # Stronger tilt parallax (was 0.06). Horizontal is capped near
-                # the 1.22x layer's ~0.11 side headroom; vertical can go bigger
-                # since the contained image leaves dark bands to move within.
-                _lay.offset = ft.Offset(-mx * 0.10, -my * 0.16)
+                # Tilt parallax. Now that the mobile backdrop is `cover` at 1.3x
+                # (15% side/vertical headroom, no dark bands), horizontal and
+                # vertical use the same gentle shift and both stay well within
+                # the overhang so no edge is ever exposed. (Was 0.10/0.16 for the
+                # old `contain` fit, which had asymmetric bands to move within.)
+                _lay.offset = ft.Offset(-mx * 0.12, -my * 0.12)
                 _lay.update()
             except Exception:
                 pass

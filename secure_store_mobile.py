@@ -72,6 +72,26 @@ _bio_gate_passed = False      # True once this launch's biometric/PIN check
 _SENTINEL_KEY = "qa_studio_bio_gate"
 _SENTINEL_VAL = "1"
 
+# CORRECT-ARCHITECTURE gate: the flet_local_auth extension (Android
+# BiometricPrompt / iOS LocalAuthentication via the official `local_auth`
+# plugin). When bundled, it REPLACES the sentinel-storage gate below — auth
+# becomes a pure identity check that never persists a key, so it can't be
+# Keystore-invalidated or wipe creds (the failure mode the sentinel design
+# still technically carries). None until init() attaches it; stays None (→
+# sentinel fallback) on desktop or any build without the extension.
+_local_auth = None
+
+
+def _local_auth_available():
+    """True only where the flet_local_auth extension actually imports — the
+    mobile build that bundles it. Desktop never installs it, so this is False
+    there and the whole local_auth path is skipped."""
+    try:
+        import flet_local_auth  # noqa: F401
+        return True
+    except Exception:
+        return False
+
 
 def available():
     """True only where flet_secure_storage actually imports — i.e. only ever
@@ -148,6 +168,18 @@ def init(page, on_ready=None):
     except Exception:
         _storage = None
         return
+    # Attach the decoupled local_auth gate if the extension is bundled. This is
+    # the preferred authenticator; _bio_gate_check()/apply_biometric_setting()
+    # use it instead of the sentinel-storage read whenever it's present.
+    global _local_auth
+    if _local_auth_available():
+        try:
+            import flet_local_auth as _fla
+            _local_auth = _fla.LocalAuth()
+            page.services.append(_local_auth)
+            page.update()
+        except Exception:
+            _local_auth = None
     try:
         page.run_task(_bootstrap)
     except Exception:
@@ -214,6 +246,27 @@ async def _bio_gate_check():
     to sign in. Re-fires on_ready when done so main.py's _on_secure_creds_
     ready() can complete the now-authorized silent session restore."""
     global _bio_gate_passed
+    # PREFERRED: decoupled local_auth check (no storage, no key to invalidate).
+    if _local_auth is not None:
+        try:
+            ok = bool(await _local_auth.authenticate(
+                reason="Unlock QA Studio"))
+            if ok:
+                _bio_gate_passed = True
+            else:
+                # Cancelled / no enrollment / lockout — fall through to
+                # email+password rather than a stuck launch.
+                _revert_bio()
+        except Exception:
+            _revert_bio()
+        if _on_ready:
+            try:
+                _on_ready()
+            except Exception:
+                pass
+        return
+    # FALLBACK (no extension bundled): sentinel-storage read. Requires the
+    # FragmentActivity host patch to actually prompt (see build-apk.yml).
     try:
         import flet_secure_storage as fss
         gate = fss.SecureStorage(
@@ -288,6 +341,31 @@ def apply_biometric_setting(want_bio, on_done=None):
 
     async def _do():
         global _bio_required, _bio_gate_passed
+        # PREFERRED: local_auth. Enabling just prompts once to confirm the user
+        # can authenticate (proves enrollment) — nothing is persisted in secure
+        # storage, so there's no key to invalidate and creds are never touched.
+        # Disabling only flips the pref. This removes the entire wipe-risk class.
+        if _local_auth is not None:
+            try:
+                if want_bio:
+                    ok = bool(await _local_auth.authenticate(
+                        reason="Confirm to enable biometric unlock"))
+                    if not ok:
+                        raise RuntimeError("authentication was not completed")
+                _bio_required = want_bio
+                _bio_gate_passed = True
+                try:
+                    import mobile_prefs as _mp
+                    _mp.set("require_biometric", want_bio)
+                except Exception:
+                    pass
+                if on_done:
+                    on_done(True, None)
+            except Exception as ex:
+                if on_done:
+                    on_done(False, str(ex)[:140] or "biometric change failed")
+            return
+        # FALLBACK (no extension): sentinel-storage round-trip.
         try:
             import flet_secure_storage as fss
             gate = fss.SecureStorage(
@@ -338,6 +416,56 @@ def apply_biometric_setting(want_bio, on_done=None):
     except Exception as ex:
         if on_done:
             on_done(False, str(ex)[:140])
+
+
+def rearm_gate():
+    """Re-arm the login gate on SIGN-OUT so biometrics guards the next sign-in,
+    not just the process launch. main.py's _sign_out() clears the Supabase
+    session (so a re-login needs typed credentials anyway) but nothing reset
+    THIS launch's already-passed gate — _bio_gate_passed stayed True from the
+    initial unlock, so a cached-session silent restore right after logout could
+    slip back in with no fresh biometric check. Reported as "biometrics not
+    working ... when logging out". Resetting _bio_gate_passed to its armed state
+    means bio_gate_passed() reads False again until the user re-verifies, so
+    _on_secure_creds_ready()'s gated restore can't auto-sign them back in. No-op
+    unless biometrics is actually required (nothing to re-arm otherwise)."""
+    global _bio_gate_passed
+    if not _bio_required:
+        return
+    _bio_gate_passed = False
+
+
+def reprompt(on_result=None):
+    """Re-run the biometric prompt MID-SESSION — e.g. when the app is resumed
+    after being backgrounded/closed while the user was signed in. Cold starts
+    are already gated at launch by init()'s _bio_gate_check; this covers the
+    resume case, where __init__ never re-runs. Calls on_result(ok: bool).
+
+    No-op that reports success (stays signed in) when biometrics isn't required
+    or there's no local_auth authenticator attached — so the ordinary,
+    non-biometric session is never disrupted."""
+    if not _bio_required or _local_auth is None or _page is None:
+        if on_result:
+            on_result(True)
+        return
+
+    async def _do():
+        ok = True
+        try:
+            ok = bool(await _local_auth.authenticate(reason="Unlock QA Studio"))
+        except Exception:
+            ok = False
+        if on_result:
+            try:
+                on_result(ok)
+            except Exception:
+                pass
+
+    try:
+        _page.run_task(_do)
+    except Exception:
+        if on_result:
+            on_result(True)
 
 
 def consume_bio_revert():

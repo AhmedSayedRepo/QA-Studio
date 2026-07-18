@@ -39,6 +39,52 @@ def card(content, padding=18, expand=False, bg=None, radius=T.R_LG):
                                             color=ft.Colors.with_opacity(0.10, "#1B1F3A")))
 
 
+def two_col_cards(cards, gap=14, card_width=300):
+    """MOBILE: lay a list of cards out two-per-row inside horizontally
+    scrollable Rows (swipe the row sideways when the pair is wider than the
+    screen — e.g. when a card's content is expanded). Each card is given a
+    fixed width so the row overflows and scrolls instead of cramming.
+
+    DESKTOP / non-mobile: unchanged single column — returns the cards
+    interleaved with `gap` spacers, exactly like the old manual assembly.
+
+    Returns a LIST of controls to splice into a screen's body Column. Any
+    falsy entries in `cards` are dropped, so callers can pass optional cards
+    inline. Defensive: on any error, falls back to the plain vertical list."""
+    items = [c for c in (cards or []) if c is not None]
+    try:
+        import platform_caps as _pc
+        mobile = _pc.is_mobile()
+    except Exception:
+        mobile = False
+    if not mobile:
+        out = []
+        for i, c in enumerate(items):
+            if i:
+                out.append(ft.Container(height=gap))
+            out.append(c)
+        return out
+    try:
+        rows = []
+        for i in range(0, len(items), 2):
+            pair = items[i:i + 2]
+            wrapped = [ft.Container(c, width=card_width) for c in pair]
+            row = ft.Row(wrapped, spacing=gap, scroll=ft.ScrollMode.AUTO,
+                         vertical_alignment=ft.CrossAxisAlignment.START,
+                         tight=True)
+            if rows:
+                rows.append(ft.Container(height=gap))
+            rows.append(row)
+        return rows
+    except Exception:
+        out = []
+        for i, c in enumerate(items):
+            if i:
+                out.append(ft.Container(height=gap))
+            out.append(c)
+        return out
+
+
 def empty_state(icon, title, hint, tone="violet"):
     """Friendly placeholder for empty panels: a soft icon badge, a bold title,
     and a dim one-line hint, centered. Theme-aware via tokens read at call time."""

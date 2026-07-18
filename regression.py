@@ -49,7 +49,7 @@ from datetime import datetime
 import flet as ft
 import theme as T
 import engine as E
-from ui import hover_field
+from ui import hover_field, two_col_cards
 
 # ── Effort model (HARDCODED — change here if your team's numbers differ) ───────
 AVG_MINUTES_PER_CASE = 8          # manual execution time per existing test case
@@ -1156,7 +1156,8 @@ def _plan_html(d):
 
 
 def _out_dir():
-    d = os.path.join(os.path.expanduser("~"), "QA Studio", "Regression Plans")
+    import platform_caps as _pc
+    d = os.path.join(_pc.export_base_dir(), "QA Studio", "Regression Plans")
     os.makedirs(d, exist_ok=True)
     return d
 
@@ -3681,6 +3682,19 @@ def _create_screen(app):
         if getattr(app, "_auto_running", False):
             app._err("Automation is running — let it finish before generating a plan.")
             return
+        # Commit the count field's CURRENT text before validating. On mobile a
+        # button tap doesn't reliably blur the field first, so _on_count
+        # (on_blur/on_submit) may not have fired and app._cp_res_count would be
+        # stale/None — which wrongly failed the "Enter the resource count" check
+        # below AND wiped the typed value on the re-render (count_field is
+        # rebuilt from that None state). Read straight from the field instead.
+        try:
+            _cv = (count_field.value or "").strip()
+            if _cv.isdigit() and int(_cv) > 0:
+                app._cp_res_count = int(_cv)
+                app._cp_count_invalid = False
+        except Exception:
+            pass
         if not app._cp_rows:
             app._cp_calc_msg = "Pick a sprint with stories first."
             app._cp_sprint_invalid = True
@@ -4154,7 +4168,10 @@ def _create_screen(app):
         bgcolor=getattr(T, "VIOLET_SOFT", T.CARD_2), border_radius=T.R,
         visible=bool(app._cp_stories_loading or app._cp_busy))
 
-    body_children = [card1, ft.Container(height=14), card2,
+    # Sprint Plan input cards two-per-row on mobile (horizontally scrollable);
+    # unchanged single column on desktop. two_col_cards handles the platform
+    # split and the inter-card spacing.
+    body_children = two_col_cards([card1, card2]) + [
                      ft.Container(height=16), calc_btn, cp_spinner, cp_calc_note_wrap]
     if results is not None:
         body_children += [ft.Container(height=16), results]
@@ -4510,6 +4527,18 @@ def screen(app):
         if getattr(app, "_auto_running", False):
             app._err("Automation is running — let it finish before generating a plan.")
             return
+        # Commit the count field's CURRENT text before validating — on mobile a
+        # button tap doesn't reliably blur the field, so _on_count may not have
+        # fired and app._reg_res_count would be stale/None, wrongly failing the
+        # "Enter the resource count" check and then wiping the typed value on the
+        # re-render. Read straight from the field instead.
+        try:
+            _cv = (count_field.value or "").strip()
+            if _cv.isdigit() and int(_cv) > 0:
+                app._reg_res_count = int(_cv)
+                app._reg_count_invalid = False
+        except Exception:
+            pass
         if not app._reg_plans_selected:
             app._reg_calc_msg = "Add at least one test plan first so effort can be " \
                                 "read from its existing test cases."
@@ -5646,7 +5675,11 @@ def screen(app):
     # minimum content width. Desktop keeps the original side-by-side Row.
     import platform_caps as _pc_cards
     if _pc_cards.is_mobile():
-        _cards_row = ft.Column([card2, ft.Container(height=14), card3], spacing=0)
+        # 2-cards-per-row on mobile too — but in a HORIZONTALLY SCROLLABLE row
+        # (swipe sideways) with each card at a comfortable fixed width, so they
+        # no longer squeeze to a ~185px sliver the way the desktop expand=1 Row
+        # did on a phone. two_col_cards returns a single-row list here.
+        _cards_row = two_col_cards([card2, card3])[0]
     else:
         _cards_row = ft.Row([ft.Container(card2, expand=1),
                               ft.Container(card3, expand=1)],

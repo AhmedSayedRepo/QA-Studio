@@ -1,0 +1,26 @@
+name: flet_local_auth
+description: Flet Local Auth (biometric) control
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+  flutter: ">=1.17.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Official Flutter-team biometric / device-credential plugin.
+  local_auth: ^2.1.7
+
+  # Resolved by `flet build` to the app's bundled Flet Flutter package — the
+  # identical relative path flet-secure-storage 0.85.3 ships, since flet stages
+  # every detected extension at the same depth.
+  flet:
+    path: ../../../../../../../packages/flet
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
