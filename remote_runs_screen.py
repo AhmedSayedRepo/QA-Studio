@@ -227,7 +227,7 @@ def _start_poll(app, run_id):
                     # screen doesn't rebuild and jump the scroll to the top
                     # every 2.5s (reported live). The ListView auto-follows
                     # the tail.
-                    app.ui_safe(lambda: _refresh_log(app))
+                    app.ui_safe(lambda: (_refresh_meta(app), _refresh_log(app)))
             if row is not None and row.get("status") in _TERMINAL:
                 # SETTLE PASS: don't stop polling the instant the status turns
                 # terminal. The worker writes the final status LAST (after its
@@ -324,12 +324,46 @@ def _stop_confirm(app, run_id):
         yes_label="Stop run", danger=True, icon=ft.Icons.STOP_CIRCLE_OUTLINED)
 
 
-def _meta_row(label, value):
+def _meta_row(label, value, _cell=None):
+    """One label/value row. Pass _cell=(dict, key) to stash the VALUE Text so a
+    caller can refresh it in place later without a full re-render (used for the
+    relative timestamps — see _refresh_meta)."""
+    val = ft.Text(str(value), size=12.5, color=T.INK, weight=ft.FontWeight.W_500,
+                  expand=True, selectable=True)
+    if _cell:
+        try:
+            _cell[0][_cell[1]] = val
+        except Exception:
+            pass
     return ft.Row([
         ft.Text(label, size=11.5, color=T.INK_3, weight=ft.FontWeight.W_600, width=90),
-        ft.Text(str(value), size=12.5, color=T.INK, weight=ft.FontWeight.W_500,
-               expand=True, selectable=True),
+        val,
     ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.START)
+
+
+def _refresh_meta(app):
+    """Re-compute the relative timestamps in place, every poll tick. Without
+    this they froze at whatever they said during the last FULL render (which
+    only happens on a status change), so a running job sat on 'just now' for
+    minutes."""
+    cells = getattr(app, "_rr_meta_cells", None)
+    run = getattr(app, "_rr_run", None)
+    if not cells or not run:
+        return
+    vals = {
+        "created": _relative(run.get("created_at")),
+        "started": (_relative(run.get("started_at")) if run.get("started_at") else "—"),
+        "finished": (_relative(run.get("finished_at")) if run.get("finished_at") else "—"),
+    }
+    for key, txt in vals.items():
+        c = cells.get(key)
+        if c is None or c.value == txt:
+            continue
+        try:
+            c.value = txt
+            c.update()
+        except Exception:
+            pass   # not mounted (screen changed) — next full render fixes it
 
 
 def _ln_from_event(ev):
@@ -365,11 +399,21 @@ def _detail_screen(app):
         _meta_row("Project", run.get("project") or "—"),
         _meta_row("Plan", f"#{run.get('plan_id')}" if run.get("plan_id") else "—"),
         _meta_row("Stories", ", ".join(str(s) for s in story_ids) or "—"),
-        _meta_row("Created", _relative(run.get("created_at"))),
+        # Keep handles on the three relative-time values. The poll loop only
+        # does a FULL render when `status` CHANGES; every other tick updates the
+        # log list in place (to avoid resetting scroll every 2.5s). These texts
+        # were therefore baked at the last status change — queued→running
+        # happens seconds after creation, so they rendered "just now" and then
+        # never moved. At 3-4 minutes in they still read "just now" (reported
+        # live). _refresh_meta() now re-computes them on every tick.
+        _meta_row("Created", _relative(run.get("created_at")),
+                  _cell=(app.__dict__.setdefault("_rr_meta_cells", {}), "created")),
         _meta_row("Started", _relative(run.get("started_at"))
-                  if run.get("started_at") else "—"),
+                  if run.get("started_at") else "—",
+                  _cell=(app._rr_meta_cells, "started")),
         _meta_row("Finished", _relative(run.get("finished_at"))
-                  if run.get("finished_at") else "—"),
+                  if run.get("finished_at") else "—",
+                  _cell=(app._rr_meta_cells, "finished")),
         (ft.Container(
             ft.Column([ft.Container(height=8), _meta_row("Summary", run.get("summary"))]))
          if run.get("summary") else ft.Container(height=0)),

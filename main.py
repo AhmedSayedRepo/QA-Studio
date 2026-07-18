@@ -126,6 +126,25 @@ class QAStudio:
         # renders can still BUILD their control trees fully in parallel and
         # only briefly wait on each other at the actual hand-off to Flet.
         self._render_lock = threading.Lock()
+        # BRANDED START-UP SPLASH (mobile): render() shows _boot_splash() until
+        # _BOOT_SPLASH_SECONDS have passed. A timer fires the hand-off render,
+        # so the splash always clears even if nothing else happens to re-render
+        # in that window.
+        self._boot_at = None
+        if platform_caps.is_mobile():
+            self._boot_at = time.time()
+
+            def _end_splash():
+                try:
+                    time.sleep(self._BOOT_SPLASH_SECONDS)
+                    self._boot_at = None
+                    self.ui_safe(self.render)
+                except Exception:
+                    self._boot_at = None
+            try:
+                threading.Thread(target=_end_splash, daemon=True).start()
+            except Exception:
+                self._boot_at = None
         # STARTUP BREADCRUMB — one line per app process, with the OS pid.
         #
         # This is what makes "I see 2 instances in background apps" answerable
@@ -207,20 +226,12 @@ class QAStudio:
         # bootstrap (same reason require_biometric lives there); _persist_theme()
         # keeps it in step with every theme change.
         _startup_theme = self.creds.get("theme", "light")
-        # _theme_known is False ONLY when we genuinely cannot tell yet — mobile,
-        # with nothing cached in mobile_prefs and nothing in creds (the vault
-        # read hasn't landed). render() uses it to hold back the first paint
-        # rather than guessing "light" and correcting a second later, which IS
-        # the flash. Priming the cache below makes this a one-launch-ever state.
-        self._theme_known = True
         if platform_caps.is_mobile():
             try:
                 import mobile_prefs as _mp_theme
                 _cached_theme = _mp_theme.get("theme", None)
                 if _cached_theme in ("dark", "light"):
                     _startup_theme = _cached_theme
-                elif not self.creds.get("theme"):
-                    self._theme_known = False
             except Exception:
                 pass
         try:
@@ -568,13 +579,14 @@ class QAStudio:
         except Exception:
             threading.Thread(target=work, daemon=True).start()
 
-    # How long render() will hold the branded splash while the theme is still
-    # unknown. Generous on purpose: the vault read is normally sub-second, so
-    # this is only ever reached if something is genuinely slow — and waiting a
-    # few extra seconds behind the app's own logo is far better than painting
-    # the wrong theme and flashing. The gate is released the moment the theme
-    # is known, so this ceiling is almost never hit.
-    _THEME_GATE_TIMEOUT = 5.0
+    # Branded start-up splash duration (mobile). A flat, unconditional window —
+    # NOT the earlier conditional "theme gate", which a second-opinion review
+    # showed was misguided: it only engaged on a first-ever launch and was
+    # released with the wrong theme anyway, so it never prevented the flash.
+    # The actual flash cause is fixed in _on_secure_creds_ready; this splash is
+    # simply a clean, branded window that also covers the async settling of the
+    # vault/session/theme reads, so nothing half-initialised is ever on screen.
+    _BOOT_SPLASH_SECONDS = 3.0
 
     def _boot_splash(self):
         """The app's own start-up screen: logo, name, version, spinner, on the
@@ -789,7 +801,6 @@ class QAStudio:
             # GET/SET race this guards against. Their explicit choice wins;
             # keep self.creds in sync with what's actually on screen so a
             # later save() elsewhere doesn't silently revert it either.
-            self._theme_known = True   # real theme known → release the render gate
             self.creds["theme"] = T.MODE
             # Prime the startup cache here TOO. It was only primed in the else
             # branch, so a session where the user had touched the theme never
@@ -799,11 +810,35 @@ class QAStudio:
             self._persist_theme(T.MODE)
         else:
             try:
-                T.apply_theme(self.creds.get("theme", "light"))
-                self._theme_known = True   # real theme known → release the gate
-                self._persist_theme(T.MODE)   # keep the startup cache in step
-                self.page.theme_mode = (ft.ThemeMode.DARK if T.MODE == "dark"
-                                        else ft.ThemeMode.LIGHT)
+                # NEVER apply or persist a DEFAULTED theme here. This callback
+                # fires MULTIPLE times per launch — secure_store_mobile.init()
+                # dispatches _bootstrap, _bootstrap_session and (optionally)
+                # _bio_gate_check, and each one calls on_ready. The early ones
+                # run while self.user is still None, so store.load() returns the
+                # DEFAULT vault slot (qa_studio_creds), whereas the user's saved
+                # theme lives in their PER-USER slot (qa_studio_creds_<uid>) —
+                # every theme toggle is saved while signed in.
+                #
+                # So `self.creds.get("theme", "light")` used to hand back the
+                # "light" DEFAULT on those early callbacks and repaint the whole
+                # app light, overriding the correct value __init__ had already
+                # read from mobile_prefs — THAT is the ~1s light flash on
+                # relaunch (dark 74 → light 210 → dark 74 in the frame capture).
+                # It also poisoned the mobile_prefs cache by persisting "light".
+                # The real theme only arrives on the LAST callback, once
+                # _switch_user_creds has re-bootstrapped the per-user slot.
+                #
+                # Acting only on a REAL saved value leaves __init__'s
+                # mobile_prefs-derived theme in place until the per-user slot
+                # confirms it. Found by a second-opinion review after three
+                # failed attempts that all targeted __init__ instead of here.
+                _saved = self.creds.get("theme")
+                if _saved in ("dark", "light"):
+                    if _saved != T.MODE:
+                        T.apply_theme(_saved)
+                        self.page.theme_mode = (ft.ThemeMode.DARK if _saved == "dark"
+                                                else ft.ThemeMode.LIGHT)
+                    self._persist_theme(_saved)
             except Exception:
                 pass
         self.render()
@@ -900,7 +935,11 @@ class QAStudio:
             pass
         try:
             th = self.creds.get("theme")
-            if th:                    # keep current theme if they have none saved yet
+            # Only a REAL saved value — same rule as _on_secure_creds_ready.
+            # self.creds here can be the file/default fallback while the
+            # per-user vault re-bootstrap is still in flight, and persisting
+            # that guess is what poisoned the mobile_prefs startup cache.
+            if th in ("dark", "light"):
                 T.apply_theme(th)
                 self._persist_theme(th)   # prime the startup cache (see _persist_theme)
                 self.page.theme_mode = (ft.ThemeMode.DARK if th == "dark"
@@ -2444,21 +2483,16 @@ class QAStudio:
         # this can NEVER strand the UI if the bootstrap callback doesn't
         # arrive; _on_secure_creds_ready clears the flag the instant the real
         # theme is known, which is the normal path and usually sub-second.
-        if getattr(self, "_theme_known", True) is False:
-            _t0 = getattr(self, "_theme_wait_start", None)
-            if _t0 is None:
-                self._theme_wait_start = _t0 = _pt.time()
-            if (_pt.time() - _t0) < self._THEME_GATE_TIMEOUT:
-                try:
-                    with self._render_lock:
-                        self.page.controls.clear()
-                        self.page.add(self._boot_splash())
-                        self.page.update()
-                    return
-                except Exception:
-                    self._theme_known = True   # never get stuck on a blank page
-            else:
-                self._theme_known = True       # deadline hit — paint anyway
+        _boot_at = getattr(self, "_boot_at", None)
+        if _boot_at is not None and (_pt.time() - _boot_at) < self._BOOT_SPLASH_SECONDS:
+            try:
+                with self._render_lock:
+                    self.page.controls.clear()
+                    self.page.add(self._boot_splash())
+                    self.page.update()
+                return
+            except Exception:
+                self._boot_at = None       # never get stuck on the splash
         try:
             # Reset dropdown closer registry so stale closers from the previous
             # render don't linger. Each _checkbox_multiselect re-registers itself.

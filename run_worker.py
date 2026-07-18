@@ -50,11 +50,24 @@ if SB_KEY.startswith("eyJ"):
     _HDRS["Authorization"] = f"Bearer {SB_KEY}"
 
 
-def _sb(method, path, payload=None, params=None):
-    r = requests.request(method, f"{SB_URL}/rest/v1/{path}", headers=_HDRS,
+class _SbError(RuntimeError):
+    """Carries the HTTP status so callers can react per-status (see
+    _flush_events' 409 handling)."""
+
+    def __init__(self, status, msg):
+        super().__init__(msg)
+        self.status = status
+
+
+def _sb(method, path, payload=None, params=None, headers=None):
+    _h = dict(_HDRS)
+    if headers:
+        _h.update(headers)
+    r = requests.request(method, f"{SB_URL}/rest/v1/{path}", headers=_h,
                          json=payload, params=params, timeout=30)
     if r.status_code >= 300:
-        raise RuntimeError(f"Supabase {method} {path}: HTTP {r.status_code} {r.text[:200]}")
+        raise _SbError(r.status_code,
+                       f"Supabase {method} {path}: HTTP {r.status_code} {r.text[:200]}")
     return r.json() if (r.text or "").strip() else None
 
 
@@ -195,15 +208,37 @@ def _flush_events():
     if not batch:
         return
     try:
-        # Upsert on (run_id, seq): a reused seq UPDATES its row in place
-        # rather than inserting a duplicate line.
-        _sb("POST", "remote_run_events?on_conflict=run_id,seq", payload=batch)
+        # UPSERT on (run_id, seq): a reused seq UPDATES its row in place rather
+        # than inserting a duplicate line.
+        #
+        # `Prefer: resolution=merge-duplicates` is MANDATORY. In PostgREST the
+        # `on_conflict` query param ALONE does nothing — without this header the
+        # request is a plain INSERT. So the first time the hb_id collapse reused
+        # a seq that had already been flushed, the batch violated
+        # remote_run_events_run_id_seq_key UNIQUE(run_id, seq) and returned 409.
+        # Combined with the blanket re-dirty below, that one poisoned seq rode
+        # along in EVERY later flush, so every flush 409'd for the rest of the
+        # run and NO further events were ever stored. Confirmed against the live
+        # project: a continuous POST->409 storm while the client GETs all
+        # returned 200, and affected runs stored only ~5 events before the feed
+        # went silent — the "activity frozen mid-run" report.
+        _sb("POST", "remote_run_events?on_conflict=run_id,seq", payload=batch,
+            headers={"Prefer": "resolution=merge-duplicates"})
     except Exception as ex:
         # Telemetry must never take the run down — note it and move on.
-        # Re-mark as dirty so the next flush retries.
-        with _ev_lock:
-            _ev_dirty.update(b["seq"] for b in batch)
-        print(f"[worker] event flush failed ({len(batch)} events): {ex}", file=sys.stderr)
+        status = getattr(ex, "status", None)
+        if status == 409:
+            # A conflict means these rows already exist server-side. Retrying
+            # the SAME batch can only 409 again, and re-dirtying it wedges the
+            # queue permanently (the bug above). Drop it and keep going —
+            # newer events still get through.
+            print(f"[worker] event flush 409 — dropping {len(batch)} already-stored "
+                  f"event(s) instead of wedging the queue: {ex}", file=sys.stderr)
+        else:
+            # Transient (network/5xx) — retry these on the next flush.
+            with _ev_lock:
+                _ev_dirty.update(b["seq"] for b in batch)
+            print(f"[worker] event flush failed ({len(batch)} events): {ex}", file=sys.stderr)
 
 
 def _event_flusher():
