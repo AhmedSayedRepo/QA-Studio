@@ -720,16 +720,32 @@ def save(d):
     global _cache
     if _storage is None or _page is None:
         return False
-    if _is_empty_creds(d) and not _is_empty_creds(_cache):
+    # NEVER persist an empty payload. Full stop — no comparison against the
+    # in-memory cache.
+    #
+    # The previous version of this guard only blocked "empty over POPULATED
+    # _cache", which left the actual hole wide open: on a fresh process the
+    # async _bootstrap has not landed yet, so _cache is None/{} — the guard saw
+    # "empty over empty", allowed it, and the empty dict went straight over the
+    # POPULATED vault on disk. The in-memory cache says nothing about what is
+    # stored, so it was the wrong thing to compare against. Confirmed by a
+    # device log where credentials were wiped and no save_blocked line was ever
+    # written, across 30 app launches in 90 minutes — plenty of windows where a
+    # save fired before the first read completed.
+    #
+    # Storing "no credentials" has no legitimate purpose: clearing one field
+    # still writes a populated dict minus that value, which this never blocks.
+    if _is_empty_creds(d):
         try:
             import diag_log
             diag_log.log_warn(
                 "secure_store.save_blocked",
-                "refused to overwrite populated credentials with an empty "
-                f"payload (key={_key}) — this is the 'credentials wiped' bug")
+                f"refused to persist an EMPTY credentials payload (key={_key}, "
+                f"cache_empty={_is_empty_creds(_cache)}) — this is the "
+                "'credentials wiped' bug")
         except Exception:
             pass
-        return True      # report success: the cache/vault still hold the truth
+        return True      # report success: the stored value remains the truth
     _cache = dict(d)
     try:
         _page.run_task(_storage.set, _key, json.dumps(d))
