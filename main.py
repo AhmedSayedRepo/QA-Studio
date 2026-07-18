@@ -568,6 +568,43 @@ class QAStudio:
         except Exception:
             threading.Thread(target=work, daemon=True).start()
 
+    # How long render() will hold the branded splash while the theme is still
+    # unknown. Generous on purpose: the vault read is normally sub-second, so
+    # this is only ever reached if something is genuinely slow — and waiting a
+    # few extra seconds behind the app's own logo is far better than painting
+    # the wrong theme and flashing. The gate is released the moment the theme
+    # is known, so this ceiling is almost never hit.
+    _THEME_GATE_TIMEOUT = 5.0
+
+    def _boot_splash(self):
+        """The app's own start-up screen: logo, name, version, spinner, on the
+        current page background. Used by render()'s theme gate so the first
+        frame is BRANDED rather than a blank container (or, worse, a
+        wrong-theme paint of the real UI)."""
+        try:
+            _logo = ft.Container(
+                logo_img(64), width=64, height=64,
+                bgcolor=(None if _logo_b64() else T.VIOLET),
+                gradient=(None if _logo_b64() else grad(T.GRAD_LOGO)),
+                border_radius=18, alignment=ft.Alignment.CENTER)
+        except Exception:
+            _logo = ft.Container(width=64, height=64)
+        return ft.Container(
+            ft.Column([
+                _logo,
+                ft.Container(height=16),
+                ft.Text("QA Studio", size=17, weight=ft.FontWeight.BOLD,
+                        color=T.RAIL_INK),
+                ft.Text(f"v{E.local_version()}", size=11, color=T.RAIL_DIM,
+                        weight=ft.FontWeight.BOLD),
+                ft.Container(height=18),
+                ft.ProgressRing(width=22, height=22, stroke_width=2.4,
+                                color=T.VIOLET),
+            ], alignment=ft.MainAxisAlignment.CENTER,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=2),
+            expand=True, alignment=ft.Alignment.CENTER,
+            bgcolor=(self.page.bgcolor or T.RAIL))
+
     def _persist_theme(self, mode):
         """Mirror the chosen theme into mobile_prefs (synchronous + durable) so
         the NEXT launch can paint the right theme on the very first frame.
@@ -2401,19 +2438,21 @@ class QAStudio:
         # back for a moment and show only the page background instead: a brief
         # neutral frame is not a visual bug, a wrong-theme frame is.
         #
-        # Bounded by a hard 2.5s deadline so this can NEVER strand the UI if the
-        # bootstrap callback doesn't arrive. _on_secure_creds_ready clears the
-        # flag the instant the real theme is known, which is the normal path.
+        # Shows the BRANDED splash (logo + version + spinner), not a blank
+        # container — a plain empty frame reads as a broken/flashing app, while
+        # a logo screen reads as the app starting up. Bounded by a deadline so
+        # this can NEVER strand the UI if the bootstrap callback doesn't
+        # arrive; _on_secure_creds_ready clears the flag the instant the real
+        # theme is known, which is the normal path and usually sub-second.
         if getattr(self, "_theme_known", True) is False:
             _t0 = getattr(self, "_theme_wait_start", None)
             if _t0 is None:
                 self._theme_wait_start = _t0 = _pt.time()
-            if (_pt.time() - _t0) < 2.5:
+            if (_pt.time() - _t0) < self._THEME_GATE_TIMEOUT:
                 try:
                     with self._render_lock:
                         self.page.controls.clear()
-                        self.page.add(ft.Container(expand=True,
-                                                   bgcolor=self.page.bgcolor))
+                        self.page.add(self._boot_splash())
                         self.page.update()
                     return
                 except Exception:

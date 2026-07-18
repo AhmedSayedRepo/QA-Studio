@@ -229,6 +229,30 @@ def _start_poll(app, run_id):
                     # the tail.
                     app.ui_safe(lambda: _refresh_log(app))
             if row is not None and row.get("status") in _TERMINAL:
+                # SETTLE PASS: don't stop polling the instant the status turns
+                # terminal. The worker writes the final status LAST (after its
+                # closing _flush_events + the "Report emailed…" line), but the
+                # row and the events are two separate reads here — so the tick
+                # that first SEES terminal can easily have fetched its events a
+                # moment before that final flush landed. Stopping there froze
+                # the feed one flush short of complete: the run showed
+                # "5 updated" while the log still ended mid-generation.
+                # One more fetch a few seconds later closes that window.
+                time.sleep(4.0)
+                if getattr(app, "_rr_poll_stop", True) or \
+                        getattr(app, "_rr_view_id", None) != run_id:
+                    return
+                try:
+                    _final = auth.get_remote_run_events(run_id, after_seq=0)
+                    if _final is not None:
+                        app._rr_events = _final
+                    _frow = auth.get_remote_run(run_id)
+                    if _frow is not None:
+                        app._rr_run = _frow
+                    if getattr(app, "_rr_view_id", None) == run_id:
+                        app.ui_safe(app.render)
+                except Exception:
+                    pass
                 return
             time.sleep(2.5)
     try:
@@ -238,8 +262,26 @@ def _start_poll(app, run_id):
 
 
 def _log_lines_for(app):
-    return [ln for ln in (_ln_from_event(ev) for ev in getattr(app, "_rr_events", []) or [])
-            if ln and ln.get("msg")]
+    lines = [ln for ln in (_ln_from_event(ev) for ev in getattr(app, "_rr_events", []) or [])
+             if ln and ln.get("msg")]
+    # REPLICATES THE DESKTOP RULE: "Only spin while the run is actually active —
+    # once it stops/finishes, don't leave a perpetual spinner"
+    # (main._build_story_cards). A line spins purely because its payload carries
+    # wip=True (see main._log_icon), and the remote viewer had no equivalent
+    # gate: once the run reached a terminal state, any line whose LAST persisted
+    # payload was an in-progress one spun forever. Reported live — the run
+    # finished "5 updated · 0 failed" while two cases sat spinning at
+    # "generating…".
+    #
+    # A terminal run cannot have work in flight, so drop wip on every line. This
+    # is display-only; the stored events are untouched.
+    try:
+        if (getattr(app, "_rr_run", None) or {}).get("status") in _TERMINAL:
+            for ln in lines:
+                ln.pop("wip", None)
+    except Exception:
+        pass
+    return lines
 
 
 def _refresh_log(app):
