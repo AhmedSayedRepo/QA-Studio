@@ -2337,27 +2337,16 @@ class QAStudio:
                     _root = self._with_window_chrome(_root)
                 except Exception:
                     pass
-                # Mobile: mount into a 2-level views stack (an empty base view +
-                # this content view) so the Android hardware BACK button fires
-                # page.on_view_pop (see _on_view_pop) instead of exiting the app.
-                # Idempotent per render (trims back to [base] then re-appends the
-                # content view), so a Back that popped the content view is
-                # re-asserted here. Defensive: any failure falls back to the
-                # plain single-root mount (unchanged desktop behavior).
-                _mounted = False
-                if platform_caps.is_mobile() and hasattr(self.page, "views"):
-                    try:
-                        self.page.controls.clear()   # keep the base view empty
-                        _main_view = ft.View("/_qs_main", [_root],
-                                             padding=0, spacing=0)
-                        while len(self.page.views) > 1:
-                            self.page.views.pop()
-                        self.page.views.append(_main_view)
-                        _mounted = True
-                    except Exception:
-                        _mounted = False
-                if not _mounted:
-                    self.page.add(_root)
+                # REVERTED (2026-07-18): a mobile-only 2-view `page.views` stack
+                # was mounted here so the Android BACK button would fire
+                # page.on_view_pop. It shipped and the app launched to a BLANK
+                # GREY SCREEN on device — appending a second View did not become
+                # the displayed view (Flet 0.85's views/routing semantics), and
+                # because nothing raised, the try/except fallback never engaged.
+                # Back to the plain single-root mount, which is what actually
+                # renders. Do NOT reintroduce a views stack here without
+                # verifying it on a real device first.
+                self.page.add(_root)
                 _u0 = _pt.perf_counter()
                 self.page.update()
                 _upd_ms = (_pt.perf_counter() - _u0) * 1000
@@ -2441,11 +2430,12 @@ class QAStudio:
                 self.page.on_app_lifecycle_state_change = self._on_app_lifecycle_change
             except Exception:
                 pass
-            # Android hardware BACK button: route it to the Setup screen instead
-            # of closing the app, and require a second press (within ~2s) on
-            # Setup to actually exit. Fires only because render() mounts the
-            # mobile UI as a 2-view stack (see render()) — on_view_pop needs a
-            # views stack to fire at all.
+            # Android hardware BACK button handler. CURRENTLY INERT: on_view_pop
+            # only fires when the app renders through a `page.views` stack, and
+            # that mount was REVERTED in render() after it launched to a blank
+            # grey screen on device. Left wired (harmless no-op) so the handler
+            # is ready if a views-based navigation is ever done properly — until
+            # then Back keeps Android's default behavior (closes the app).
             try:
                 self.page.on_view_pop = self._on_view_pop
             except Exception:
