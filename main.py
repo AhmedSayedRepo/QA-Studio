@@ -617,10 +617,18 @@ class QAStudio:
         if self.user is None:
             try:
                 import secure_store_mobile as _ssm
-                if _ssm.bio_required() and _ssm.bio_gate_passed():
+                # Restore when EITHER biometrics isn't required at all, OR it is
+                # and the gate has been passed. The "not required" case matters
+                # now that the session lives in the Keystore vault: it can only
+                # be read once this bootstrap has landed, so __init__'s earlier
+                # synchronous acquire_silent() found nothing. Without this
+                # branch a user with biometrics OFF would be signed out on every
+                # launch — the exact bug this whole area keeps producing.
+                if (not _ssm.bio_required()) or _ssm.bio_gate_passed():
                     _u0 = auth.acquire_silent()
                     if _u0:
                         self.user = _u0
+                        self._switch_user_creds()
             except Exception:
                 pass
         if getattr(self, "_theme_touched", False):

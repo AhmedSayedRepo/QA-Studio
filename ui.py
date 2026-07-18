@@ -389,7 +389,11 @@ def ghost_btn(text, icon=None, on_click=None, expand=False, disabled=False,
             padding=ft.Padding.symmetric(horizontal=16, vertical=0)))
     return _disabled_wrap(_wrap_btn(btn, expand), disabled, op=0.55)
 
-def danger_btn(text, icon=None, on_click=None, disabled=False):
+def danger_btn(text, icon=None, on_click=None, disabled=False, expand=False):
+    # `expand` added to match green_btn/ghost_btn, which already had it. Without
+    # it a danger action couldn't share a Row evenly with its sibling, so on
+    # mobile the primary button stretched full-width and Stop wrapped onto its
+    # own line at a mismatched size (Remote Runs' Resume/Stop pair).
     disabled = disabled or _READONLY
     btn = ft.FilledButton(
         text, icon=icon, on_click=(None if disabled else on_click), height=40,
@@ -398,7 +402,13 @@ def danger_btn(text, icon=None, on_click=None, disabled=False):
             shape=ft.RoundedRectangleBorder(radius=T.R),
             padding=ft.Padding.symmetric(horizontal=18, vertical=0)))
     # design shadow: 0 6px 16px -6px rgba(224,71,77,.6)
-    return _disabled_wrap(_shadow_wrap(btn, T.RED, 0.55, False), disabled)
+    out = _disabled_wrap(_shadow_wrap(btn, T.RED, 0.55, False), disabled)
+    if expand:
+        try:
+            out.expand = True
+        except Exception:
+            pass
+    return out
 
 def searchable_dropdown(**kwargs):
     """ft.Dropdown that is type-to-filter on newer Flet, degrading gracefully."""

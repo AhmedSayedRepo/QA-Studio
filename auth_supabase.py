@@ -216,6 +216,21 @@ def _load_session():
     global _session_data
     if _session_data is not None:
         return _session_data
+    # MOBILE: prefer the Keystore-encrypted vault over the local file. The file
+    # path uses store._encrypt(), which on the mobile build degrades to base64
+    # (no DPAPI, no Fernet) — see secure_store_mobile.save_session. Only trusted
+    # once the vault's async bootstrap has landed; before that we fall through
+    # to the file, and the caller (main._on_secure_creds_ready) re-runs the
+    # restore after the bootstrap anyway.
+    try:
+        import secure_store_mobile as _ssm
+        if _ssm.session_available():
+            _s = _ssm.load_session()
+            if _s:
+                _session_data = _s
+                return _session_data
+    except Exception:
+        pass
     try:
         import store
         with open(_cache_file(), "rb") as f:
@@ -234,6 +249,23 @@ def _load_session():
 def _save_session(data):
     global _session_data
     _session_data = data
+    # MOBILE: write the session into the Keystore-encrypted vault and do NOT
+    # also leave a base64 copy on disk — that copy was the security hole (a
+    # refresh token in base64 is effectively plaintext, and sign-out now keeps
+    # that token on purpose so biometrics can restore the session). Falls
+    # through to the file path below if the vault isn't ready yet.
+    try:
+        import secure_store_mobile as _ssm
+        if _ssm.session_available() and _ssm.save_session(data):
+            # Remove any pre-existing plaintext-ish file from before this fix.
+            try:
+                if data is None or os.path.exists(_cache_file()):
+                    os.remove(_cache_file())
+            except Exception:
+                pass
+            return
+    except Exception:
+        pass
     try:
         import store
         os.makedirs(os.path.dirname(_cache_file()), exist_ok=True)
@@ -898,11 +930,25 @@ def get_remote_run_events(run_id, after_seq=0, limit=500):
                           params={"run_id": f"eq.{run_id}",
                                   "seq": f"gt.{int(after_seq)}",
                                   "select": "seq,kind,payload,created_at",
-                                  "order": "seq.asc", "limit": str(int(limit))},
+                                  # DESC + reverse, NOT asc — see below.
+                                  "order": "seq.desc", "limit": str(int(limit))},
                           timeout=_TIMEOUT)
         if r.status_code != 200:
             return []
-        return r.json() or []
+        rows = r.json() or []
+        # Return the NEWEST `limit` events (restored to ascending order for
+        # display), not the OLDEST. The detail view re-fetches the whole feed
+        # every tick with after_seq=0 — it has to, because run_worker collapses
+        # a line's lifecycle into ONE row updated in place (hb_id), which an
+        # incremental after_seq poll would never see. But with "order=seq.asc"
+        # + limit=500 that meant any run producing more than 500 event rows
+        # returned the SAME earliest 500 forever: the activity feed froze at an
+        # early line (a "Still checking for duplicates… 15s so far" heartbeat,
+        # reported live) and never showed later activity or the completion
+        # lines — even though the run finished fine and the meta card, which
+        # polls get_remote_run separately, kept updating correctly.
+        rows.reverse()
+        return rows
     except Exception:
         return []
 

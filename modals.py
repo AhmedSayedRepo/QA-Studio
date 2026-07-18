@@ -683,11 +683,29 @@ def open_sprint_summary(app):
             ], spacing=2, horizontal_alignment=ft.CrossAxisAlignment.START)
 
             # Stat tiles: total stories + total test cases
-            tiles = ft.Row([
+            _tiles = [
                 stat_tile("Stories", total, tone="violet"),
                 stat_tile("Test Cases", total_tc, tone="green"),
                 stat_tile("Statuses", len(by_state), tone="amber"),
-            ], spacing=10)
+            ]
+            if platform_caps.is_mobile():
+                # Inside this dialog the usable width is only ~300 logical px on
+                # a phone, so three expand=True tiles got ~93px each and
+                # stat_tile's no_wrap+ELLIPSIS label truncated to "St…" / "Te…" /
+                # "St…" — unreadable. Give each tile a width that actually fits
+                # its label and scroll the row sideways instead of compressing
+                # the content (same rule as the generated-plan KPI cards).
+                for _t in _tiles:
+                    try:
+                        _t.expand = None
+                        _t.width = 132
+                    except Exception:
+                        pass
+                tiles = ft.Row(_tiles, spacing=10, scroll=ft.ScrollMode.AUTO,
+                               tight=True,
+                               vertical_alignment=ft.CrossAxisAlignment.START)
+            else:
+                tiles = ft.Row(_tiles, spacing=10)
 
             # Status breakdown — give EACH status its own distinct colour so the
             # cards are visually separable (most states otherwise collapsed to the
@@ -721,7 +739,16 @@ def open_sprint_summary(app):
             _MIN_W, _MAX_W = 92, 150
             _n_cards = len(_sorted_states)
             _card_w = _MAX_W
-            if _n_cards:
+            _m_status = platform_caps.is_mobile()
+            if _m_status:
+                # The width maths below assumes the 820px DESKTOP dialog. On a
+                # phone the dialog is only ~300 logical px wide, so that formula
+                # handed back cards up to 150px and the row overflowed — the
+                # status breakdown rendered clipped mid-card. Use one readable
+                # fixed width and scroll the row sideways instead (same rule as
+                # the stat tiles above and the generated-plan KPI cards).
+                _card_w = 132
+            elif _n_cards:
                 _avail = 760  # dialog content width (820) minus outer padding
                 _raw = (_avail - (10 * (_n_cards - 1))) / _n_cards
                 _card_w = max(_MIN_W, min(_MAX_W, _raw))
@@ -740,7 +767,10 @@ def open_sprint_summary(app):
             state_cards = []
             for st, cnt in _sorted_states:
                 state_cards.append(_status_card(st, cnt, _state_color[st], _card_w))
-            status_row = ft.Row(state_cards, wrap=True, spacing=10, run_spacing=10) \
+            status_row = ft.Row(state_cards, wrap=not _m_status, spacing=10,
+                                run_spacing=10,
+                                scroll=(ft.ScrollMode.AUTO if _m_status else None),
+                                tight=bool(_m_status)) \
                 if state_cards else ft.Text("No stories in this sprint.",
                                             size=12, color=T.INK_3, weight=ft.FontWeight.W_500)
             dist_bar = ft.Container(

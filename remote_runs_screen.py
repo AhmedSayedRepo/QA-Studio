@@ -333,17 +333,27 @@ def _detail_screen(app):
          if run.get("summary") else ft.Container(height=0)),
     ], spacing=6))
 
+    # On a phone the buttons must SHARE the row evenly. Left to their natural
+    # widths inside a wrap Row, the primary action (Resume/Pause) stretched to
+    # the full width and pushed Stop onto its own line at a much smaller size —
+    # reported live: the Resume button needed adjustment because the pair looked
+    # mismatched and misaligned. expand=True on mobile splits the row into equal
+    # halves (or thirds); desktop keeps the natural-width wrap layout.
+    _m_ctl = platform_caps.is_mobile()
     controls = []
     if can_control and status not in _TERMINAL:
         if status in ("queued", "running"):
             controls.append(ghost_btn("Pause", icon=ft.Icons.PAUSE_CIRCLE_OUTLINE,
+                                      expand=_m_ctl,
                                       on_click=lambda e: _control(app, run_id, "pause", "Pause")))
         if status == "paused":
             controls.append(green_btn("Resume", icon=ft.Icons.PLAY_CIRCLE_OUTLINE,
+                                      expand=_m_ctl,
                                       on_click=lambda e: _control(app, run_id, "resume", "Resume")))
         controls.append(danger_btn("Stop", icon=ft.Icons.STOP_CIRCLE_OUTLINED,
+                                   expand=_m_ctl,
                                    on_click=lambda e: _stop_confirm(app, run_id)))
-    controls_row = (ft.Row(controls, spacing=10, wrap=True)
+    controls_row = (ft.Row(controls, spacing=10, wrap=not _m_ctl)
                     if controls else ft.Container(height=0))
 
     # Live badge: only meaningful while the run hasn't reached a terminal

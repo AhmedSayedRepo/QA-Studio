@@ -549,6 +549,58 @@ def bio_gate_passed():
     return _bio_gate_passed
 
 
+_SESSION_KEY = "__supabase_session__"
+
+
+def session_available():
+    """True when the Keystore-backed vault is up AND its first read has landed,
+    i.e. load_session() can give a trustworthy answer."""
+    return _storage is not None and _cache is not None
+
+
+def save_session(data):
+    """Persist the Supabase session (access + REFRESH token) inside the
+    Keystore-encrypted vault instead of auth_supabase's own file.
+
+    WHY: that file is written via store._encrypt(), which on the mobile build
+    has NEITHER DPAPI (Windows-only) NOR Fernet (`cryptography` is deliberately
+    excluded from the APK — see build-apk.yml), so it fell through to
+    base64-only. The diagnostics log confirmed it live: 20x "DPAPI and Fernet
+    both unavailable — saving credentials with base64 only (NOT encrypted)".
+    A refresh token in base64 is effectively plaintext on the device, and that
+    matters more now that signing out deliberately KEEPS the refresh token so
+    biometrics can restore the session. Riding on the existing vault gets real
+    Android Keystore / iOS Keychain encryption with no new dependency and no
+    Python-side crypto to get wrong.
+
+    Returns False if the vault isn't ready, so the caller can fall back."""
+    global _cache
+    if _storage is None or _page is None or _cache is None:
+        return False
+    try:
+        d = dict(_cache)
+        if data is None:
+            d.pop(_SESSION_KEY, None)
+        else:
+            d[_SESSION_KEY] = data
+        _cache = d
+        _page.run_task(_storage.set, _key, json.dumps(d))
+        return True
+    except Exception:
+        return False
+
+
+def load_session():
+    """The cached session dict, or None. Only meaningful once the async
+    bootstrap has landed (see session_available)."""
+    try:
+        if _cache is None:
+            return None
+        return _cache.get(_SESSION_KEY) or None
+    except Exception:
+        return None
+
+
 def _migrate_legacy_file():
     """One-time pickup of whatever store.py's file-based fallback already
     saved before this module existed — reads it via store's own decrypt
