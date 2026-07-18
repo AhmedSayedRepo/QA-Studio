@@ -18,6 +18,49 @@ if _os.path.isdir(_pc):
     _shutil.rmtree(_pc, ignore_errors=True)
 del _pc, _os, _shutil, _sys
 
+# ── GLOBAL HOME FIX (mobile) — must run BEFORE anything computes a path ──────
+# On an Android Flet build `os.path.expanduser("~")` resolves to /data, which is
+# NOT writable. We already route our own modules through
+# platform_caps.app_data_dir(), but THIRD-PARTY libraries compute their own
+# paths from ~ and we cannot patch them: the azure-devops SDK caches under
+# ~/.azure-devops, which failed live with
+#   "Couldn't check for existing test case steps ([Errno 13] Permission denied:
+#    '/data/.azure-devops')"
+# and took the existing-test-case count with it (it reported 0 cases).
+#
+# Repairing ~ ITSELF fixes this class everywhere at once — our code, the Azure
+# SDK, and any future dependency — instead of chasing call sites one at a time
+# (this bug has now surfaced six separate times; see DEV_ROADMAP #95).
+#
+# Deliberately gated on ~ being genuinely UNWRITABLE rather than on
+# is_mobile(): platform detection needs page.platform, which doesn't exist at
+# import time, and this must land before any import-time path computation.
+# Desktop keeps its real home directory untouched.
+def _repair_home_if_broken():
+    import os
+    appdata = os.environ.get("FLET_APP_STORAGE_DATA")
+    if not appdata:
+        return
+    home = os.path.expanduser("~")
+    try:
+        os.makedirs(home, exist_ok=True)
+        probe = os.path.join(home, ".qa_write_probe")
+        with open(probe, "w") as f:
+            f.write("x")
+        os.remove(probe)
+        return                      # ~ is fine (desktop) — change nothing
+    except Exception:
+        pass
+    try:
+        os.makedirs(appdata, exist_ok=True)
+        os.environ["HOME"] = appdata
+        os.environ["USERPROFILE"] = appdata
+    except Exception:
+        pass
+
+
+_repair_home_if_broken()
+
 import threading, traceback, time
 import flet as ft
 
@@ -682,6 +725,12 @@ class QAStudio:
             # keep self.creds in sync with what's actually on screen so a
             # later save() elsewhere doesn't silently revert it either.
             self.creds["theme"] = T.MODE
+            # Prime the startup cache here TOO. It was only primed in the else
+            # branch, so a session where the user had touched the theme never
+            # wrote it — and the next launch had nothing to read and flashed
+            # light again. Priming on BOTH paths is what makes the flash a
+            # once-ever event rather than a recurring one.
+            self._persist_theme(T.MODE)
         else:
             try:
                 T.apply_theme(self.creds.get("theme", "light"))
@@ -786,6 +835,7 @@ class QAStudio:
             th = self.creds.get("theme")
             if th:                    # keep current theme if they have none saved yet
                 T.apply_theme(th)
+                self._persist_theme(th)   # prime the startup cache (see _persist_theme)
                 self.page.theme_mode = (ft.ThemeMode.DARK if th == "dark"
                                         else ft.ThemeMode.LIGHT)
                 self.page.bgcolor = T.RAIL
@@ -5296,6 +5346,19 @@ class QAStudio:
         # executing locally — the validations above apply to both paths.
         if bool(getattr(self, "run_remote", False)):
             self._start_remote_run()
+            return
+        # MOBILE: there is no local run path. A local run needs the Azure SDK
+        # writing under the app's home dir and a long-lived foreground process —
+        # neither of which a phone provides (MOBILE_PLAN Phase 3: mobile is a
+        # viewer/controller, execution happens on the remote worker). Starting
+        # one anyway got partway, failed on the SDK's own cache dir, and then
+        # opened the local Report screen — which is desktop-only and rendered
+        # empty (reported live). Stop here with an actionable message instead.
+        if platform_caps.is_mobile():
+            self._err_msg = ""
+            self._toast("Turn on “Run remotely” to start a run on mobile — "
+                        "local runs are desktop-only.")
+            self.render()
             return
         # Steps tool: check existing steps first
         if self.tool == "steps":
