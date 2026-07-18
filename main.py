@@ -130,8 +130,22 @@ class QAStudio:
         # _BOOT_SPLASH_SECONDS have passed. A timer fires the hand-off render,
         # so the splash always clears even if nothing else happens to re-render
         # in that window.
+        # ONLY when biometric unlock is OFF. With it ON the native
+        # fingerprint/PIN prompt already covers the whole start-up window — it
+        # sits over the app until the user authenticates, and the session
+        # restore is gated behind it — so a splash underneath would add 3s of
+        # dead time before the prompt without hiding anything the prompt isn't
+        # hiding already. read from mobile_prefs, which is synchronous and
+        # therefore available this early (the vault read is not).
         self._boot_at = None
+        _splash_wanted = False
         if platform_caps.is_mobile():
+            try:
+                import mobile_prefs as _mp_boot
+                _splash_wanted = not bool(_mp_boot.get("require_biometric", False))
+            except Exception:
+                _splash_wanted = True     # can't tell → assume no biometrics
+        if _splash_wanted:
             self._boot_at = time.time()
 
             def _end_splash():
