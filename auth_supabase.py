@@ -50,7 +50,42 @@ SUPABASE_ANON_KEY = os.environ.get(
 
 _TIMEOUT = 20
 _REFRESH_SKEW = 60          # refresh this many seconds before expiry
-_CACHE_FILE = os.path.join(os.path.expanduser("~"), ".qa_tool", "supabase_session.bin")
+
+
+def _cache_dir():
+    """PERSISTENT, writable data dir for the cached session.
+
+    ROOT CAUSE this fixes (four rounds of "biometrics doesn't log me in on
+    relaunch" were all chasing the wrong layer): this file used to live under
+    `os.path.expanduser("~")`, which on an Android Flet build does NOT resolve
+    to a writable, relaunch-surviving location (it lands on /data). So every
+    _save_session() silently failed and the Supabase session was NEVER
+    persisted on mobile at all. The biometric gate was working correctly the
+    whole time — it prompted, the user passed, and then acquire_silent() had
+    literally nothing on disk to restore, so the app sat on the login screen.
+
+    Flet sets FLET_APP_STORAGE_DATA to the app-private files directory on
+    Android/iOS — the only place guaranteed both writable and durable across
+    relaunches. Same fix already applied to mobile_prefs (onboarding/biometric
+    flags, which silently never persisted for the same reason) and to the
+    exporters (which failed loudly with "[Errno 13] Permission denied:
+    '/data/QA Studio'"). Desktop is unchanged: the env var isn't set there, so
+    it falls back to ~/.qa_tool exactly as before.
+
+    Resolved lazily (not at import) so it reflects the environment Flet has
+    actually set up by the time a session is read or written."""
+    d = os.environ.get("FLET_APP_STORAGE_DATA")
+    if d:
+        try:
+            os.makedirs(d, exist_ok=True)
+            return d
+        except Exception:
+            pass
+    return os.path.join(os.path.expanduser("~"), ".qa_tool")
+
+
+def _cache_file():
+    return os.path.join(_cache_dir(), "supabase_session.bin")
 
 # ── Permission model (granular, per-user) ────────────────────────────────────
 # Each user carries a set of capability KEYS. "nav.*" keys gate opening a screen;
@@ -183,7 +218,7 @@ def _load_session():
         return _session_data
     try:
         import store
-        with open(_CACHE_FILE, "rb") as f:
+        with open(_cache_file(), "rb") as f:
             _session_data = json.loads(store._decrypt(f.read()).decode("utf-8"))
     except FileNotFoundError:
         _session_data = None   # normal — no cached session yet, not worth logging
@@ -201,15 +236,15 @@ def _save_session(data):
     _session_data = data
     try:
         import store
-        os.makedirs(os.path.dirname(_CACHE_FILE), exist_ok=True)
+        os.makedirs(os.path.dirname(_cache_file()), exist_ok=True)
         if data is None:
             try:
-                os.remove(_CACHE_FILE)
+                os.remove(_cache_file())
             except Exception:
                 pass
             return
         blob = store._encrypt(json.dumps(data).encode("utf-8"))
-        with open(_CACHE_FILE, "wb") as f:
+        with open(_cache_file(), "wb") as f:
             f.write(blob)
     except Exception as ex:
         # Silent failure here means sign-in APPEARS to succeed but the session

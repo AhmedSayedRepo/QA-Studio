@@ -23,7 +23,8 @@ _PERF_ON = os.environ.get("QASTUDIO_PERF", "1") != "0"
 try:
     _PERF_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "qa_perf.log")
 except Exception:
-    _PERF_LOG = os.path.join(os.path.expanduser("~"), "qa_perf.log")
+    import platform_caps as _pc_dir
+    _PERF_LOG = os.path.join(_pc_dir.app_data_dir(), "qa_perf.log")
 
 def _perf_log(msg):
     if not _PERF_ON:
@@ -123,7 +124,8 @@ def _keep_scroll(app, off):
 #  Azure changed. The "Regenerate" button force-refreshes, so stale data always
 #  has an escape hatch. Keyed by project; JSON (int keys stored as strings).
 # ═══════════════════════════════════════════════════════════════════════════════
-_CACHE_DIR = os.path.join(os.path.expanduser("~"), ".qa_tool")
+import platform_caps as _pc_dir
+_CACHE_DIR = _pc_dir.app_data_dir()   # writable on mobile too (see helper)
 _CACHE_FILE = os.path.join(_CACHE_DIR, "reg_cache.json")
 
 
@@ -3297,6 +3299,23 @@ def _cp_load_stories(app):
         if _gen != getattr(app, "_cp_stories_gen", _gen):
             return                      # sprint selection changed mid-fetch -> drop
         app._cp_rows = agg
+        # STORIES ARE NOW USABLE → stop the "Loading sprint stories…" spinner
+        # here, not at the end of this function. Everything below is background
+        # ENRICHMENT (Azure metadata, feature names, and an AI complexity call
+        # that can run for a long time), and the Generate button is already
+        # enabled off `_cp_rows` alone — so leaving the flag set until the end
+        # meant the spinner stayed up while the user generated a plan and kept
+        # claiming it was "Loading sprint stories from Azure DevOps…" underneath
+        # the finished result (reported live as the spinner looking static after
+        # the plan generated). The enrichment still finishes silently and
+        # _cp_estimate_and_assign() below refreshes the estimates when it does.
+        if _gen == getattr(app, "_cp_stories_gen", _gen):
+            app._cp_stories_loading = False
+            if getattr(app, "active", None) == "testplan":
+                try:
+                    _repaint_unless_open(app, "_cp_sprint_open")
+                except Exception:
+                    pass
         # Pull real Azure DevOps priority (+ state) for these stories so the plan
         # table and email show P1–P4 like the Regression Plan report (not a bare "P").
         # _fetch_meta also returns each story's parent (feature) id, which we use

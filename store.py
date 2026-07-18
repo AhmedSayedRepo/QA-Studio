@@ -28,7 +28,11 @@ try:
 except Exception:
     _mobile = None
 
-CRED_DIR  = os.path.join(os.path.expanduser("~"), ".qa_tool")
+# Persistent app-data dir. MUST go through platform_caps.app_data_dir():
+# a bare expanduser("~") is not writable on Android, so this file silently
+# failed to save there (see that helper for the full bug-class writeup).
+import platform_caps as _pc_dir
+CRED_DIR  = _pc_dir.app_data_dir()
 _DEFAULT_FILE = os.path.join(CRED_DIR, "creds.dat")
 # Active credential file. Switched to a per-user file via set_user() so different
 # signed-in accounts on the same device don't share keys / PAT / prefs.

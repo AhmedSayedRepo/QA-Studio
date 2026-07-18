@@ -177,7 +177,8 @@ def set_current_user(user_id):
 
 
 def _usage_log_path():
-    d = os.path.join(os.path.expanduser("~"), ".qa_tool")
+    import platform_caps as _pc_dir
+    d = _pc_dir.app_data_dir()   # writable on mobile too (see helper)
     try:
         os.makedirs(d, exist_ok=True)
     except Exception:
@@ -3779,7 +3780,8 @@ def _is_near_duplicate(key, seen_keys, threshold=0.8):
 
 
 def _dedupe_ai_debug_path():
-    d = os.path.join(os.path.expanduser("~"), ".qa_tool")
+    import platform_caps as _pc_dir
+    d = _pc_dir.app_data_dir()   # writable on mobile too (see helper)
     try:
         os.makedirs(d, exist_ok=True)
     except Exception:

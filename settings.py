@@ -11,6 +11,40 @@ import platform_caps
 from ui import _ic, card, ghost_btn, danger_btn
 
 
+def _share_diag_log(app):
+    """Hand the diagnostics log to the user.
+
+    This exists because mobile failures were previously undiagnosable: the log
+    was written under expanduser("~"), which isn't writable on Android, so
+    every diag_log call silently vanished (see diag_log._data_dir). Now that it
+    actually lands in the app-private dir, there still has to be a way to GET
+    it off the phone — the app sandbox isn't browsable. Mobile hands it to the
+    OS share sheet (same ft.Share path the exports use); desktop just reveals
+    it in Explorer, matching every other export on that platform."""
+    try:
+        import os
+        import diag_log
+        path = diag_log.LOG_FILE
+        if not os.path.exists(path) or os.path.getsize(path) == 0:
+            app._toast("No diagnostics recorded yet — nothing to share.")
+            return
+        if platform_caps.is_mobile():
+            # Reuse the proven export delivery popup so this behaves exactly
+            # like every other "here's your file" flow on mobile.
+            try:
+                app._mobile_download_popup(path, "Diagnostics log")
+            except Exception:
+                platform_caps.reveal_export(app.page, path)
+        else:
+            platform_caps.open_folder(os.path.dirname(path))
+            app._toast(f"Diagnostics log: {path}")
+    except Exception as ex:
+        try:
+            app._err(f"Couldn't open the diagnostics log: {str(ex)[:120]}")
+        except Exception:
+            pass
+
+
 def screen(app):
         ro = bool(getattr(app, "readonly", False))   # no 'act.settings' → read-only
 
@@ -99,6 +133,13 @@ def screen(app):
                  "Append timing diagnostics to qa_perf.log. Leave on if I'm helping "
                  "you troubleshoot speed.",
                  perf_switch),
+            divider(),
+            srow("Diagnostics log",
+                 "Send the app's error log when reporting a problem. It records "
+                 "unhandled errors — including crashes on the Flutter side that "
+                 "leave no visible message.",
+                 ghost_btn("Share log", icon=_ic("BUG_REPORT_OUTLINED", "DESCRIPTION"),
+                           on_click=lambda e: _share_diag_log(app))),
         ], spacing=0))
 
         # ── Security (Admins only) — idle auto-logout policy ──

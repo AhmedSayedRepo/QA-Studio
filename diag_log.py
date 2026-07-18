@@ -20,7 +20,36 @@ import os
 import logging
 import logging.handlers
 
-CRED_DIR = os.path.join(os.path.expanduser("~"), ".qa_tool")
+def _data_dir():
+    """PERSISTENT, writable dir for the diagnostics log.
+
+    THIS FILE WAS ITSELF THE REASON MOBILE BUGS WERE UNDIAGNOSABLE. The log
+    used to live under `os.path.expanduser("~")`, which on an Android Flet
+    build is NOT writable (it resolves to /data). So every diag_log.log()
+    call silently did nothing on device — including the two most valuable
+    ones: page.on_error (unhandled Flutter/Dart client exceptions, the only
+    window into "silent grey box" failures) and render()'s own except-block.
+    The app had good instrumentation the entire time and simply couldn't
+    write it anywhere, so every mobile issue had to be diagnosed by
+    inference instead of evidence.
+
+    Flet sets FLET_APP_STORAGE_DATA to the app-private files directory on
+    Android/iOS. Same fix already applied to mobile_prefs, auth_supabase's
+    session cache, and the exporters. Desktop is unchanged (env var unset →
+    ~/.qa_tool). Deliberately uses the env var directly rather than
+    platform_caps.is_mobile(): this module is imported far earlier than
+    set_flet_platform() runs, so is_mobile() would still be False here."""
+    d = os.environ.get("FLET_APP_STORAGE_DATA")
+    if d:
+        try:
+            os.makedirs(d, exist_ok=True)
+            return d
+        except Exception:
+            pass
+    return os.path.join(os.path.expanduser("~"), ".qa_tool")
+
+
+CRED_DIR = _data_dir()
 LOG_FILE = os.path.join(CRED_DIR, "diagnostics.log")
 
 _logger = None

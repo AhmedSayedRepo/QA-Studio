@@ -1838,7 +1838,8 @@ class QAStudio:
     # ---- Useful Links ----
     def _links_path(self):
         import os, re
-        d = os.path.join(os.path.expanduser("~"), ".qa_tool")
+        import platform_caps as _pc_dir
+        d = _pc_dir.app_data_dir()   # writable on mobile too (see helper)
         try:
             os.makedirs(d, exist_ok=True)
         except Exception:
@@ -1896,7 +1897,8 @@ class QAStudio:
 
     def _static_links_state_path(self):
         import os, re
-        d = os.path.join(os.path.expanduser("~"), ".qa_tool")
+        import platform_caps as _pc_dir
+        d = _pc_dir.app_data_dir()   # writable on mobile too (see helper)
         try:
             os.makedirs(d, exist_ok=True)
         except Exception:

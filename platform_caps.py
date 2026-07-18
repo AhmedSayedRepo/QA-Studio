@@ -50,6 +50,37 @@ def has_self_update():
     return is_windows() and not is_mobile()
 
 
+def app_data_dir():
+    """The one canonical PERSISTENT, writable app-data dir (`.qa_tool` on
+    desktop).
+
+    THE BUG CLASS THIS ENDS: `os.path.expanduser("~")` does NOT resolve to a
+    writable, relaunch-surviving location on an Android Flet build — it lands
+    on /data. Every module that built its own `~/.qa_tool` path therefore
+    silently failed to write on mobile. That has now bitten five separate
+    times: mobile_prefs (onboarding + biometric flags never persisted), the
+    exporters ("[Errno 13] Permission denied: '/data/QA Studio'"), the
+    Supabase session cache (sign-in never persisted, so biometric unlock had
+    nothing to restore — four rounds of misdiagnosis), the diagnostics log
+    (which is WHY those were undiagnosable), and the caches below.
+
+    Deliberately reads FLET_APP_STORAGE_DATA directly rather than going
+    through is_mobile(): callers like store.py are imported long before
+    set_flet_platform() runs, so is_mobile() would still be False there.
+
+    Use this for anything the app must READ BACK LATER. For user-facing
+    exports use export_base_dir() instead (same resolution, but semantically
+    the place files are written for the user to share out)."""
+    d = os.environ.get("FLET_APP_STORAGE_DATA")
+    if d:
+        try:
+            os.makedirs(d, exist_ok=True)
+            return d
+        except Exception:
+            pass
+    return os.path.join(os.path.expanduser("~"), ".qa_tool")
+
+
 def export_base_dir():
     """Base directory for generated export files (Regression/Sprint/Task
     Manager/AI Usage reports all build `<base>/QA Studio/<kind>/…`).
