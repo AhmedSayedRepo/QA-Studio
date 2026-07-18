@@ -230,7 +230,10 @@ async def _bootstrap():
         if data is None:
             data = _migrate_legacy_file()
             if data:
+                # Await the vault write, and only THEN drop the legacy file —
+                # never the other way round (see _migrate_legacy_file).
                 await _storage.set(key, json.dumps(data))
+                _delete_legacy_file()
         if _key == key:      # a later set_user() may have moved on already
             _cache = data if data is not None else {}
     except Exception:
@@ -646,19 +649,34 @@ def load_session():
     return _session_cache or None
 
 
+def _delete_legacy_file():
+    """Drop the legacy file-backed copy — called ONLY after the Keystore write
+    has been awaited and confirmed, so the credentials always exist in at least
+    one place at every instant."""
+    try:
+        import store as _store, os
+        os.remove(_store.CRED_FILE)
+    except Exception:
+        pass
+
+
 def _migrate_legacy_file():
     """One-time pickup of whatever store.py's file-based fallback already
     saved before this module existed — reads it via store's own decrypt
     logic, then deletes that file so a weaker-security copy doesn't keep
     sitting on disk once the keychain-backed copy exists."""
     try:
-        import store as _store, os
+        import store as _store
         d = _store._load_from_file()
         if d.get("pat") or d.get("gmail") or d.get("keys"):
-            try:
-                os.remove(_store.CRED_FILE)
-            except Exception:
-                pass
+            # DO NOT delete the source here. This used to os.remove() the file
+            # and THEN hand the data back for an async vault write — so if the
+            # process died in between, the credentials were gone from both
+            # places. Process death right after a read is not hypothetical:
+            # installing an app UPDATE kills the old process, which is exactly
+            # when users reported "setup credentials wiped after update".
+            # _bootstrap now deletes it only once the vault write has been
+            # awaited and confirmed (see _delete_legacy_file).
             return d
     except Exception:
         pass
@@ -672,13 +690,46 @@ def load():
     return _cache
 
 
+def _is_empty_creds(d):
+    """True when this payload carries NO actual secret. Used to recognise the
+    'we haven't loaded anything yet' state so it can't be mistaken for 'the
+    user cleared everything'."""
+    if not isinstance(d, dict):
+        return True
+    return not (d.get("pat") or d.get("gmail") or d.get("gmail_app_pass")
+                or (d.get("keys") or {}))
+
+
 def save(d):
     """Update the cache immediately, then fire off the real write. Never
     blocks. Returns False (no-op) if init() hasn't run / isn't available —
-    caller (store.py) falls back to its existing file-based path."""
+    caller (store.py) falls back to its existing file-based path.
+
+    SAFETY GUARD — this is how credentials kept getting 'wiped after an
+    update': the vault is keyed per-user, so a launch that starts signed out
+    (or whose bootstrap hasn't landed) reads an EMPTY slot into self.creds.
+    Anything that then called store.save(self.creds) — a theme change, a
+    provider pick, an onboarding flag — persisted that empty dict straight over
+    the real credentials. One incidental save was enough to destroy them
+    permanently.
+
+    An empty payload landing on top of populated storage is never a legitimate
+    intent, so refuse it and log it. Genuinely clearing credentials happens
+    field-by-field (each writes a populated dict minus one value), which this
+    never blocks."""
     global _cache
     if _storage is None or _page is None:
         return False
+    if _is_empty_creds(d) and not _is_empty_creds(_cache):
+        try:
+            import diag_log
+            diag_log.log_warn(
+                "secure_store.save_blocked",
+                "refused to overwrite populated credentials with an empty "
+                f"payload (key={_key}) — this is the 'credentials wiped' bug")
+        except Exception:
+            pass
+        return True      # report success: the cache/vault still hold the truth
     _cache = dict(d)
     try:
         _page.run_task(_storage.set, _key, json.dumps(d))

@@ -126,6 +126,24 @@ class QAStudio:
         # renders can still BUILD their control trees fully in parallel and
         # only briefly wait on each other at the actual hand-off to Flet.
         self._render_lock = threading.Lock()
+        # STARTUP BREADCRUMB — one line per app process, with the OS pid.
+        #
+        # This is what makes "I see 2 instances in background apps" answerable
+        # instead of a guess: a GHOST task in recents leaves ONE startup line,
+        # whereas two genuinely running processes leave TWO lines with
+        # DIFFERENT pids seconds apart. It also finally pins down which build a
+        # phone is actually running — a question that has repeatedly wasted time
+        # here (DEV_ROADMAP #141/#166 stale-APK false alarms) and that the APK
+        # itself couldn't answer while it shipped versionName 1.0.0.
+        try:
+            import diag_log as _dl_start, os as _os_start
+            _dl_start.log_warn(
+                "startup",
+                f"pid={_os_start.getpid()} version={E.local_version()} "
+                f"platform={getattr(self.page, 'platform', '?')} "
+                f"home={_os_start.path.expanduser('~')}")
+        except Exception:
+            pass
         # Mobile only (no-op on desktop — see secure_store_mobile.py): kick
         # off the async OS-keychain read BEFORE the first store.load() below,
         # so the moment its bootstrap lands, _on_secure_creds_ready() has a
@@ -189,10 +207,20 @@ class QAStudio:
         # bootstrap (same reason require_biometric lives there); _persist_theme()
         # keeps it in step with every theme change.
         _startup_theme = self.creds.get("theme", "light")
+        # _theme_known is False ONLY when we genuinely cannot tell yet — mobile,
+        # with nothing cached in mobile_prefs and nothing in creds (the vault
+        # read hasn't landed). render() uses it to hold back the first paint
+        # rather than guessing "light" and correcting a second later, which IS
+        # the flash. Priming the cache below makes this a one-launch-ever state.
+        self._theme_known = True
         if platform_caps.is_mobile():
             try:
                 import mobile_prefs as _mp_theme
-                _startup_theme = _mp_theme.get("theme", _startup_theme)
+                _cached_theme = _mp_theme.get("theme", None)
+                if _cached_theme in ("dark", "light"):
+                    _startup_theme = _cached_theme
+                elif not self.creds.get("theme"):
+                    self._theme_known = False
             except Exception:
                 pass
         try:
@@ -724,6 +752,7 @@ class QAStudio:
             # GET/SET race this guards against. Their explicit choice wins;
             # keep self.creds in sync with what's actually on screen so a
             # later save() elsewhere doesn't silently revert it either.
+            self._theme_known = True   # real theme known → release the render gate
             self.creds["theme"] = T.MODE
             # Prime the startup cache here TOO. It was only primed in the else
             # branch, so a session where the user had touched the theme never
@@ -734,6 +763,7 @@ class QAStudio:
         else:
             try:
                 T.apply_theme(self.creds.get("theme", "light"))
+                self._theme_known = True   # real theme known → release the gate
                 self._persist_theme(T.MODE)   # keep the startup cache in step
                 self.page.theme_mode = (ft.ThemeMode.DARK if T.MODE == "dark"
                                         else ft.ThemeMode.LIGHT)
@@ -2364,6 +2394,32 @@ class QAStudio:
         import time as _pt
         _r0 = _pt.perf_counter()
         self._last_activity = _pt.time()   # any re-render counts as user activity
+        # THEME-FLASH GATE (mobile, first launch only). When the theme is
+        # genuinely unknown — nothing cached in mobile_prefs, nothing in creds
+        # because the Keystore read is still in flight — painting the app now
+        # means guessing, and a wrong guess is the light flash. Hold the content
+        # back for a moment and show only the page background instead: a brief
+        # neutral frame is not a visual bug, a wrong-theme frame is.
+        #
+        # Bounded by a hard 2.5s deadline so this can NEVER strand the UI if the
+        # bootstrap callback doesn't arrive. _on_secure_creds_ready clears the
+        # flag the instant the real theme is known, which is the normal path.
+        if getattr(self, "_theme_known", True) is False:
+            _t0 = getattr(self, "_theme_wait_start", None)
+            if _t0 is None:
+                self._theme_wait_start = _t0 = _pt.time()
+            if (_pt.time() - _t0) < 2.5:
+                try:
+                    with self._render_lock:
+                        self.page.controls.clear()
+                        self.page.add(ft.Container(expand=True,
+                                                   bgcolor=self.page.bgcolor))
+                        self.page.update()
+                    return
+                except Exception:
+                    self._theme_known = True   # never get stuck on a blank page
+            else:
+                self._theme_known = True       # deadline hit — paint anyway
         try:
             # Reset dropdown closer registry so stale closers from the previous
             # render don't linger. Each _checkbox_multiselect re-registers itself.
@@ -5398,6 +5454,17 @@ class QAStudio:
                 try:
                     have, total = E.count_existing_steps(self.project, self.plan_id, self.story_ids)
                 except Exception as ex:
+                    # Log it, don't just toast. This failure was diagnosable
+                    # only from a screenshot before — it turned out to be the
+                    # Azure SDK's own ~/.azure-devops cache dir being
+                    # unwritable on Android, which ALSO silently zeroed the
+                    # existing-test-case count. A toast disappears; the log
+                    # doesn't.
+                    try:
+                        import diag_log
+                        diag_log.log("run.count_existing_steps", ex)
+                    except Exception:
+                        pass
                     self._unbusy()
                     self._snack(
                         f"Couldn't check for existing test case steps ({str(ex)[:100]}) — "
