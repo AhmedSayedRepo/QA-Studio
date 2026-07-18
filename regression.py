@@ -49,7 +49,7 @@ from datetime import datetime
 import flet as ft
 import theme as T
 import engine as E
-from ui import hover_field, two_col_cards
+from ui import hover_field
 
 # ── Effort model (HARDCODED — change here if your team's numbers differ) ───────
 AVG_MINUTES_PER_CASE = 8          # manual execution time per existing test case
@@ -1914,6 +1914,44 @@ def kpi_row(tiles, spacing=14):
     return ft.Row(kpi_tiles_mobile(tiles), spacing=10, wrap=True, run_spacing=10)
 
 
+def kpi_pairs(tiles, spacing=10, width=180):
+    """MOBILE: TWO KPI tiles per line for the GENERATED PLAN cards (STORIES /
+    TEST CASES / TOTAL EFFORT / PER PERSON and the per-person workload tiles),
+    in a HORIZONTALLY SCROLLABLE row — swipe sideways rather than squeezing.
+
+    Two earlier approaches were wrong, in opposite directions:
+      1. kpi_tiles_mobile's fixed 152px + wrap: inside the plan card the usable
+         width is only ~306 logical px on a ~390px phone, and 2*152 + 10 = 314 —
+         two tiles missed fitting by ~8px, so EVERY tile wrapped onto its own
+         line (the reported "one card per line").
+      2. expand=True pairs: always 2 per line, but each tile then got only
+         ~148px and the CONTENT shrank/wrapped ("2365.72 h" broke across two
+         lines).
+    So: keep the tiles at a comfortable fixed width that fits their values on
+    one line, put the pair in a scroll=AUTO Row, and let the row overflow. Both
+    tiles are on the same line and nothing is compressed; if the pair is wider
+    than the card, you swipe it.
+
+    Returns a LIST OF ROWS (feed it to a Column, and to that Column's .controls
+    on in-place refresh). Desktop: one equal-share Row, unchanged."""
+    import platform_caps as _pc
+    if not _pc.is_mobile():
+        return [ft.Row(tiles, spacing=14)]
+    rows = []
+    for i in range(0, len(tiles), 2):
+        pair = list(tiles[i:i + 2])
+        for t in pair:
+            try:
+                t.expand = None      # never stretch/compress to fit the row —
+                t.width = width      # a fixed comfortable width + scroll instead
+            except Exception:
+                pass
+        rows.append(ft.Row(pair, spacing=spacing, scroll=ft.ScrollMode.AUTO,
+                           vertical_alignment=ft.CrossAxisAlignment.START,
+                           tight=True))
+    return rows
+
+
 def hscroll_table(header, rows_col, min_width, mobile=None):
     """Wrap a fixed-column-width table (header row + rows column) in a
     HORIZONTAL scroll on mobile. Data tables can't wrap or stack, and their
@@ -3223,7 +3261,7 @@ def _cp_load_stories(app):
     app._cp_table_page = 0
     _repaint_unless_open(app, "_cp_sprint_open")
 
-    def _work():
+    def _work_inner():
         import concurrent.futures as _cf
 
         # Fetch every selected sprint's stories CONCURRENTLY. Sequentially this was
@@ -3300,12 +3338,39 @@ def _cp_load_stories(app):
         _cp_estimate_and_assign(app)
         if _gen != getattr(app, "_cp_stories_gen", _gen):
             return                      # selection changed mid-fetch -> drop results
-        app._cp_stories_loading = False
-        # Only repaint if the user is still on the Sprint Plan screen — otherwise
-        # this background completion would force a full (heavy) render of whatever
-        # screen they navigated to, which reads as a freeze.
-        if getattr(app, "active", None) == "testplan":
-            _repaint_unless_open(app, "_cp_sprint_open")
+        # NOTE: the loading flag is cleared by _work's finally below, never here.
+
+    def _work():
+        """Wrapper that GUARANTEES the loading spinner clears.
+
+        _work_inner has two mid-flight `return`s (superseded selection) and
+        several unguarded calls — the concurrent fetch block and
+        _cp_estimate_and_assign() sit outside its inner try. Any exception or
+        early return there left _cp_stories_loading True forever, so the screen
+        sat on "Loading sprint stories…" with no end (reported live) and the
+        Generate button stayed disabled. A finally is the only construct that
+        makes that outcome impossible."""
+        try:
+            _work_inner()
+        except Exception as ex:
+            try:
+                import diag_log
+                diag_log.log("regression.cp_load_stories", ex)
+            except Exception:
+                pass
+        finally:
+            # Only the CURRENT generation may clear the flag — a superseded
+            # fetch must not switch off a spinner that a newer fetch now owns.
+            if _gen == getattr(app, "_cp_stories_gen", _gen):
+                app._cp_stories_loading = False
+                # Only repaint if the user is still on the Sprint Plan screen —
+                # otherwise this background completion forces a full (heavy)
+                # render of whatever screen they navigated to, reading as a freeze.
+                if getattr(app, "active", None) == "testplan":
+                    try:
+                        _repaint_unless_open(app, "_cp_sprint_open")
+                    except Exception:
+                        pass
     threading.Thread(target=_work, daemon=True).start()
 
 
@@ -3811,7 +3876,7 @@ def _create_screen(app):
                        vertical_alignment=ft.CrossAxisAlignment.START)], spacing=0)
 
         def _refresh_totals():
-            kpi_strip.controls = _kpis()
+            kpi_strip.controls = kpi_pairs(_kpis())
             workload_holder.content = _workload()
             kpi_strip.update(); workload_holder.update()
 
@@ -4004,8 +4069,9 @@ def _create_screen(app):
                                           padding=ft.Padding.symmetric(vertical=10))]
             return out
 
-        kpi_strip = ft.Row(_kpis(), spacing=(10 if _m_plan else 14),
-                           wrap=_m_plan, run_spacing=10)
+        # Column of paired Rows → exactly 2 tiles per line on mobile (see
+        # kpi_pairs); a single equal-share Row on desktop.
+        kpi_strip = ft.Column(kpi_pairs(_kpis()), spacing=10)
         # Keep plan_col a Column (its identity + .controls refresh is reused by
         # _toggle_cp_feature's collapse). On mobile give it a fixed min-width
         # (so TITLE, a fixed width there too, doesn't collapse) and scroll the
@@ -4168,10 +4234,7 @@ def _create_screen(app):
         bgcolor=getattr(T, "VIOLET_SOFT", T.CARD_2), border_radius=T.R,
         visible=bool(app._cp_stories_loading or app._cp_busy))
 
-    # Sprint Plan input cards two-per-row on mobile (horizontally scrollable);
-    # unchanged single column on desktop. two_col_cards handles the platform
-    # split and the inter-card spacing.
-    body_children = two_col_cards([card1, card2]) + [
+    body_children = [card1, ft.Container(height=14), card2,
                      ft.Container(height=16), calc_btn, cp_spinner, cp_calc_note_wrap]
     if results is not None:
         body_children += [ft.Container(height=16), results]
@@ -5484,8 +5547,9 @@ def screen(app):
             ])
 
         import platform_caps as _pc_sp
-        kpi_strip = ft.Row(_kpi_tiles_for(d), spacing=10,
-                           wrap=_pc_sp.is_mobile(), run_spacing=10)
+        # Column of paired Rows → exactly 2 tiles per line on mobile (see
+        # kpi_pairs); a single equal-share Row on desktop.
+        kpi_strip = ft.Column(kpi_pairs(_kpi_tiles_for(d)), spacing=10)
 
         def _mk_workload(_d):
             if not _d["workload"]:
@@ -5547,7 +5611,7 @@ def screen(app):
             nonlocal d
             d = plan_payload(app)
             _refresh_table()
-            kpi_strip.controls = _kpi_tiles_for(d)
+            kpi_strip.controls = kpi_pairs(_kpi_tiles_for(d))
             kpi_strip.update()
             workload_holder.content = _mk_workload(d)
             workload_holder.update()
@@ -5675,11 +5739,7 @@ def screen(app):
     # minimum content width. Desktop keeps the original side-by-side Row.
     import platform_caps as _pc_cards
     if _pc_cards.is_mobile():
-        # 2-cards-per-row on mobile too — but in a HORIZONTALLY SCROLLABLE row
-        # (swipe sideways) with each card at a comfortable fixed width, so they
-        # no longer squeeze to a ~185px sliver the way the desktop expand=1 Row
-        # did on a phone. two_col_cards returns a single-row list here.
-        _cards_row = two_col_cards([card2, card3])[0]
+        _cards_row = ft.Column([card2, ft.Container(height=14), card3], spacing=0)
     else:
         _cards_row = ft.Row([ft.Container(card2, expand=1),
                               ft.Container(card3, expand=1)],

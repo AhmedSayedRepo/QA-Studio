@@ -155,6 +155,32 @@ def _clean_line(s):
     return s.translate(_AR_DIGITS).strip().strip(_BIDI_MARKS).strip()
 
 
+# Report text is PLAIN TEXT: no double quotes, no colons. Azure story titles
+# routinely carry both ("Login: verify the \"Remember me\" box"), and the AI
+# translation can reintroduce them, so this is applied once at the point the
+# report's title is set — which covers the on-screen report, the Word export
+# and the emailed HTML in one place, so they can never drift apart.
+# Colons become a SPACE rather than being deleted, so "Login:verify" reads as
+# "Login verify" instead of running the words together; quotes are dropped
+# outright. Curly/typographic quotes and the full-width colon are included
+# because both the AI and Azure produce them. Whitespace is collapsed
+# afterwards so nothing is left with double spaces.
+_PLAIN_DROP = '"“”„«»'      # " “ ” „ « »
+_PLAIN_SPACE = ':：ː'                        # : ： ː
+
+
+def _plain_text(s):
+    """Strip double quotes and colons from report text (see above)."""
+    if not s:
+        return s
+    out = str(s)
+    for ch in _PLAIN_DROP:
+        out = out.replace(ch, "")
+    for ch in _PLAIN_SPACE:
+        out = out.replace(ch, " ")
+    return re.sub(r"\s{2,}", " ", out).strip()
+
+
 def _parse_json_array(out, n):
     """Pull a JSON array of `n` strings out of a model response; None if it can't."""
     try:
@@ -279,7 +305,10 @@ def _generate(app):
             originals = [s["title"] for s in stories]
             titles, terr = _translate(originals, lang)
             for s, tr in zip(stories, titles):
-                s["t"] = tr
+                # Plain text only — no quotes/colons (see _plain_text). Set here,
+                # at the single point the report title is assigned, so the
+                # on-screen report, the .docx export and the email all agree.
+                s["t"] = _plain_text(tr)
             n_changed = sum(1 for o, t in zip(originals, titles)
                             if (t or "").strip() != (o or "").strip())
             completed = [s for s in stories if (s.get("state", "").lower() in _DONE)]
@@ -342,7 +371,10 @@ def _retranslate(app):
             originals = [s["title"] for s in rows]
             titles, terr = _translate(originals, lang)
             for s, t in zip(rows, titles):
-                s["t"] = t
+                # Same plain-text rule as _generate — otherwise flipping the
+                # language toggle would reintroduce quotes/colons the report
+                # was generated without.
+                s["t"] = _plain_text(t)
             r["lang"] = lang
             n_changed = sum(1 for o, t in zip(originals, titles)
                             if (t or "").strip() != (o or "").strip())
@@ -394,7 +426,18 @@ def _export_docx(app):
 
     r = app._st_report or {}
     lang = r.get("lang", "ar")
-    rtl = (lang == "ar")
+    # LTR ALWAYS (requested): the exported Word document is laid out
+    # left-to-right regardless of the report language. This single flag is what
+    # drives every direction-dependent decision below — the paragraph <w:bidi>
+    # and RIGHT alignment (_set_bidi), the run-level <w:rtl/> (_rtl_run), the
+    # bullet side in _bullet, and the logo's alignment — so pinning it False is
+    # all that's needed; nothing else reads the language for layout.
+    # NOTE: this only changes DIRECTION/ALIGNMENT, not content. An Arabic report
+    # still exports Arabic text (Unicode's bidi algorithm still shapes the
+    # Arabic glyphs correctly inside each run); it's just left-aligned in an
+    # LTR paragraph rather than right-aligned in an RTL one.
+    # To restore language-driven direction, change this back to (lang == "ar").
+    rtl = False
     L = _L[lang]
     BLUE = RGBColor(0x4C, 0x94, 0xD8)         # brand blue from the reference report
     INK = RGBColor(0x1F, 0x1F, 0x1F)

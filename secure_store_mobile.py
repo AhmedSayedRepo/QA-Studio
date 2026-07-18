@@ -237,43 +237,55 @@ async def _bootstrap():
 
 
 async def _bio_gate_check():
-    """Launch-time LOGIN GATE: read the biometric sentinel under an
-    enforce_biometrics storage. On Android this get() only returns after the
-    user passes the native fingerprint/PIN/Face prompt, so a successful read of
-    the expected value is proof the gate was cleared. Anything else — nothing
-    enrolled (the plugin throws), a cancelled prompt, or a missing sentinel —
-    reverts the setting via _revert_bio() so the app can never get stuck unable
-    to sign in. Re-fires on_ready when done so main.py's _on_secure_creds_
-    ready() can complete the now-authorized silent session restore."""
+    """Launch-time LOGIN GATE — the ONLY place biometrics is challenged.
+
+    Prefers local_auth (a real biometric prompt); falls back to the legacy
+    sentinel read only on builds without the extension. Re-fires on_ready when
+    done so main.py's _on_secure_creds_ready() can complete the now-authorized
+    silent session restore.
+
+    Failing or cancelling NEVER disables the feature and NEVER grants access —
+    it just leaves the gate closed, so the user signs in with email+password
+    this once and biometrics still guards the next launch."""
     global _bio_gate_passed
+    # INVARIANT (learned the hard way): a failed/cancelled gate must leave
+    # _bio_gate_passed FALSE and the preference ON. The old code called
+    # _revert_bio() here, which BOTH disabled biometrics permanently AND set
+    # _bio_gate_passed = True — so the app signed in with no biometric check at
+    # all and never prompted again ("closing the entire app and relaunching
+    # doesn't trigger bio"). The user is never locked out by failing here,
+    # because the email+password screen is always the fallback.
+    #
     # PREFERRED: decoupled local_auth check (no storage, no key to invalidate).
     if _local_auth is not None:
         try:
             ok = await _authenticate("Unlock QA Studio")
-            if ok:
-                _bio_gate_passed = True
-            else:
-                # CANCELLED / dismissed — e.g. the user pressed BACK on the
-                # prompt because they want to sign in with credentials (or as a
-                # different account). Leave the preference ON and the gate
-                # UNPASSED: the session simply isn't restored, so the ordinary
-                # email+password screen is shown as the fallback. Deliberately
-                # NOT _revert_bio() — cancelling once must not silently disable
-                # biometric unlock, and the user can never be locked out
-                # because credentials always remain available.
-                pass
         except Exception:
-            # Hard failure (plugin missing / nothing enrolled) — revert so the
-            # feature can't leave the user stuck prompting forever.
-            _revert_bio()
+            ok = False
+        _bio_gate_passed = bool(ok)
         if _on_ready:
             try:
                 _on_ready()
             except Exception:
                 pass
         return
-    # FALLBACK (no extension bundled): sentinel-storage read. Requires the
-    # FragmentActivity host patch to actually prompt (see build-apk.yml).
+    # local_auth is the configured mechanism but isn't attached this launch
+    # (import or page.services attach failed). Do NOT fall through to the
+    # sentinel read: enabling via local_auth never writes a sentinel, so that
+    # read would find nothing and look like a failed check — which is exactly
+    # what silently disabled biometrics before. Leave the gate closed and let
+    # the user sign in with credentials this once; biometrics still works on a
+    # launch where the extension attaches.
+    if _local_auth_available():
+        _bio_gate_passed = False
+        if _on_ready:
+            try:
+                _on_ready()
+            except Exception:
+                pass
+        return
+    # LEGACY FALLBACK: builds without the extension, where the sentinel IS the
+    # mechanism that enabled biometrics (apply_biometric_setting wrote it).
     try:
         import flet_secure_storage as fss
         gate = fss.SecureStorage(
@@ -287,14 +299,9 @@ async def _bio_gate_check():
         except Exception:
             pass
         val = await gate.get(_SENTINEL_KEY)   # ← native biometric prompt here
-        if val == _SENTINEL_VAL:
-            _bio_gate_passed = True
-        else:
-            # Sentinel absent/blank: can't confirm a real check happened
-            # (never written, or biometrics got un-enrolled since). Fail safe.
-            _revert_bio()
+        _bio_gate_passed = (val == _SENTINEL_VAL)
     except Exception:
-        _revert_bio()
+        _bio_gate_passed = False
     if _on_ready:
         try:
             _on_ready()

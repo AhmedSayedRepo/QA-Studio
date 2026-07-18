@@ -2655,20 +2655,6 @@ class QAStudio:
         running = bool(getattr(self, "_run_active", False)
                        or getattr(self, "_auto_running", False))
         if state in ("pause", "hide", "inactive"):
-            # Mark that the app left the foreground so the resume branch can
-            # re-challenge biometrics (see _maybe_bio_relock) — but NOT when
-            # this pause was caused by our OWN biometric prompt, which
-            # backgrounds the app while it's on screen. Treating that as a real
-            # backgrounding is what made the re-lock fire another prompt, and
-            # another, forever ("after verify keeps triggering fingerprint").
-            _own_prompt = False
-            try:
-                import secure_store_mobile as _ssm
-                _own_prompt = _ssm.prompt_active()
-            except Exception:
-                _own_prompt = False
-            if not _own_prompt:
-                self._was_backgrounded = True
             if running:
                 self._mobile_bg_during_run = True
                 try:
@@ -2680,13 +2666,16 @@ class QAStudio:
                     pass
             return
         if state in ("resume", "restart", "show"):
-            # Re-challenge biometrics if the app really was backgrounded while
-            # signed in. Guarded against our own prompt's lifecycle churn — see
-            # _maybe_bio_relock.
-            try:
-                self._maybe_bio_relock()
-            except Exception:
-                pass
+            # NO biometric re-lock here — REMOVED after it caused three live
+            # bugs: Flutter fires `inactive` for ordinary in-app transients
+            # (dropdowns, expanding rows, the system UI overlay), so the
+            # re-lock fired the fingerprint prompt seemingly at random while
+            # just browsing the app; and cancelling one of those stray prompts
+            # ran its failure path, which SIGNED THE USER OUT. Biometrics is a
+            # LAUNCH gate only (secure_store_mobile.init → _bio_gate_check),
+            # which is what was actually asked for: "closed the app and
+            # relaunch → fingerprint". Re-locking mid-session needs a real
+            # lock-screen UI, not a lifecycle hook — don't reintroduce it here.
             if getattr(self, "_mobile_bg_during_run", False):
                 self._mobile_bg_during_run = False
                 try:
@@ -2743,42 +2732,15 @@ class QAStudio:
             pass
         self.ui_safe(self.render)   # re-assert the view stack so we don't exit
 
-    def _maybe_bio_relock(self):
-        """Mobile: require a fresh biometric check when the app returns to the
-        foreground after being backgrounded/closed while signed in — so
-        "closed while logged in → reopen" asks for biometrics again, not just a
-        full cold start. No-op unless mobile + signed in + the unlock setting is
-        on + the app actually left the foreground since the last check. A
-        failed/cancelled re-auth drops the user to the login screen."""
-        if not platform_caps.is_mobile():
-            return
-        if getattr(self, "user", None) is None:
-            return
-        if not getattr(self, "_was_backgrounded", False):
-            return
-        self._was_backgrounded = False
-        try:
-            import mobile_prefs
-            if not mobile_prefs.get("require_biometric", False):
-                return
-        except Exception:
-            return
-        try:
-            import secure_store_mobile as _ssm
-            # Never react to the lifecycle churn our OWN prompt creates: showing
-            # the native prompt pauses the app, and the trailing resume can land
-            # just after _prompt_active clears — hence BOTH the live check and a
-            # short grace window. Without these the re-lock re-prompted in an
-            # endless loop (reported live on the Settings toggle).
-            if _ssm.prompt_active() or _ssm.seconds_since_prompt() < 5:
-                return
-
-            def _res(ok):
-                if not ok:
-                    self.ui_safe(self._sign_out)
-            _ssm.reprompt(_res)
-        except Exception:
-            pass
+    # REMOVED: _maybe_bio_relock (resume re-lock). It re-challenged biometrics
+    # whenever the app returned to the foreground, but Flutter's `inactive`
+    # lifecycle state fires for ordinary in-app transients (dropdowns, expanding
+    # rows, system UI), so it prompted at random during normal use — and
+    # cancelling one of those stray prompts hit its failure path and SIGNED THE
+    # USER OUT. Biometrics is now purely a LAUNCH gate (see
+    # secure_store_mobile.init → _bio_gate_check), which is the requested
+    # behavior. Doing this properly mid-session needs a real lock-screen view,
+    # not an app-lifecycle hook.
 
     def _on_window_event(self, e):
         """Best-effort confirm-on-close while a run is active. If a run is NOT
@@ -6938,7 +6900,7 @@ class QAStudio:
                             content=ft.Icon(ft.Icons.SYSTEM_UPDATE_ALT_ROUNDED,
                                             size=22, color=T.GREEN),
                             width=42, height=42, bgcolor=T.GREEN_SOFT,
-                            border_radius=12, alignment=ft.alignment.center),
+                            border_radius=12, alignment=ft.Alignment.CENTER),
                         ft.Column([
                             ft.Text("Update available", size=16,
                                     weight=ft.FontWeight.BOLD, color=T.INK),
@@ -7120,7 +7082,7 @@ class QAStudio:
                 content=ft.Icon(ft.Icons.FILE_DOWNLOAD_OUTLINED, size=22,
                                 color=T.GREEN),
                 width=42, height=42, bgcolor=T.GREEN_SOFT,
-                border_radius=12, alignment=ft.alignment.center),
+                border_radius=12, alignment=ft.Alignment.CENTER),
             ft.Column([
                 ft.Text("Export ready", size=16, weight=ft.FontWeight.BOLD,
                         color=T.INK),
