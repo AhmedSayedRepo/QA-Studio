@@ -216,6 +216,7 @@ class QAStudio:
         self._gmail_unlocked = False
         self._org_unlocked = False
         self._sender_unlocked = False
+        self._sender_name_unlocked = False
         # connect loading state
         self._connecting = False
         self._connect_status = ""
@@ -3289,13 +3290,25 @@ class QAStudio:
         self.sender_btn = green_btn("Save", on_click=self._save_sender) if sender_editable                      else ghost_btn("Update", on_click=self._unlock_sender)
 
         # Sender DISPLAY NAME — what recipients see instead of the raw address.
+        # Save/Update button + lock behaviour to match EVERY other credential
+        # field in this card (API key, Azure org, PAT, Email sender, Gmail app
+        # password). It was the only field here with no button: it auto-saved on
+        # every keystroke, so there was no explicit confirmation and no way to
+        # tell a saved value from one being edited (reported live).
+        sender_name_val = (self.creds.get("gmail_sender_name") or E.GMAIL_SENDER_NAME)
+        sender_name_has = bool(self.creds.get("gmail_sender_name"))
+        sender_name_editable = (not sender_name_has) or self._sender_name_unlocked
         self.sender_name_field = ft.TextField(
-            value=(self.creds.get("gmail_sender_name") or E.GMAIL_SENDER_NAME),
+            value=sender_name_val,
             hint_text="Display name recipients see (e.g. QA Studio)",
-            on_change=self._save_sender_name,
+            read_only=not sender_name_editable,
+            bgcolor=(T.CARD if sender_name_editable else T.CARD_2),
             border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
             content_padding=ft.Padding.symmetric(vertical=12, horizontal=12),
             text_size=13, expand=True)
+        self.sender_name_btn = (green_btn("Save", on_click=self._save_sender_name)
+                                if sender_name_editable
+                                else ghost_btn("Update", on_click=self._unlock_sender_name))
 
         _fields = [
             field_label("AI Provider", req=True, info="How to make a provider active",
@@ -3334,7 +3347,8 @@ class QAStudio:
                 ft.Container(ft.Row([hover_field(self.sender_field), self.sender_btn], spacing=8),
                             padding=ft.Padding.only(top=4, bottom=12)),
                 field_label("Sender name", hint="shown to recipients instead of the address"),
-                ft.Container(hover_field(self.sender_name_field),
+                ft.Container(ft.Row([hover_field(self.sender_name_field),
+                                     self.sender_name_btn], spacing=8),
                             padding=ft.Padding.only(top=4, bottom=12)),
                 ft.Row([
                     ft.Column([
@@ -3772,13 +3786,18 @@ class QAStudio:
         except Exception:
             pass
         self._sender_unlocked = False
+        self._sender_name_unlocked = False
         self._toast("Email sender saved."); self.render()
         self._push_org_email()
 
     def _save_sender_name(self, e=None):
-        """Persist the sender DISPLAY NAME (From: 'Name' <address>) as the user
-        types, and apply it immediately for the next email."""
-        val = ((e.control.value if e else self.sender_name_field.value) or "").strip()
+        """Persist the sender DISPLAY NAME (From: 'Name' <address>) and apply it
+        immediately for the next email. Now driven by an explicit Save button
+        (was on_change, i.e. saving on every keystroke) so it behaves like every
+        other credential field in the card. Reads the field directly rather than
+        e.control.value, since the event now comes from the BUTTON, not the
+        TextField."""
+        val = (self.sender_name_field.value or "").strip()
         self.creds["gmail_sender_name"] = val
         try:
             store.save(self.creds)
@@ -3788,7 +3807,13 @@ class QAStudio:
             E.set_credentials(gmail_sender_name=val)
         except Exception:
             pass
+        self._sender_name_unlocked = False
+        self._toast("Sender name saved.")
+        self.render()
         self._push_org_email()
+
+    def _unlock_sender_name(self, e=None):
+        self._sender_name_unlocked = True; self.render()
 
     def _unlock_sender(self, e=None):
         self._sender_unlocked = True; self.render()
@@ -6962,13 +6987,20 @@ class QAStudio:
                                             size=22, color=T.GREEN),
                             width=42, height=42, bgcolor=T.GREEN_SOFT,
                             border_radius=12, alignment=ft.Alignment.CENTER),
+                        # expand=True + no_wrap=False so the subtitle WRAPS
+                        # inside the dialog instead of running off its right
+                        # edge — on a phone "…is ready" was clipped mid-word.
+                        # The Row must not be tight either, or it sizes to the
+                        # text's unwrapped width and the Column never gets a
+                        # bound to wrap against.
                         ft.Column([
                             ft.Text("Update available", size=16,
-                                    weight=ft.FontWeight.BOLD, color=T.INK),
+                                    weight=ft.FontWeight.BOLD, color=T.INK,
+                                    no_wrap=False),
                             ft.Text("A newer version of QA Studio is ready",
-                                    size=11.5, color=T.INK_2),
-                        ], spacing=1, tight=True),
-                    ], spacing=13, tight=True,
+                                    size=11.5, color=T.INK_2, no_wrap=False),
+                        ], spacing=1, tight=True, expand=True),
+                    ], spacing=13,
                         vertical_alignment=ft.CrossAxisAlignment.CENTER)
                     # In-app download progress — hidden until Download is tapped.
                     # NO browser, NO GitHub page: the .apk is streamed straight
@@ -7199,13 +7231,15 @@ class QAStudio:
                                 color=T.GREEN),
                 width=42, height=42, bgcolor=T.GREEN_SOFT,
                 border_radius=12, alignment=ft.Alignment.CENTER),
+            # Same wrap fix as the update dialog's header: expand + no_wrap so a
+            # long label can't run off the dialog's right edge on a phone.
             ft.Column([
                 ft.Text("Export ready", size=16, weight=ft.FontWeight.BOLD,
-                        color=T.INK),
+                        color=T.INK, no_wrap=False),
                 ft.Text(label or "Save or send your file", size=11.5,
-                        color=T.INK_2),
-            ], spacing=1, tight=True),
-        ], spacing=13, tight=True,
+                        color=T.INK_2, no_wrap=False),
+            ], spacing=1, tight=True, expand=True),
+        ], spacing=13,
             vertical_alignment=ft.CrossAxisAlignment.CENTER)
         # File chip: format badge + name + size, on the themed card surface.
         file_chip = ft.Container(
