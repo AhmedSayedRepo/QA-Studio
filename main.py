@@ -135,8 +135,25 @@ class QAStudio:
         self._provider_choice = (_sp if _sp in E.AI_CONFIG
                                  else (E.active_providers()[:1] or ["anthropic"])[0])
         # Apply the saved theme (light default, dark secondary) before any UI builds.
+        #
+        # MOBILE: read it from mobile_prefs, which is a small SYNCHRONOUS local
+        # file. self.creds comes from the Keystore vault, whose read is async and
+        # has NOT landed yet at this point — so it returns the empty default and
+        # this line applied "light" on every launch, painting the whole first
+        # frame light before _on_secure_creds_ready() corrected it a moment
+        # later. That is the light-theme FLASH on relaunch (reported live).
+        # mobile_prefs exists precisely for values needed before the async
+        # bootstrap (same reason require_biometric lives there); _persist_theme()
+        # keeps it in step with every theme change.
+        _startup_theme = self.creds.get("theme", "light")
+        if platform_caps.is_mobile():
+            try:
+                import mobile_prefs as _mp_theme
+                _startup_theme = _mp_theme.get("theme", _startup_theme)
+            except Exception:
+                pass
         try:
-            T.apply_theme(self.creds.get("theme", "light"))
+            T.apply_theme(_startup_theme)
             # theme_mode drives Flet's BUILT-IN controls (dropdown menus, pickers,
             # text fields) so they get readable dark surfaces — without it the
             # dropdown popups render dark-on-dark.
@@ -479,6 +496,23 @@ class QAStudio:
         except Exception:
             threading.Thread(target=work, daemon=True).start()
 
+    def _persist_theme(self, mode):
+        """Mirror the chosen theme into mobile_prefs (synchronous + durable) so
+        the NEXT launch can paint the right theme on the very first frame.
+
+        The authoritative copy still lives in creds/the vault; this is purely a
+        startup cache. Without it __init__ has nothing to read (the vault is
+        async) and always applied "light", which is the light flash on relaunch.
+        No-op on desktop, where creds load synchronously."""
+        if not platform_caps.is_mobile():
+            return
+        try:
+            import mobile_prefs
+            if mode in ("dark", "light"):
+                mobile_prefs.set("theme", mode)
+        except Exception:
+            pass
+
     def _biometric_login_gate_active(self):
         """True when a returning user's cached session must NOT be silently
         restored yet — mobile only, only while "Require biometric/PIN
@@ -650,6 +684,7 @@ class QAStudio:
         else:
             try:
                 T.apply_theme(self.creds.get("theme", "light"))
+                self._persist_theme(T.MODE)   # keep the startup cache in step
                 self.page.theme_mode = (ft.ThemeMode.DARK if T.MODE == "dark"
                                         else ft.ThemeMode.LIGHT)
             except Exception:
@@ -1310,6 +1345,7 @@ class QAStudio:
         new = "dark" if getattr(T, "MODE", "light") == "light" else "light"
         try:
             T.apply_theme(new)
+            self._persist_theme(new)   # startup cache (see _persist_theme)
         except Exception:
             pass
         # Mobile: secure_store_mobile's OS-keychain read is async and can
@@ -7069,6 +7105,27 @@ class QAStudio:
                 # extension isn't in this build, so it degrades, never breaks.
                 # NOTE: the system install confirmation and the one-time "Allow
                 # from this source" grant remain — no app can bypass those.
+                # SELF-DIAGNOSING: every failure path below is logged, because
+                # the fallback (share sheet) looks IDENTICAL to the old
+                # behaviour — so "still shows the chooser" could mean the
+                # extension is missing from the bundle, or that open() was
+                # refused. Silently falling back is what made this
+                # indistinguishable; diagnostics.log now says which.
+                def _diag(msg, exc=None):
+                    try:
+                        import diag_log
+                        diag_log.log(f"update_install.{msg}",
+                                     exc or Exception(msg))
+                    except Exception:
+                        pass
+
+                def _share_fallback():
+                    try:
+                        import platform_caps as _pc
+                        _pc.reveal_export(self.page, path)
+                    except Exception:
+                        pass
+
                 _opened = False
                 try:
                     import flet_open_file as _fof
@@ -7078,23 +7135,26 @@ class QAStudio:
                             svc = _fof.OpenFile()
                             self.page.services.append(svc)
                             self.page.update()
-                            await svc.open(path)
-                        except Exception:
-                            try:
-                                import platform_caps as _pc
-                                _pc.reveal_export(self.page, path)
-                            except Exception:
-                                pass
+                            res = str(await svc.open(path) or "")
+                            # open_filex returns "done" on success; anything
+                            # else (noAppToOpen / permissionDenied / error)
+                            # means the install intent didn't take, so fall
+                            # back to the sheet rather than doing nothing.
+                            if res != "done":
+                                _diag(f"open_returned_{res or 'empty'}")
+                                self.ui_safe(_share_fallback)
+                        except Exception as ex:
+                            _diag("open_raised", ex)
+                            self.ui_safe(_share_fallback)
                     self.page.run_task(_open_apk)
                     _opened = True
-                except Exception:
+                except Exception as ex:
+                    # The extension isn't importable in this bundle — THE most
+                    # likely reason the chooser still appears.
+                    _diag("extension_import_failed", ex)
                     _opened = False
                 if not _opened:
-                    try:
-                        import platform_caps
-                        platform_caps.reveal_export(self.page, path)
-                    except Exception:
-                        pass
+                    _share_fallback()
                 self.ui_safe(lambda: (
                     self._close_dialog(),
                     self._toast("Update downloaded — tap Install to finish.")))

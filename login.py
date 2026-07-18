@@ -370,6 +370,12 @@ def login_gate(app):
                         # versa). Setting this True routes that callback down its
                         # "keep what's on screen" branch instead.
                         app._theme_touched = True
+                        # Startup cache so the next launch paints this theme on
+                        # the FIRST frame instead of flashing light.
+                        try:
+                            app._persist_theme(app._login_theme)
+                        except Exception:
+                            pass
                         app.creds["theme"] = app._login_theme
                         store.save(app.creds)
                         app.page.bgcolor = T.RAIL

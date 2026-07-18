@@ -230,7 +230,28 @@ jobs:
           # black system default depending on launcher/OEM. White matches the
           # glow's own fade and every other white-card surface the logo
           # already sits on in-app.
+          # VERSION STAMPING — without these the APK shipped Flet's defaults,
+          # versionName 1.0.0 / versionCode 1, on EVERY build:
+          #   * versionName is what Android shows in Settings > Apps, so the OS
+          #     reported "1.0.0" while the app's own UI said 3.3.x. That made
+          #     "which build is this phone actually running?" unanswerable from
+          #     the system — the exact confusion that cost real time earlier
+          #     (see DEV_ROADMAP #141/#166, stale-APK false alarms).
+          #   * versionCode is how Android decides what counts as an upgrade.
+          #     Pinned at 1 forever, every build looks like the SAME version to
+          #     the package manager, so in-place update behaviour is undefined
+          #     at best. github.run_number is monotonic, so it always increases.
+          # NOTE: the flags are --build-version / --build-number (NOT
+          # --build-name, which doesn't exist in flet-cli 0.85.3).
+          APP_VER=$(cat VERSION 2>/dev/null | tr -d ' \r\n')
+          if [ -z "$APP_VER" ]; then
+            echo "::error::VERSION file is empty/missing — refusing to build an"
+            echo "::error::APK stamped with Flet's default 1.0.0."
+            exit 1
+          fi
+          echo "Stamping APK: versionName=$APP_VER versionCode=${{ github.run_number }}"
           yes | flet build apk --project "QA Studio" --org com.qastudio \
+            --build-version "$APP_VER" --build-number ${{ github.run_number }} \
             --android-adaptive-icon-background "#FFFFFF" --verbose
 
       # BIOMETRIC PROMPT PREREQUISITE #3 (see BIOMETRICS_FIX_PLAN.md): the host
@@ -301,7 +322,17 @@ jobs:
           fi
           echo "Rebuilding signed APK in $FLUTTER_DIR"
           echo "SERIOUS_PYTHON_SITE_PACKAGES=$SERIOUS_PYTHON_SITE_PACKAGES"
-          ( cd "$FLUTTER_DIR" && flutter build apk --release )
+          # Re-stamp the version on the rebuild too. flet's generation writes it
+          # into the generated pubspec, but this step drives `flutter build`
+          # directly, so pass it explicitly rather than relying on that — a
+          # silent fallback to 1.0.0/1 here would undo the stamping above and be
+          # invisible until someone checked the phone's app info.
+          # NOTE: the FLUTTER CLI spells these --build-name / --build-number
+          # (flet-cli spells the first one --build-version).
+          APP_VER=$(cat VERSION 2>/dev/null | tr -d ' \r\n')
+          ( cd "$FLUTTER_DIR" && flutter build apk --release \
+              ${APP_VER:+--build-name "$APP_VER"} \
+              --build-number ${{ github.run_number }} )
           PATCHED_APK=$(find "$FLUTTER_DIR" -path '*outputs*' -name '*release*.apk' | head -n1)
           if [ -z "$PATCHED_APK" ]; then
             echo "::error::patched release APK not produced — check the flutter build output above."
