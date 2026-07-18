@@ -1411,7 +1411,14 @@ class QAStudio:
         if _mobile:
             # Phone header (mobile Phase 2): hamburger opens the nav drawer —
             # shell() skips the permanent rail on mobile (it ate half the
-            # width) — and the title shrinks so the row fits.
+            # width) — and the title shrinks so the row fits. Attach the drawer
+            # shell NOW (idempotent) so it's synced to the client by the time
+            # the user can tap — the first-tap reliability fix (see
+            # _ensure_nav_drawer).
+            try:
+                self._ensure_nav_drawer()
+            except Exception:
+                pass
             row.insert(0, ft.IconButton(ft.Icons.MENU, icon_size=24,
                                         icon_color=T.INK,
                                         on_click=lambda e: self._open_nav_drawer()))
@@ -1554,112 +1561,150 @@ class QAStudio:
         except Exception:
             pass
 
-    def _open_nav_drawer(self):
-        """Mobile nav (mobile Phase 2): a modal drawer replacing the permanent
-        rail — opened by the header hamburger, closes on pick, then goto()."""
-        items = self._nav_items_visible()
-        ids = [n["id"] for n in items]
-        try:
-            sel = ids.index(getattr(self, "active", "setup"))
-        except ValueError:
-            # Falling back to 0 here used to make "Setup" show as the
-            # selected destination even when the user was somewhere else
-            # entirely — with "run" and "report" now also hidden from this
-            # list (see _nav_items_visible()), the primary destinations are
-            # down to just Setup/Automation, so EVERY other screen (Users,
-            # Settings, Task Manager, Regression, Remote Runs, …) fell
-            # through this except branch and got mislabeled as "Setup"
-            # selected — reported live as "the selected nav doesn't
-            # highlight[ed]" (the highlight was on the wrong item, not
-            # missing). Flet's own NavigationDrawer docs are explicit that
-            # -1 (or any out-of-range value) is how you represent "none of
-            # these are selected" — the correct state here, since the
-            # active screen genuinely isn't one of the two.
-            sel = -1
-
-        def _pick(e):
+    def _ensure_nav_drawer(self):
+        """Create the mobile nav drawer ONCE and attach it to the page, so it's
+        already synced to the Flutter client before the first hamburger tap.
+        The previous approach created + attached + opened the drawer all inside
+        one click handler — the client hadn't registered the brand-new control
+        yet, so the first show_drawer() no-op'd (reported live twice: "first
+        click does nothing, second opens it") even with a page.update() in
+        between. A persistent, pre-attached drawer opens reliably on the very
+        first tap; only its CONTENTS are rebuilt per open (see _open_nav_drawer).
+        Attached during the first render via topbar() calling this, so it's
+        long since synced by the time the user can tap."""
+        d = getattr(self, "_nav_drawer", None)
+        if d is None:
+            d = self._nav_drawer = ft.NavigationDrawer(controls=[], bgcolor=T.RAIL)
             try:
-                i = int(e.control.selected_index)
+                self.page.drawer = d   # render()'s own page.update() syncs it
             except Exception:
-                return
-            self._close_nav_drawer()
-            if 0 <= i < len(ids) and ids[i] != getattr(self, "active", None):
-                self.goto(ids[i])
+                pass
+        return d
 
-        def _drawer_action(fn):
+    def _nav_drawer_content(self):
+        """Drawer body styled to match the desktop left rail (rail()): brand
+        header, a PIPELINE nav list with the same active gradient + index
+        badge, then Help / Settings / Remote Runs, the theme toggle and the
+        connection card — instead of the plain Material ListTiles it used to
+        show (which looked nothing like the rail)."""
+        def _close_then(fn):
             def _run(e):
                 self._close_nav_drawer()
-                fn()
+                try:
+                    fn()
+                except Exception:
+                    pass
             return _run
 
-        # Everything below the nav list on desktop's rail() — Help & guide,
-        # Settings, the theme toggle, and the connection-status footer —
-        # never made it into the mobile drawer (confirmed live: only the
-        # T.NAV screen destinations showed). Same items, same handlers,
-        # just as ListTiles instead of rail()'s bespoke Containers — Flutter's
-        # NavigationDrawer only assigns selected_index among the actual
-        # NavigationDrawerDestination children, so mixing in plain
-        # tiles/dividers here is exactly what the leading spacer Container
-        # already did safely above.
-        _conn_color = T.GREEN if self.connected else T.INK_3
-        _prov = self.current_provider()
-        _conn_text = ((T.disp_name(_prov) + " · Claude") if (self.connected and _prov == "anthropic")
-                     else (T.disp_name(_prov) if self.connected else "Not connected"))
-        _conn_sub = "Connected" if self.connected else "Enter credentials"
-        extra = [
-            ft.Divider(height=1),
-            ft.ListTile(
-                leading=ft.Icon(ft.Icons.HELP_OUTLINE),
-                title=ft.Text("Help & guide", weight=ft.FontWeight.BOLD),
-                on_click=_drawer_action(self._open_help_guide)),
-        ]
-        if self.can("nav.settings"):
-            extra.append(ft.ListTile(
-                leading=ft.Icon(ft.Icons.SETTINGS_OUTLINED),
-                title=ft.Text("Settings", weight=ft.FontWeight.BOLD),
-                on_click=_drawer_action(lambda: self.goto("settings"))))
-        if auth.configured() and self.can(auth.CAP_RUN):
-            extra.append(ft.ListTile(
-                leading=ft.Icon(ft.Icons.CLOUD_QUEUE_OUTLINED),
-                title=ft.Text("Remote Runs", weight=ft.FontWeight.BOLD),
-                on_click=_drawer_action(lambda: self.goto("remote_runs"))))
-        extra.append(ft.ListTile(
-            leading=ft.Icon(ft.Icons.DARK_MODE_OUTLINED if T.MODE == "light"
-                            else ft.Icons.LIGHT_MODE_OUTLINED),
-            title=ft.Text("Dark mode" if T.MODE == "light" else "Light mode",
-                          weight=ft.FontWeight.BOLD),
-            trailing=ft.Text(T.MODE.upper(), size=10, weight=ft.FontWeight.BOLD,
-                             font_family=T.F_MONO),
-            on_click=_drawer_action(self._toggle_theme)))
-        extra.append(ft.Container(
+        brand = ft.Container(
             ft.Row([
-                ft.Container(width=8, height=8, bgcolor=_conn_color, border_radius=4),
+                ft.Container(logo_img(44), width=44, height=44,
+                             bgcolor=(None if _logo_b64() else T.VIOLET),
+                             gradient=(None if _logo_b64() else grad(T.GRAD_LOGO)),
+                             border_radius=12, alignment=ft.Alignment.CENTER),
                 ft.Column([
-                    ft.Text(_conn_text, size=12, weight=ft.FontWeight.BOLD),
-                    ft.Text(_conn_sub, size=10.5, color=T.INK_3, weight=ft.FontWeight.BOLD),
-                ], spacing=1, tight=True),
-            ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-            padding=ft.Padding.symmetric(vertical=12, horizontal=16)))
+                    ft.Text("QA Studio", size=15, weight=ft.FontWeight.BOLD, color=T.RAIL_INK),
+                    ft.Text(f"v{E.local_version()}", size=10, color=T.RAIL_DIM,
+                            weight=ft.FontWeight.BOLD),
+                ], spacing=2),
+            ], spacing=11, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=ft.Padding.only(left=16, right=12, top=18, bottom=8))
 
-        drawer = ft.NavigationDrawer(
-            controls=[ft.Container(height=12)] + [
-                ft.NavigationDrawerDestination(
-                    icon=getattr(ft.Icons, n.get("icon", "CIRCLE"), ft.Icons.CIRCLE),
-                    label=n.get("label", n["id"]))
-                for n in items] + extra,
-            selected_index=sel, on_change=_pick)
-        self.page.drawer = drawer
-        # Sync the freshly-assigned drawer down to the Flutter client BEFORE
-        # asking it to open. Without this, the very first hamburger tap of a
-        # launch set page.drawer and immediately scheduled show_drawer() in
-        # the same tick — the client hadn't registered the new drawer control
-        # yet, so that first show_drawer() no-op'd (reported live: "first
-        # click does nothing, second opens it"). page.update() forces the
-        # control to be acknowledged first; the scheduled show_drawer then
-        # finds it. Same "attach/sync a Service-style control before invoking
-        # a method on it" rule already applied to secure_store/url_launcher.
+        nav_tiles = []
+        for n in self._nav_items_visible():
+            active = (n["id"] == self.active)
+            color = "#FFFFFF" if active else T.RAIL_INK
+            icon_color = "#FFFFFF" if active else T.RAIL_DIM
+            ixcolor = "#FFFFFF" if active else "#615E6E"
+            leading = getattr(ft.Icons, n.get("icon", "CIRCLE"), ft.Icons.CIRCLE)
+            nav_tiles.append(ft.Container(
+                ft.Row([
+                    ft.Container(width=4, height=22, border_radius=4,
+                                 bgcolor=("#FFFFFF" if active else ft.Colors.TRANSPARENT)),
+                    ft.Icon(leading, size=18, color=icon_color),
+                    ft.Text(n.get("label", n["id"]), size=14, weight=ft.FontWeight.BOLD, color=color),
+                    ft.Container(expand=True),
+                    ft.Text(n.get("ix", ""), size=10.5, weight=ft.FontWeight.BOLD,
+                            color=ixcolor, font_family=T.F_MONO),
+                ], spacing=9),
+                padding=ft.Padding.only(left=6, right=12, top=12, bottom=12),
+                margin=ft.Margin.symmetric(vertical=2, horizontal=10),
+                border_radius=11,
+                gradient=(grad(T.GRAD_NAV_ACT) if active else None),
+                shadow=(ft.BoxShadow(blur_radius=16, spread_radius=-6, offset=ft.Offset(0, 5),
+                                     color=ft.Colors.with_opacity(0.45, T.VIOLET)) if active else None),
+                on_click=_close_then((lambda nid=n["id"]: self.goto(nid))),
+            ))
+
+        def _rail_btn(icon, label, active, on_tap):
+            return ft.Container(
+                ft.Row([ft.Icon(icon, size=17, color=("#FFFFFF" if active else T.RAIL_INK)),
+                        ft.Text(label, size=13, weight=ft.FontWeight.BOLD,
+                                color=("#FFFFFF" if active else T.RAIL_INK)),
+                        ft.Container(expand=True)], spacing=10),
+                on_click=_close_then(on_tap),
+                padding=ft.Padding.symmetric(vertical=12, horizontal=12),
+                margin=ft.Margin.only(left=10, right=10, bottom=6),
+                border_radius=10,
+                bgcolor=(ft.Colors.with_opacity(0.16, T.VIOLET) if active
+                         else ft.Colors.with_opacity(0.04, "#FFFFFF")),
+                border=ft.Border.all(1, T.RAIL_LINE))
+
+        footer_btns = [_rail_btn(ft.Icons.HELP_OUTLINE, "Help & guide", False,
+                                 self._open_help_guide)]
+        if self.can("nav.settings"):
+            footer_btns.append(_rail_btn(ft.Icons.SETTINGS_OUTLINED, "Settings",
+                                         self.active == "settings",
+                                         lambda: self.goto("settings")))
+        if auth.configured() and self.can(auth.CAP_RUN):
+            footer_btns.append(_rail_btn(ft.Icons.CLOUD_QUEUE_OUTLINED, "Remote Runs",
+                                         self.active == "remote_runs",
+                                         lambda: self.goto("remote_runs")))
+        footer_btns.append(_rail_btn(
+            ft.Icons.DARK_MODE_OUTLINED if T.MODE == "light" else ft.Icons.LIGHT_MODE_OUTLINED,
+            "Dark mode" if T.MODE == "light" else "Light mode", False, self._toggle_theme))
+
+        conn_color = T.GREEN if self.connected else T.INK_3
+        _prov = self.current_provider()
+        conn_text = ((T.disp_name(_prov) + " · Claude") if (self.connected and _prov == "anthropic")
+                     else (T.disp_name(_prov) if self.connected else "Not connected"))
+        conn_sub = "Connected" if self.connected else "Enter credentials"
+        conn_card = ft.Container(
+            ft.Row([
+                ft.Container(self._provider_logo(_prov, 28) if self.connected
+                             else ft.Container(width=10, height=10, bgcolor=conn_color, border_radius=5),
+                             width=28, height=28, bgcolor=(None if self.connected else T.RAIL_2),
+                             border_radius=8, alignment=ft.Alignment.CENTER),
+                ft.Column([
+                    ft.Text(conn_text, size=12, weight=ft.FontWeight.BOLD, color=T.RAIL_INK),
+                    ft.Row([ft.Container(width=7, height=7, bgcolor=conn_color, border_radius=4),
+                            ft.Text(conn_sub, size=10.5, color=T.RAIL_DIM, weight=ft.FontWeight.BOLD)],
+                           spacing=5, tight=True),
+                ], spacing=2, expand=True),
+            ], spacing=9),
+            padding=12, margin=ft.Margin.all(10),
+            bgcolor=ft.Colors.with_opacity(0.04, "#FFFFFF"),
+            border_radius=10, border=ft.Border.all(1, T.RAIL_LINE))
+
+        return ft.Container(
+            ft.Column([
+                brand,
+                ft.Container(ft.Text("PIPELINE", size=10, weight=ft.FontWeight.BOLD, color="#615E6E"),
+                             padding=ft.Padding.only(left=18, top=8, bottom=6)),
+                ft.Column(nav_tiles, spacing=0, scroll=ft.ScrollMode.AUTO, expand=True),
+                *footer_btns,
+                conn_card,
+            ], spacing=0, expand=True),
+            expand=True, gradient=grad(T.GRAD_RAIL, diagonal=False), bgcolor=T.RAIL)
+
+    def _open_nav_drawer(self):
+        """Open the mobile nav drawer — rebuild its rail-styled content for the
+        current screen/connection state, then show the persistent, already-
+        attached drawer (see _ensure_nav_drawer for the first-tap fix)."""
+        d = self._ensure_nav_drawer()
+        d.controls = [self._nav_drawer_content()]
         try:
-            self.page.update()
+            d.update()
         except Exception:
             pass
         self._show_nav_drawer()
@@ -2080,7 +2125,13 @@ class QAStudio:
             self._close_dialog()
         except Exception:
             pass
-        if goto_setup:
+        # Only navigate to Setup when actually SIGNED IN. First-run onboarding
+        # shows OVER the login gate (no user yet) — calling goto("setup") then
+        # hits the permission check and fires a "You don't have access to that
+        # screen" toast (reported live), which is wrong for a brand-new user.
+        # Signed out, just closing the walkthrough leaves the login screen up,
+        # which is exactly where they should be.
+        if goto_setup and getattr(self, "user", None) is not None:
             self.goto("setup")
 
     def _open_onboarding(self):
@@ -6725,18 +6776,59 @@ class QAStudio:
                         pass
 
                 def _show():
+                    remote_v = str(res.get("remote") or "")
+                    local_v = str(res.get("local") or "")
+                    # Version transition pill: your current build → the new one,
+                    # so the update reads at a glance (muted "from" → green "to").
+                    def _pill(text, ink, bg):
+                        return ft.Container(
+                            content=ft.Text(text, size=12.5,
+                                            weight=ft.FontWeight.W_700, color=ink),
+                            bgcolor=bg, border_radius=8,
+                            padding=ft.Padding.symmetric(horizontal=10, vertical=4))
+                    version_row = ft.Row(
+                        [_pill(f"v{local_v}", T.INK_2, T.CARD_2),
+                         ft.Icon(ft.Icons.ARROW_FORWARD_ROUNDED, size=16,
+                                 color=T.INK_3),
+                         _pill(f"v{remote_v}", T.GREEN, T.GREEN_SOFT)],
+                        spacing=8, tight=True,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER)
+                    # Header: brand-green badge + title + subtitle, matching the
+                    # app's other themed dialog headers (show_dialog() supplies
+                    # the card surface/border/scrim around this).
+                    header = ft.Row([
+                        ft.Container(
+                            content=ft.Icon(ft.Icons.SYSTEM_UPDATE_ALT_ROUNDED,
+                                            size=22, color=T.GREEN),
+                            width=42, height=42, bgcolor=T.GREEN_SOFT,
+                            border_radius=12, alignment=ft.alignment.center),
+                        ft.Column([
+                            ft.Text("Update available", size=16,
+                                    weight=ft.FontWeight.BOLD, color=T.INK),
+                            ft.Text("A newer version of QA Studio is ready",
+                                    size=11.5, color=T.INK_2),
+                        ], spacing=1, tight=True),
+                    ], spacing=13, tight=True,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER)
+                    body = ft.Container(
+                        content=ft.Column([
+                            version_row,
+                            ft.Text(
+                                "Download the new APK and open it to update in "
+                                "place. Your saved credentials, biometric "
+                                "unlock and sign-in all carry over — nothing "
+                                "is cleared by the update.",
+                                size=12.5, color=T.INK_2),
+                        ], spacing=14, tight=True),
+                        # Cap width so the card reads as a tidy panel on phones
+                        # without overflowing the narrowest screens.
+                        width=min(340, (self.page.width or 400) - 64))
                     dlg = ft.AlertDialog(
-                        modal=False,
-                        title=ft.Text("Update available", size=15,
-                                      weight=ft.FontWeight.BOLD, color=T.INK),
-                        content=ft.Text(
-                            f"QA Studio v{res.get('remote')} is out — you have "
-                            f"v{res.get('local')}. Download the new APK and open "
-                            "it to update in place.", size=12.5, color=T.INK_2),
+                        modal=False, title=header, content=body,
                         actions=[
                             ghost_btn("Later",
                                       on_click=lambda e: self._close_dialog()),
-                            green_btn("Download",
+                            green_btn("Download", icon=ft.Icons.DOWNLOAD_ROUNDED,
                                       on_click=lambda e, u=url: (
                                           _open(u), self._close_dialog())),
                         ])

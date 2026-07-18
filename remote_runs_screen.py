@@ -182,6 +182,8 @@ def _open_run(app, run_id):
     app._rr_last_seq = 0
     app._rr_run = None
     app._rr_poll_stop = False
+    app._rr_log_col = None        # stable log ListView, (re)built in screen()
+    app._rr_last_status = None    # drives full-render-only-on-status-change
     app.render()
     _start_poll(app, run_id)
 
@@ -204,12 +206,28 @@ def _start_poll(app, run_id):
             row = auth.get_remote_run(run_id)
             if row is not None:
                 app._rr_run = row
-            evs = auth.get_remote_run_events(run_id, after_seq=getattr(app, "_rr_last_seq", 0))
-            if evs:
-                app._rr_events = (getattr(app, "_rr_events", None) or []) + evs
-                app._rr_last_seq = evs[-1].get("seq", app._rr_last_seq)
+            # Fetch ALL events (after_seq=0), not just new seqs: the worker now
+            # UPDATES an existing line's row in place (a test case's whole
+            # "generating… → still generating Ns → done" lifecycle reuses one
+            # seq — see run_worker.py's hb_id collapse), so an incremental
+            # after_seq poll would never see those updates. Collapse keeps the
+            # row count low, so re-fetching all each tick is cheap.
+            evs = auth.get_remote_run_events(run_id, after_seq=0)
+            if evs is not None:
+                app._rr_events = evs
+            _status = (row or {}).get("status")
             if getattr(app, "_rr_view_id", None) == run_id:
-                app.ui_safe(app.render)
+                if _status != getattr(app, "_rr_last_status", None):
+                    # Status changed (queued→running→terminal / pause) — the
+                    # meta card + control buttons change, so full render once.
+                    app._rr_last_status = _status
+                    app.ui_safe(app.render)
+                else:
+                    # Events-only tick: update the log list IN PLACE so the
+                    # screen doesn't rebuild and jump the scroll to the top
+                    # every 2.5s (reported live). The ListView auto-follows
+                    # the tail.
+                    app.ui_safe(lambda: _refresh_log(app))
             if row is not None and row.get("status") in _TERMINAL:
                 return
             time.sleep(2.5)
@@ -217,6 +235,32 @@ def _start_poll(app, run_id):
         app._bg(work)
     except Exception:
         threading.Thread(target=work, daemon=True).start()
+
+
+def _log_lines_for(app):
+    return [ln for ln in (_ln_from_event(ev) for ev in getattr(app, "_rr_events", []) or [])
+            if ln and ln.get("msg")]
+
+
+def _refresh_log(app):
+    """Update ONLY the activity log list in place — no full screen render, so
+    the scroll position isn't reset on every 2.5s poll. Falls back to a full
+    render if the stable log control isn't mounted."""
+    col = getattr(app, "_rr_log_col", None)
+    if col is None:
+        try:
+            app.render()
+        except Exception:
+            pass
+        return
+    try:
+        col.controls = [app._render_one_log(ln) for ln in _log_lines_for(app)]
+        col.update()
+    except Exception:
+        try:
+            app.render()
+        except Exception:
+            pass
 
 
 def _control(app, run_id, action, label):
@@ -311,17 +355,22 @@ def _detail_screen(app):
     ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER)
                  if status not in _TERMINAL else ft.Container(height=0))
 
-    log_lines = [ln for ln in (_ln_from_event(ev) for ev in getattr(app, "_rr_events", []) or [])
-                if ln and ln.get("msg")]
+    log_lines = _log_lines_for(app)
     log_ctls = [app._render_one_log(ln) for ln in log_lines]
+    # Stable ListView held on the app so the poll loop can update its
+    # .controls in place (see _refresh_log) instead of a full render that
+    # resets scroll. auto_scroll follows the tail as new lines land; height
+    # is bounded so it's outside flet#6087's expand+scroll trap.
+    if getattr(app, "_rr_log_col", None) is None:
+        app._rr_log_col = ft.ListView(spacing=0, height=360, auto_scroll=True)
+    app._rr_log_col.controls = log_ctls
     log_card = card(ft.Column([
         ft.Row([
             ft.Text("ACTIVITY", size=11, weight=ft.FontWeight.BOLD, color=T.VIOLET_INK),
             ft.Container(expand=True), live_chip,
         ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
         ft.Container(height=8),
-        (ft.Column(log_ctls, spacing=0, scroll=ft.ScrollMode.AUTO, height=360)
-         if log_ctls else
+        (app._rr_log_col if log_ctls else
          ft.Text("No activity yet — the worker hasn't started, or the "
                 "GitHub Actions dispatch is still queuing.", size=12,
                 color=T.INK_3, weight=ft.FontWeight.W_500)),

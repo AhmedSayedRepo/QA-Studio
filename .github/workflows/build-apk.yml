@@ -62,6 +62,15 @@ jobs:
           # finds one regardless of which ui.py currently prefers.
           cp app.png /tmp/mobile/ 2>/dev/null || true
           cp qa-logo.png /tmp/mobile/ 2>/dev/null || true
+          # Provider logos (Anthropic/OpenAI/NVIDIA/Gemini/… brand icons):
+          # main.py's _provider_logo() reads providers/<id>.png next to the
+          # app at RUNTIME (os.path.dirname(__file__)/providers/…), same plain
+          # filesystem read as the app logo above. Staging only ever copied
+          # *.py, so this folder never existed on device and every provider
+          # fell through to the coloured first-letter glyph placeholder
+          # (reported live: "I need the logos for connected providers like the
+          # desktop app"). Stage the whole folder so the real logos show.
+          cp -r providers /tmp/mobile/ 2>/dev/null || true
           # VERSION must ship in the bundle: the mobile update NOTICE compares
           # engine.local_version() (reads this file) against the repo's copy —
           # without it local_version() returns 0.0.0 and every launch nags.

@@ -17,10 +17,29 @@ platform_caps.is_mobile() gates the call site.
 import json
 import os
 
-_DIR = os.path.join(os.path.expanduser("~"), ".qa_tool")
-_FILE = os.path.join(_DIR, "mobile_prefs.json")
-
 _cache = None
+
+
+def _dir():
+    """The PERSISTENT, writable data dir. On Android/iOS, Flet sets
+    FLET_APP_STORAGE_DATA to the app-private files directory — the only place
+    guaranteed writable AND surviving relaunch. `os.path.expanduser("~")`
+    (the previous location) is NOT reliably either on Android: writes silently
+    failed, so `onboarded` and `require_biometric` never persisted — the
+    walkthrough replayed every launch and biometrics never engaged. Fall back
+    to ~/.qa_tool on desktop, where the env var isn't set and ~ is real."""
+    d = os.environ.get("FLET_APP_STORAGE_DATA")
+    if d:
+        try:
+            os.makedirs(d, exist_ok=True)
+            return d
+        except Exception:
+            pass
+    return os.path.join(os.path.expanduser("~"), ".qa_tool")
+
+
+def _file():
+    return os.path.join(_dir(), "mobile_prefs.json")
 
 
 def _load():
@@ -28,7 +47,7 @@ def _load():
     if _cache is not None:
         return _cache
     try:
-        with open(_FILE, "r", encoding="utf-8") as f:
+        with open(_file(), "r", encoding="utf-8") as f:
             _cache = json.load(f)
         if not isinstance(_cache, dict):
             _cache = {}
@@ -49,8 +68,9 @@ def set(key, value):
     d = _load()
     d[key] = value
     try:
-        os.makedirs(_DIR, exist_ok=True)
-        with open(_FILE, "w", encoding="utf-8") as f:
+        _f = _file()
+        os.makedirs(os.path.dirname(_f), exist_ok=True)
+        with open(_f, "w", encoding="utf-8") as f:
             json.dump(d, f)
         return True
     except Exception:

@@ -141,9 +141,18 @@ def _apply_credentials(E, run):
 
 # ── event feed: buffered, batched, never allowed to kill the run ────────────
 _ev_lock = threading.Lock()
-_ev_buf = []
+# Buffer is keyed by SEQ (not a plain list) so an in-place update to a line
+# that hasn't flushed yet collapses to just its latest payload.
+_ev_buf = {}
 _ev_seq = 0
+_ev_dirty = set()      # seqs changed since the last flush (re-post these)
 _ev_stop = threading.Event()
+# hb_id / wip_id -> seq, so a test case's whole lifecycle (generating… →
+# "still generating Ns" heartbeats → done) updates ONE line in place instead
+# of appending a fresh remote_run_events row every ~15s. Mirrors the desktop
+# Run log's hb_id collapse (main.py _refresh_run) — reported live: the remote
+# viewer stacked a new "Still generating… Ns so far" line per heartbeat.
+_hb_seq = {}
 
 
 def _cb(kind, payload):
@@ -155,21 +164,45 @@ def _cb(kind, payload):
         print(line[:2000], flush=True)
     except Exception:
         pass
+    pd = payload if isinstance(payload, dict) else {"value": payload}
     with _ev_lock:
-        _ev_seq += 1
-        _ev_buf.append({"run_id": RUN_ID, "seq": _ev_seq, "kind": str(kind),
-                        "payload": payload if isinstance(payload, dict) else {"value": payload}})
+        key = pd.get("hb_id") or pd.get("wip_id")
+        rep = pd.get("replace_wip")
+        seq = None
+        # A completion line that "replaces" a wip/heartbeat takes over that
+        # line's seq → updates it in place to the final content.
+        if rep is not None and rep in _hb_seq:
+            seq = _hb_seq.pop(rep)
+        # A heartbeat / wip update for an already-open line reuses its seq.
+        if seq is None and key is not None and key in _hb_seq:
+            seq = _hb_seq[key]
+        if seq is None:
+            _ev_seq += 1
+            seq = _ev_seq
+        # (Re)map this line's key to its seq so future updates find it.
+        if key is not None:
+            _hb_seq[key] = seq
+        _ev_buf[seq] = {"run_id": RUN_ID, "seq": seq, "kind": str(kind), "payload": pd}
+        _ev_dirty.add(seq)
 
 
 def _flush_events():
     with _ev_lock:
-        batch, _ev_buf[:] = _ev_buf[:], []
+        if not _ev_dirty:
+            return
+        batch = [_ev_buf[s] for s in sorted(_ev_dirty) if s in _ev_buf]
+        _ev_dirty.clear()
     if not batch:
         return
     try:
+        # Upsert on (run_id, seq): a reused seq UPDATES its row in place
+        # rather than inserting a duplicate line.
         _sb("POST", "remote_run_events?on_conflict=run_id,seq", payload=batch)
     except Exception as ex:
         # Telemetry must never take the run down — note it and move on.
+        # Re-mark as dirty so the next flush retries.
+        with _ev_lock:
+            _ev_dirty.update(b["seq"] for b in batch)
         print(f"[worker] event flush failed ({len(batch)} events): {ex}", file=sys.stderr)
 
 

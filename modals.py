@@ -201,17 +201,19 @@ def open_onboarding(app):
     skip = ft.TextButton("Skip", on_click=lambda e: app._finish_onboarding())
     import platform_caps as _pc_foot
     if _pc_foot.is_mobile():
-        # Phone: Skip + 4 dots + Back + Next in ONE row overflowed a ~390px
-        # width, pushing the Next button off the right edge (unreachable —
-        # reported as "Next out of frame, not clickable"). Stack: dots on
-        # their own centered line, then a full-width nav row (Skip left,
-        # Back/Next right) that always fits.
+        # Phone: Skip + Back + Next/Get-started in ONE nav row still overflowed
+        # on the LAST step, where "Get started" is much wider than "Next" — it
+        # clipped off the right edge (reported live). So put SKIP up on the
+        # dots line (far left, balanced by a spacer to keep the dots centred),
+        # and give the two nav buttons (Back + Next/Get-started) their OWN
+        # right-aligned row with the full card width — they always fit there.
         footer = ft.Container(
             ft.Column([
-                ft.Row([ft.Container(expand=True), dots, ft.Container(expand=True)],
+                ft.Row([skip, ft.Container(expand=True), dots,
+                        ft.Container(expand=True), ft.Container(width=52)],
                        vertical_alignment=ft.CrossAxisAlignment.CENTER),
                 ft.Container(height=10),
-                ft.Row([skip, ft.Container(expand=True), back_holder,
+                ft.Row([ft.Container(expand=True), back_holder,
                         ft.Container(width=8), next_holder],
                        vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=0),
             ], spacing=0, tight=True),
