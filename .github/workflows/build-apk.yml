@@ -268,7 +268,23 @@ jobs:
             echo "::error::Flet's generated layout changed; re-verify this patch step."
             exit 1
           fi
+          # serious_python_android's build.gradle HARD-REQUIRES
+          # SERIOUS_PYTHON_SITE_PACKAGES, which `flet build` passes to gradle
+          # itself (flet_cli/commands/build_base.py → build_env) and a bare
+          # `flutter build apk` does not — that's what failed the previous run
+          # with "SERIOUS_PYTHON_SITE_PACKAGES environment variable is not set".
+          # It is the ONLY var flet adds beyond the four FLET_ANDROID_SIGNING_*
+          # already exported above, and flet defines it as build_dir/site-packages
+          # (build_dir = <app>/build, i.e. /tmp/mobile/build here).
+          export SERIOUS_PYTHON_SITE_PACKAGES="$(pwd)/build/site-packages"
+          if [ ! -d "$SERIOUS_PYTHON_SITE_PACKAGES" ]; then
+            echo "::error::Expected flet's packaged site-packages at"
+            echo "::error::$SERIOUS_PYTHON_SITE_PACKAGES but it does not exist —"
+            echo "::error::flet's build layout changed; re-verify this patch step."
+            exit 1
+          fi
           echo "Rebuilding signed APK in $FLUTTER_DIR"
+          echo "SERIOUS_PYTHON_SITE_PACKAGES=$SERIOUS_PYTHON_SITE_PACKAGES"
           ( cd "$FLUTTER_DIR" && flutter build apk --release )
           PATCHED_APK=$(find "$FLUTTER_DIR" -path '*outputs*' -name '*release*.apk' | head -n1)
           if [ -z "$PATCHED_APK" ]; then
