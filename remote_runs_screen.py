@@ -79,8 +79,7 @@ def screen(app):
         return app.shell("Remote Runs", "GitHub-executed runs",
                          empty_state(ft.Icons.CLOUD_OFF_OUTLINED, "Sign-in required",
                                      "Remote runs need Supabase sign-in — "
-                                     "connect an account in Setup first."),
-                         wrap=True)
+                                     "connect an account in Setup first."))
     if getattr(app, "_rr_view_id", None):
         return _detail_screen(app)
     return _list_screen(app)
@@ -172,7 +171,7 @@ def _list_screen(app):
         body_content,
     ], spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
     return app.shell("Remote Runs", "GitHub-executed runs — live status & activity",
-                     body, wrap=True)
+                     body)
 
 
 # ── DETAIL ───────────────────────────────────────────────────────────────────
@@ -480,5 +479,4 @@ def _detail_screen(app):
          if controls else ft.Container(height=0)),
         ft.Container(height=14), log_card,
     ], spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
-    return app.shell("Remote Runs", _kind_label(run.get("kind")) + " run", body,
-                     wrap=True)
+    return app.shell("Remote Runs", _kind_label(run.get("kind")) + " run", body)

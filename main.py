@@ -1608,7 +1608,7 @@ class QAStudio:
             width=size, height=size, bgcolor=color, border_radius=int(size * 0.28),
             alignment=ft.Alignment.CENTER)
 
-    def topbar(self, title, sub=None, right=None, badge=None, wrap=False):
+    def topbar(self, title, sub=None, right=None, badge=None, wrap=True):
         title_ctl = ft.Text(title, size=27, weight=ft.FontWeight.W_800, color=T.INK,
                             no_wrap=True)
         if badge:
@@ -1642,12 +1642,15 @@ class QAStudio:
             # fighting it for space, and ellipsize both lines at that width.
             title_col.tight = False
             title_col.expand = True
-            # `wrap=True` (opt-in per screen) WRAPS the header onto a second
-            # line instead of ellipsizing it. Ellipsis is the default because it
-            # keeps the header one fixed height, but it hides real information
-            # when the text is long — e.g. Remote Runs' "GitHub-executed runs —
-            # live status & activity" was cut mid-phrase. Capped at 2 lines so a
-            # long subtitle still can't push the body off-screen.
+            # WRAP (the default) lets the header run onto a second line instead
+            # of ellipsizing. Ellipsis used to be the behaviour here — it kept
+            # the header a fixed height, but it silently HID real information on
+            # every screen with a descriptive subtitle ("Plan & estimate test
+            # effort acros…", "GitHub-executed runs — live status & acti…").
+            # Wrapping solves the original overflow problem just as well, since
+            # it's capped at 2 lines and still ellipsizes past that, so a long
+            # subtitle can never push the body off-screen. Pass wrap=False to
+            # opt a screen back into single-line truncation.
             try:
                 title_ctl.no_wrap = not wrap
                 title_ctl.max_lines = 2 if wrap else None
@@ -1976,7 +1979,7 @@ class QAStudio:
             pass
         self._show_nav_drawer()
 
-    def shell(self, title, sub, body, right=None, badge=None, wrap=False):
+    def shell(self, title, sub, body, right=None, badge=None, wrap=True):
         # Glass-header pattern: the frosted, translucent header is pinned ON TOP of
         # the scroll area in a Stack. The body has NO top padding; instead each
         # primary column gets a scrolling top-spacer (see _install_top_gap), so
