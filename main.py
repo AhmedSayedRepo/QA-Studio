@@ -2478,10 +2478,13 @@ class QAStudio:
             # grey screen on device. Left wired (harmless no-op) so the handler
             # is ready if a views-based navigation is ever done properly — until
             # then Back keeps Android's default behavior (closes the app).
-            try:
-                self.page.on_view_pop = self._on_view_pop
-            except Exception:
-                pass
+            # NOT WIRED: on_view_pop only fires when the app renders through a
+            # page.views stack, and that mount was reverted (it launched to a
+            # blank grey screen). Leaving the handler attached served no purpose
+            # and kept a back-press path alive that used to hard-kill the
+            # process. _on_view_pop is retained, unattached, for whenever
+            # views-based navigation is done properly and verified on a device.
+            #     self.page.on_view_pop = self._on_view_pop
         # Client-side (Flutter) render errors were previously INVISIBLE: a
         # widget subtree that fails to build on the Dart side just paints a
         # flat grey placeholder with nothing surfacing back to Python, so a
@@ -2734,19 +2737,18 @@ class QAStudio:
             self._back_exit_ts = 0.0
             self.ui_safe(self.render)
             return
-        # Already on Setup: second Back within ~2s exits.
+        # Already on Setup: second Back within ~2s would exit.
+        #
+        # The os._exit(0) that used to live here has been REMOVED. It hard-kills
+        # the process — no atexit, no thread shutdown, no Flet teardown — so
+        # Android can be left holding a task record for a process that vanished,
+        # which shows up as a DUPLICATE entry in the recents/background-apps list
+        # (the next launch starts a fresh task alongside the ghost). This handler
+        # is currently inert anyway (on_view_pop only fires with a page.views
+        # stack, and that mount was reverted), but leaving a reachable hard-kill
+        # in the tree is not worth the risk. If back-to-exit is ever revived, let
+        # Android finish the activity normally — never _exit() the interpreter.
         if now and (now - getattr(self, "_back_exit_ts", 0.0) < 2.0):
-            try:
-                if hasattr(self.page, "window") and self.page.window is not None:
-                    self.page.window.destroy()
-                    return
-            except Exception:
-                pass
-            try:
-                import os as _os
-                _os._exit(0)
-            except Exception:
-                pass
             return
         self._back_exit_ts = now
         try:

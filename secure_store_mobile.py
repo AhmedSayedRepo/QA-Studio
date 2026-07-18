@@ -184,6 +184,13 @@ def init(page, on_ready=None):
         page.run_task(_bootstrap)
     except Exception:
         pass
+    # Read the session from its own FIXED key, independently of the per-user
+    # creds bootstrap above — set_user() must never move or hide the session
+    # (that slot mismatch is what let a logged-out user come back signed in).
+    try:
+        page.run_task(_bootstrap_session)
+    except Exception:
+        pass
     # When the login gate is on, read the biometric SENTINEL — THIS is what
     # pops the OS fingerprint/PIN prompt at launch. Kept separate from the
     # creds bootstrap above so the prompt fires regardless of whether this
@@ -226,18 +233,6 @@ async def _bootstrap():
                 await _storage.set(key, json.dumps(data))
         if _key == key:      # a later set_user() may have moved on already
             _cache = data if data is not None else {}
-            # A sign-out that arrived before this bootstrap couldn't clear the
-            # stored session (no cache to modify). Apply it NOW, before anyone
-            # reads _cache — otherwise acquire_silent() would find the old
-            # session and sign the user straight back in after they logged out.
-            global _pending_session_clear
-            if _pending_session_clear:
-                _pending_session_clear = False
-                if _cache.pop(_SESSION_KEY, None) is not None:
-                    try:
-                        await _storage.set(key, json.dumps(_cache))
-                    except Exception:
-                        pass
     except Exception:
         if _key == key:
             _cache = _cache or {}
@@ -561,65 +556,94 @@ def bio_gate_passed():
     return _bio_gate_passed
 
 
-_SESSION_KEY = "__supabase_session__"
-_pending_session_clear = False   # sign-out arrived before the vault was ready
+# The session lives under its OWN FIXED storage key — never inside the
+# per-user creds vault, and never keyed by uid.
+#
+# ROOT CAUSE this fixes ("log out, close the app, relaunch → still signed in"):
+# the session used to be embedded in the per-user creds dict, whose storage key
+# CHANGES with set_user(). auth.sign_in() saves the session BEFORE
+# _switch_user_creds() runs (login.py), so it landed in the DEFAULT slot
+# (qa_studio_creds); auth.sign_out() clears it while the user is still signed
+# in, so it cleared the PER-USER slot (qa_studio_creds_<uid>). Different slots —
+# the default slot's copy survived logout, and relaunch reads exactly that slot
+# first and restored it.
+#
+# Same reasoning as the biometric sentinel above: a value you need in order to
+# know WHO the user is cannot itself be stored per-user.
+_SESSION_STORE_KEY = "qa_studio_session"
+_session_cache = None     # dict | None — the session as last read/written
+_session_ready = False    # True once the first read of the fixed key has landed
 
 
 def session_available():
-    """True when the Keystore-backed vault is up AND its first read has landed,
-    i.e. load_session() can give a trustworthy answer."""
-    return _storage is not None and _cache is not None
+    """True once the fixed session key's first read has landed, i.e.
+    load_session() can give a trustworthy answer. Independent of the per-user
+    creds bootstrap — set_user() must never affect the session."""
+    return _storage is not None and _session_ready
+
+
+async def _bootstrap_session():
+    """Read the session from its FIXED key. Runs once per launch, alongside (and
+    independently of) the per-user creds bootstrap."""
+    global _session_cache, _session_ready
+    try:
+        raw = await _storage.get(_SESSION_STORE_KEY)
+        _session_cache = json.loads(raw) if raw else None
+    except Exception:
+        _session_cache = None
+    _session_ready = True
+    if _on_ready:
+        try:
+            _on_ready()
+        except Exception:
+            pass
 
 
 def save_session(data):
-    """Persist the Supabase session (access + REFRESH token) inside the
-    Keystore-encrypted vault instead of auth_supabase's own file.
+    """Persist (or clear, when data is None) the Supabase session — access +
+    REFRESH token — under the FIXED Keystore key.
 
-    WHY: that file is written via store._encrypt(), which on the mobile build
-    has NEITHER DPAPI (Windows-only) NOR Fernet (`cryptography` is deliberately
-    excluded from the APK — see build-apk.yml), so it fell through to
-    base64-only. The diagnostics log confirmed it live: 20x "DPAPI and Fernet
-    both unavailable — saving credentials with base64 only (NOT encrypted)".
-    A refresh token in base64 is effectively plaintext on the device, and that
-    matters more now that signing out deliberately KEEPS the refresh token so
-    biometrics can restore the session. Riding on the existing vault gets real
-    Android Keystore / iOS Keychain encryption with no new dependency and no
-    Python-side crypto to get wrong.
+    WHY the vault at all: auth_supabase's own file is written via
+    store._encrypt(), which on the mobile build has NEITHER DPAPI
+    (Windows-only) NOR Fernet (`cryptography` is excluded from the APK), so it
+    degraded to base64. The diagnostics log confirmed it live — 22x "DPAPI and
+    Fernet both unavailable ... NOT encrypted". A refresh token in base64 is
+    effectively plaintext, which matters all the more because signing out
+    deliberately KEEPS that token so biometrics can restore the session.
 
-    Returns False if the vault isn't ready, so the caller can fall back."""
-    global _cache, _pending_session_clear
-    if _storage is None or _page is None or _cache is None:
-        # Cache not bootstrapped yet. For a CLEAR (sign-out) we must not just
-        # give up: the vault would keep the old session on disk, and the next
-        # bootstrap would hand it straight back to acquire_silent() — signing
-        # the user back in right after they logged out. Record the intent so
-        # _bootstrap applies it the moment it lands.
-        if data is None:
-            _pending_session_clear = True
+    WHY a fixed key: see _SESSION_STORE_KEY. Storing it in the per-user creds
+    slot meant sign-in wrote it to one slot and sign-out cleared another, so
+    logging out then relaunching signed the user straight back in.
+
+    A clear does NOT require the cache to be ready — it writes straight through
+    to storage, so a sign-out can never be lost to bootstrap timing."""
+    global _session_cache
+    if _storage is None or _page is None:
         return False
+    _session_cache = data
     try:
-        d = dict(_cache)
         if data is None:
-            d.pop(_SESSION_KEY, None)
-            _pending_session_clear = False
+            _fn = None
+            for _m in ("remove", "delete"):
+                _fn = getattr(_storage, _m, None)
+                if _fn:
+                    break
+            if _fn:
+                _page.run_task(_fn, _SESSION_STORE_KEY)
+            else:
+                # No remove API — overwrite with empty, which reads back falsy.
+                _page.run_task(_storage.set, _SESSION_STORE_KEY, "")
         else:
-            d[_SESSION_KEY] = data
-        _cache = d
-        _page.run_task(_storage.set, _key, json.dumps(d))
+            _page.run_task(_storage.set, _SESSION_STORE_KEY, json.dumps(data))
         return True
     except Exception:
         return False
 
 
 def load_session():
-    """The cached session dict, or None. Only meaningful once the async
-    bootstrap has landed (see session_available)."""
-    try:
-        if _cache is None:
-            return None
-        return _cache.get(_SESSION_KEY) or None
-    except Exception:
-        return None
+    """The cached session dict, or None. Only meaningful once the fixed-key
+    read has landed (see session_available)."""
+    return _session_cache or None
 
 
 def _migrate_legacy_file():

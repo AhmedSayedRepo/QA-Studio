@@ -222,7 +222,7 @@
 <nav><div class="nav-in">
   <div class="brand">
     <img src="https://ahmedsayedrepo.github.io/QA-Studio/qa-logo.png" alt="QA Studio">
-    <div><b>QA Studio</b> &nbsp;<span id="vernav">v3.2.4</span></div>
+    <div><b>QA Studio</b> &nbsp;<span id="vernav">v3.3.0</span></div>
   </div>
   <a class="nlink" href="https://github.com/AhmedSayedRepo/QA-Studio" target="_blank" rel="noopener">⭐ Star on GitHub</a>
 </div></nav>
@@ -237,7 +237,7 @@
 
 <header><div class="wrap">
   <div class="pillrow fade-up fade-up-1">
-    <div class="pill"><span class="dot"></span> Windows desktop &amp; Android · <span id="ver">v3.2.4</span></div>
+    <div class="pill"><span class="dot"></span> Windows desktop &amp; Android · <span id="ver">v3.3.0</span></div>
     <div class="pill">🔒 Local-first — keys never leave your device</div>
   </div>
   <h1 class="fade-up fade-up-2">AI test cases for<br><span class="grad">Azure DevOps</span>, in minutes</h1>
@@ -248,7 +248,7 @@
     <a class="btn btn-primary" href="https://github.com/AhmedSayedRepo/QA-Studio/releases/latest/download/install.bat">↓ Download installer</a>
     <a class="btn btn-ghost" href="https://github.com/AhmedSayedRepo/QA-Studio/releases/download/android-apk/qa-studio.apk">🤖 Android APK</a>
   </div>
-  <div class="cta-note fade-up fade-up-4"><code>install.bat</code> for Windows · ~50 KB, sets up everything automatically &nbsp;·&nbsp; <code>qa-studio.apk</code> for Android — early build, sideload (no Play Store yet)</div>
+  <div class="cta-note fade-up fade-up-4"><code>install.bat</code> for Windows · ~50 KB, sets up everything automatically &nbsp;·&nbsp; <code>qa-studio.apk</code> for Android — early build, sideload (no Play Store yet); updates install in-app after that</div>
 
   <div class="ps fade-up fade-up-4">
     <div class="lbl">— OR PASTE THIS IN POWERSHELL —</div>
@@ -391,8 +391,9 @@
   <h2>Not just a solo tool</h2>
   <div class="feat3">
     <div class="card"><div class="ic">🔒</div><h3>Local-first &amp; private</h3>
-      <p>Azure DevOps and AI credentials are encrypted on your own device (Windows DPAPI) and never
-        uploaded anywhere but the services you connect — no telemetry, no third-party servers.</p></div>
+      <p>Azure DevOps and AI credentials are encrypted on your own device — Windows DPAPI on desktop,
+        the Android Keystore on mobile — and never uploaded anywhere but the services you connect —
+        no telemetry, no third-party servers.</p></div>
     <div class="card"><div class="ic">👥</div><h3>Role-based access</h3>
       <p>Admin, Member &amp; Viewer roles with permissions enforced server-side — share it across a whole
         QA team, not just one seat.</p></div>
@@ -431,8 +432,10 @@
     </details>
     <details>
       <summary>Where do my Azure DevOps and AI credentials live?</summary>
-      <p>Locally on your device only, encrypted with Windows DPAPI. They're only ever sent to the Azure
-        DevOps org and AI provider you explicitly connect — nothing is uploaded anywhere else.</p>
+      <p>Locally on your device only — encrypted with Windows DPAPI on desktop, and in the Android
+        Keystore on mobile, where you can also require a fingerprint / PIN unlock before the app
+        restores your session. They're only ever sent to the Azure DevOps org and AI provider you
+        explicitly connect — nothing is uploaded anywhere else.</p>
     </details>
     <details>
       <summary>Can my whole QA team use it, not just me?</summary>
@@ -457,7 +460,7 @@
   </div>
 </div></section>
 
-<footer>QA Studio · <span id="verfoot">v3.2.4</span> · Windows 10/11 · Python auto-installed · keys stay on your device</footer>
+<footer>QA Studio · <span id="verfoot">v3.3.0</span> · Windows 10/11 · Python auto-installed · keys stay on your device</footer>
 
 <script>
   // Supabase email-confirmation redirect handling. When someone clicks the

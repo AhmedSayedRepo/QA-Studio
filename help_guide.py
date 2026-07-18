@@ -365,12 +365,26 @@ FEATURES = [
          "to force a fresh pull. Admins additionally control the security policy: an "
          "idle auto-logout of Off / 5 / 15 / 30 / 60 minutes, with a 60-second "
          "warning that lets you stay signed in before it logs you out.",
+         "On mobile, Device Security adds \"Require biometric/PIN unlock\". With it "
+         "on, reopening the app asks for your fingerprint / Face / PIN before it "
+         "restores your session — and signing out keeps you signed out until you "
+         "unlock again, rather than dropping you straight back in. Dismissing the "
+         "prompt is always allowed: you simply sign in with your email and password "
+         "instead, and the setting stays on for next time. Your credentials and "
+         "session are held in the device's own secure keystore.",
+         "Data & Diagnostics has a Share log button. QA Studio records unhandled "
+         "errors locally — including failures that leave no visible message — and "
+         "this hands that file to you so it can be attached to a bug report. It is "
+         "never uploaded anywhere on its own.",
      ],
      "points": [
          "Theme (light / dark), default language, and default generator (Titles vs Steps).",
          "Clear cached Azure data when stories or plans look stale.",
          "Admins: idle auto-logout (Off / 5 / 15 / 30 / 60 min) with a 60-second "
          "stay-signed-in warning.",
+         "Mobile: biometric / PIN unlock on reopen; credentials and session kept in "
+         "the device keystore. Cancelling the prompt falls back to email + password.",
+         "Share log — send the local diagnostics file when reporting a problem.",
      ]},
     {"key": "providers", "icon": ft.Icons.BOLT, "title": "AI Providers & keys",
      "blurb": "How the AI connection works, which providers are supported, and why "
