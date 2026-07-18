@@ -341,6 +341,10 @@ def login_gate(app):
                 app._gate_busy = False
                 if user:
                     app.user = user; app._auth_msg = None
+                    # Clear the post-sign-out restore block (see main._sign_out /
+                    # _on_secure_creds_ready): the user has explicitly signed in
+                    # again, so later vault bootstraps may restore normally.
+                    app._user_signed_out = False
                     # Load THIS user's own per-user creds file FIRST, then apply the
                     # login screen's chosen theme on top of it — order matters. This
                     # used to run the other way around: apply + save the login theme

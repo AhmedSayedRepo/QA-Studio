@@ -614,7 +614,15 @@ class QAStudio:
         # auto-reverted the setting above. Only restore the session in the
         # SUCCESS case — a failed/canceled/reverted check must fall through
         # to the ordinary email+password sign-in screen, never silently in.
-        if self.user is None:
+        # NEVER auto-restore after an explicit sign-out. _sign_out() calls
+        # _switch_user_creds(), which re-bootstraps the vault and therefore
+        # re-enters THIS callback moments later — so without this guard the
+        # "biometrics not required" branch below signed the user straight back
+        # in and Log out appeared to do nothing (reported live: "bio toggle off,
+        # not able to logout, it forces keep me logged in"). The flag lives on
+        # the instance, so relaunching the app clears it and normal session
+        # restore resumes; login.py clears it on a successful sign-in.
+        if self.user is None and not getattr(self, "_user_signed_out", False):
             try:
                 import secure_store_mobile as _ssm
                 # Restore when EITHER biometrics isn't required at all, OR it is
@@ -902,6 +910,11 @@ class QAStudio:
                 _ssm.rearm_gate()
             except Exception:
                 pass
+        # Blocks _on_secure_creds_ready's auto-restore for the rest of this
+        # process — _switch_user_creds() below re-bootstraps the vault and
+        # re-enters that callback, which would otherwise sign the user straight
+        # back in (see the guard there). Cleared by a successful sign-in.
+        self._user_signed_out = True
         self.user = None
         self._switch_user_creds()       # revert to the shared default cred file
         # The login screen keeps its OWN theme flag (login.py's app._login_theme —
@@ -7044,11 +7057,42 @@ class QAStudio:
                             else:
                                 _set(f"Downloading… {done // 1024} KB", None)
                 _set("Downloaded — opening installer…", 1.0)
+                # Open the .apk DIRECTLY so Android resolves it to the package
+                # installer. ft.Share (reveal_export) opens the SHARE SHEET
+                # instead — an app chooser the user had to hunt through for
+                # "Package installer" (reported as having to select the
+                # download place). flet_open_file wraps open_filex, which
+                # handles the FileProvider + intent; REQUEST_INSTALL_PACKAGES is
+                # granted in build-apk.yml. Falls back to the share sheet if the
+                # extension isn't in this build, so it degrades, never breaks.
+                # NOTE: the system install confirmation and the one-time "Allow
+                # from this source" grant remain — no app can bypass those.
+                _opened = False
                 try:
-                    import platform_caps
-                    platform_caps.reveal_export(self.page, path)
+                    import flet_open_file as _fof
+
+                    async def _open_apk():
+                        try:
+                            svc = _fof.OpenFile()
+                            self.page.services.append(svc)
+                            self.page.update()
+                            await svc.open(path)
+                        except Exception:
+                            try:
+                                import platform_caps as _pc
+                                _pc.reveal_export(self.page, path)
+                            except Exception:
+                                pass
+                    self.page.run_task(_open_apk)
+                    _opened = True
                 except Exception:
-                    pass
+                    _opened = False
+                if not _opened:
+                    try:
+                        import platform_caps
+                        platform_caps.reveal_export(self.page, path)
+                    except Exception:
+                        pass
                 self.ui_safe(lambda: (
                     self._close_dialog(),
                     self._toast("Update downloaded — tap Install to finish.")))

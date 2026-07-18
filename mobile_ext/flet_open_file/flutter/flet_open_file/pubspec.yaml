@@ -1,0 +1,28 @@
+name: flet_open_file
+description: Flet open-local-file control
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+  flutter: ">=1.17.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Opens a local file with the OS default handler. Handles the Android
+  # FileProvider + intent internally, which is what routes an .apk to the
+  # package installer. A raw file:// URI would throw FileUriExposedException
+  # on API 24+, and url_launcher does not handle install intents.
+  open_filex: ^4.5.0
+
+  # Resolved by `flet build` to the app's bundled Flet Flutter package — same
+  # relative path flet-secure-storage 0.85.3 and flet_local_auth ship.
+  flet:
+    path: ../../../../../../../packages/flet
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0

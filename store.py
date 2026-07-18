@@ -252,6 +252,20 @@ def save(d):
                 return True
         except Exception:
             pass
+        # MOBILE: do NOT fall through to the file below. On the mobile build
+        # _encrypt() has neither DPAPI (Windows-only) nor Fernet (cryptography
+        # is excluded from the APK), so that path writes credentials in
+        # effectively PLAINTEXT base64 — confirmed live in diagnostics.log
+        # ("DPAPI and Fernet both unavailable"). The only writes that reach
+        # here are the handful fired before the vault's async bootstrap lands;
+        # skipping them is strictly better than leaving secrets in the clear,
+        # since the vault is write-through and captures the next save.
+        try:
+            import platform_caps as _pc_save
+            if _pc_save.is_mobile():
+                return False
+        except Exception:
+            pass
     try:
         os.makedirs(CRED_DIR, exist_ok=True)
         blob = _encrypt(json.dumps(d).encode("utf-8"))

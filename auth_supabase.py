@@ -266,6 +266,16 @@ def _save_session(data):
             return
     except Exception:
         pass
+    # MOBILE: never fall through to the base64 file for the SESSION either —
+    # it holds the refresh token, the single most sensitive value on the
+    # device. Same reasoning as store.save(): the only writes reaching here are
+    # pre-bootstrap ones, and skipping them beats writing a token in the clear.
+    try:
+        import platform_caps as _pc_sess
+        if _pc_sess.is_mobile():
+            return
+    except Exception:
+        pass
     try:
         import store
         os.makedirs(os.path.dirname(_cache_file()), exist_ok=True)

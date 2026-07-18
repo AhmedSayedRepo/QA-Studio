@@ -59,6 +59,14 @@ jobs:
           pip install --quiet build hatchling
           python -m build --wheel mobile_ext/flet_local_auth -o /tmp/ext-wheels
           pip install --quiet /tmp/ext-wheels/flet_local_auth-*.whl
+          # flet_open_file: opens the downloaded .apk with the OS default
+          # handler so Android routes it STRAIGHT to the package installer,
+          # instead of ft.Share's app-chooser sheet. Needs
+          # REQUEST_INSTALL_PACKAGES (added in the pyproject block below) in the
+          # SAME build, or the intent fails at runtime the way the biometric
+          # prompt did without its manifest entry.
+          python -m build --wheel mobile_ext/flet_open_file -o /tmp/ext-wheels
+          pip install --quiet /tmp/ext-wheels/flet_open_file-*.whl
           ls -la /tmp/ext-wheels
 
       - name: Stage mobile app (clean dir, minimal requirements)
@@ -147,6 +155,12 @@ jobs:
           [tool.flet.android.permission]
           "android.permission.USE_BIOMETRIC" = true
           "android.permission.USE_FINGERPRINT" = true
+          # Lets the in-app updater open the downloaded .apk directly in the
+          # package installer (flet_open_file). Without it the install intent is
+          # refused at runtime. The system install confirmation and the one-time
+          # "Allow from this source" grant still apply — those are OS security
+          # guarantees no app can bypass.
+          "android.permission.REQUEST_INSTALL_PACKAGES" = true
 
           [tool.flet.android]
           min_sdk_version = 28
@@ -155,9 +169,11 @@ jobs:
           # (its Flutter side is bundled via the CI-env install above). Absolute
           # local path so serious-python installs the wheel into the on-device
           # bundle; the extension's flutter/ dir rides along harmlessly.
-          WHL=$(ls /tmp/ext-wheels/flet_local_auth-*.whl | head -n1)
-          cp "$WHL" /tmp/mobile/
-          echo "/tmp/mobile/$(basename "$WHL")" >> /tmp/mobile/requirements.txt
+          for _w in /tmp/ext-wheels/flet_local_auth-*.whl /tmp/ext-wheels/flet_open_file-*.whl; do
+            WHL=$(ls $_w | head -n1)
+            cp "$WHL" /tmp/mobile/
+            echo "/tmp/mobile/$(basename "$WHL")" >> /tmp/mobile/requirements.txt
+          done
           # App icon: `flet build` only customizes the launcher icon if it
           # finds <staged-app>/assets/icon.png (see flet_cli's customize_icons()
           # — assets_path.exists() gates the whole step). This directory was

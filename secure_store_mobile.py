@@ -226,6 +226,18 @@ async def _bootstrap():
                 await _storage.set(key, json.dumps(data))
         if _key == key:      # a later set_user() may have moved on already
             _cache = data if data is not None else {}
+            # A sign-out that arrived before this bootstrap couldn't clear the
+            # stored session (no cache to modify). Apply it NOW, before anyone
+            # reads _cache — otherwise acquire_silent() would find the old
+            # session and sign the user straight back in after they logged out.
+            global _pending_session_clear
+            if _pending_session_clear:
+                _pending_session_clear = False
+                if _cache.pop(_SESSION_KEY, None) is not None:
+                    try:
+                        await _storage.set(key, json.dumps(_cache))
+                    except Exception:
+                        pass
     except Exception:
         if _key == key:
             _cache = _cache or {}
@@ -550,6 +562,7 @@ def bio_gate_passed():
 
 
 _SESSION_KEY = "__supabase_session__"
+_pending_session_clear = False   # sign-out arrived before the vault was ready
 
 
 def session_available():
@@ -574,13 +587,21 @@ def save_session(data):
     Python-side crypto to get wrong.
 
     Returns False if the vault isn't ready, so the caller can fall back."""
-    global _cache
+    global _cache, _pending_session_clear
     if _storage is None or _page is None or _cache is None:
+        # Cache not bootstrapped yet. For a CLEAR (sign-out) we must not just
+        # give up: the vault would keep the old session on disk, and the next
+        # bootstrap would hand it straight back to acquire_silent() — signing
+        # the user back in right after they logged out. Record the intent so
+        # _bootstrap applies it the moment it lands.
+        if data is None:
+            _pending_session_clear = True
         return False
     try:
         d = dict(_cache)
         if data is None:
             d.pop(_SESSION_KEY, None)
+            _pending_session_clear = False
         else:
             d[_SESSION_KEY] = data
         _cache = d
