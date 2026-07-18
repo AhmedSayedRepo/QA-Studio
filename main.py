@@ -843,7 +843,7 @@ class QAStudio:
             return None
         return idle_watch.start_idle_watch(self)
 
-    def _sign_out(self, e=None):
+    def _sign_out(self, e=None, full=False):
         # ROOT CAUSE this guards against: on mobile, _account_chip()'s
         # compact avatar opens an AlertDialog popup (avatar + name + role +
         # this same Sign out button) via self._show_dialog(). Flet 0.85's
@@ -860,10 +860,29 @@ class QAStudio:
             self._close_dialog()
         except Exception:
             pass
-        try:
-            auth.sign_out()
-        except Exception:
-            pass
+        # BIOMETRIC-PROTECTED REFRESH TOKEN: when biometric unlock is on, a
+        # normal sign-out LOCKS the app instead of destroying the session —
+        # auth.sign_out() would revoke the token server-side AND wipe the local
+        # cache, leaving fingerprint with nothing to unlock on relaunch (the
+        # reported "logged out + closed the app → fingerprint doesn't log me
+        # in"). Keeping the refresh token means the launch gate can restore the
+        # session after a successful fingerprint. The token is only ever usable
+        # THROUGH that gate: every silent-restore path is guarded by
+        # bio_required()/bio_gate_passed(). Pass full=True for a real,
+        # complete sign-out (revoke + wipe) — and biometrics off behaves
+        # exactly as before.
+        _bio_lock = False
+        if not full and platform_caps.is_mobile():
+            try:
+                import mobile_prefs as _mp
+                _bio_lock = bool(_mp.get("require_biometric", False))
+            except Exception:
+                _bio_lock = False
+        if not _bio_lock:
+            try:
+                auth.sign_out()
+            except Exception:
+                pass
         # Re-arm the biometric login gate (mobile): without this, THIS launch's
         # gate stayed "passed" from the initial unlock, so a cached-session
         # silent restore right after logout could sign the user back in with no
@@ -2637,8 +2656,19 @@ class QAStudio:
                        or getattr(self, "_auto_running", False))
         if state in ("pause", "hide", "inactive"):
             # Mark that the app left the foreground so the resume branch can
-            # re-challenge biometrics (see _maybe_bio_relock).
-            self._was_backgrounded = True
+            # re-challenge biometrics (see _maybe_bio_relock) — but NOT when
+            # this pause was caused by our OWN biometric prompt, which
+            # backgrounds the app while it's on screen. Treating that as a real
+            # backgrounding is what made the re-lock fire another prompt, and
+            # another, forever ("after verify keeps triggering fingerprint").
+            _own_prompt = False
+            try:
+                import secure_store_mobile as _ssm
+                _own_prompt = _ssm.prompt_active()
+            except Exception:
+                _own_prompt = False
+            if not _own_prompt:
+                self._was_backgrounded = True
             if running:
                 self._mobile_bg_during_run = True
                 try:
@@ -2650,9 +2680,9 @@ class QAStudio:
                     pass
             return
         if state in ("resume", "restart", "show"):
-            # Re-lock behind biometrics if the app was backgrounded/closed while
-            # signed in and the unlock setting is on (cold starts are already
-            # gated at launch; this covers resume-from-background).
+            # Re-challenge biometrics if the app really was backgrounded while
+            # signed in. Guarded against our own prompt's lifecycle churn — see
+            # _maybe_bio_relock.
             try:
                 self._maybe_bio_relock()
             except Exception:
@@ -2735,6 +2765,13 @@ class QAStudio:
             return
         try:
             import secure_store_mobile as _ssm
+            # Never react to the lifecycle churn our OWN prompt creates: showing
+            # the native prompt pauses the app, and the trailing resume can land
+            # just after _prompt_active clears — hence BOTH the live check and a
+            # short grace window. Without these the re-lock re-prompted in an
+            # endless loop (reported live on the Settings toggle).
+            if _ssm.prompt_active() or _ssm.seconds_since_prompt() < 5:
+                return
 
             def _res(ok):
                 if not ok:

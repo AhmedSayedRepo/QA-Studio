@@ -249,15 +249,22 @@ async def _bio_gate_check():
     # PREFERRED: decoupled local_auth check (no storage, no key to invalidate).
     if _local_auth is not None:
         try:
-            ok = bool(await _local_auth.authenticate(
-                reason="Unlock QA Studio"))
+            ok = await _authenticate("Unlock QA Studio")
             if ok:
                 _bio_gate_passed = True
             else:
-                # Cancelled / no enrollment / lockout — fall through to
-                # email+password rather than a stuck launch.
-                _revert_bio()
+                # CANCELLED / dismissed — e.g. the user pressed BACK on the
+                # prompt because they want to sign in with credentials (or as a
+                # different account). Leave the preference ON and the gate
+                # UNPASSED: the session simply isn't restored, so the ordinary
+                # email+password screen is shown as the fallback. Deliberately
+                # NOT _revert_bio() — cancelling once must not silently disable
+                # biometric unlock, and the user can never be locked out
+                # because credentials always remain available.
+                pass
         except Exception:
+            # Hard failure (plugin missing / nothing enrolled) — revert so the
+            # feature can't leave the user stuck prompting forever.
             _revert_bio()
         if _on_ready:
             try:
@@ -348,8 +355,8 @@ def apply_biometric_setting(want_bio, on_done=None):
         if _local_auth is not None:
             try:
                 if want_bio:
-                    ok = bool(await _local_auth.authenticate(
-                        reason="Confirm to enable biometric unlock"))
+                    ok = await _authenticate(
+                        "Confirm to enable biometric unlock")
                     if not ok:
                         raise RuntimeError("authentication was not completed")
                 _bio_required = want_bio
@@ -435,6 +442,45 @@ def rearm_gate():
     _bio_gate_passed = False
 
 
+_prompt_active = False    # True while a native biometric prompt is on screen
+_last_prompt_ts = 0.0     # monotonic time the last prompt finished
+
+
+def prompt_active():
+    """True while THIS app is showing a native biometric prompt.
+
+    CRITICAL for the resume re-lock: showing the prompt pushes the app through
+    its own pause → resume lifecycle cycle, which the re-lock would otherwise
+    mistake for the user backgrounding the app — firing another prompt, which
+    cycles again, forever. Reported live as "the bio toggle triggers
+    fingerprint, after verify keeps triggering fingerprint". Lifecycle handlers
+    consult this so they never react to our own prompt."""
+    return _prompt_active
+
+
+def seconds_since_prompt():
+    """Seconds since the last native prompt finished (a huge number if none has
+    run yet). Gives resume handlers a grace window, since the lifecycle events
+    that TRAIL a just-finished prompt can arrive after _prompt_active clears."""
+    import time as _t
+    if not _last_prompt_ts:
+        return 1e9
+    return max(0.0, _t.monotonic() - _last_prompt_ts)
+
+
+async def _authenticate(reason):
+    """Single funnel for EVERY native prompt, so _prompt_active /
+    _last_prompt_ts are maintained no matter which caller triggered it."""
+    global _prompt_active, _last_prompt_ts
+    import time as _t
+    _prompt_active = True
+    try:
+        return bool(await _local_auth.authenticate(reason=reason))
+    finally:
+        _prompt_active = False
+        _last_prompt_ts = _t.monotonic()
+
+
 def reprompt(on_result=None):
     """Re-run the biometric prompt MID-SESSION — e.g. when the app is resumed
     after being backgrounded/closed while the user was signed in. Cold starts
@@ -452,7 +498,7 @@ def reprompt(on_result=None):
     async def _do():
         ok = True
         try:
-            ok = bool(await _local_auth.authenticate(reason="Unlock QA Studio"))
+            ok = await _authenticate("Unlock QA Studio")
         except Exception:
             ok = False
         if on_result:
