@@ -256,8 +256,18 @@ jobs:
             echo "::error::no longer matches the expected FlutterActivity pattern."
             exit 1
           fi
-          # Rebuild the (patched) APK in-place from Flet's generated Flutter project.
-          FLUTTER_DIR=$(dirname "$(find build -name 'pubspec.yaml' -path '*flutter*' | head -n1)")
+          # Rebuild the (patched) APK from the APP's Flutter project. Derive its
+          # root from the MainActivity path (everything before /android/) — NOT a
+          # blind pubspec.yaml search: that also matched the bundled extension
+          # packages under build/flutter-packages/ (flet_local_auth), so the
+          # first version cd'd into the extension and died on a missing
+          # lib/main.dart. The app project is the one that owns MainActivity.
+          FLUTTER_DIR="${MA%%/android/*}"
+          if [ ! -f "$FLUTTER_DIR/lib/main.dart" ]; then
+            echo "::error::Derived app Flutter dir '$FLUTTER_DIR' has no lib/main.dart —"
+            echo "::error::Flet's generated layout changed; re-verify this patch step."
+            exit 1
+          fi
           echo "Rebuilding signed APK in $FLUTTER_DIR"
           ( cd "$FLUTTER_DIR" && flutter build apk --release )
           PATCHED_APK=$(find "$FLUTTER_DIR" -path '*outputs*' -name '*release*.apk' | head -n1)
@@ -265,7 +275,12 @@ jobs:
             echo "::error::patched release APK not produced — check the flutter build output above."
             exit 1
           fi
+          # Replace flet's original (unpatched, FlutterActivity) APK so the
+          # upload + publish steps below pick up ONLY the patched
+          # FlutterFragmentActivity build (they glob build/apk/*.apk / take the
+          # first match — leaving the old one there could publish the wrong APK).
           mkdir -p build/apk
+          rm -f build/apk/*.apk
           cp "$PATCHED_APK" build/apk/
           echo "Patched, re-signed APK staged at build/apk/: $(basename "$PATCHED_APK")"
 
