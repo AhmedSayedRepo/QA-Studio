@@ -58,6 +58,12 @@ _bio_required = False         # snapshot of require_biometric at init() time —
 _bio_gate_passed = False      # True once this launch's biometric/PIN check
                               # has actually succeeded (or immediately, if
                               # biometrics wasn't required — nothing to gate)
+_bio_gate_done = False        # True once this launch's biometric/PIN check has
+                              # RESOLVED — passed, failed, or cancelled. Distinct
+                              # from _bio_gate_passed: lets the caller tell "still
+                              # waiting on the prompt" from "resolved, not passed",
+                              # so a branded 'Signing you in…' hold can clear the
+                              # instant the gate settles instead of guessing.
 
 # Biometric LOGIN-GATE sentinel. A fixed (NOT per-user) entry written under an
 # enforce_biometrics storage when the toggle is enabled. Reading it back at
@@ -108,7 +114,7 @@ def init(page, on_ready=None):
     right where store.load() is first called. Registers on_ready (invoked
     every time a (re)bootstrap completes, including later set_user() calls)
     and kicks off the first read."""
-    global _storage, _page, _on_ready, _bio_required, _bio_gate_passed
+    global _storage, _page, _on_ready, _bio_required, _bio_gate_passed, _bio_gate_done
     if not available():
         return
     try:
@@ -133,6 +139,7 @@ def init(page, on_ready=None):
             _want_bio = False
         _bio_required = _want_bio
         _bio_gate_passed = not _want_bio   # nothing to gate → treat as passed
+        _bio_gate_done = not _want_bio     # nothing to gate → already resolved
         # The CREDS vault is NEVER put behind biometrics anymore. Enforcing
         # biometrics on it was the direct cause of the recurring "enabling
         # biometrics wiped my saved credentials" bug: adding
@@ -257,7 +264,7 @@ async def _bio_gate_check():
     Failing or cancelling NEVER disables the feature and NEVER grants access —
     it just leaves the gate closed, so the user signs in with email+password
     this once and biometrics still guards the next launch."""
-    global _bio_gate_passed
+    global _bio_gate_passed, _bio_gate_done
     # INVARIANT (learned the hard way): a failed/cancelled gate must leave
     # _bio_gate_passed FALSE and the preference ON. The old code called
     # _revert_bio() here, which BOTH disabled biometrics permanently AND set
@@ -273,6 +280,7 @@ async def _bio_gate_check():
         except Exception:
             ok = False
         _bio_gate_passed = bool(ok)
+        _bio_gate_done = True
         if _on_ready:
             try:
                 _on_ready()
@@ -288,6 +296,7 @@ async def _bio_gate_check():
     # launch where the extension attaches.
     if _local_auth_available():
         _bio_gate_passed = False
+        _bio_gate_done = True
         if _on_ready:
             try:
                 _on_ready()
@@ -312,6 +321,7 @@ async def _bio_gate_check():
         _bio_gate_passed = (val == _SENTINEL_VAL)
     except Exception:
         _bio_gate_passed = False
+    _bio_gate_done = True
     if _on_ready:
         try:
             _on_ready()
@@ -326,7 +336,7 @@ def _revert_bio():
     longer blocks (there's nothing protecting the vault now), so the normal
     silent restore may proceed; main.py surfaces the revert via
     consume_bio_revert() so the user sees why the toggle turned itself off."""
-    global _bio_reverted, _bio_gate_passed
+    global _bio_reverted, _bio_gate_passed, _bio_gate_done
     try:
         import mobile_prefs as _mp
         if _mp.get("require_biometric", False):
@@ -335,6 +345,7 @@ def _revert_bio():
         pass
     _bio_reverted = True
     _bio_gate_passed = True
+    _bio_gate_done = True
 
 
 def apply_biometric_setting(want_bio, on_done=None):
@@ -557,6 +568,15 @@ def bio_gate_passed():
     just for switching accounts (biometrics protects the DEVICE'S vault
     access, not each individual account's own slot within it)."""
     return _bio_gate_passed
+
+
+def bio_gate_done():
+    """True once this launch's biometric/PIN check has RESOLVED — whether it
+    passed, failed, or was cancelled. Unlike bio_gate_passed(), this lets the
+    caller distinguish "still waiting on the native prompt" (show a branded
+    hold) from "resolved but not passed" (fall through to email+password).
+    Always True immediately when biometrics wasn't required."""
+    return _bio_gate_done
 
 
 # The session lives under its OWN FIXED storage key — never inside the

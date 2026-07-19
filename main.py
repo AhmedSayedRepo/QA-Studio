@@ -159,6 +159,21 @@ class QAStudio:
                 threading.Thread(target=_end_splash, daemon=True).start()
             except Exception:
                 self._boot_at = None
+        # BIOMETRIC-LOGIN HOLD (mobile, "Require biometric/PIN unlock" ON):
+        # with the gate on, the native fingerprint prompt covers start-up, but
+        # AFTER it's passed there's a second, invisible wait — acquire_silent()
+        # must REFRESH the Supabase access token over the network whenever it's
+        # expired (i.e. any launch after ~1h idle). That refresh happens on the
+        # bare login screen with no indication, so a long-idle relaunch looks
+        # stuck on "sign in" for a few seconds before the app appears, while a
+        # quick relaunch (token still valid, no refresh) snaps in — exactly the
+        # reported "keeps on the sign-in screen longer the longer it's been
+        # closed". Hold a branded "Signing you in…" frame across the WHOLE
+        # restore (prompt → vault read → token refresh) instead of flashing the
+        # login form; _on_secure_creds_ready clears it the instant the gate
+        # resolves. Deadline-bounded so a hung network can never strand it.
+        self._awaiting_bio_login = self._biometric_login_gate_active()
+        self._bio_login_deadline = time.time() + 20.0
         # STARTUP BREADCRUMB — one line per app process, with the OS pid.
         #
         # This is what makes "I see 2 instances in background apps" answerable
@@ -605,11 +620,15 @@ class QAStudio:
     # vault/session/theme reads, so nothing half-initialised is ever on screen.
     _BOOT_SPLASH_SECONDS = 3.0
 
-    def _boot_splash(self):
+    def _boot_splash(self, signing_in=False):
         """The app's own start-up screen: logo, name, version, spinner, on the
         current page background. Used by render()'s theme gate so the first
         frame is BRANDED rather than a blank container (or, worse, a
-        wrong-theme paint of the real UI)."""
+        wrong-theme paint of the real UI).
+
+        `signing_in`: when the biometric-login hold is active, add a "Signing
+        you in…" line so the post-fingerprint token-refresh wait reads as
+        progress rather than a stuck login screen."""
         try:
             _logo = ft.Container(
                 logo_img(64), width=64, height=64,
@@ -618,14 +637,18 @@ class QAStudio:
                 border_radius=18, alignment=ft.Alignment.CENTER)
         except Exception:
             _logo = ft.Container(width=64, height=64)
+        _foot = (ft.Text("Signing you in…", size=12, color=T.RAIL_DIM,
+                         weight=ft.FontWeight.W_600)
+                 if signing_in else
+                 ft.Text(f"v{E.local_version()}", size=11, color=T.RAIL_DIM,
+                         weight=ft.FontWeight.BOLD))
         return ft.Container(
             ft.Column([
                 _logo,
                 ft.Container(height=16),
                 ft.Text("QA Studio", size=17, weight=ft.FontWeight.BOLD,
                         color=T.RAIL_INK),
-                ft.Text(f"v{E.local_version()}", size=11, color=T.RAIL_DIM,
-                        weight=ft.FontWeight.BOLD),
+                _foot,
                 ft.Container(height=18),
                 ft.ProgressRing(width=22, height=22, stroke_width=2.4,
                                 color=T.VIOLET),
@@ -820,6 +843,23 @@ class QAStudio:
                             pass
             except Exception:
                 pass
+        # Clear the biometric-login hold once the outcome is settled: either the
+        # session restored (→ app), or the gate has RESOLVED and the session
+        # bootstrap has landed but there's nothing to restore / the user
+        # cancelled (→ email+password). Until then keep the branded "Signing you
+        # in…" frame up — this callback fires several times per launch (creds
+        # bootstrap, session bootstrap, bio gate), and the early ones run before
+        # the prompt is answered, so clearing on them would flash the login form
+        # mid-restore, which is the whole bug.
+        if getattr(self, "_awaiting_bio_login", False):
+            try:
+                import secure_store_mobile as _ssm
+                if self.user is not None:
+                    self._awaiting_bio_login = False
+                elif _ssm.bio_gate_done() and _ssm.session_available():
+                    self._awaiting_bio_login = False
+            except Exception:
+                self._awaiting_bio_login = False
         if getattr(self, "_theme_touched", False):
             # The user already toggled the theme locally (e.g. tapped it on
             # the login screen) since launch, possibly WHILE this bootstrap
@@ -2530,15 +2570,26 @@ class QAStudio:
         # arrive; _on_secure_creds_ready clears the flag the instant the real
         # theme is known, which is the normal path and usually sub-second.
         _boot_at = getattr(self, "_boot_at", None)
-        if _boot_at is not None and (_pt.time() - _boot_at) < self._BOOT_SPLASH_SECONDS:
+        _boot_splash_on = (_boot_at is not None
+                           and (_pt.time() - _boot_at) < self._BOOT_SPLASH_SECONDS)
+        # Biometric-login hold: keep the branded frame up through the post-prompt
+        # session restore + token refresh (see __init__), deadline-bounded so a
+        # stalled bootstrap can't strand the UI. Shows a "Signing you in…" line.
+        _bio_hold = (getattr(self, "_awaiting_bio_login", False)
+                     and _pt.time() < getattr(self, "_bio_login_deadline", 0)
+                     and getattr(self, "user", None) is None)
+        if not _bio_hold and getattr(self, "_awaiting_bio_login", False):
+            self._awaiting_bio_login = False   # deadline passed or user restored
+        if _boot_splash_on or _bio_hold:
             try:
                 with self._render_lock:
                     self.page.controls.clear()
-                    self.page.add(self._boot_splash())
+                    self.page.add(self._boot_splash(signing_in=_bio_hold))
                     self.page.update()
                 return
             except Exception:
                 self._boot_at = None       # never get stuck on the splash
+                self._awaiting_bio_login = False
         try:
             # Reset dropdown closer registry so stale closers from the previous
             # render don't linger. Each _checkbox_multiselect re-registers itself.
