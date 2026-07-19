@@ -342,6 +342,59 @@ def _meta_row(label, value, _cell=None):
     ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.START)
 
 
+def _summary_cards(summary):
+    """Turn a run summary string like "5 updated · 0 skipped · 0 failed" into a
+    row of compact stat cards (green/amber/red). Falls back to a plain text row
+    for anything that doesn't match that shape (e.g. an error summary), so no
+    information is ever lost."""
+    if not summary:
+        return None
+    import re
+    specs = [
+        ("Updated", r"(\d+)\s*(?:updated|created|written|generated)", T.GREEN),
+        ("Skipped", r"(\d+)\s*skipp?ed", T.AMBER),
+        ("Failed",  r"(\d+)\s*(?:failed|error)", T.RED),
+    ]
+    found = []
+    for label, pat, tone in specs:
+        m = re.search(pat, summary, re.I)
+        if m:
+            found.append((label, m.group(1), tone))
+    if not found:
+        # Not the counts shape — keep the raw summary as a normal row.
+        return _meta_row("Summary", summary)
+
+    # Mobile: fixed-width cards in a HORIZONTALLY SCROLLABLE row (swipe if they
+    # don't fit) — same rule as the plan KPI / sprint-summary cards, never
+    # expand=True which would shrink them. Desktop: equal-share expand.
+    _m = platform_caps.is_mobile()
+
+    def _card(label, val, tone):
+        return ft.Container(
+            ft.Column([
+                ft.Text(val, size=20, weight=ft.FontWeight.BOLD, color=tone,
+                        font_family=T.F_MONO),
+                ft.Text(label.upper(), size=10, weight=ft.FontWeight.BOLD,
+                        color=T.INK_3),
+            ], spacing=2, horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                tight=True),
+            expand=(None if _m else True), width=(120 if _m else None),
+            alignment=ft.Alignment.CENTER,
+            padding=ft.Padding.symmetric(vertical=12, horizontal=6),
+            bgcolor=ft.Colors.with_opacity(0.10, tone), border_radius=T.R,
+            border=ft.Border.all(1, ft.Colors.with_opacity(0.30, tone)))
+
+    _cards_row = ft.Row([_card(*f) for f in found], spacing=10,
+                        scroll=(ft.ScrollMode.AUTO if _m else None),
+                        tight=bool(_m),
+                        vertical_alignment=ft.CrossAxisAlignment.START)
+    return ft.Column([
+        ft.Text("SUMMARY", size=10, weight=ft.FontWeight.BOLD, color=T.INK_3),
+        ft.Container(height=6),
+        _cards_row,
+    ], spacing=0)
+
+
 def _refresh_meta(app):
     """Re-compute the relative timestamps in place, every poll tick. Without
     this they froze at whatever they said during the last FULL render (which
@@ -415,8 +468,8 @@ def _detail_screen(app):
         _meta_row("Finished", _relative(run.get("finished_at"))
                   if run.get("finished_at") else "—",
                   _cell=(app._rr_meta_cells, "finished")),
-        (ft.Container(
-            ft.Column([ft.Container(height=8), _meta_row("Summary", run.get("summary"))]))
+        (ft.Container(ft.Column([ft.Container(height=8),
+                                 _summary_cards(run.get("summary"))]))
          if run.get("summary") else ft.Container(height=0)),
     ], spacing=6))
 

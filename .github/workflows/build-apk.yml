@@ -72,7 +72,17 @@ jobs:
       - name: Stage mobile app (clean dir, minimal requirements)
         run: |
           mkdir -p /tmp/mobile
-          cp *.py /tmp/mobile/
+          # Stage the app's .py, but EXCLUDE the *_backup*.py image-asset files
+          # (login_bg_assets_old_backup / _square_backup / _square_backup2 /
+          # _landscape_backup). They're kept in the repo as design history but
+          # are never imported — a bare `cp *.py` swept ~3.3 MB / 30k lines of
+          # dead base64 into every APK. Exclude them so the bundle isn't bloated.
+          for f in *.py; do
+            case "$f" in
+              *_backup*.py) echo "skip (unused backup): $f" ;;
+              *) cp "$f" /tmp/mobile/ ;;
+            esac
+          done
           cp app.ico /tmp/mobile/ 2>/dev/null || true
           # In-app logo (login screen, nav rail, dialogs — ui.py's logo_img()):
           # _logo_path()/_logo_b64() look for app.png/qa-logo.png next to
@@ -387,5 +397,15 @@ jobs:
               --notes "Always the most recent successful Android CI build. Not a versioned release — see the desktop vX.Y.Z releases for those. Re-published automatically on every build-apk.yml run." \
               --prerelease
           fi
-          gh release upload android-apk qa-studio.apk \
+          # Write the version marker ALONGSIDE the .apk, in this same step. The
+          # mobile app reads this (engine.check_mobile_update), NOT the repo
+          # VERSION on main — so it only ever advertises a version whose APK is
+          # actually attached. This closes the ~10-min race where release.bat
+          # bumps VERSION + cuts the release before the APK finishes building.
+          # Uploaded together with --clobber so the marker and the .apk can
+          # never disagree.
+          APP_VER=$(cat VERSION 2>/dev/null | tr -d ' \r\n')
+          printf '%s' "$APP_VER" > mobile-version.txt
+          echo "Publishing APK for version $APP_VER (marker: mobile-version.txt)"
+          gh release upload android-apk qa-studio.apk mobile-version.txt \
             --repo "$GITHUB_REPOSITORY" --clobber

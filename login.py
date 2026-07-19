@@ -391,6 +391,14 @@ def login_gate(app):
                             mobile_tilt.disable()
                         except Exception:
                             pass
+                        # POST-LOGIN update check for a MANUAL email/password
+                        # sign-in (the biometric/auto-restore path fires its own
+                        # in _on_secure_creds_ready). Self-guarded + once-per-
+                        # session, so it only shows to a now-signed-in user.
+                        try:
+                            app._check_mobile_update(force=True)
+                        except Exception:
+                            pass
                     app.ui_safe(app.render); return
                 app._auth_msg = ("ok" if ok else "err", m)
                 if ok and signup:

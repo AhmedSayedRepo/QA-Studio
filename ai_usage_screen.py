@@ -234,6 +234,10 @@ def _filtered_rows_and_totals(app, report):
     rows = report.get("rows", [])
     pf = getattr(app, "_usage_provider_filter", "All") or "All"
     filtered = rows if pf == "All" else [r for r in rows if r.get("provider") == pf]
+    # Most-recent usage FIRST ("last call at the top"). Rows are aggregated per
+    # day, so the sortable key is the bare YYYY-MM-DD `date` — descending. A
+    # stable sort preserves the server's within-day ordering (provider/model).
+    filtered = sorted(filtered, key=lambda r: r.get("date", ""), reverse=True)
     totals = {"calls": 0, "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}
     unpriced = 0
     for r in filtered:

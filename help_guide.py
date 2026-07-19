@@ -9,6 +9,7 @@ search + selection with in-place control updates (no full re-render).
 """
 import flet as ft
 import theme as T
+import platform_caps
 from ui import ghost_btn
 
 
@@ -498,10 +499,21 @@ def show(app, initial=None):
     """Open the searchable feature guide as a modal."""
     app._helpg_sel = initial or FEATURES[0]["key"]
     app._helpg_query = ""
+    # MOBILE uses a master→detail drill-in instead of the desktop two-pane
+    # layout. The old layout was a fixed 880px-wide Row (232px nav + content);
+    # on a ~390px phone the content pane was pushed off-screen to the right, so
+    # tapping a topic updated a pane you couldn't see — "help doesn't open
+    # anything but its navs". On mobile we show the nav list, and selecting a
+    # topic swaps the whole body to that topic's content with a back link.
+    _mobile = platform_caps.is_mobile()
+    app._helpg_mobile_detail = bool(initial) and _mobile  # deep-linked → open detail
 
     nav_col = ft.Column(spacing=3, scroll=ft.ScrollMode.AUTO, expand=True)
     content_col = ft.Column(spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
     empty_hint = ft.Text("No features match your search.", size=12.5, color=T.INK_3)
+    # Mobile single-pane holder — _refresh swaps its content between the topic
+    # LIST and the selected topic's DETAIL. Unused on desktop.
+    mobile_holder = ft.Column(spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
 
     def _nav_item(feat):
         selected = (feat["key"] == app._helpg_sel)
@@ -539,13 +551,37 @@ def show(app, initial=None):
         nav_col.controls = [_nav_item(f) for f in shown] or [empty_hint]
         cur = next((f for f in FEATURES if f["key"] == app._helpg_sel), FEATURES[0])
         content_col.controls = _content(cur)
+        if _mobile:
+            if getattr(app, "_helpg_mobile_detail", False):
+                mobile_holder.controls = [
+                    ft.Container(
+                        ft.Row([ft.Icon(ft.Icons.ARROW_BACK, size=16, color=T.VIOLET_INK),
+                                ft.Text("All topics", size=12.5,
+                                        weight=ft.FontWeight.BOLD, color=T.VIOLET_INK)],
+                               spacing=6, tight=True),
+                        on_click=_back_to_list, ink=True, border_radius=8,
+                        padding=ft.Padding.symmetric(vertical=8, horizontal=6),
+                        margin=ft.Margin.only(bottom=6)),
+                    content_col,
+                ]
+            else:
+                mobile_holder.controls = [search, ft.Container(height=8), nav_col]
         try:
-            nav_col.update(); content_col.update()
+            if _mobile:
+                mobile_holder.update()
+            else:
+                nav_col.update(); content_col.update()
         except Exception:
             pass
 
     def _select(key):
         app._helpg_sel = key
+        if _mobile:
+            app._helpg_mobile_detail = True   # drill into the topic's content
+        _refresh()
+
+    def _back_to_list(_e=None):
+        app._helpg_mobile_detail = False
         _refresh()
 
     def _on_search(e):
@@ -561,22 +597,27 @@ def show(app, initial=None):
 
     _refresh()
 
-    left = ft.Container(
-        ft.Column([
-            search,
-            ft.Container(height=8),
-            ft.Container(nav_col, expand=True),
-        ], spacing=0, expand=True),
-        width=232, padding=ft.Padding.only(right=14),
-        border=ft.Border.only(right=ft.BorderSide(1, T.BORDER)))
+    if _mobile:
+        # Single pane sized to the (narrow) viewport — width=None lets the
+        # dialog fit the phone instead of a fixed 880px that ran off-screen.
+        body = ft.Container(mobile_holder, width=None, height=520)
+    else:
+        left = ft.Container(
+            ft.Column([
+                search,
+                ft.Container(height=8),
+                ft.Container(nav_col, expand=True),
+            ], spacing=0, expand=True),
+            width=232, padding=ft.Padding.only(right=14),
+            border=ft.Border.only(right=ft.BorderSide(1, T.BORDER)))
 
-    right = ft.Container(content_col, expand=True,
-                         padding=ft.Padding.only(left=18, right=4))
+        right = ft.Container(content_col, expand=True,
+                             padding=ft.Padding.only(left=18, right=4))
 
-    body = ft.Container(
-        ft.Row([left, right], spacing=0, expand=True,
-               vertical_alignment=ft.CrossAxisAlignment.STRETCH),
-        width=880, height=560)
+        body = ft.Container(
+            ft.Row([left, right], spacing=0, expand=True,
+                   vertical_alignment=ft.CrossAxisAlignment.STRETCH),
+            width=880, height=560)
 
     dlg = ft.AlertDialog(
         modal=True,

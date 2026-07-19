@@ -110,6 +110,7 @@ PROVIDER_DISPLAY = {
     "gemini": "Gemini", "azure_openai": "Azure OpenAI", "ollama": "Ollama",
     "groq": "Groq", "cerebras": "Cerebras", "openrouter": "OpenRouter",
     "mistral": "Mistral", "deepseek": "DeepSeek", "qwen": "Qwen", "manus": "Manus",
+    "minimax": "MiniMax", "glm": "GLM",
 }
 def disp_name(name):
     if not name:

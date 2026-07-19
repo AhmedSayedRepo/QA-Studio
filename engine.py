@@ -70,12 +70,40 @@ AI_CONFIG = {
     # Keys: console.mistral.ai. OpenAI-compatible endpoint.
     "mistral":      {"api_key": "your-mistral-key-here", "base_url": "https://api.mistral.ai/v1",
                      "model": "mistral-large-latest", "vision": False},
+    # MiniMax — OpenAI-compatible; built for coding/agentic + test-validated
+    # loops (a good fit for test-case generation). Keys: platform.minimax.io.
+    # base_url is the INTERNATIONAL endpoint. "MiniMax-M2" is the flagship;
+    # newer point releases (MiniMax-M2.1 / -M2.5 / -M2.7) can be selected in the
+    # model dropdown once a key is saved. Text-only. Time-limited free trial.
+    "minimax":      {"api_key": "your-minimax-key-here", "base_url": "https://api.minimax.io/v1",
+                     "model": "MiniMax-M2", "vision": False},
+    # GLM (Zhipu AI / Z.AI) — OpenAI-compatible. Tops the open-weight
+    # leaderboards. Keys: z.ai (free tier, no card). base_url is the
+    # international Z.AI endpoint (mainland: https://open.bigmodel.cn/api/paas/v4).
+    # "glm-4.5-flash" is the FREE, rate-limited model; switch to "glm-4.5" /
+    # "glm-4.7" (or a -flash newer point release) for the stronger paid models.
+    "glm":          {"api_key": "your-glm-key-here", "base_url": "https://api.z.ai/api/paas/v4",
+                     "model": "glm-4.5-flash", "vision": False},
 }
 
 # OpenAI-compatible providers — all share one HTTP chat/model-list adapter. Add a
 # provider here when its endpoint speaks the OpenAI /chat/completions + /models API.
 OPENAI_COMPAT_PROVIDERS = ("openai", "nvidia", "deepseek", "qwen",
-                           "groq", "cerebras", "openrouter", "mistral")
+                           "groq", "cerebras", "openrouter", "mistral",
+                           "minimax", "glm")
+
+# Rough capability ranking for ordering the provider dropdown "most powerful
+# first" (lower = stronger). Applied WITHIN each free/paid group in
+# _provider_options, after the active provider. Deliberately subjective and
+# time-sensitive — bump entries as models change. Anything not listed sorts
+# last (99). NVIDIA/Groq/Cerebras/OpenRouter are model HOSTS, ranked on the
+# strength of what they typically serve, not a model of their own.
+POWER_RANK = {
+    "anthropic": 0, "openai": 1, "gemini": 2, "azure_openai": 3,
+    "deepseek": 4, "glm": 5, "qwen": 6, "minimax": 7, "mistral": 8,
+    "nvidia": 9, "groq": 10, "cerebras": 11, "openrouter": 12,
+    "manus": 13, "ollama": 14,
+}
 
 # ── AI usage / cost tracking ─────────────────────────────────────────────────
 # USD per 1,000,000 tokens, {"in": ..., "out": ...}. This table is NOT
@@ -558,7 +586,8 @@ def T_disp(name):
             "azure_openai": "Azure OpenAI", "ollama": "Ollama", "nvidia": "NVIDIA",
             "deepseek": "DeepSeek", "qwen": "Qwen", "manus": "Manus",
             "groq": "Groq", "cerebras": "Cerebras", "openrouter": "OpenRouter",
-            "mistral": "Mistral"}.get(name, str(name).title())
+            "mistral": "Mistral", "minimax": "MiniMax",
+            "glm": "GLM"}.get(name, str(name).title())
 
 def active_providers():
     """Provider names that have a usable key."""
@@ -780,10 +809,14 @@ def _gemini_http(cfg, prompt_text, images, max_tokens, timeout, want_json=False)
     if want_json:
         gen_cfg["responseMimeType"] = "application/json"
     key = (cfg.get("api_key") or "").strip()
+    # Send the key in the x-goog-api-key HEADER, not the URL query string.
+    # Keys in URLs are far more likely to be captured in proxy/server/access
+    # logs than header auth (security review hardening).
     url = ("https://generativelanguage.googleapis.com/v1beta/models/"
-           f"{cfg['model']}:generateContent?key={key}")
+           f"{cfg['model']}:generateContent")
     payload = {"contents": [{"parts": parts}], "generationConfig": gen_cfg}
-    data = _http_post_json(url, {"content-type": "application/json"}, payload, timeout)
+    data = _http_post_json(url, {"content-type": "application/json",
+                                 "x-goog-api-key": key}, payload, timeout)
     cands = (data or {}).get("candidates") or []
     if not cands:
         fb = ((data or {}).get("promptFeedback") or {}).get("blockReason")
@@ -803,10 +836,11 @@ def _gemini_models_http(key, timeout=15):
     # page and follow nextPageToken so the FULL catalogue is returned.
     key = (key or "").strip()
     base = "https://generativelanguage.googleapis.com/v1beta/models"
+    _hdr = {"x-goog-api-key": key}   # key in header, not the URL (see _gemini call)
     ids, token = [], None
     for _ in range(20):  # safety cap on pages
-        url = f"{base}?key={key}&pageSize=1000" + (f"&pageToken={token}" if token else "")
-        data = _http_get_json(url, {}, timeout)
+        url = f"{base}?pageSize=1000" + (f"&pageToken={token}" if token else "")
+        data = _http_get_json(url, _hdr, timeout)
         for m in ((data or {}).get("models") or []):
             if "generateContent" in (m.get("supportedGenerationMethods") or []):
                 nm = m.get("name", "") or ""
@@ -8588,6 +8622,48 @@ def _parse_ver(v):
 
 def _ver_newer(remote, local):
     return _parse_ver(remote) > _parse_ver(local)
+
+# The rolling Android release tag + the version-marker asset that build-apk.yml
+# writes AFTER a successful build. See check_mobile_update.
+MOBILE_RELEASE_TAG = "android-apk"
+MOBILE_VERSION_ASSET = "mobile-version.txt"
+
+def check_mobile_update(timeout=6):
+    """MOBILE update check — reads the version of the APK that is ACTUALLY
+    PUBLISHED, not the repo's VERSION on main.
+
+    THE RACE THIS FIXES: release.bat bumps VERSION + cuts the vX.Y.Z release
+    IMMEDIATELY, but the APK takes ~10 min to build and attach. check_for_update
+    (which reads main's VERSION) would tell mobile users an update exists during
+    that whole window — they'd tap Download and get a 404 or the OLD apk, since
+    the new one isn't attached yet. So mobile must NOT key off the repo VERSION.
+
+    build-apk.yml publishes the APK to the rolling `android-apk` release and, in
+    the SAME step, uploads a `mobile-version.txt` asset containing the version
+    it just built. Because the marker and the .apk are written together at the
+    END of a successful build, the advertised version can never run ahead of an
+    available APK. This reads that marker. Same dict shape as check_for_update;
+    fail-soft (update=False) on any network/parse error.
+    """
+    local = local_version()
+    import time as _t
+    url = (f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases/download/"
+           f"{MOBILE_RELEASE_TAG}/{MOBILE_VERSION_ASSET}?_={int(_t.time())}")
+    hdr = {"Cache-Control": "no-cache"}
+    tok = _github_token()
+    if tok:
+        hdr["Authorization"] = f"Bearer {tok}"
+    try:
+        r = requests.get(url, headers=hdr, timeout=timeout, allow_redirects=True)
+        if r.status_code != 200:
+            return {"update": False, "local": local, "remote": None, "error": None}
+        remote = _clean_ver(r.text or "")
+        if not remote:
+            return {"update": False, "local": local, "remote": None, "error": None}
+        return {"update": _ver_newer(remote, local), "local": local,
+                "remote": remote, "error": None}
+    except Exception:
+        return {"update": False, "local": local, "remote": None, "error": None}
 
 def check_for_update(timeout=6):
     """Fetch the repo's VERSION file and compare to local.

@@ -96,6 +96,14 @@ def show_idle_warning(app):
         app._idle_warning_active = False
         return
     app._idle_left = int(min(app.IDLE_WARN_SECONDS, idle_minutes(app) * 60))
+    # WALL-CLOCK deadline, not a decrementing counter. The old `_idle_left -= 1`
+    # per time.sleep(1) FREEZES whenever the process is suspended — desktop
+    # window closed/minimised, laptop sleep, or the Flet client disconnecting —
+    # so on resume it showed a STALE value (reported live: frozen at 43s) and
+    # the security timeout never fired. Deriving `remaining` from a fixed
+    # deadline means a suspended-then-resumed app sees the time that really
+    # elapsed and signs out at once, which is the correct security behaviour.
+    app._idle_warn_deadline = time.time() + app._idle_left
     app._idle_warn_cancel = False
     app._idle_warn_txt = ft.Text(warn_msg(app._idle_left),
                                  size=15, weight=ft.FontWeight.BOLD, color=T.VIOLET_INK)
@@ -122,7 +130,8 @@ def show_idle_warning(app):
     app._show_dialog(dlg)
 
     def _tick():
-        while getattr(app, "_idle_left", 0) > 0 and not getattr(app, "_idle_warn_cancel", False):
+        import math
+        while not getattr(app, "_idle_warn_cancel", False):
             # If the session ended some other way mid-countdown (revoked,
             # explicit sign-out, revalidate() finding it gone), just close the
             # dialog quietly instead of letting it sit on top of the login gate.
@@ -131,9 +140,14 @@ def show_idle_warning(app):
                 app._idle_warning_active = False
                 app.ui_safe(app._close_dialog)
                 return
-            time.sleep(1)
-            app._idle_left = getattr(app, "_idle_left", 0) - 1
+            remaining = getattr(app, "_idle_warn_deadline", 0) - time.time()
+            app._idle_left = max(0, math.ceil(remaining))
+            if remaining <= 0:
+                break                     # deadline reached (incl. after suspend)
             app.ui_safe(lambda: update_idle_warn(app))
+            # Sleep to the next whole second, capped at 1s — so a resumed thread
+            # re-checks the wall clock promptly instead of overshooting.
+            time.sleep(min(1.0, remaining))
         if not getattr(app, "_idle_warn_cancel", False):
             app.ui_safe(lambda: sign_out(app))
     try:
@@ -144,6 +158,12 @@ def show_idle_warning(app):
 
 def update_idle_warn(app):
     try:
+        import math
+        # Recompute from the deadline (not the possibly-stale _idle_left) so a
+        # render after a reconnect/resume shows the REAL remaining time.
+        dl = getattr(app, "_idle_warn_deadline", None)
+        if dl is not None:
+            app._idle_left = max(0, math.ceil(dl - time.time()))
         t = getattr(app, "_idle_warn_txt", None)
         if t is not None:
             t.value = warn_msg(getattr(app, "_idle_left", 0))

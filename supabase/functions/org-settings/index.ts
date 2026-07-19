@@ -22,6 +22,17 @@
 // capability check below is what actually closes that gap: it is enforced here,
 // server-side, regardless of what the client does or doesn't do.
 //
+// DEFENCE IN DEPTH (2026-07, security review): the `org_settings` TABLE is now
+// also locked at the database layer. It previously had an RLS policy
+// `org_settings_select_authenticated USING (true)` plus a direct SELECT grant,
+// which let any signed-in user read the Gmail App Password DIRECTLY via
+// `GET /rest/v1/org_settings`, bypassing this function's capability check
+// entirely. That policy + grants were dropped (migration
+// `lock_org_settings_to_service_role`): RLS stays enabled with NO permissive
+// policy for authenticated/anon => the table is reachable ONLY through this
+// service-role function. So the capability check here is now the true and only
+// gate, not just the intended one.
+//
 // Writes (POST) remain Admin-only, unchanged.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";

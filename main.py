@@ -439,7 +439,7 @@ class QAStudio:
     # local). Everything NOT listed here is treated as paid. Drives the free/paid
     # grouping in the provider dropdown — adjust as providers change their pricing.
     FREE_PROVIDERS = {"gemini", "nvidia", "groq", "cerebras", "openrouter",
-                      "mistral", "ollama"}
+                      "mistral", "ollama", "minimax", "glm"}
 
     # ---- credential helpers ----
     def _provider_options(self):
@@ -462,8 +462,11 @@ class QAStudio:
                                  margin=ft.Margin.only(left=4)),
                 ], spacing=7, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                 padding=ft.Padding.only(left=4, right=10, top=9, bottom=5))
-        # group by free/paid; within a group, active first, then original order
-        names.sort(key=lambda n: (_grp(n), not _is_active(n), orig_index[n]))
+        # Group by free/paid; within a group: the active provider first (it's
+        # the one you'll most likely pick), then MOST POWERFUL first
+        # (E.POWER_RANK), then original config order as a stable tiebreaker.
+        names.sort(key=lambda n: (_grp(n), not _is_active(n),
+                                  E.POWER_RANK.get(n, 99), orig_index[n]))
         opts, cur_grp = [], None
         for name in names:
             g = _grp(name)
@@ -806,6 +809,15 @@ class QAStudio:
                     if _u0:
                         self.user = _u0
                         self._switch_user_creds()
+                        # POST-LOGIN update check — fires for BOTH biometrics-on
+                        # (gate just passed) and biometrics-off (auto-restore)
+                        # session restores, so a signed-in user reliably sees a
+                        # pending update instead of it popping behind the login
+                        # gate at build time (self-guarded / once-per-session).
+                        try:
+                            self._check_mobile_update(force=True)
+                        except Exception:
+                            pass
             except Exception:
                 pass
         if getattr(self, "_theme_touched", False):
@@ -2444,6 +2456,14 @@ class QAStudio:
             except Exception:
                 pass
             return
+        # Mobile: surface any pending update on a nav switch too (self-guarded,
+        # throttled, once-per-session — see _check_mobile_update). Gives a
+        # signed-in user a reliable moment to see it beyond the login-time
+        # check, without re-popping every switch.
+        try:
+            self._check_mobile_update()
+        except Exception:
+            pass
         # Persist automation inputs when leaving the Automation screen so they
         # are preserved until the user changes them.
         if self.active == "automation" and screen != "automation":
@@ -2835,7 +2855,12 @@ class QAStudio:
             except Exception:
                 pass
         self.render()
-        # Mobile: one-shot update NOTICE (self-gates; no-op on desktop).
+        # Mobile update NOTICE. Self-guards: no-op on desktop, and skips while
+        # not signed in — so at build time (before login, especially with
+        # biometrics on) it does nothing. The real triggers are post-login
+        # (login._submit / _on_secure_creds_ready) and nav switches (goto). This
+        # call still covers the case where auth is unconfigured (no login gate
+        # at all), where the user is effectively "in" immediately.
         try:
             self._check_mobile_update()
         except Exception:
@@ -3323,6 +3348,13 @@ class QAStudio:
         "mistral":   ("console.mistral.ai → API Keys → Create new key. The free "
                       "'Experiment' tier requires opting into data-training.",
                       "https://console.mistral.ai/api-keys", "Open Mistral Console"),
+        "minimax":   ("platform.minimax.io → sign in → API Keys → Create. Uses the "
+                      "international endpoint; the M2 free trial is time-limited.",
+                      "https://platform.minimax.io/user-center/basic-information/interface-key",
+                      "Open MiniMax Platform"),
+        "glm":       ("z.ai → sign up (free, no card) → API Keys → Create. "
+                      "glm-4.5-flash is the free model.",
+                      "https://z.ai/manage-apikey/apikey-list", "Open Z.AI Keys"),
     }
 
     def _show_help(self, key):
@@ -3442,27 +3474,13 @@ class QAStudio:
             except TypeError:
                 self.model_dd = ft.Dropdown(**_dd_kwargs)
 
-        # PAT field
-        pat_has = bool(self.creds.get("pat"))
-        pat_editable = (not pat_has) or self._pat_unlocked
-        self.pat_field = ft.TextField(
-            value=self.creds.get("pat", ""), password=True, can_reveal_password=True,
-            hint_text="Paste PAT", read_only=not pat_editable,
-            bgcolor=(T.CARD if pat_editable else T.CARD_2),
-            border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
-            content_padding=ft.Padding.symmetric(vertical=12, horizontal=12), text_size=13, expand=True)
-        self.pat_btn = green_btn("Save", on_click=self._save_pat) if pat_editable                   else ghost_btn("Update", on_click=self._unlock_pat)
-
-        # Gmail field
-        gmail_has = bool(self.creds.get("gmail"))
-        gmail_editable = (not gmail_has) or self._gmail_unlocked
-        self.gmail_field = ft.TextField(
-            value=self.creds.get("gmail", ""), password=True, can_reveal_password=True,
-            hint_text="Gmail app password (optional)", read_only=not gmail_editable,
-            bgcolor=(T.CARD if gmail_editable else T.CARD_2),
-            border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
-            content_padding=ft.Padding.symmetric(vertical=12, horizontal=12), text_size=13, expand=True)
-        self.gmail_btn = green_btn("Save", on_click=self._save_gmail) if gmail_editable                     else ghost_btn("Update", on_click=self._unlock_gmail)
+        # PAT / Gmail / sender / sender-name fields are built by _make_cred_field
+        # and wrapped in in-place cells (see below) so saving them rebuilds only
+        # that one row, not the whole screen.
+        self._pat_cell = ft.Container(self._make_cred_field("pat"),
+                                      padding=ft.Padding.only(top=4))
+        self._gmail_cell = ft.Container(self._make_cred_field("gmail"),
+                                        padding=ft.Padding.only(top=4))
 
         # Azure Organization field (one-time set, preserved, Update to change).
         # Deliberately does NOT fall back to E.AZURE_ORG when this account has
@@ -3482,38 +3500,14 @@ class QAStudio:
             content_padding=ft.Padding.symmetric(vertical=12, horizontal=12), text_size=13, expand=True)
         self.org_btn = green_btn("Save", on_click=self._save_org) if org_editable                   else ghost_btn("Update", on_click=self._unlock_org)
 
-        # Gmail sender field (one-time set, preserved, Update to change)
-        sender_val = self.creds.get("gmail_sender", "") or E.GMAIL_SENDER
-        sender_has = bool(self.creds.get("gmail_sender"))
-        sender_editable = (not sender_has) or self._sender_unlocked
-        self.sender_field = ft.TextField(
-            value=sender_val, hint_text="Sender Gmail address",
-            read_only=not sender_editable,
-            bgcolor=(T.CARD if sender_editable else T.CARD_2),
-            border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
-            content_padding=ft.Padding.symmetric(vertical=12, horizontal=12), text_size=13, expand=True)
-        self.sender_btn = green_btn("Save", on_click=self._save_sender) if sender_editable                      else ghost_btn("Update", on_click=self._unlock_sender)
-
-        # Sender DISPLAY NAME — what recipients see instead of the raw address.
-        # Save/Update button + lock behaviour to match EVERY other credential
-        # field in this card (API key, Azure org, PAT, Email sender, Gmail app
-        # password). It was the only field here with no button: it auto-saved on
-        # every keystroke, so there was no explicit confirmation and no way to
-        # tell a saved value from one being edited (reported live).
-        sender_name_val = (self.creds.get("gmail_sender_name") or E.GMAIL_SENDER_NAME)
-        sender_name_has = bool(self.creds.get("gmail_sender_name"))
-        sender_name_editable = (not sender_name_has) or self._sender_name_unlocked
-        self.sender_name_field = ft.TextField(
-            value=sender_name_val,
-            hint_text="Display name recipients see (e.g. QA Studio)",
-            read_only=not sender_name_editable,
-            bgcolor=(T.CARD if sender_name_editable else T.CARD_2),
-            border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
-            content_padding=ft.Padding.symmetric(vertical=12, horizontal=12),
-            text_size=13, expand=True)
-        self.sender_name_btn = (green_btn("Save", on_click=self._save_sender_name)
-                                if sender_name_editable
-                                else ghost_btn("Update", on_click=self._unlock_sender_name))
+        # Gmail sender address + display NAME — in-place cells too (Save/Update
+        # + lock behaviour identical to every other credential field). Sender
+        # name previously auto-saved on every keystroke; it now has an explicit
+        # Save button like the rest.
+        self._sender_cell = ft.Container(self._make_cred_field("sender"),
+                                         padding=ft.Padding.only(top=4, bottom=12))
+        self._sender_name_cell = ft.Container(self._make_cred_field("sender_name"),
+                                              padding=ft.Padding.only(top=4, bottom=12))
 
         _fields = [
             field_label("AI Provider", req=True, info="How to make a provider active",
@@ -3537,8 +3531,7 @@ class QAStudio:
                     field_label("Azure DevOps PAT", req=True,
                                 info="How to create an Azure DevOps PAT",
                                 on_info=lambda e: self._show_help("pat")),
-                    ft.Container(ft.Row([hover_field(self.pat_field), self.pat_btn], spacing=8),
-                                 padding=ft.Padding.only(top=4)),
+                    self._pat_cell,
                 ], expand=True, spacing=0),
             ]),
         ]
@@ -3549,23 +3542,74 @@ class QAStudio:
             _fields += [
                 ft.Container(height=12),
                 field_label("Email Sender", hint="optional"),
-                ft.Container(ft.Row([hover_field(self.sender_field), self.sender_btn], spacing=8),
-                            padding=ft.Padding.only(top=4, bottom=12)),
+                self._sender_cell,
                 field_label("Sender name", hint="shown to recipients instead of the address"),
-                ft.Container(ft.Row([hover_field(self.sender_name_field),
-                                     self.sender_name_btn], spacing=8),
-                            padding=ft.Padding.only(top=4, bottom=12)),
+                self._sender_name_cell,
                 ft.Row([
                     ft.Column([
                         field_label("Gmail App Password", hint="optional", req=False,
                                     info="How to create a Gmail App Password",
                                     on_info=lambda e: self._show_help("gmail")),
-                        ft.Container(ft.Row([hover_field(self.gmail_field), self.gmail_btn], spacing=8),
-                                     padding=ft.Padding.only(top=4)),
+                        self._gmail_cell,
                     ], expand=True, spacing=0),
                 ]),
             ]
         return ft.Column(_fields, spacing=0)
+
+    # Credential fields whose save affects ONLY themselves (no "THIS RUN"
+    # summary, no model catalogue, nothing cross-screen) — so a save just flips
+    # this one field editable<->locked. These are rebuilt IN PLACE (see
+    # _refresh_cred_field) instead of full-rendering the whole Setup screen.
+    # AI key / provider / org are deliberately NOT here: saving them changes the
+    # run summary and the model dropdown, so they still full-render.
+    _INPLACE_CRED_FIELDS = {
+        "pat":         dict(value_key="pat", hint="Paste PAT", password=True),
+        "sender":      dict(value_key="gmail_sender", hint="Sender Gmail address",
+                            password=False, env="GMAIL_SENDER"),
+        "sender_name": dict(value_key="gmail_sender_name", password=False,
+                            hint="Display name recipients see (e.g. QA Studio)",
+                            env="GMAIL_SENDER_NAME"),
+        "gmail":       dict(value_key="gmail", password=True,
+                            hint="Gmail app password (optional)"),
+    }
+
+    def _make_cred_field(self, kind):
+        """Build (or REBUILD) one self-contained credential field + its
+        Save/Update button, stash them on self.<kind>_field / self.<kind>_btn,
+        and return the row. Shared by first render and in-place refresh, so both
+        produce an identical control."""
+        cfg = self._INPLACE_CRED_FIELDS[kind]
+        raw = self.creds.get(cfg["value_key"], "")
+        val = raw or (getattr(E, cfg["env"], "") if cfg.get("env") else "")
+        editable = (not bool(raw)) or getattr(self, f"_{kind}_unlocked", False)
+        field = ft.TextField(
+            value=val, hint_text=cfg["hint"], read_only=not editable,
+            password=cfg["password"], can_reveal_password=cfg["password"],
+            bgcolor=(T.CARD if editable else T.CARD_2),
+            border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
+            content_padding=ft.Padding.symmetric(vertical=12, horizontal=12),
+            text_size=13, expand=True)
+        setattr(self, f"{kind}_field", field)
+        btn = (green_btn("Save", on_click=getattr(self, f"_save_{kind}")) if editable
+               else ghost_btn("Update", on_click=getattr(self, f"_unlock_{kind}")))
+        setattr(self, f"{kind}_btn", btn)
+        return ft.Row([hover_field(field), btn], spacing=8)
+
+    def _refresh_cred_field(self, *kinds):
+        """In-place rebuild of one or more credential rows after a save/unlock —
+        NO full screen render, so the rest of Setup doesn't rebuild or jump
+        scroll. Falls back to a full render if a cell isn't mounted yet."""
+        for kind in kinds:
+            cell = getattr(self, f"_{kind}_cell", None)
+            if cell is None:
+                self.render()
+                return
+            try:
+                cell.content = self._make_cred_field(kind)
+                cell.update()
+            except Exception:
+                self.render()
+                return
 
     # ---- connection: saved (connected) ----
     def _cred_saved_row(self, icon, k, v, badge_ctrl):
@@ -3586,6 +3630,8 @@ class QAStudio:
         masked_pat = "••••••••••" + (pat[-4:] if len(pat) >= 4 else "")
         gm = self.creds.get("gmail", "")
         masked_gm = ("•••• •••• ••••" if gm else "—")
+        _sender = self.creds.get("gmail_sender") or "—"
+        _sender_name = self.creds.get("gmail_sender_name") or "—"
         div = ft.Container(height=1, bgcolor=T.BORDER_2, margin=ft.Margin.symmetric(vertical=8))
         _model = self._saved_model(name)
         prov_val = f"{T.disp_name(name)}  ·  {_model}" if _model else T.disp_name(name)
@@ -3600,6 +3646,17 @@ class QAStudio:
         # even see whether it's configured here either.
         if self._is_admin():
             _rows += [
+                div,
+                # Email SENDER address + display NAME — previously the saved view
+                # jumped straight from PAT to the Gmail App Password and never
+                # showed these, so once connected you couldn't see or reach the
+                # sender name without editing blindly. Each row's "Update" opens
+                # the full edit view (same as every other saved row).
+                self._cred_saved_row(ft.Icons.ALTERNATE_EMAIL, "Email Sender", _sender,
+                                     badge("optional", "grey")),
+                div,
+                self._cred_saved_row(ft.Icons.BADGE_OUTLINED, "Sender name", _sender_name,
+                                     badge("optional", "grey")),
                 div,
                 self._cred_saved_row(ft.Icons.MAIL_OUTLINED, "Gmail App Password", masked_gm,
                                      badge("optional", "grey")),
@@ -3953,20 +4010,20 @@ class QAStudio:
             self._err("Azure DevOps PAT is required."); return
         self.creds["pat"] = val; store.save(self.creds)
         self._pat_unlocked = False
-        self._toast("PAT saved."); self.render()
+        self._toast("PAT saved."); self._refresh_cred_field("pat")
 
     def _unlock_pat(self, e=None):
-        self._pat_unlocked = True; self.render()
+        self._pat_unlocked = True; self._refresh_cred_field("pat")
 
     def _save_gmail(self, e=None):
         val = (self.gmail_field.value or "").strip()
         self.creds["gmail"] = val; store.save(self.creds)
         self._gmail_unlocked = False
-        self._toast("Gmail password saved."); self.render()
+        self._toast("Gmail password saved."); self._refresh_cred_field("gmail")
         self._push_org_email()
 
     def _unlock_gmail(self, e=None):
-        self._gmail_unlocked = True; self.render()
+        self._gmail_unlocked = True; self._refresh_cred_field("gmail")
 
     def _save_org(self, e=None):
         val = (self.org_field.value or "").strip()
@@ -3991,8 +4048,7 @@ class QAStudio:
         except Exception:
             pass
         self._sender_unlocked = False
-        self._sender_name_unlocked = False
-        self._toast("Email sender saved."); self.render()
+        self._toast("Email sender saved."); self._refresh_cred_field("sender")
         self._push_org_email()
 
     def _save_sender_name(self, e=None):
@@ -4014,14 +4070,14 @@ class QAStudio:
             pass
         self._sender_name_unlocked = False
         self._toast("Sender name saved.")
-        self.render()
+        self._refresh_cred_field("sender_name")
         self._push_org_email()
 
     def _unlock_sender_name(self, e=None):
-        self._sender_name_unlocked = True; self.render()
+        self._sender_name_unlocked = True; self._refresh_cred_field("sender_name")
 
     def _unlock_sender(self, e=None):
-        self._sender_unlocked = True; self.render()
+        self._sender_unlocked = True; self._refresh_cred_field("sender")
 
     def _push_org_email(self):
         """Best-effort: share the just-saved email config (sender / sender name /
@@ -5046,12 +5102,27 @@ class QAStudio:
 
     def _bg(self, fn):
         """Run fn in a background thread using Flet's loop-aware runner when available.
-        This fixes the 0.85 bug where thread updates don't repaint until refocus."""
+        This fixes the 0.85 bug where thread updates don't repaint until refocus.
+
+        fn is wrapped so an exception in the background work is LOGGED rather
+        than vanishing — nearly every save/fetch/export/generation runs through
+        here, and a bare unhandled error in one was previously invisible (on
+        mobile there's no console to catch it). Still fail-soft: the thread
+        dies quietly as before, but now with a diagnostics.log breadcrumb."""
+        def _guarded():
+            try:
+                fn()
+            except Exception as ex:
+                try:
+                    import diag_log
+                    diag_log.log("bg_task", ex)
+                except Exception:
+                    pass
         runner = getattr(self.page, "run_thread", None)
         if callable(runner):
-            runner(fn)
+            runner(_guarded)
         else:
-            threading.Thread(target=fn, daemon=True).start()
+            threading.Thread(target=_guarded, daemon=True).start()
 
     def _track_scroll(self, e):
         try:
@@ -5352,8 +5423,19 @@ class QAStudio:
             pass
         try:
             fn()
-        except Exception:
-            pass
+        except Exception as ex:
+            # LOG the swallowed UI exception instead of a bare pass. ui_safe
+            # wraps almost every UI mutation and render, so a bare swallow here
+            # made a whole class of bugs invisible — e.g. an AttributeError
+            # while BUILDING a dialog (the ft.alignment.center typo) silently
+            # produced "the popup just doesn't appear", diagnosable only by
+            # guesswork. Still fail-soft (a broken render must never crash the
+            # app), but now every occurrence lands in diagnostics.log.
+            try:
+                import diag_log
+                diag_log.log("ui_safe", ex)
+            except Exception:
+                pass
 
     def _open_help_guide(self, initial=None):
         """Open the searchable feature guide (Help & guide)."""
@@ -7157,7 +7239,7 @@ class QAStudio:
         except Exception:
             self._remote_run_active = False
 
-    def _check_mobile_update(self):
+    def _check_mobile_update(self, force=False):
         """Mobile-only UPDATE NOTICE (option 1 of the mobile update plan):
         Android can't self-update (an installed APK is immutable — which is
         why has_self_update() is gated off there), so instead of the desktop's
@@ -7165,13 +7247,39 @@ class QAStudio:
         (E.check_for_update — the same source the desktop trusts) and offer
         the latest GitHub Release's APK for download; opening the downloaded
         APK updates in place (same package id). Fail-silent end to end: no
-        network / no release / API hiccups must never disturb startup."""
+        network / no release / API hiccups must never disturb startup.
+
+        Called at three moments now (was only once, at build): app build,
+        straight after a successful sign-in (force=True), and on every nav
+        switch. The guards below make that safe — it never pops over the login
+        screen and never shows more than once per session."""
         if not platform_caps.is_mobile():
             return
+        # (1) Never surface an update over the LOGIN screen. With biometrics ON,
+        # __init__/_build run BEFORE sign-in, so the old single build-time call
+        # fired while the fingerprint gate was still up and the user never saw
+        # the popup — the whole reason this is now also triggered post-login.
+        if auth.configured() and getattr(self, "user", None) is None:
+            return
+        # (2) Show at most once per session, so switching navs can drive the
+        # check without re-popping the dialog every time.
+        if getattr(self, "_mobile_update_shown", False):
+            return
+        # (3) Throttle the network hit — nav switches call this frequently.
+        import time as _upd_t
+        if not force and (_upd_t.time() - getattr(self, "_mobile_update_ts", 0)) < 60:
+            return
+        self._mobile_update_ts = _upd_t.time()
 
         def work():
             try:
-                res = E.check_for_update() or {}
+                # MOBILE uses check_MOBILE_update (the published-APK version
+                # marker), NOT check_for_update (the repo VERSION on main).
+                # release.bat bumps VERSION ~10 min before the APK is built, so
+                # keying off the repo version told users an update existed while
+                # its APK didn't exist yet. The marker only advances once the
+                # APK is actually attached — see engine.check_mobile_update.
+                res = E.check_mobile_update() or {}
                 if not res.get("update"):
                     return
                 # Download the APK DIRECTLY. Reported live: tapping Download
@@ -7299,6 +7407,14 @@ class QAStudio:
                     waited += 1
                 if getattr(self, "_onboarding_open", False):
                     return
+                # Re-check the session guards now that we're about to show —
+                # the user may have signed out, or another trigger may have
+                # already shown it, during the network round-trip.
+                if getattr(self, "_mobile_update_shown", False):
+                    return
+                if auth.configured() and getattr(self, "user", None) is None:
+                    return
+                self._mobile_update_shown = True
                 self.ui_safe(_show)
             except Exception:
                 pass
