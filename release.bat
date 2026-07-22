@@ -59,8 +59,41 @@ if errorlevel 1 (
 echo [OK] GitHub CLI is installed and authenticated.
 echo.
 
-set /p VER=New version (e.g. 2.0.8):
+rem --- show what's already published before asking for a number -------------
+rem Without this you're picking the next version from memory, which is how the
+rem original incident (VERSION climbing 2.1.1 -> 3.0.5 with nothing released)
+rem went unnoticed for four attempts. Two values, shown separately because the
+rem difference is the useful part:
+rem   VERSION file   - what this working copy claims
+rem   Latest release - what actually exists on GitHub
+rem A gap between them means a bump that never published.
+rem
+rem goto-style flow and a :next_patch subroutine on purpose — same trap this
+rem script's sibling documents: a bare ) in prompt text closes a parenthesized
+rem block mid-line and kills the window, and %var% inside a block expands at
+rem PARSE time so the answer would be ignored.
+echo --- Current release state ---------------------------------------------
+set "CUR=(none)"
+if exist VERSION set /p CUR=<VERSION
+echo   VERSION file      %CUR%
+for /f "usebackq delims=" %%T in (`gh release view --json tagName -q .tagName 2^>nul`) do set "LAST=%%T"
+if not defined LAST set "LAST=(none)"
+echo   Latest release    %LAST%
+echo -----------------------------------------------------------------------
+echo.
+
+set "SUGGEST="
+call :next_patch "%CUR%" SUGGEST
+if not defined SUGGEST goto ask_plain
+set /p VER=New version [%SUGGEST%]:
+if "%VER%"=="" set "VER=%SUGGEST%"
+goto have_version
+
+:ask_plain
+set /p VER=New version, e.g. 2.0.8:
+:have_version
 if "%VER%"=="" echo No version entered. & pause & exit /b 1
+echo Using version %VER%.
 
 rem --- refuse to re-publish a version whose GitHub Release already exists,
 rem     rather than silently falling through to a confusing gh error later. ---
@@ -146,3 +179,20 @@ echo Tag page:
 echo   https://github.com/AhmedSayedRepo/QA-Studio/releases/tag/v%VER%
 pause
 endlocal
+rem Explicit exit so the successful path never falls through into the helper
+rem label below.
+exit /b 0
+
+:next_patch
+rem %1 = current version, %2 = variable to receive current-with-patch-bumped.
+rem Leaves %2 untouched if %1 isn't a parseable x.y.z, so a malformed or missing
+rem VERSION file falls back to the plain prompt rather than suggesting nonsense.
+set "_MAJ="
+set "_MIN="
+set "_PAT="
+for /f "tokens=1,2,3 delims=." %%a in ("%~1") do set "_MAJ=%%a" & set "_MIN=%%b" & set "_PAT=%%c"
+if not defined _PAT exit /b 0
+set /a "_NEXT=_PAT+1" >nul 2>&1
+if errorlevel 1 exit /b 0
+call set "%~2=%_MAJ%.%_MIN%.%_NEXT%"
+exit /b 0

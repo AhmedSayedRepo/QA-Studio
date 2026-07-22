@@ -41,6 +41,33 @@ if errorlevel 1 (
 echo [OK] GitHub CLI is installed and authenticated.
 echo.
 
+rem --- show what's about to be baked into the APK -----------------------------
+rem This script doesn't prompt for a version — it builds whatever is on main —
+rem so the useful thing to show is which version that will be, and whether your
+rem local tree agrees with it. Three values, separately, because the gaps are
+rem the point:
+rem   VERSION file    - what this working copy claims
+rem   Latest release  - the last version release.bat actually published
+rem   Local vs main   - whether main is even in sync with what you're looking at
+rem A build started while these disagree produces an APK whose version number
+rem isn't the one you think you're shipping.
+echo --- Version state -----------------------------------------------------
+set "CUR=(none)"
+if exist VERSION set /p CUR=<VERSION
+echo   VERSION file      %CUR%
+for /f "usebackq delims=" %%T in (`gh release view --json tagName -q .tagName 2^>nul`) do set "LAST=%%T"
+if not defined LAST set "LAST=(none)"
+echo   Latest release    %LAST%
+rem The APK is built from origin/main, so compare against that rather than the
+rem local branch tip — they differ exactly when you have unpushed commits.
+git fetch origin main --quiet >nul 2>&1
+set "AHEAD=?"
+for /f %%C in ('git rev-list --count origin/main..HEAD 2^>nul') do set "AHEAD=%%C"
+if "%AHEAD%"=="0" echo   Local vs main     in sync
+if not "%AHEAD%"=="0" echo   Local vs main     %AHEAD% local commit^(s^) NOT on main
+echo -----------------------------------------------------------------------
+echo.
+
 rem --- the workflow builds MAIN on GitHub, not your local files ---------------
 rem goto-style flow on purpose: a `set /p` prompt inside a parenthesized if-
 rem block is a batch trap — a bare ) in the prompt text closes the block

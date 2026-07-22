@@ -127,6 +127,10 @@ def show_idle_warning(app):
             primary_btn("Stay signed in", on_click=lambda e: renew(app)),
         ], alignment=ft.MainAxisAlignment.END, spacing=10, tight=True)],
         actions_alignment=ft.MainAxisAlignment.END)
+    # Remember WHICH dialog is the countdown, so any later close only ever
+    # dismisses this one — never a different dialog the user may have opened
+    # since (e.g. after clicking "Stay signed in").
+    app._idle_warn_dlg = dlg
     app._show_dialog(dlg)
 
     def _tick():
@@ -138,7 +142,7 @@ def show_idle_warning(app):
             if not (auth.configured() and getattr(app, "user", None)):
                 app._idle_warn_cancel = True
                 app._idle_warning_active = False
-                app.ui_safe(app._close_dialog)
+                app.ui_safe(lambda: close_idle_dialog(app))
                 return
             remaining = getattr(app, "_idle_warn_deadline", 0) - time.time()
             app._idle_left = max(0, math.ceil(remaining))
@@ -150,8 +154,37 @@ def show_idle_warning(app):
             time.sleep(min(1.0, remaining))
         if not getattr(app, "_idle_warn_cancel", False):
             app.ui_safe(lambda: sign_out(app))
+        else:
+            # The loop exited because _idle_warn_cancel was set from OUTSIDE this
+            # thread — the ONE path that doesn't close the dialog itself. renew()
+            # and signout_now() (the button handlers) both dismiss it before
+            # setting the flag, but _sign_out() (main.py) — reached when a
+            # background revalidate() finds the session revoked/expired — only
+            # flips the flags. Without this, the countdown is orphaned: left
+            # frozen at whatever second it last showed, floating over the now
+            # unauthenticated login gate (the reported "stuck at 59s over the
+            # sign-in screen"). The in-loop auth guard above can't catch this —
+            # once the flag is set, `while not _idle_warn_cancel` short-circuits
+            # before the guard runs. Closing here (idempotent; a no-op when the
+            # button handlers already closed it) guarantees the dialog never
+            # outlives the session.
+            app._idle_warning_active = False
+            app.ui_safe(lambda: close_idle_dialog(app))
     try:
         threading.Thread(target=_tick, daemon=True).start()
+    except Exception:
+        pass
+
+
+def close_idle_dialog(app):
+    """Dismiss the countdown dialog — but ONLY if it's still the one on screen.
+    Guards the teardown-race close (and the session-ended close) against yanking
+    a different dialog the user opened in the meantime: _close_dialog() closes
+    whatever `_dialog` currently is, so we first confirm it's still ours."""
+    try:
+        if getattr(app, "_dialog", None) is getattr(app, "_idle_warn_dlg", None):
+            app._close_dialog()
+        app._idle_warn_dlg = None
     except Exception:
         pass
 
