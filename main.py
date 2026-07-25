@@ -439,6 +439,9 @@ class QAStudio:
                 _u0 = auth.acquire_silent()
                 if _u0:
                     self.user = _u0
+                self._diag_restore("1-sync-init", restored=bool(_u0))
+            else:
+                self._diag_restore("1-sync-init", skipped="bio-gate-active-or-unconfigured")
         except Exception:
             pass
 
@@ -586,6 +589,45 @@ class QAStudio:
         return bool((self.creds["keys"].get(self._cred_slot(name)) or "").strip())
 
     # ---- external auth (Supabase) ----
+    def _diag_restore(self, tag, restored=None, skipped=""):
+        """DIAGNOSTIC ONLY (temporary, diag-logs branch) — no behaviour change.
+
+        Records the exact gate state at every session-restore decision so a
+        cold-start "biometrics → keeps loading → sign-in screen" can be traced
+        to the specific gate that swallowed it. Investigating the live report
+        showed the launch log contains NO auth error at all: the restore doesn't
+        fail, it either finds nothing (the Keystore session vault's async
+        bootstrap hasn't landed — on mobile the session is written ONLY to that
+        vault, while _load_session()'s pre-bootstrap fallback reads a file that
+        mobile never writes) or is skipped by a biometric gate. Nothing in the
+        current logging distinguishes those, which is why two versions of
+        guessing haven't fixed it.
+
+        Deliberately fail-soft and log-only: any exception here is swallowed so
+        instrumentation can never affect the launch path it's measuring."""
+        try:
+            import diag_log as _dl
+            try:
+                import secure_store_mobile as _ssm
+                sess_ready = _ssm.session_available()
+                bio_req = _ssm.bio_required()
+                bio_pass = _ssm.bio_gate_passed()
+                bio_done = _ssm.bio_gate_done()
+            except Exception as _ex:
+                sess_ready = bio_req = bio_pass = bio_done = f"n/a({type(_ex).__name__})"
+            _dl.log_warn(
+                "diag.restore",
+                f"{tag} | restored={'YES' if restored else ('NO' if restored is not None else '-')}"
+                + (f" | skipped={skipped}" if skipped else "")
+                + f" | user_set={self.user is not None}"
+                + f" | session_available={sess_ready}"
+                + f" | bio_required={bio_req} bio_gate_passed={bio_pass} bio_gate_done={bio_done}"
+                + f" | signed_out_flag={getattr(self, '_user_signed_out', False)}"
+                + f" | awaiting_bio_login={getattr(self, '_awaiting_bio_login', False)}"
+                + f" | auth_configured={auth.configured()}")
+        except Exception:
+            pass
+
     def _restore_session_async(self):
         """Silently restore a signed-in session on startup (off the UI thread)."""
         if not auth.configured():
@@ -596,6 +638,7 @@ class QAStudio:
         # entirely) moments after the sync path deliberately skipped it.
         # _on_secure_creds_ready() performs the actual gated restore instead.
         if self._biometric_login_gate_active():
+            self._diag_restore("2-async-bg", skipped="bio-gate-active")
             return
         def work():
             try:
@@ -604,6 +647,7 @@ class QAStudio:
                     self.user = u
                     self._switch_user_creds()   # load this user's own creds
                     self.ui_safe(self.render)
+                self._diag_restore("2-async-bg", restored=bool(u))
             except Exception:
                 pass
         try:
@@ -829,6 +873,7 @@ class QAStudio:
                 # launch — the exact bug this whole area keeps producing.
                 if (not _ssm.bio_required()) or _ssm.bio_gate_passed():
                     _u0 = auth.acquire_silent()
+                    self._diag_restore("3-on-ready", restored=bool(_u0))
                     if _u0:
                         self.user = _u0
                         self._switch_user_creds()
@@ -841,8 +886,15 @@ class QAStudio:
                             self._check_mobile_update(force=True)
                         except Exception:
                             pass
+                else:
+                    # THE suspected swallow point: bootstrap landed but the bio
+                    # gate hasn't passed yet, so the restore never runs — and
+                    # nothing re-triggers it if the gate resolves afterwards.
+                    self._diag_restore("3-on-ready", skipped="bio-required-and-gate-not-passed")
             except Exception:
                 pass
+        elif self.user is None:
+            self._diag_restore("3-on-ready", skipped="signed_out_flag-set")
         # Clear the biometric-login hold once the outcome is settled: either the
         # session restored (→ app), or the gate has RESOLVED and the session
         # bootstrap has landed but there's nothing to restore / the user

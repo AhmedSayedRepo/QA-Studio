@@ -383,7 +383,14 @@ jobs:
       # single `qa-studio.apk` asset in place each run, so this tag's
       # download URL is always a stable, world-downloadable pointer at the
       # newest successful build with zero manual release.bat step required.
+      # DISABLED ON THE diag-logs BRANCH. This step publishes to the shared
+      # `android-apk` rolling release with --clobber AND rewrites
+      # mobile-version.txt, which the in-app update check reads. A diagnostics
+      # build must not become the APK every install downloads, so this branch
+      # produces the Actions artifact ONLY (see "Upload APK artifact" above —
+      # grab it from the run page). Do NOT merge this branch to main.
       - name: Publish to rolling Android release
+        if: ${{ github.ref_name != 'diag-logs' }}
         working-directory: /tmp/mobile
         env:
           GH_TOKEN: ${{ github.token }}

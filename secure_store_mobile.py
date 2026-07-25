@@ -609,12 +609,25 @@ async def _bootstrap_session():
     """Read the session from its FIXED key. Runs once per launch, alongside (and
     independently of) the per-user creds bootstrap."""
     global _session_cache, _session_ready
+    _diag_err = ""
     try:
         raw = await _storage.get(_SESSION_STORE_KEY)
         _session_cache = json.loads(raw) if raw else None
-    except Exception:
+    except Exception as _ex:
         _session_cache = None
+        _diag_err = f"{type(_ex).__name__}: {str(_ex)[:100]}"
     _session_ready = True
+    # DIAGNOSTIC ONLY (temporary, diag-logs branch): timestamps WHEN the session
+    # vault lands and WHETHER it actually held a session. The launch restore
+    # returns None for "vault not ready yet" and "no session stored" alike, so
+    # without this the two are indistinguishable in the log.
+    try:
+        import diag_log as _dl
+        _dl.log_warn("diag.vault",
+                     f"session bootstrap landed | had_session={_session_cache is not None}"
+                     + (f" | error={_diag_err}" if _diag_err else ""))
+    except Exception:
+        pass
     if _on_ready:
         try:
             _on_ready()
