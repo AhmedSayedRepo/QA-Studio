@@ -405,6 +405,18 @@ def _refresh(refresh_token):
         if _diag: _diag.log("auth_supabase._refresh", ex)
         return None
     if r.status_code != 200:
+        # A non-200 here is THE reason a day-old biometric restore silently
+        # bounces to sign-in (acquire_silent wipes the session on a None return).
+        # Log status + body: "invalid_grant / refresh_token_not_found" = token
+        # rotated/revoked (Supabase session inactivity time-box or reuse); a 5xx
+        # = transient outage that should NOT have wiped the session.
+        if _diag:
+            try:
+                _diag.log_warn("auth_supabase._refresh",
+                               f"refresh rejected status={r.status_code} "
+                               f"body={(r.text or '')[:240]}")
+            except Exception:
+                pass
         return None
     return r.json()
 
