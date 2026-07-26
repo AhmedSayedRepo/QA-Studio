@@ -256,7 +256,8 @@ def _save_session(data):
     # through to the file path below if the vault isn't ready yet.
     try:
         import secure_store_mobile as _ssm
-        if _ssm.session_available() and _ssm.save_session(data):
+        _avail = _ssm.session_available()
+        if _avail and _ssm.save_session(data):
             # Remove any pre-existing plaintext-ish file from before this fix.
             try:
                 if data is None or os.path.exists(_cache_file()):
@@ -264,6 +265,16 @@ def _save_session(data):
             except Exception:
                 pass
             return
+        # Reached here on mobile means the vault write DID NOT confirm — the
+        # exact durability gap that loses a rotated refresh token. Make it loud
+        # (was silent) so a dropped persist is visible in the diag log.
+        if _diag:
+            try:
+                _diag.log_warn("auth_supabase._save_session",
+                               f"vault persist NOT confirmed "
+                               f"(session_available={_avail}, data={'none' if data is None else 'set'})")
+            except Exception:
+                pass
     except Exception:
         pass
     # MOBILE: never fall through to the base64 file for the SESSION either —
@@ -395,6 +406,19 @@ def sign_in(email, password):
 
 
 def _refresh(refresh_token):
+    # Log the TAIL of the token we're about to present. Cross-reference it with
+    # secure_store_mobile.save_session's rt_tail: if the token presented at an
+    # overnight restore ≠ the tail last persisted, the rotated token was lost on
+    # write (durability gap) rather than server-revoked — the two are otherwise
+    # indistinguishable from a bare "refresh_token_not_found".
+    if _diag:
+        try:
+            import hashlib
+            _t = (refresh_token or "")
+            _fp = hashlib.sha256(_t.encode("utf-8")).hexdigest()[:8] if _t else ""
+            _diag.log_warn("auth_supabase._refresh", f"presenting rt_fp={_fp}")
+        except Exception:
+            pass
     try:
         r = _post_retry(f"{SUPABASE_URL}/auth/v1/token?grant_type=refresh_token",
                         json={"refresh_token": refresh_token})

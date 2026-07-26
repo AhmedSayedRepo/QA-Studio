@@ -37,3 +37,7 @@ apk-out/
 
 # Runtime perf log
 qa_perf.log
+
+# Locally-built Android APK artifacts — never commit (exceeds GitHub 100MB limit)
+apk_out/
+*.apk

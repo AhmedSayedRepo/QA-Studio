@@ -652,28 +652,70 @@ def save_session(data):
     logging out then relaunching signed the user straight back in.
 
     A clear does NOT require the cache to be ready — it writes straight through
-    to storage, so a sign-out can never be lost to bootstrap timing."""
+    to storage, so a sign-out can never be lost to bootstrap timing.
+
+    DURABILITY (root cause of the overnight 'refresh_token_not_found' bounce):
+    this used to `_page.run_task(...)` the Keystore write and return True
+    IMMEDIATELY — fire-and-forget. When a restore refreshed the session, GoTrue
+    ROTATED the refresh token, but if the process was backgrounded/killed before
+    that scheduled write flushed, the Keystore kept the OLD token. Next launch
+    presented the rotated-away token → 400 refresh_token_not_found → session
+    wiped → sign-in screen. We now AWAIT the write (bounded) and return its real
+    result, so a rotated token can't be silently dropped and callers only delete
+    the legacy fallback once the vault write has actually landed."""
     global _session_cache
+    import threading as _th
     if _storage is None or _page is None:
         return False
     _session_cache = data
-    try:
-        if data is None:
-            _fn = None
-            for _m in ("remove", "delete"):
-                _fn = getattr(_storage, _m, None)
+    done = _th.Event()
+    ok = {"v": False}
+
+    async def _writer():
+        try:
+            if data is None:
+                _fn = None
+                for _m in ("remove", "delete"):
+                    _fn = getattr(_storage, _m, None)
+                    if _fn:
+                        break
                 if _fn:
-                    break
-            if _fn:
-                _page.run_task(_fn, _SESSION_STORE_KEY)
+                    await _fn(_SESSION_STORE_KEY)
+                else:
+                    # No remove API — overwrite with empty, reads back falsy.
+                    await _storage.set(_SESSION_STORE_KEY, "")
             else:
-                # No remove API — overwrite with empty, which reads back falsy.
-                _page.run_task(_storage.set, _SESSION_STORE_KEY, "")
-        else:
-            _page.run_task(_storage.set, _SESSION_STORE_KEY, json.dumps(data))
-        return True
+                await _storage.set(_SESSION_STORE_KEY, json.dumps(data))
+            ok["v"] = True
+        except Exception:
+            ok["v"] = False
+        finally:
+            done.set()
+
+    try:
+        _page.run_task(_writer)
     except Exception:
         return False
+    # Block the CALLING thread (a background/handler thread — never the page's
+    # asyncio loop thread, which is what actually runs _writer) until the write
+    # confirms. Timeout is a backstop so a stuck vault can't freeze auth forever.
+    confirmed = done.wait(timeout=6.0)
+    try:
+        import diag_log, hashlib
+        # Log a ONE-WAY fingerprint of the refresh token, never the token (or any
+        # slice of it). 8 hex chars is enough to answer "same token or not?"
+        # across log lines while leaking nothing usable.
+        fp = ""
+        if data:
+            rt = data.get("refresh_token") or ""
+            fp = hashlib.sha256(rt.encode("utf-8")).hexdigest()[:8] if rt else ""
+        diag_log.log_warn(
+            "secure_store_mobile.save_session",
+            f"kind={'clear' if data is None else 'session'} "
+            f"confirmed={confirmed} ok={ok['v']} rt_fp={fp}")
+    except Exception:
+        pass
+    return bool(confirmed and ok["v"])
 
 
 def load_session():
