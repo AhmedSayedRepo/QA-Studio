@@ -1577,17 +1577,33 @@ def _wiql_str(value):
 def fetch_stories_in_iteration(project, iteration_path, pat=None):
     pat = pat or AZURE_PAT
     safe = _wiql_str(iteration_path)
-    wiql = {"query": ("SELECT [System.Id], [System.Title] FROM WorkItems "
-                      "WHERE [System.WorkItemType] = 'User Story' "
-                      f"AND [System.IterationPath] = '{safe}' ORDER BY [System.Id]")}
     url = f"https://dev.azure.com/{AZURE_ORG}/{project}/_apis/wit/wiql?api-version=7.0"
-    r = requests.post(url, json=wiql, auth=("", pat), timeout=30)
+    # Order by the sprint board's own stack-rank so the dropdown + generated plan
+    # match the Taskboard/Backlog top-to-bottom order (not ascending id). The
+    # rank field differs by process template — Scrum uses BacklogPriority, Agile/
+    # CMMI use StackRank — so we order by BOTH: the process's UNused field is null
+    # for every item, leaving the used one to decide (System.Id is the final tie
+    # break). If a process lacks either field the WIQL 400s, so we fall back to
+    # the old id ordering rather than failing the whole fetch.
+    _base = ("SELECT [System.Id], [System.Title] FROM WorkItems "
+             "WHERE [System.WorkItemType] = 'User Story' "
+             f"AND [System.IterationPath] = '{safe}' ORDER BY ")
+    _board_order = ("[Microsoft.VSTS.Common.StackRank], "
+                    "[Microsoft.VSTS.Common.BacklogPriority], [System.Id]")
+    r = requests.post(url, json={"query": _base + _board_order}, auth=("", pat), timeout=30)
+    if r.status_code != 200:
+        r = requests.post(url, json={"query": _base + "[System.Id]"},
+                          auth=("", pat), timeout=30)
     if r.status_code != 200:
         raise RuntimeError(f"WIQL query failed (HTTP {r.status_code})")
+    # WIQL returns workItems already in the ORDER BY (board) order — this id list
+    # is the canonical order we must preserve.
     ids = [w["id"] for w in r.json().get("workItems", [])]
     if not ids:
         return []
-    out = []
+    # The batched detail GETs don't guarantee response order (and never across
+    # batches), so collect into a map and re-emit in the WIQL/board order.
+    by_id = {}
     for i in range(0, len(ids), 200):
         batch = ids[i:i+200]
         burl = (f"https://dev.azure.com/{AZURE_ORG}/{project}/_apis/wit/workitems"
@@ -1595,8 +1611,9 @@ def fetch_stories_in_iteration(project, iteration_path, pat=None):
         br = requests.get(burl, auth=("", pat), timeout=30)
         if br.status_code == 200:
             for w in br.json().get("value", []):
-                out.append({"id": w["id"], "title": w["fields"].get("System.Title", "")})
-    return out
+                by_id[w["id"]] = {"id": w["id"],
+                                  "title": w["fields"].get("System.Title", "")}
+    return [by_id[i] for i in ids if i in by_id]
 
 def create_plan_with_sprint_suites(project, name, iteration_path, cb=None, pat=None):
     """Create a test plan, then add a requirement-based suite for every User Story

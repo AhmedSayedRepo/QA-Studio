@@ -2235,8 +2235,11 @@ def _init(app):
                  ("_reg_mode", "existing"),
                  ("_cp_iterations", []), ("_cp_iter_loading", False),
                  ("_cp_sprint_paths", []), ("_cp_sprint_name", ""),
-                 ("_cp_stories_loading", False),
-                 ("_cp_rows", []), ("_cp_res_names", []),
+                 ("_cp_stories_loading", False), ("_cp_enriching", False),
+                 ("_cp_ai_timeout", False),
+                 ("_cp_rows", []), ("_cp_all_rows", []),
+                 ("_cp_story_ids", []), ("_cp_story_open", False),
+                 ("_cp_res_names", []),
                  ("_cp_est_min", 1.0), ("_cp_est_max", 8.0),
                  ("_cp_res_count", None), ("_cp_calculated", False),
                  ("_cp_calc_msg", None),
@@ -3470,11 +3473,24 @@ def _cp_load_stories(app):
     _gen = app._cp_stories_gen
     if not paths:
         app._cp_rows = []
+        app._cp_all_rows = []
+        app._cp_story_ids = []
         app._cp_stories_loading = False
+        app._cp_enriching = False
+        app._cp_ai_timeout = False
         _repaint_unless_open(app, "_cp_sprint_open")
         return
     app._cp_stories_loading = True
+    app._cp_ai_timeout = False
+    # Enrichment (Azure priority + content heuristic + the AI complexity call)
+    # runs AFTER the story list loads and can take 20–30s. Estimates aren't
+    # trustworthy until it finishes, so track it separately from
+    # _cp_stories_loading (which clears the moment the list is usable): the plan
+    # badges itself "provisional" and locks Export/Email while this is True.
+    app._cp_enriching = True
     app._cp_rows = []
+    app._cp_all_rows = []
+    app._cp_story_ids = []
     app._cp_table_page = 0
     _repaint_unless_open(app, "_cp_sprint_open")
 
@@ -3513,7 +3529,15 @@ def _cp_load_stories(app):
                                     "hours": 0.0, "assignee": ""})
         if _gen != getattr(app, "_cp_stories_gen", _gen):
             return                      # sprint selection changed mid-fetch -> drop
-        app._cp_rows = agg
+        # Master list = every story in the picked sprint(s). The Stories
+        # multiselect narrows it to a subset; default to ALL selected so the
+        # plan behaves exactly as before unless the user deselects some. _cp_rows
+        # holds the SAME dict objects (by reference) as the master, so the
+        # enrichment below (priority/feature/work-units, which mutates `agg`)
+        # still lands on the selected rows.
+        app._cp_all_rows = agg
+        app._cp_story_ids = [r["id"] for r in agg]
+        app._cp_rows = list(agg)
         # STORIES ARE NOW USABLE → stop the "Loading sprint stories…" spinner
         # here, not at the end of this function. Everything below is background
         # ENRICHMENT (Azure metadata, feature names, and an AI complexity call
@@ -3531,54 +3555,11 @@ def _cp_load_stories(app):
                     _repaint_unless_open(app, "_cp_sprint_open")
                 except Exception:
                     pass
-        # Pull real Azure DevOps priority (+ state) for these stories so the plan
-        # table and email show P1–P4 like the Regression Plan report (not a bare "P").
-        # _fetch_meta also returns each story's parent (feature) id, which we use
-        # to group the plan table by feature (collapsible, like the Regression Plan).
-        try:
-            with _perf(f"cp.fetch_meta+features ({len(agg)} stories)"):
-                meta = _fetch_meta(app, [_sid(r["id"]) for r in agg])
-                parent_ids = []
-                for r in agg:
-                    m = meta.get(_sid(r["id"]), {})
-                    r["priority"] = m.get("priority", DEFAULT_PRIORITY)
-                    if m.get("state"):
-                        r["state"] = m["state"]
-                    fid = _sid(m["parent_id"]) if m.get("parent_id") else None
-                    r["feature_id"] = fid
-                    if fid:
-                        parent_ids.append(fid)
-                fnames = _fetch_feature_names(app, list(set(parent_ids)))
-                for r in agg:
-                    r["feature_name"] = (fnames.get(r.get("feature_id"), "")
-                                         if r.get("feature_id") else "")
-                # Content-complexity units per story → drives a non-random estimate.
-                # units: word-count heuristic (always available, including
-                # AC-link resolution). ai_scores: AI facet-counting signal,
-                # best-effort — any failure just leaves it empty and the
-                # blend below falls back to the heuristic alone, so this
-                # whole block degrades gracefully with zero behavior change
-                # from before if the AI call fails or credits are out.
-                comp, texts = _fetch_cp_complexity(app, [_sid(r["id"]) for r in agg])
-                try:
-                    ai_scores = _fetch_cp_ai_complexity(app, texts)
-                except Exception:
-                    ai_scores = {}
-                comp = _cp_blend_complexity(comp, ai_scores)
-                for r in agg:
-                    r["work_units"] = comp.get(_sid(r["id"]), 1.0)
-        except Exception as _ex:
-            # Was a silent `pass` — an enrichment failure here flattens the whole
-            # estimate to the midpoint with NO trace (exactly the symptom under
-            # investigation). Log it; still fail-soft.
-            try:
-                import diag_log as _dl
-                _dl.log("regression.cp_enrichment", _ex)
-            except Exception:
-                pass
-        _cp_estimate_and_assign(app)
-        if _gen != getattr(app, "_cp_stories_gen", _gen):
-            return                      # selection changed mid-fetch -> drop results
+        # Enrichment (Azure priority/state/feature + content heuristic + the AI
+        # complexity call, now capped at 30s) lives in a shared helper so the
+        # Regenerate button can re-run it over the already-loaded stories without
+        # re-fetching the sprint. It also runs _cp_estimate_and_assign at the end.
+        _cp_run_enrichment(app, _gen)
         # NOTE: the loading flag is cleared by _work's finally below, never here.
 
     def _work():
@@ -3604,6 +3585,11 @@ def _cp_load_stories(app):
             # fetch must not switch off a spinner that a newer fetch now owns.
             if _gen == getattr(app, "_cp_stories_gen", _gen):
                 app._cp_stories_loading = False
+                # Enrichment (incl. the AI complexity call) is now truly done, so
+                # the estimate is trustworthy — drop the "provisional" state. The
+                # repaint below refreshes an on-screen plan to the real numbers AND
+                # clears the badge / re-enables Export+Email in the same pass.
+                app._cp_enriching = False
                 # This is the ENRICHMENT-completion repaint (runs after the AI
                 # complexity call). It's only needed to refresh a plan that is
                 # ALREADY on screen (calculated) — e.g. the user generated while
@@ -3617,6 +3603,123 @@ def _cp_load_stories(app):
                 # was never noticed. Gate it: no plan on screen → no redundant
                 # repaint → no flash. (The enriched work-units are still stored on
                 # _cp_rows for the next Generate regardless of this repaint.)
+                if (getattr(app, "active", None) == "testplan"
+                        and getattr(app, "_cp_calculated", False)):
+                    try:
+                        _repaint_unless_open(app, "_cp_sprint_open")
+                    except Exception:
+                        pass
+    threading.Thread(target=_work, daemon=True).start()
+
+
+_CP_AI_TIMEOUT_S = 30   # cap the AI complexity call; past this, fall back to the
+                        # size heuristic and prompt the user to switch AI provider.
+
+
+def _cp_ai_scores_with_timeout(app, texts, timeout=_CP_AI_TIMEOUT_S):
+    """Run the AI complexity call but never wait more than `timeout` seconds.
+
+    The call can't be force-killed, so on timeout we stop waiting
+    (shutdown(wait=False) — the orphaned thread finishes and its result is
+    discarded) and fall back to the heuristic. Sets app._cp_ai_timeout so the
+    plan can tell the user the AI provider timed out and to switch it in Setup."""
+    app._cp_ai_timeout = False
+    if not texts:
+        return {}
+    import concurrent.futures as _cf
+    ex = _cf.ThreadPoolExecutor(max_workers=1)
+    fut = ex.submit(_fetch_cp_ai_complexity, app, texts)
+    try:
+        return fut.result(timeout=timeout) or {}
+    except _cf.TimeoutError:
+        app._cp_ai_timeout = True
+        try:
+            import diag_log
+            diag_log.log("regression.cp_ai_timeout",
+                         Exception(f"AI complexity call exceeded {timeout}s"))
+        except Exception:
+            pass
+        return {}
+    except Exception:
+        return {}
+    finally:
+        ex.shutdown(wait=False)
+
+
+def _cp_run_enrichment(app, gen):
+    """Enrich the loaded stories (Azure priority/state/parent-feature + content
+    heuristic + AI complexity) and (re)compute the estimate over the selected
+    rows. Operates on app._cp_all_rows so a later selection change is already
+    enriched; _cp_rows shares those dict objects, so the estimate sees the
+    updated work-units. Shared by the initial load and the Regenerate path."""
+    agg = app._cp_all_rows or []
+    if not agg:
+        return
+    try:
+        with _perf(f"cp.fetch_meta+features ({len(agg)} stories)"):
+            meta = _fetch_meta(app, [_sid(r["id"]) for r in agg])
+            parent_ids = []
+            for r in agg:
+                m = meta.get(_sid(r["id"]), {})
+                r["priority"] = m.get("priority", DEFAULT_PRIORITY)
+                if m.get("state"):
+                    r["state"] = m["state"]
+                fid = _sid(m["parent_id"]) if m.get("parent_id") else None
+                r["feature_id"] = fid
+                if fid:
+                    parent_ids.append(fid)
+            fnames = _fetch_feature_names(app, list(set(parent_ids)))
+            for r in agg:
+                r["feature_name"] = (fnames.get(r.get("feature_id"), "")
+                                     if r.get("feature_id") else "")
+            # Content-complexity units per story → drives a non-random estimate.
+            # The AI signal is best-effort: timeout / failure / no-credit just
+            # leaves ai_scores empty and the blend falls back to the heuristic.
+            comp, texts = _fetch_cp_complexity(app, [_sid(r["id"]) for r in agg])
+            ai_scores = _cp_ai_scores_with_timeout(app, texts)
+            comp = _cp_blend_complexity(comp, ai_scores)
+            for r in agg:
+                r["work_units"] = comp.get(_sid(r["id"]), 1.0)
+    except Exception as _ex:
+        try:
+            import diag_log as _dl
+            _dl.log("regression.cp_enrichment", _ex)
+        except Exception:
+            pass
+    if gen != getattr(app, "_cp_stories_gen", gen):
+        return                          # selection changed mid-enrich -> drop
+    _cp_estimate_and_assign(app)
+
+
+def _cp_replan(app):
+    """Regenerate: re-run enrichment over the already-loaded stories (fresh AI —
+    the AI call isn't cached, so new scores → new hours) and re-estimate, WITHOUT
+    re-fetching the sprint or resetting the story selection. This is what makes
+    the Generate/Regenerate button actually produce a fresh plan instead of only
+    refreshing when the sprint is deselected and reselected."""
+    if not (app.connected and app.project):
+        return
+    if not app._cp_all_rows:
+        return _cp_load_stories(app)    # nothing loaded yet -> full load
+    app._cp_stories_gen = getattr(app, "_cp_stories_gen", 0) + 1
+    _gen = app._cp_stories_gen
+    app._cp_enriching = True
+    app._cp_ai_timeout = False
+    # Keep the current plan on screen; badge it provisional while re-enriching.
+    _repaint_unless_open(app, "_cp_sprint_open")
+
+    def _work():
+        try:
+            _cp_run_enrichment(app, _gen)
+        except Exception as ex:
+            try:
+                import diag_log
+                diag_log.log("regression.cp_replan", ex)
+            except Exception:
+                pass
+        finally:
+            if _gen == getattr(app, "_cp_stories_gen", _gen):
+                app._cp_enriching = False
                 if (getattr(app, "active", None) == "testplan"
                         and getattr(app, "_cp_calculated", False)):
                     try:
@@ -3846,7 +3949,7 @@ def _create_screen(app):
         # spinner already indicates progress. Once loaded, show the story count.
         _stories_status = (ft.Container()
                            if app._cp_stories_loading
-                           else _txt(f"· {len(app._cp_rows)} stories", color=T.INK_3))
+                           else _txt(f"· {len(app._cp_all_rows or [])} stories", color=T.INK_3))
         picked = ft.Container(
             ft.Column([
                 ft.Row([ft.Icon(ft.Icons.CHECK_CIRCLE, size=15, color=T.GREEN),
@@ -3856,11 +3959,116 @@ def _create_screen(app):
             ], spacing=0),
             padding=ft.Padding.only(top=10))
 
+    # ── Stories multiselect — narrow the picked sprint(s) to a subset ──
+    # Same pattern as the Regression screen's story picker (checkbox multiselect
+    # + chips + live count). _cp_all_rows is every story in the sprint; _cp_rows
+    # is the selected subset the plan actually estimates. Handlers close over
+    # _cp_calc_btn_cell / _calculate, which are defined lower in this function but
+    # exist by the time a user interaction fires these.
+    def _cp_apply_story_selection():
+        sel = {str(x) for x in (app._cp_story_ids or [])}
+        app._cp_rows = [r for r in (app._cp_all_rows or []) if str(r["id"]) in sel]
+        app._cp_calculated = False
+        app._cp_calc_msg = None
+        cb = _cp_calc_btn_cell[0]
+        if cb is not None:
+            should = bool(app._cp_rows and app._cp_res_names) \
+                and not getattr(app, "readonly", False)
+            try:
+                cb.opacity = 1.0 if should else 0.45
+                cb.on_click = _calculate if should else None
+                cb.update()
+            except Exception:
+                pass
+        # Defer the full repaint while the panel is open (a render would snap the
+        # open list back to the top — same reason the sprint picker defers); the
+        # picker's close flushes it.
+        _repaint_unless_open(app, "_cp_story_open")
+
+    def _toggle_cp_story(key, checked):
+        # `key` is str(id); recover the real id so its type is preserved (int
+        # work-item id on Azure, string issue KEY on Jira/Xray — ADR-001).
+        src = next((r for r in (app._cp_all_rows or []) if str(r["id"]) == key), None)
+        sid = src["id"] if src else key
+        ids = list(app._cp_story_ids or [])
+        if checked and sid not in ids:
+            ids.append(sid)
+        elif not checked:
+            ids = [x for x in ids if str(x) != key]
+        app._cp_story_ids = ids
+        _cp_apply_story_selection()
+
+    def _all_cp_stories(checked):
+        app._cp_story_ids = [r["id"] for r in (app._cp_all_rows or [])] if checked else []
+        _cp_apply_story_selection()
+
+    def _open_cp_stories():
+        was = app._cp_story_open
+        app._cp_story_open = not was
+        app._cp_sprint_open = False
+        if was and not app._cp_story_open:
+            app._flush_deferred_render()
+
+    stories_block = ft.Container()
+    if app._cp_sprint_paths:
+        if app._cp_stories_loading:
+            story_field = _loading_field("Loading stories…")
+        else:
+            story_field = _checkbox_multiselect(
+                [(str(r["id"]), f"[{r['id']}] {(r.get('title') or '')[:60]}")
+                 for r in (app._cp_all_rows or [])],
+                [str(x) for x in (app._cp_story_ids or [])],
+                _toggle_cp_story, _all_cp_stories,
+                is_open=app._cp_story_open, on_open=_open_cp_stories,
+                placeholder="Select stories", height=260,
+                empty="No stories in the selected sprint(s).",
+                page=app.page, app=app, sync_key="cp_stories")
+
+        _cp_sel = {str(x) for x in (app._cp_story_ids or [])}
+        _cp_sel_rows = [r for r in (app._cp_all_rows or []) if str(r["id"]) in _cp_sel]
+
+        def _cp_story_chip(r):
+            return ft.Container(
+                ft.Row([
+                    ft.Text(str(r["id"]), size=12, weight=ft.FontWeight.BOLD,
+                            color=T.VIOLET_INK, font_family=T.F_MONO),
+                    ft.GestureDetector(
+                        content=ft.Icon(ft.Icons.CLOSE, size=12, color=T.VIOLET_INK),
+                        on_tap=(lambda e, x=r["id"]: _toggle_cp_story(str(x), False)),
+                        mouse_cursor=ft.MouseCursor.CLICK),
+                ], spacing=5, tight=True),
+                padding=ft.Padding.only(left=10, right=7, top=5, bottom=5),
+                bgcolor=T.VIOLET_SOFT, border_radius=T.R_SM,
+                border=ft.Border.all(1, "#D9D2FF"),
+                on_hover=_chip_hover, animate_scale=120)
+
+        _CP_STORY_CHIP_CAP = 40
+        _cp_story_chip_ctrls = [_cp_story_chip(r) for r in _cp_sel_rows[:_CP_STORY_CHIP_CAP]]
+        if len(_cp_sel_rows) > _CP_STORY_CHIP_CAP:
+            _cp_story_chip_ctrls.append(ft.Container(
+                ft.Text(f"+{len(_cp_sel_rows) - _CP_STORY_CHIP_CAP} more", size=12,
+                        weight=ft.FontWeight.BOLD, color=T.INK_3),
+                padding=ft.Padding.only(left=10, right=10, top=5, bottom=5),
+                bgcolor=T.CARD_2, border_radius=T.R_SM))
+        if len(_cp_sel_rows) > 1:
+            _cp_story_chip_ctrls.append(_clear_chip(lambda e: _all_cp_stories(False)))
+
+        stories_block = ft.Column([
+            ft.Container(height=14),
+            ft.Column([field_label("Stories", req=True), story_field], spacing=6),
+            ft.Container(ft.Row(_cp_story_chip_ctrls, wrap=True, spacing=6, run_spacing=6),
+                         padding=ft.Padding.only(top=10), visible=bool(_cp_sel_rows)),
+            ft.Text(f"{len(_cp_sel_rows)} of {len(app._cp_all_rows or [])} stories selected",
+                    size=11, color=T.INK_3, weight=ft.FontWeight.BOLD,
+                    visible=bool(app._cp_all_rows)),
+        ], spacing=0)
+
     card1 = card(ft.Column([
-        sec_head("1", "Sprint"),
+        sec_head("1", "Sprint & stories"),
         ft.Container(height=10),
         ft.Column([field_label("Sprints", req=True), sprint_picker], spacing=6),
         picked,
+        stories_block,
     ], spacing=0))
 
     # ── Card 2: resources (count + tester picker) ──
@@ -4030,9 +4238,13 @@ def _create_screen(app):
         except Exception:
             pass
         if not app._cp_rows:
-            app._cp_calc_msg = "Pick a sprint with stories first."
-            app._cp_sprint_invalid = True
-            app.render()   # repaint so the sprint picker turns red
+            if app._cp_all_rows:
+                # stories loaded but the user deselected them all
+                app._cp_calc_msg = "Select at least one story."
+            else:
+                app._cp_calc_msg = "Pick a sprint with stories first."
+                app._cp_sprint_invalid = True
+            app.render()   # repaint so the picker/message shows
             return
         if not app._cp_res_count:
             app._cp_calc_msg = "Enter the resource count."
@@ -4099,9 +4311,18 @@ def _create_screen(app):
                     app.render()
         app.ui_safe(_do)
 
-    calc_btn = primary_btn("Generating…" if app._cp_busy else "Generate Sprint Plan",
-                           icon=ft.Icons.CALCULATE,
-                           on_click=(None if app._cp_busy else _calculate),
+    # Once a plan is already on screen, Regenerate re-runs the FULL pipeline
+    # (fresh enrichment incl. a new AI call → new work-units → new hours) via
+    # _cp_replan, not just _cp_estimate_and_assign — otherwise the estimate is
+    # deterministic and re-clicking looked like a no-op, only changing when the
+    # sprint was deselected/reselected. First-time Generate still uses _calculate.
+    _cp_regen = bool(app._cp_calculated) and not app._cp_busy \
+        and bool(app._cp_rows and app._cp_res_names)
+    _cp_gen_click = (lambda e: _cp_replan(app)) if _cp_regen else _calculate
+    calc_btn = primary_btn("Generating…" if app._cp_busy
+                           else ("Regenerate Sprint Plan" if _cp_regen else "Generate Sprint Plan"),
+                           icon=(ft.Icons.REFRESH if _cp_regen else ft.Icons.CALCULATE),
+                           on_click=(None if app._cp_busy else _cp_gen_click),
                            disabled=app._cp_busy or not (app._cp_rows and app._cp_res_names))
     _cp_calc_btn_cell[0] = calc_btn   # wire so _res_changed can enable it in place
 
@@ -4177,6 +4398,9 @@ def _create_screen(app):
         def _delete_story(sid):
             def _do():
                 app._cp_rows = [r for r in app._cp_rows if r["id"] != sid]
+                # keep the Stories multiselect in sync with an inline delete
+                app._cp_story_ids = [x for x in (app._cp_story_ids or [])
+                                     if str(x) != str(sid)]
                 _refresh_all()             # rebuild table + recalc, no scroll jump
                 try:
                     app._toast(f"Removed story {sid} from the sprint plan.")
@@ -4474,19 +4698,64 @@ def _create_screen(app):
             padding=10, bgcolor=T.CARD, border_radius=T.R,
             border=ft.Border.all(1, T.BORDER_2), margin=ft.Margin.only(top=12))
 
+        # PROVISIONAL GATE — the plan can be generated the moment the story list
+        # loads, but the estimate isn't trustworthy until enrichment (Azure
+        # priority + content heuristic + the AI complexity call) finishes. While
+        # that's in flight, badge the plan and lock the actions that would emit
+        # the provisional numbers (Export / Email / Azure assign). The enrichment
+        # completion repaint (see _cp_load_stories._work finally) rebuilds this
+        # card with _cp_enriching False, which clears the badge + unlocks.
+        _cp_prov = bool(getattr(app, "_cp_enriching", False))
+        prov_badge = ft.Container(
+            ft.Row([ft.ProgressRing(width=14, height=14, stroke_width=2, color=T.AMBER),
+                    _txt("Provisional estimate — refining with AI. Export, email and "
+                         "Azure assign unlock automatically once it settles.",
+                         color=T.AMBER, size=12, weight=ft.FontWeight.W_500, expand=True)],
+                   spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=10, bgcolor=T.AMBER_SOFT, border_radius=T.R,
+            border=ft.Border.all(1, "#EAD9A8"),
+            margin=ft.Margin.only(top=12), visible=_cp_prov)
+
+        # AI complexity call hit the 30s cap → estimate fell back to the size
+        # heuristic. Tell the user to switch provider (only when NOT still
+        # refining, so it doesn't fight the provisional badge above).
+        _cp_timed_out = bool(getattr(app, "_cp_ai_timeout", False)) and not _cp_prov
+        timeout_note = ft.Container(
+            ft.Row([ft.Icon(ft.Icons.WARNING_AMBER_ROUNDED, size=16, color=T.RED),
+                    _txt("AI provider timed out after 30s — this estimate uses story "
+                         "size only. Switch the AI provider in Setup, then Regenerate.",
+                         color=T.RED, size=12, weight=ft.FontWeight.W_500, expand=True)],
+                   spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=10, bgcolor=T.RED_SOFT, border_radius=T.R,
+            border=ft.Border.all(1, ft.Colors.with_opacity(0.4, T.RED)),
+            margin=ft.Margin.only(top=12), visible=_cp_timed_out)
+
+        _exports_ui = ft.Container(exports_col, disabled=_cp_prov,
+                                   opacity=0.5 if _cp_prov else 1.0)
+        _email_ui = ft.Container(email_row, disabled=_cp_prov,
+                                 opacity=0.5 if _cp_prov else 1.0)
+        _assign_btn = green_btn("Assigning…" if app._cp_assigning
+                                else "Assign to tester in Azure",
+                                icon=ft.Icons.PERSON_ADD,
+                                on_click=(None if (app._cp_assigning or _cp_prov)
+                                          else _assign_testers))
+        try:
+            if _cp_prov:
+                _assign_btn.opacity = 0.5
+        except Exception:
+            pass
+
         results = card(ft.Column([
-            sec_head("3", "Plan"), ft.Container(height=12), kpi_strip,
+            sec_head("3", "Plan"), prov_badge, timeout_note,
+            ft.Container(height=12), kpi_strip,
             ft.Container(height=14), table, workload_ui,
             ft.Divider(height=22, color=T.BORDER),
             ft.Text("EXPORT", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
-            ft.Container(height=8), exports_col,
+            ft.Container(height=8), _exports_ui,
             ft.Divider(height=22, color=T.BORDER),
-            email_row,
+            _email_ui,
             ft.Container(height=14),
-            ft.Row([green_btn("Assigning…" if app._cp_assigning
-                              else "Assign to tester in Azure",
-                              icon=ft.Icons.PERSON_ADD,
-                              on_click=(None if app._cp_assigning else _assign_testers))]),
+            ft.Row([_assign_btn]),
             assign_note,
         ], spacing=0))
 
