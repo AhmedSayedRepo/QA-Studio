@@ -50,6 +50,7 @@ from datetime import datetime
 import flet as ft
 import theme as T
 import engine as E
+import backend_setup
 from ui import hover_field
 
 # ── Effort model (HARDCODED — change here if your team's numbers differ) ───────
@@ -129,14 +130,46 @@ _CACHE_DIR = _pc_dir.app_data_dir()   # writable on mobile too (see helper)
 _CACHE_FILE = os.path.join(_CACHE_DIR, "reg_cache.json")
 
 
+def _sid(x):
+    """Canonical story-identity key (see ADR-001).
+
+    Story ids are a different TYPE per backend — an integer work-item id on
+    Azure (101048), a string issue KEY on Jira/Xray ("SCRUM-1"). This layer
+    used to int()-cast them as dict keys and comparisons, which crashes on a
+    Jira key. Canonicalising to a stripped string gives ONE identity form both
+    backends key/compare on identically; a numeric-string id is still a valid
+    Azure REST path value and JSON already persists dict keys as strings, so
+    Azure round-trips unchanged. `int()` on a story id is never correct here —
+    use this instead. (int() stays for genuine integers: sprint numbers,
+    facet counts, pixels.)"""
+    return str(x).strip()
+
+
+def _cache_key(app):
+    """Disk/session namespace for the regression caches: BACKEND + project.
+
+    Project alone is not enough. `_reg_case_count_cache` is keyed by bare
+    suite id and `_reg_suite_cache` by bare plan id — and an Azure suite id and
+    a TestRail section id are both small ints, so the SAME project run under
+    Azure and then under Azure→TestRail collides: the hybrid is served Azure's
+    counts for identically-numbered TestRail sections. Because these caches are
+    written to disk, that wrong answer also survives a restart, and the whole
+    point of the cache (regenerate costs zero network) means it is never
+    naturally refreshed. Namespacing by backend keeps each one's numbers apart.
+    """
+    return f"{backend_setup.active(getattr(app, 'creds', {}) or {})}::" \
+           f"{getattr(app, 'project', None) or ''}"
+
+
 def _cache_load(app):
-    """Load the saved caches for the current project once (per project)."""
+    """Load the saved caches for the current backend+project once."""
     proj = getattr(app, "project", None)
     if not proj:
         return
-    if getattr(app, "_reg_cache_loaded_project", None) == proj:
+    key = _cache_key(app)
+    if getattr(app, "_reg_cache_loaded_project", None) == key:
         return
-    app._reg_cache_loaded_project = proj
+    app._reg_cache_loaded_project = key
     # Reset first so switching projects never carries another project's caches.
     app._reg_case_count_cache = {}
     app._reg_meta_cache = {}
@@ -145,24 +178,29 @@ def _cache_load(app):
     app._reg_story_features = {}
     try:
         with open(_CACHE_FILE, "r", encoding="utf-8") as f:
-            d = (json.load(f) or {}).get(proj) or {}
+            d = (json.load(f) or {}).get(key) or {}
+        # Keys are canonical story-id strings (see _sid / ADR-001). The suite
+        # cache is keyed by PLAN id (an int on Azure, an issue id on Jira) — the
+        # inner map by suite id; both stay ints where numeric. Only STORY-id
+        # keys move to _sid.
         app._reg_case_count_cache = {int(k): v for k, v in d.get("counts", {}).items()}
-        app._reg_meta_cache = {int(k): v for k, v in d.get("meta", {}).items()}
-        app._reg_suite_cache = {int(k): {int(sk): sv for sk, sv in v.items()}
+        app._reg_meta_cache = {_sid(k): v for k, v in d.get("meta", {}).items()}
+        app._reg_suite_cache = {int(k): {_sid(sk): sv for sk, sv in v.items()}
                                 for k, v in d.get("suites", {}).items()}
-        app._reg_feature_name_cache = {int(k): v
+        app._reg_feature_name_cache = {_sid(k): v
                                        for k, v in d.get("fnames", {}).items()}
-        app._reg_story_features = {int(k): tuple(v)
+        app._reg_story_features = {_sid(k): tuple(v)
                                    for k, v in d.get("features", {}).items()}
     except Exception:
         pass
 
 
 def _cache_save(app):
-    """Persist the current project's caches to disk (best-effort)."""
+    """Persist the current backend+project's caches to disk (best-effort)."""
     proj = getattr(app, "project", None)
     if not proj:
         return
+    key = _cache_key(app)      # MUST match _cache_load's namespace
     try:
         os.makedirs(_CACHE_DIR, exist_ok=True)
         try:
@@ -170,7 +208,7 @@ def _cache_save(app):
                 allp = json.load(f) or {}
         except Exception:
             allp = {}
-        allp[proj] = {
+        allp[key] = {
             "counts": {str(k): v for k, v
                        in (getattr(app, "_reg_case_count_cache", {}) or {}).items()},
             "meta": {str(k): v for k, v
@@ -226,6 +264,27 @@ def _fetch_meta(app, ids):
     """Fetch work item metadata with per-story caching (fast on re-generate)."""
     cache = getattr(app, "_reg_meta_cache", {})
     missing = [i for i in ids if i not in cache]
+    if missing and not backend_setup.reads_stories_from_azure(getattr(app, "creds", {}) or {}):
+        # Non-Azure: fill from the backend's own story fetch instead of building
+        # a dev.azure.com work-items URL here. Priority has no cross-backend
+        # equivalent, so it falls back to DEFAULT_PRIORITY — exactly what the
+        # Azure path does when the field is absent — rather than being faked.
+        try:
+            backend = backend_setup.get_backend(app)
+            from tracker.models import Ref
+            for st in backend.fetch_stories([Ref(id=str(i), key=str(i))
+                                             for i in missing]) or []:
+                # Key by the canonical id (issue KEY on Jira, work-item id on
+                # Azure) matching what callers pass in — never int(), which
+                # dropped every Jira story here (see _sid / ADR-001).
+                _key = _sid(st.ref.key or st.ref.id)
+                cache[_key] = {"title": getattr(st, "title", "") or "",
+                               "state": getattr(st, "state", "") or "Unknown",
+                               "priority": DEFAULT_PRIORITY, "parent_id": None}
+        except Exception:
+            pass
+        app._reg_meta_cache = cache
+        return {i: cache.get(i, {}) for i in ids}
     if missing:
         org, proj = E.AZURE_ORG, app.project
         for i in range(0, len(missing), 200):
@@ -246,10 +305,10 @@ def _fetch_meta(app, ids):
                               or DEFAULT_PRIORITY)
                 except Exception:
                     pri = DEFAULT_PRIORITY
-                cache[int(w["id"])] = {"title": f.get("System.Title", ""),
-                                       "state": f.get("System.State", "Unknown"),
-                                       "priority": pri,
-                                       "parent_id": f.get("System.Parent")}
+                cache[_sid(w["id"])] = {"title": f.get("System.Title", ""),
+                                        "state": f.get("System.State", "Unknown"),
+                                        "priority": pri,
+                                        "parent_id": f.get("System.Parent")}
         app._reg_meta_cache = cache
     return {i: cache.get(i, {}) for i in ids}
 
@@ -257,7 +316,9 @@ def _fetch_meta(app, ids):
 def _fetch_feature_names(app, parent_ids):
     """Feature (parent work-item) titles, cached per id on app._reg_feature_name_cache
     so re-selecting plans / re-generating never re-requests a name we already have."""
-    ids = [i for i in parent_ids if i]
+    # Canonicalise feature/parent ids (see _sid / ADR-001) so the cache keys
+    # match build_rows' _sid(parent_id) lookups on every backend.
+    ids = [_sid(i) for i in parent_ids if i]
     if not ids:
         return {}
     cache = getattr(app, "_reg_feature_name_cache", None)
@@ -266,6 +327,22 @@ def _fetch_feature_names(app, parent_ids):
         app._reg_feature_name_cache = cache
     names = {i: cache[i] for i in ids if i in cache}
     missing = [i for i in ids if i not in cache]
+    if missing and not backend_setup.reads_stories_from_azure(getattr(app, "creds", {}) or {}):
+        # Non-Azure: resolve parent/feature titles through the backend rather
+        # than a dev.azure.com work-items URL. Anything the backend can't
+        # resolve is simply left out — callers already fall back to the id.
+        try:
+            backend = backend_setup.get_backend(app)
+            from tracker.models import Ref
+            for st in backend.fetch_stories([Ref(id=str(i), key=str(i))
+                                             for i in missing]) or []:
+                _key = _sid(st.ref.key or st.ref.id)
+                nm = getattr(st, "title", "") or _key
+                names[_key] = nm
+                cache[_key] = nm
+        except Exception:
+            pass
+        return names
     if missing:
         org, proj = E.AZURE_ORG, app.project
         for i in range(0, len(missing), 200):
@@ -280,8 +357,8 @@ def _fetch_feature_names(app, parent_ids):
             for w in data.get("value", []):
                 f2 = w.get("fields", {})
                 nm = f2.get("System.Title", str(w["id"]))
-                names[int(w["id"])] = nm
-                cache[int(w["id"])] = nm
+                names[_sid(w["id"])] = nm
+                cache[_sid(w["id"])] = nm
             # Every caller runs off the UI thread. Yield the GIL each batch so a
             # large background resolve can't monopolize it and freeze the plan
             # table's collapse / pagination for the minute-or-two it runs.
@@ -298,9 +375,11 @@ def _resolve_reg_features(app, stories, gen=None):
     Aborts early if the selection changed (gen token)."""
     try:
         feat_cache = dict(getattr(app, "_reg_story_features", {}) or {})
-        sids = [int(s["id"]) for s in stories if int(s["id"]) not in feat_cache]
+        sids = [_sid(s["id"]) for s in stories if _sid(s["id"]) not in feat_cache]
         if not sids:
             return
+        if not backend_setup.reads_stories_from_azure(getattr(app, "creds", {}) or {}):
+            return          # parent/feature hierarchy is an Azure-only concept here
         org, proj = E.AZURE_ORG, app.project
         parent_map = {}
         for i in range(0, len(sids), 200):
@@ -316,14 +395,14 @@ def _resolve_reg_features(app, stories, gen=None):
             for w in data.get("value", []):
                 pid2 = w.get("fields", {}).get("System.Parent")
                 if pid2:
-                    parent_map[int(w["id"])] = pid2
+                    parent_map[_sid(w["id"])] = _sid(pid2)
             _time.sleep(0.04)           # yield GIL during the load
         names = _fetch_feature_names(app, list(set(parent_map.values())))
         for sid, pid2 in parent_map.items():
             feat_cache[sid] = (pid2, names.get(pid2, ""))
         app._reg_story_features = feat_cache
         for s in stories:
-            fdata = feat_cache.get(int(s["id"]), (None, ""))
+            fdata = feat_cache.get(_sid(s["id"]), (None, ""))
             s["feature_id"] = fdata[0]
             s["feature_name"] = fdata[1]
     except Exception:
@@ -341,9 +420,33 @@ def _cp_fetch_fields(app, ids):
     work-item client _resolve_ac_links relies on in engine.py — same idea,
     reimplemented over E._azure_get's batching instead). Returns
     {id: {"title","desc","crit"}}; missing/failed ids are just absent."""
-    ids = [int(i) for i in ids if i]
+    ids = [_sid(i) for i in ids if i]
     if not ids:
         return {}
+    if not backend_setup.reads_stories_from_azure(getattr(app, "creds", {}) or {}):
+        # Non-Azure: pull title/description/acceptance-criteria from the backend's
+        # own story fetch so complexity scoring has REAL content. Jira/Xray have
+        # no dev.azure.com work-items endpoint, so this used to return {} — which
+        # left every story at the 1.0-unit default and made the Sprint-Plan
+        # estimate a flat equal split regardless of content (a story with empty
+        # acceptance criteria scored the same as a rich one). The DTO carries
+        # description/acceptance_criteria as HTML (Jira ADF → html), so _cp_plain
+        # strips it to word-countable text exactly like the Azure branch.
+        out = {}
+        try:
+            backend = backend_setup.get_backend(app)
+            from tracker.models import Ref
+            for st in backend.fetch_stories([Ref(id=str(i), key=str(i))
+                                             for i in ids]) or []:
+                key = _sid(st.ref.key or st.ref.id)
+                out[key] = {
+                    "title": getattr(st, "title", "") or "",
+                    "desc": _cp_plain(getattr(st, "description", "") or ""),
+                    "crit": _cp_plain(getattr(st, "acceptance_criteria", "") or ""),
+                }
+        except Exception:
+            pass
+        return out
     org, proj = E.AZURE_ORG, app.project
     flds = ("System.Id,System.Title,System.Description,"
             "Microsoft.VSTS.Common.AcceptanceCriteria")
@@ -358,7 +461,7 @@ def _cp_fetch_fields(app, ids):
             data = {}
         for w in data.get("value", []):
             f = w.get("fields", {})
-            out[int(w["id"])] = {
+            out[_sid(w["id"])] = {
                 "title": f.get("System.Title", "") or "",
                 "desc": _cp_plain(f.get("System.Description", "")),
                 "crit": _cp_plain(f.get("Microsoft.VSTS.Common.AcceptanceCriteria", "")),
@@ -395,7 +498,7 @@ def _fetch_cp_complexity(app, ids):
             wid = m.group(1) or m.group(2)
             if not wid:
                 continue
-            wid = int(wid)
+            wid = _sid(wid)
             if wid != sid and wid not in found:
                 found.append(wid)
             if len(found) >= 3:
@@ -519,7 +622,24 @@ def _fetch_cp_ai_complexity(app, texts):
                                 usage_tag="sprint_plan_complexity")
             data = E.parse_json_robust(raw)
             if isinstance(data, dict):
-                data = next((v for v in data.values() if isinstance(v, list)), [])
+                # Models return one of THREE shapes; accept all, not just the
+                # array the prompt asked for (robustness beats assuming format):
+                #  (a) a wrapper around the array:  {"stories": [ {...}, ... ]}
+                #  (b) a MAP of id -> facets:        {"SCRUM-1": {...}, ...}
+                #      — Cerebras/Llama-style models emit this; it was silently
+                #        dropped as a non-list, so the AI never contributed (all
+                #        stories fell back to the heuristic, ai=None). Confirmed
+                #        live from the raw reply.
+                #  (c) a single record object:       {"id": ..., "rules": ...}
+                _list = next((v for v in data.values() if isinstance(v, list)), None)
+                if _list is not None:
+                    data = _list
+                elif data and all(isinstance(v, dict) for v in data.values()):
+                    data = [{**v, "id": k} for k, v in data.items()]   # (b)
+                elif "id" in data or "rules" in data:
+                    data = [data]                                       # (c)
+                else:
+                    data = []
             if not isinstance(data, list):
                 return
             wanted = set(chunk_ids)
@@ -527,26 +647,44 @@ def _fetch_cp_ai_complexity(app, texts):
             for rec in data:
                 if not isinstance(rec, dict):
                     continue
-                try:
-                    sid = int(rec.get("id"))
-                except Exception:
-                    continue
+                sid = _sid(rec.get("id"))
                 if sid not in wanted or sid in seen:
                     continue   # hallucinated/duplicate id — ignore rather than trust
                 seen.add(sid)
                 score = _cp_facet_score(rec)
-                # A story with substantial AC text but an all-zero facet
-                # count reads as a lazy/empty answer, not a genuinely
-                # trivial story — don't trust it, fall back to heuristic
-                # for just this one id.
                 crit_words = len((texts[sid].get("crit") or "").split())
+                desc_words = len((texts[sid].get("desc") or "").split())
+                # Guard 1 (existing): substantial AC text but an all-zero facet
+                # count reads as a lazy/empty answer, not a genuinely trivial
+                # story — distrust it, fall back to heuristic for this id.
                 if score <= 0 and crit_words > 50:
+                    continue
+                # Guard 2 (symmetric content bound): a near-empty story has no
+                # testable facets to count, so a POSITIVE score is a
+                # hallucination — not signal. Ignore it and let the heuristic
+                # (which correctly floors an empty story) govern. Without this a
+                # blank "Test Story" out-scored a fully-specified one and took
+                # the MAX estimate while the rich story took the min (observed
+                # live on a weak model: empty → 8 h, rich → 1 h). Clean
+                # principle: the AI may only refine complexity WITHIN what the
+                # content evidences; it never manufactures complexity the text
+                # doesn't contain.
+                if score > 0 and (crit_words + desc_words) < 8:
                     continue
                 scored[sid] = score
             # Most of the chunk failing validation suggests the whole reply
             # was unreliable — discard the chunk entirely rather than trust
-            # a couple of survivors that might just be coincidental.
-            if len(scored) < max(1, len(chunk_ids) * 0.7):
+            # a couple of survivors that might just be coincidental. Measure
+            # against the CONTENTFUL stories only: a near-empty story is skipped
+            # by design (guard 2 above), so counting it as a failure would wrongly
+            # discard a perfectly good reply on any small sprint that happens to
+            # contain a blank story.
+            contentful = sum(
+                1 for s in chunk_ids
+                if (len((texts[s].get("crit") or "").split())
+                    + len((texts[s].get("desc") or "").split())) >= 8)
+            need = max(1, contentful * 0.7) if contentful else 1
+            if len(scored) < need:
                 return
             with lock:
                 out.update(scored)
@@ -613,6 +751,18 @@ def _discover_suite_map(app, plan_id, story_ids):
     cache = getattr(app, "_reg_suite_cache", {})
     if plan_id in cache:
         return cache[plan_id]
+    # NOT reads_stories_from_azure(): that asks where the STORIES live, and on a
+    # hybrid Azure is the read side for stories/acceptance-criteria ONLY. Test
+    # CASES — and the suites holding them — live in the WRITE target (TestRail),
+    # so a hybrid must resolve suites there. Only the pure-Azure backend uses the
+    # Azure suite endpoint below.
+    if not backend_setup.is_azure(getattr(app, "creds", {}) or {}):
+        smap = backend_setup.suite_map_for_stories(app, plan_id, story_ids)
+        try:
+            app._reg_suite_cache[plan_id] = smap
+        except Exception:
+            pass
+        return smap
     url = (f"https://dev.azure.com/{E.AZURE_ORG}/{app.project}"
            f"/_apis/testplan/Plans/{plan_id}/Suites?api-version=7.0&$expand=true")
     try:
@@ -623,12 +773,14 @@ def _discover_suite_map(app, plan_id, story_ids):
     for suite in data.get("value", []):
         sid = suite.get("id")
         req_id = suite.get("requirementId")
-        if req_id and int(req_id) in story_ids:
-            smap[int(req_id)] = sid
+        # story_ids is a set of canonical string ids (see _sid); the Azure suite
+        # carries a numeric requirementId / "<id>: name" — match in string form.
+        if req_id and _sid(req_id) in story_ids:
+            smap[_sid(req_id)] = sid
             continue
         name = suite.get("name", "")
         try:
-            cand = int(name.split(":")[0].strip())
+            cand = _sid(name.split(":")[0].strip())
             if cand in story_ids:
                 smap[cand] = sid
         except (ValueError, IndexError):
@@ -647,10 +799,10 @@ def _count_cases(app, selected, progress=None):
     progress(done, total) — optional callback invoked as suites are counted, so the
     UI can show live progress instead of a blank 'Generating…'."""
     import concurrent.futures as _cf
-    counts = {int(s["id"]): 0 for s in selected}
+    counts = {_sid(s["id"]): 0 for s in selected}
     by_plan = {}
     for s in selected:
-        by_plan.setdefault(s.get("plan_id"), []).append(int(s["id"]))
+        by_plan.setdefault(s.get("plan_id"), []).append(_sid(s["id"]))
 
     tasks = []
     plan_items = [(pid, sids) for pid, sids in by_plan.items() if pid]
@@ -682,10 +834,9 @@ def _count_cases(app, selected, progress=None):
 
     def _one(t):
         sid, pid, suite_id = t
-        try:
-            n = len(E.fetch_test_cases_for_suite(app.project, pid, suite_id))
-        except Exception:
-            n = 0
+        # Routed: Azure counts its own suite, a hybrid counts the TestRail
+        # section that actually holds the cases (see suite_map_for_stories).
+        n = backend_setup.count_cases_in_suite(app, pid, suite_id)
         return sid, suite_id, n
 
     if todo:
@@ -713,7 +864,7 @@ def _count_cases(app, selected, progress=None):
 
 def build_rows(app, selected, progress=None):
     _cache_load(app)   # warm caches from disk on the first generate of a session
-    ids = [int(s["id"]) for s in selected]
+    ids = [_sid(s["id"]) for s in selected]
     with _perf(f"build_rows.fetch_meta ({len(ids)} stories)"):
         meta = _fetch_meta(app, ids)
     if getattr(app, "_reg_effort_mode", True):
@@ -727,7 +878,7 @@ def build_rows(app, selected, progress=None):
         # assign_resources() already has a built-in "0-hour -> spread evenly
         # by headcount" branch, so distribution falls back to a plain even
         # split automatically with no other change needed.
-        counts = {int(s["id"]): 0 for s in selected}
+        counts = {_sid(s["id"]): 0 for s in selected}
     _cache_save(app)   # persist freshly-fetched counts/meta/features for next launch
     story_features = getattr(app, "_reg_story_features", {})
     feat_cache = getattr(app, "_reg_feature_name_cache", {}) or {}
@@ -738,13 +889,13 @@ def build_rows(app, selected, progress=None):
     # UI / freeze the nav while the heavy test-case counting is running.
     parent_of = {}
     for s in selected:
-        sid = int(s["id"])
+        sid = _sid(s["id"])
         p = meta.get(sid, {}).get("parent_id")
         if p:
-            parent_of[sid] = int(p)
+            parent_of[sid] = _sid(p)
     rows = []
     for s in selected:
-        sid = int(s["id"])
+        sid = _sid(s["id"])
         m = meta.get(sid, {})
         pri = m.get("priority", DEFAULT_PRIORITY)
         cases = counts.get(sid, 0)
@@ -853,7 +1004,20 @@ def plan_payload(app):
             "total_stories": len(rows), "total_cases": total_cases,
             "total_hours": total_hours, "hours_per_person": per_person,
             "effort_mode": effort_on,
-            "total_days": total_days, "hours_per_person_days": per_person_days}
+            "total_days": total_days, "hours_per_person_days": per_person_days,
+            # Backend labels captured HERE, where `app` is available — the
+            # exporters and the email builder receive only this dict, so without
+            # them every deliverable hardcoded "Azure DevOps" regardless of the
+            # active backend. Two different labels on purpose: test cases come
+            # from the case store (TestRail on a hybrid) while priority/story
+            # links come from the story source (Azure or Jira).
+            "case_store": backend_setup.case_store_label(app),
+            "story_store": backend_setup.story_store_label(app),
+            # Per-story links, resolved through the backend seam rather than
+            # _wi_url's hardcoded dev.azure.com (wrong on any Jira-sourced
+            # backend). Keyed by story id; exporters fall back to _wi_url.
+            "story_urls": {str(r["id"]): (backend_setup.item_url(app, r["id"]) or "")
+                           for r in rows if r.get("id") is not None}}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -875,11 +1039,19 @@ def _email_pri(p):
             4: ("#E5F6EC", "#1F9D57")}.get(p, ("#F4F6FB", "#6E7180")) + (f"P{p}",)
 
 
-def _wi_url(project, sid):
-    """Azure DevOps work-item URL for a story id — used to hyperlink story IDs in
-    every export (xlsx/docx/pdf/json) and the email so a reader can jump straight
-    to the work item. Org comes from the configured Azure org; project is encoded
-    so names with spaces still produce a valid link."""
+def _wi_url(project, sid, d=None):
+    """Story link for exports (xlsx/docx/pdf/json) and the email.
+
+    Prefers the URL resolved through the backend seam at plan-build time
+    (`d["story_urls"]`), because this function's own fallback hardcodes
+    dev.azure.com — correct for Azure and the Azure→TestRail hybrid (whose
+    stories ARE Azure work items), but wrong on any Jira-sourced backend.
+    Falls back to the Azure form when no resolved URL is available, so older
+    callers/plan dicts keep working unchanged."""
+    if d:
+        hit = (d.get("story_urls") or {}).get(str(sid))
+        if hit:
+            return hit
     from urllib.parse import quote
     try:
         org = E.AZURE_ORG or ""
@@ -981,7 +1153,7 @@ def _plan_html(d):
             f"<tr style='border-top:1px solid {LINE2}'>"
             f"<td style='padding:12px 14px;font-family:{MONO};font-size:13px;"
             f"font-weight:600;white-space:nowrap'>"
-            f"<a href='{_wi_url(d['project'], r['id'])}' "
+            f"<a href='{_wi_url(d['project'], r['id'], d)}' "
             f"style='color:{VIOLET_INK};text-decoration:none'>{r['id']}</a></td>"
             f"<td style='padding:12px 8px;font-size:13.5px;font-weight:600;color:{INK}'>"
             f"{_html.escape(r['title']) if r['title'] else '—'}</td>"
@@ -1121,8 +1293,8 @@ def _plan_html(d):
         f"<div style='font-size:13px;color:{INK2};font-weight:600;margin-top:8px'>{scope}</div>")
 
     footer_note = (
-        f"Estimates use {d['avg_minutes_per_case']}&nbsp;min / test case weighted by Azure "
-        f"DevOps priority." if show_cases else
+        f"Estimates use {d['avg_minutes_per_case']}&nbsp;min / test case weighted by "
+        f"{d.get('story_store') or 'Azure DevOps'} priority." if show_cases else
         "Effort is estimated per story and balanced across the team." if effort_on else
         "Effort wasn't calculated for this plan — stories are split evenly by "
         "count across the team.")
@@ -1130,7 +1302,9 @@ def _plan_html(d):
         f"<table role='presentation' cellpadding='0' cellspacing='0'><tr>"
         f"<td valign='middle' style='padding-right:9px'>{E._logo_tag(20)}</td>"
         f"<td valign='middle' style='font-size:11.5px;font-weight:600;color:{INK3}'>"
-        f"Generated by QA Studio &middot; Azure DevOps + AI</td></tr></table>"
+        f"Generated by QA Studio &middot; {d.get('story_store') or 'Azure DevOps'}"
+        f"{(' + ' + d['case_store']) if d.get('case_store') and d.get('case_store') != d.get('story_store') else ''}"
+        f" + AI</td></tr></table>"
         f"<div style='font-family:{MONO};font-size:11px;color:{INK3};margin-top:8px;"
         f"line-height:1.6'>The full plan is attached as a Word document. {footer_note}</div>")
 
@@ -1226,7 +1400,7 @@ def _ask_save_path(fmt, default_name):
 def export_json(app):
     d = plan_payload(app)
     for s in d.get("stories", []):          # link each story id to its Azure work item
-        s["url"] = _wi_url(d["project"], s["id"])
+        s["url"] = _wi_url(d["project"], s["id"], d)
     p = os.path.join(_out_dir(), _stamp(app) + ".json")
     with open(p, "w", encoding="utf-8") as f:
         json.dump(d, f, ensure_ascii=False, indent=2)
@@ -1292,7 +1466,7 @@ def export_xlsx(app):
                 cell = ws.cell(r, c, v)
                 cell.border = thin
                 if c == 2:                                       # story id -> Azure link
-                    cell.hyperlink = _wi_url(d["project"], s["id"])
+                    cell.hyperlink = _wi_url(d["project"], s["id"], d)
                     cell.font = Font(color="3A57D6", underline="single")
                 if c in (2, _hours_col) or c == _cases_col:      # ids / hours / cases
                     cell.alignment = _AR
@@ -1420,7 +1594,7 @@ def export_docx(app):
                 if i == 0:                                  # story id -> Azure link
                     try:
                         _add_hyperlink(c[i].paragraphs[0],
-                                       _wi_url(d["project"], s["id"]), v)
+                                       _wi_url(d["project"], s["id"], d), v)
                     except Exception:
                         c[i].text = v                        # fall back to plain text
                 else:
@@ -1535,7 +1709,7 @@ def export_pdf(app):
 
     def _id_cell(sid):                       # story id -> clickable Azure link
         return Paragraph(
-            f'<link href="{_wi_url(d["project"], sid)}"><u>{sid}</u></link>', _id_style)
+            f'<link href="{_wi_url(d["project"], sid, d)}"><u>{sid}</u></link>', _id_style)
     elems = [Paragraph(_ar(d.get("report_title") or "Regression Test Plan"), styles["Title"]),
              Paragraph(_ar(d['plan_name'] or d['project']),
                        styles["Normal"]),
@@ -1763,13 +1937,16 @@ def _txt(s, **kw):
 
 
 def _id_link(app, sid, **kw):
-    """Story id rendered as a clickable link to its Azure DevOps work item — the
-    in-app plan tables, mirroring the hyperlinks already in the exports. Opens via
+    """Story id rendered as a clickable link to the story in its OWN tracker —
+    the in-app plan tables, mirroring the hyperlinks already in the exports.
+    Routed through the backend seam (`item_url`) so a Jira-sourced backend links
+    to Jira rather than a dev.azure.com URL that doesn't exist. Opens via
     app._open_url (OS browser). Falls back to plain text on any error."""
-    kw.setdefault("tooltip", f"Open story {sid} in Azure DevOps")
+    _store = backend_setup.story_store_label(app)
+    kw.setdefault("tooltip", f"Open story {sid} in {_store}")
     txt = _txt(str(sid), **kw)
     try:
-        url = _wi_url(app.project, sid)
+        url = backend_setup.item_url(app, sid) or _wi_url(app.project, sid)
     except Exception:
         return txt
     return ft.GestureDetector(content=txt,
@@ -2189,16 +2366,24 @@ def _reload_plan_stories(app):
             if hit is not None:
                 return pid, hit[0], hit[1]
             # Fetch sprint label + stories for each plan concurrently.
+            # Sprint label: only Azure (and the Azure→TestRail hybrid, whose
+            # stories still come from Azure) has a plan endpoint carrying the
+            # iteration. Other backends fall back to the label the adapter
+            # already supplied on the plan dict, instead of this UI layer
+            # building a dev.azure.com URL that would 404 on them.
+            if backend_setup.reads_stories_from_azure(getattr(app, "creds", {}) or {}):
+                try:
+                    pj = E._azure_get(f"https://dev.azure.com/{E.AZURE_ORG}/{app.project}"
+                                      f"/_apis/testplan/plans/{p['id']}?api-version=7.0")
+                    itr = pj.get("iteration") or ""
+                    sprint = _sprint_num(itr) or _sprint_num(p.get("name", "")) \
+                        or itr.split("\\")[-1]
+                except Exception:
+                    sprint = p.get("sprint", "")
+            else:
+                sprint = p.get("sprint", "") or _sprint_num(p.get("name", "")) or ""
             try:
-                pj = E._azure_get(f"https://dev.azure.com/{E.AZURE_ORG}/{app.project}"
-                                  f"/_apis/testplan/plans/{p['id']}?api-version=7.0")
-                itr = pj.get("iteration") or ""
-                sprint = _sprint_num(itr) or _sprint_num(p.get("name", "")) \
-                    or itr.split("\\")[-1]
-            except Exception:
-                sprint = p.get("sprint", "")
-            try:
-                stories = E.fetch_stories_in_plan(app.project, p["id"])
+                stories = backend_setup.fetch_stories_for_plan(app, p["id"])
             except Exception:
                 stories = []
             _pcache[pid] = (sprint, stories)
@@ -2272,16 +2457,24 @@ def _reload_auto_plan_stories(app):
             hit = _pcache.get(pid)
             if hit is not None:
                 return pid, hit[0], hit[1]
+            # Sprint label: only Azure (and the Azure→TestRail hybrid, whose
+            # stories still come from Azure) has a plan endpoint carrying the
+            # iteration. Other backends fall back to the label the adapter
+            # already supplied on the plan dict, instead of this UI layer
+            # building a dev.azure.com URL that would 404 on them.
+            if backend_setup.reads_stories_from_azure(getattr(app, "creds", {}) or {}):
+                try:
+                    pj = E._azure_get(f"https://dev.azure.com/{E.AZURE_ORG}/{app.project}"
+                                      f"/_apis/testplan/plans/{p['id']}?api-version=7.0")
+                    itr = pj.get("iteration") or ""
+                    sprint = _sprint_num(itr) or _sprint_num(p.get("name", "")) \
+                        or itr.split("\\")[-1]
+                except Exception:
+                    sprint = p.get("sprint", "")
+            else:
+                sprint = p.get("sprint", "") or _sprint_num(p.get("name", "")) or ""
             try:
-                pj = E._azure_get(f"https://dev.azure.com/{E.AZURE_ORG}/{app.project}"
-                                  f"/_apis/testplan/plans/{p['id']}?api-version=7.0")
-                itr = pj.get("iteration") or ""
-                sprint = _sprint_num(itr) or _sprint_num(p.get("name", "")) \
-                    or itr.split("\\")[-1]
-            except Exception:
-                sprint = p.get("sprint", "")
-            try:
-                stories = E.fetch_stories_in_plan(app.project, p["id"])
+                stories = backend_setup.fetch_stories_for_plan(app, p["id"])
             except Exception:
                 stories = []
             _pcache[pid] = (sprint, stories)
@@ -2386,15 +2579,20 @@ def automation_source_card(app):
             invalid=getattr(app, "_auto_plan_invalid", False)))
 
     def _toggle_story(key, checked):
-        sid = int(key)
+        # `key` is str(s["id"]); recover the story's REAL id so its type is
+        # preserved (int work-item id on Azure, string issue KEY on Jira/Xray).
+        # int(key) threw on a Jira key, so Automation story selection never
+        # registered on non-Azure backends (see ADR-001 / _sid). Matches
+        # _all_stories, which appends s["id"] verbatim.
+        src = next((s for s in app._auto_plan_stories if str(s["id"]) == key), None)
+        sid = src["id"] if src else key
         ids = [s["id"] for s in app._auto_selected]
         if checked and sid not in ids:
-            src = next((s for s in app._auto_plan_stories if s["id"] == sid), None)
             if src:
                 app._auto_selected.append({"id": sid, "title": src.get("title", ""),
                                            "plan_id": src.get("plan_id")})
         elif not checked:
-            app._auto_selected = [s for s in app._auto_selected if s["id"] != sid]
+            app._auto_selected = [s for s in app._auto_selected if str(s["id"]) != key]
         if app._auto_selected:
             app._auto_story_invalid = False
         _fn = getattr(app, "_auto_refresh_story_ext", None)
@@ -2578,7 +2776,7 @@ def _cp_load_iterations(app):
 
     def _work():
         try:
-            its = E.fetch_iterations(_proj) or []
+            its = backend_setup.fetch_sprints(app, _proj) or []
         except Exception:
             its = []
         sprints = [it for it in its if _cp_is_sprint(it)] or its
@@ -2924,8 +3122,16 @@ def email_recipient_picker(app, state_key, *, is_open_key, sync_key, height=260,
 
         def _load_members():
             try:
-                mem = E.fetch_project_members(app.project)
-            except Exception:
+                mem = backend_setup.fetch_project_members(app, app.project)
+            except Exception as _ex:
+                # Was a silent `mem = []`, which then LATCHED: the retry guard
+                # above only re-fetches while _members_cache is None, so one
+                # failed load left the picker permanently empty for the session.
+                try:
+                    import diag_log
+                    diag_log.log("regression._load_members", _ex)
+                except Exception:
+                    pass
                 mem = []
             app._members_cache = mem
             app._members_loading = False
@@ -3105,8 +3311,16 @@ def resource_name_picker(app, list_key, *, is_open_key, sync_key, height=220,
 
         def _load_members():
             try:
-                mem = E.fetch_project_members(app.project)
-            except Exception:
+                mem = backend_setup.fetch_project_members(app, app.project)
+            except Exception as _ex:
+                # Was a silent `mem = []`, which then LATCHED: the retry guard
+                # above only re-fetches while _members_cache is None, so one
+                # failed load left the picker permanently empty for the session.
+                try:
+                    import diag_log
+                    diag_log.log("regression._load_members", _ex)
+                except Exception:
+                    pass
                 mem = []
             app._members_cache = mem
             app._members_loading = False
@@ -3147,7 +3361,8 @@ def resource_name_picker(app, list_key, *, is_open_key, sync_key, height=220,
                        spacing=7, tight=True),
                 padding=ft.Padding.only(left=5, right=9, top=4, bottom=4),
                 bgcolor=T.CARD_2, border_radius=999, border=ft.Border.all(1, T.BORDER_2),
-                tooltip=(email or "not in the Azure DevOps member list — typed manually"),
+                tooltip=(email or f"not in the {backend_setup.story_store_label(app)} "
+                                  f"member list — typed manually"),
                 on_hover=_chip_hover, animate_scale=120))
         if len(cur) > 1:
             chips.append(_clear_chip(_clear_all))
@@ -3280,7 +3495,7 @@ def _cp_load_stories(app):
             if hit is not None:
                 return hit
             try:
-                res = E.fetch_stories_in_iteration(app.project, path) or []
+                res = backend_setup.fetch_stories_in_sprint(app, path) or []
             except Exception:
                 res = []
             _scache[path] = res
@@ -3322,14 +3537,14 @@ def _cp_load_stories(app):
         # to group the plan table by feature (collapsible, like the Regression Plan).
         try:
             with _perf(f"cp.fetch_meta+features ({len(agg)} stories)"):
-                meta = _fetch_meta(app, [int(r["id"]) for r in agg])
+                meta = _fetch_meta(app, [_sid(r["id"]) for r in agg])
                 parent_ids = []
                 for r in agg:
-                    m = meta.get(int(r["id"]), {})
+                    m = meta.get(_sid(r["id"]), {})
                     r["priority"] = m.get("priority", DEFAULT_PRIORITY)
                     if m.get("state"):
                         r["state"] = m["state"]
-                    fid = m.get("parent_id")
+                    fid = _sid(m["parent_id"]) if m.get("parent_id") else None
                     r["feature_id"] = fid
                     if fid:
                         parent_ids.append(fid)
@@ -3344,16 +3559,23 @@ def _cp_load_stories(app):
                 # blend below falls back to the heuristic alone, so this
                 # whole block degrades gracefully with zero behavior change
                 # from before if the AI call fails or credits are out.
-                comp, texts = _fetch_cp_complexity(app, [int(r["id"]) for r in agg])
+                comp, texts = _fetch_cp_complexity(app, [_sid(r["id"]) for r in agg])
                 try:
                     ai_scores = _fetch_cp_ai_complexity(app, texts)
                 except Exception:
                     ai_scores = {}
                 comp = _cp_blend_complexity(comp, ai_scores)
                 for r in agg:
-                    r["work_units"] = comp.get(int(r["id"]), 1.0)
-        except Exception:
-            pass
+                    r["work_units"] = comp.get(_sid(r["id"]), 1.0)
+        except Exception as _ex:
+            # Was a silent `pass` — an enrichment failure here flattens the whole
+            # estimate to the midpoint with NO trace (exactly the symptom under
+            # investigation). Log it; still fail-soft.
+            try:
+                import diag_log as _dl
+                _dl.log("regression.cp_enrichment", _ex)
+            except Exception:
+                pass
         _cp_estimate_and_assign(app)
         if _gen != getattr(app, "_cp_stories_gen", _gen):
             return                      # selection changed mid-fetch -> drop results
@@ -3382,10 +3604,21 @@ def _cp_load_stories(app):
             # fetch must not switch off a spinner that a newer fetch now owns.
             if _gen == getattr(app, "_cp_stories_gen", _gen):
                 app._cp_stories_loading = False
-                # Only repaint if the user is still on the Sprint Plan screen —
-                # otherwise this background completion forces a full (heavy)
-                # render of whatever screen they navigated to, reading as a freeze.
-                if getattr(app, "active", None) == "testplan":
+                # This is the ENRICHMENT-completion repaint (runs after the AI
+                # complexity call). It's only needed to refresh a plan that is
+                # ALREADY on screen (calculated) — e.g. the user generated while
+                # enrichment was still in flight, so the hours want the real
+                # work-units now. After a sprint change the plan is cleared
+                # (_cp_calculated=False) and the story count already rendered when
+                # the stories loaded, so this late full render just re-blanks the
+                # same view seconds later — the visible "wipe once written" on
+                # slower (network + AI) backends like Jira/Xray. On Azure
+                # enrichment is instant so it landed behind the count render and
+                # was never noticed. Gate it: no plan on screen → no redundant
+                # repaint → no flash. (The enriched work-units are still stored on
+                # _cp_rows for the next Generate regardless of this repaint.)
+                if (getattr(app, "active", None) == "testplan"
+                        and getattr(app, "_cp_calculated", False)):
                     try:
                         _repaint_unless_open(app, "_cp_sprint_open")
                     except Exception:
@@ -3406,7 +3639,14 @@ def _cp_estimate_and_assign(app):
 
     # complexity score = content work-units × priority weight
     def _score(r):
-        units = float(r.get("work_units", 1.0) or 1.0)
+        # A story's work_units is a NORMALIZED [0,1] complexity (see
+        # _cp_blend_complexity) — the least-complex story is legitimately 0.0.
+        # `... or 1.0` treated that 0.0 as "missing" and bumped it to 1.0, which
+        # (since every other story is ≤1.0) shoved the LEAST-complex story to the
+        # TOP of the estimate — the live "empty Test Story → 8 h, rich story → 1 h"
+        # inversion. Distinguish None/missing from a real 0.0.
+        _u = r.get("work_units")
+        units = float(_u) if _u is not None else 1.0
         boost = PRIORITY_BOOST.get(r.get("priority", DEFAULT_PRIORITY), 1.0)
         return units * boost
     scores = [_score(r) for r in rows]
@@ -3473,7 +3713,17 @@ def _cp_payload(app):
             "total_stories": len(rows), "total_cases": 0,
             "total_hours": total_hours, "hours_per_person": per_person,
             "effort_mode": True,
-            "total_days": total_days, "hours_per_person_days": per_person_days}
+            "total_days": total_days, "hours_per_person_days": per_person_days,
+            # Same backend labels/links plan_payload() carries — this payload
+            # feeds the SAME _plan_html() and exporters (see the parity comment
+            # above), so without them the Sprint Plan email/export footer would
+            # hardcode "Azure DevOps" and its story links would bypass the
+            # backend seam. `_plan_html` and `_wi_url` both fall back safely if
+            # these are absent, so this is consistency rather than a crash fix.
+            "case_store": backend_setup.case_store_label(app),
+            "story_store": backend_setup.story_store_label(app),
+            "story_urls": {str(r["id"]): (backend_setup.item_url(app, r["id"]) or "")
+                           for r in rows if r.get("id") is not None}}
 
 
 def _mode_toggle(app):
@@ -3502,7 +3752,7 @@ def test_plan_screen(app):
         return locked_state(
             app, "Sprint Plan",
             "Plan & estimate test effort across a sprint’s stories",
-            "Connect your Azure DevOps account on the Setup screen, then pick a "
+            f"Connect your {backend_setup.story_store_label(app)} account on the Setup screen, then pick a "
             "sprint here.")
     app._reg_mode = "create"
     return _create_screen(app)
@@ -3938,7 +4188,7 @@ def _create_screen(app):
                 app._confirm(
                     "Remove story?",
                     f"Remove story {sid} from the sprint plan and recalculate the "
-                    "workload? This doesn't change anything in Azure DevOps.",
+                    f"workload? This doesn't change anything in {backend_setup.story_store_label(app)}.",
                     _do, yes_label="Remove")
             return _d
 
@@ -4242,7 +4492,7 @@ def _create_screen(app):
 
     # Generating / loading indicator (same style as the Regression Plan spinner).
     _cp_spin_label = ("Generating sprint plan…" if app._cp_busy
-                      else "Loading sprint stories from Azure DevOps…")
+                      else f"Loading sprint stories from {backend_setup.story_store_label(app)}…")
     cp_spinner = ft.Container(
         ft.Row([ft.ProgressRing(width=18, height=18, stroke_width=2.5, color=T.VIOLET),
                 ft.Text(_cp_spin_label,
@@ -4391,7 +4641,7 @@ def screen(app):
         return locked_state(
             app, "Regression Plan",
             "Build a regression plan from your test plans & their stories",
-            "Connect your Azure DevOps account on the Setup screen. You can pick "
+            f"Connect your {backend_setup.story_store_label(app)} account on the Setup screen. You can pick "
             "the test plans right here once connected.")
 
     app._reg_mode = "existing"
@@ -4514,7 +4764,7 @@ def screen(app):
             app._confirm(
                 "Remove story?",
                 f"Remove story {sid} from the regression plan and recalculate the "
-                "effort? This doesn't change anything in Azure DevOps.",
+                f"effort? This doesn't change anything in {backend_setup.story_store_label(app)}.",
                 _do, yes_label="Remove")
         return _d
 
@@ -4524,9 +4774,14 @@ def screen(app):
             app._reg_plans_selected.append(
                 {"id": app.plan_id, "name": getattr(app, "plan_name", "") or str(app.plan_id)})
             _reload_plan_stories(app)
+        # Carry Setup's selected story ids over in their NATIVE form (int on
+        # Azure, issue KEY on Jira) — the picker stores them the same way and the
+        # calc layer canonicalises via _sid. int(sid) crashed on a Jira key.
+        _have = {_sid(s["id"]) for s in app._reg_selected}
         for sid in (app.story_ids or []):
-            if int(sid) not in [s["id"] for s in app._reg_selected]:
-                app._reg_selected.append({"id": int(sid), "title": "", "plan_id": app.plan_id})
+            if _sid(sid) not in _have:
+                app._reg_selected.append({"id": sid, "title": "", "plan_id": app.plan_id})
+                _have.add(_sid(sid))
         app._reg_selected_rows = []
         app._reg_export_msg = app._reg_calc_msg = None
         app.render()
@@ -4771,10 +5026,14 @@ def screen(app):
                 setattr(app, _attr, {})
             except Exception:
                 pass
-        # Mark this project's cache as already "loaded" (now empty) so the
-        # generate doesn't re-warm it from the stale disk copy. build_rows will
-        # refetch and then _cache_save() overwrites disk with fresh data.
-        app._reg_cache_loaded_project = getattr(app, "project", None)
+        # Mark this backend+project's cache as already "loaded" (now empty) so
+        # the generate doesn't re-warm it from the stale disk copy. build_rows
+        # will refetch and then _cache_save() overwrites disk with fresh data.
+        # MUST use _cache_key(app), not the bare project: _cache_load compares
+        # against that exact key, so a bare project name would never match and
+        # the disk copy would be re-loaded straight over the caches we just
+        # cleared — silently turning Regenerate back into a cache hit.
+        app._reg_cache_loaded_project = _cache_key(app)
         _calculate(e)
 
     def _do_export_to(fmt, dest=None):
@@ -4987,15 +5246,21 @@ def screen(app):
 
     # ── Stories: checkbox multiselect with Select all ──
     def _toggle_story(key, checked):
-        sid = int(key)
+        # `key` is str(s["id"]). Recover the story's REAL id so its type is
+        # preserved: int work-item id on Azure, string issue KEY ("SCRUM-1") on
+        # Jira/Xray. int(key) threw on Jira keys, so the click never landed in
+        # _reg_selected — leaving "0 stories selected" and Generate disabled on
+        # every non-Azure backend. Matches _all_stories, which appends s["id"]
+        # verbatim.
+        src = next((s for s in app._reg_plan_stories if str(s["id"]) == key), None)
+        sid = src["id"] if src else key
         ids = [s["id"] for s in app._reg_selected]
         if checked and sid not in ids:
-            src = next((s for s in app._reg_plan_stories if s["id"] == sid), None)
             if src:
                 app._reg_selected.append({"id": sid, "title": src.get("title", ""),
                                           "plan_id": src.get("plan_id")})
         elif not checked:
-            app._reg_selected = [s for s in app._reg_selected if s["id"] != sid]
+            app._reg_selected = [s for s in app._reg_selected if str(s["id"]) != key]
         app._reg_selected_rows = []
         app._reg_export_msg = app._reg_calc_msg = None
         if app._reg_selected:
@@ -5274,9 +5539,10 @@ def screen(app):
                         "On: counts each story's existing test cases and "
                         f"estimates hours and days (1 workday = "
                         f"{WORK_DAY_HOURS}h), then balances resources by "
-                        "effort. Off: skips counting test cases (faster — no "
-                        "extra Azure DevOps calls) and just splits stories "
-                        "evenly by number across the resources you add below.",
+                        f"effort. Off: skips counting test cases (faster — no "
+                        f"extra {backend_setup.case_store_label(app)} calls) "
+                        f"and just splits stories evenly by number across the "
+                        f"resources you add below.",
                         color=T.INK_2, size=11.5, no_wrap=False),
                 ], spacing=2, tight=True, expand=True),
             ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.START),
@@ -5298,7 +5564,8 @@ def screen(app):
                         ft.Text("=", size=14, color=T.INK_3, weight=ft.FontWeight.BOLD),
                         _pill("estimated hours", T.GREEN, T.GREEN_SOFT),
                     ], spacing=8, wrap=True), padding=ft.Padding.only(bottom=12)),
-                ft.Text("Priority weight (from each story's Azure DevOps priority):",
+                ft.Text(f"Priority weight (from each story's "
+                        f"{backend_setup.story_store_label(app)} priority):",
                         size=12, color=T.INK_2, weight=ft.FontWeight.W_500),
                 ft.Container(height=8),
                 ft.Row([_pill("P1 ×1.30", T.RED, T.RED_SOFT),
@@ -5736,7 +6003,8 @@ def screen(app):
 
     gen_spinner = ft.Container(
         ft.Row([ft.ProgressRing(width=18, height=18, stroke_width=2.5, color=T.VIOLET),
-                ft.Text("Generating plan — reading test cases from Azure DevOps…",
+                ft.Text(f"Generating plan — reading test cases from "
+                        f"{backend_setup.case_store_label(app)}…",
                         size=12.5, color=T.INK_3, weight=ft.FontWeight.W_500)],
                spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
         padding=ft.Padding.symmetric(vertical=10, horizontal=12),

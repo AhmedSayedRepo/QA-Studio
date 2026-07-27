@@ -4,7 +4,7 @@ Extracted from main.py (Step-8 modular refactor). Functions take the QAStudio
 app; the app keeps thin delegator methods so render() and close handlers keep
 working. force_close is still reachable as app._force_close (used by updater_ui.restart_close and the window close button).
 """
-import os, sys, threading, time, subprocess
+import asyncio, os, sys, threading, time, subprocess
 import flet as ft
 import theme as T
 from ui import ghost_btn, danger_btn
@@ -100,7 +100,18 @@ def force_close(app):
                 app.page.window.prevent_close = False
             except Exception:
                 pass
-            app.page.window.destroy()
+            # Flet 0.85+: window.destroy() is a COROUTINE. Calling it bare
+            # never awaits it — "RuntimeWarning: coroutine 'Window.destroy'
+            # was never awaited" — so the graceful close never actually runs
+            # and only the hard taskkill below closes the app. confirm_close()
+            # (further down this file) already schedules it via run_task; this
+            # path was simply missed. Same fix as main.py's window.center().
+            _destroy = app.page.window.destroy
+            _rt = getattr(app.page, "run_task", None)
+            if asyncio.iscoroutinefunction(_destroy) and callable(_rt):
+                _rt(_destroy)
+            else:
+                _destroy()          # older Flet: destroy() is synchronous
             closed = True
     except Exception:
         pass

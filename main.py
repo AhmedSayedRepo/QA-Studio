@@ -87,6 +87,7 @@ import platform_caps
 import login
 import modals
 import idle_watch
+import backend_setup
 
 # ── Flet version-compatibility shim ───────────────────────────────────────────
 # Flet renamed ft.icons→ft.Icons and ft.colors→ft.Colors around 0.25+. Support both.
@@ -450,11 +451,15 @@ class QAStudio:
         self._last_activity = time.time()
         self._start_idle_watch()
 
-    # Providers that offer an ongoing free tier (no card required for real use, or
-    # local). Everything NOT listed here is treated as paid. Drives the free/paid
-    # grouping in the provider dropdown — adjust as providers change their pricing.
-    FREE_PROVIDERS = {"gemini", "nvidia", "groq", "cerebras", "openrouter",
-                      "mistral", "ollama", "minimax", "glm"}
+    # Providers with a GENUINELY ongoing free tier — permanent + rate-limited (or
+    # local), NOT expiring trial credits. Trial-credit providers (nvidia, minimax,
+    # glm, qwen, deepseek) hand out a one-time grant and then reject calls with
+    # "insufficient balance / out of credit", so labelling them "free" promises
+    # something that breaks — they're intentionally treated as PAID here. Everything
+    # NOT listed is treated as paid. Drives the free/paid grouping in the provider
+    # dropdown — adjust as providers change their pricing.
+    FREE_PROVIDERS = {"gemini", "groq", "cerebras", "openrouter",
+                      "mistral", "ollama"}
 
     # ---- credential helpers ----
     def _provider_options(self):
@@ -504,7 +509,9 @@ class QAStudio:
             active = _is_active(name)
             dot = "●" if active else "○"
             opts.append(ft.DropdownOption(key=name,
-                text=f"{dot}  {T.disp_name(name)}  ({'active' if active else 'inactive'})"))
+                text=f"{dot}  {T.disp_name(name)}"
+                     + ("  (local — needs Ollama running)" if name == "ollama"
+                        else f"  ({'active' if active else 'inactive'})")))
         return opts
 
     # Providers that issue a DISTINCT API key per model (build.nvidia.com does).
@@ -1130,8 +1137,14 @@ class QAStudio:
         # Reported live as "logging out keeps the avatar on the login
         # screen". Closing whatever dialog is open FIRST (a no-op if none
         # is) fixes every entry point into sign-out, not just this one.
+        #
+        # Must close ALL stacked dialogs, not just the top one: Flet 0.85's
+        # pop_dialog() removes a single entry, so an auto-logout that shows the
+        # idle-warning dialog ON TOP of an already-open modal (e.g. "Create test
+        # plan") popped only the warning and left the modal over the login
+        # screen — reported live as "the modal is still open after auto logout".
         try:
-            self._close_dialog()
+            self._close_all_dialogs()
         except Exception:
             pass
         # BIOMETRIC-PROTECTED REFRESH TOKEN: when biometric unlock is on, a
@@ -2713,6 +2726,16 @@ class QAStudio:
             # Never leave the user on a blank "Working…" screen — show the error.
             import traceback
             tb = traceback.format_exc()
+            # Bind the exception to a NON-except name before anything nested
+            # closes over it. Python deletes the `except ... as ex` target when
+            # the block exits, so the nested _draw_err_screen() below — which
+            # renders str(ex) — saw a dead cell and raised "cannot access free
+            # variable 'ex' where it is not associated with a value in enclosing
+            # scope". The error screen crashed while reporting an error, which
+            # REPLACED the real message with a confusing one and made the
+            # original render failure invisible. `_err_obj` is an ordinary local,
+            # so the closure keeps working.
+            _err_obj = ex
             # Always keep the full trace on disk (never shown/sent anywhere but
             # the local diagnostics file) — previously the ONLY record of this
             # was whatever text happened to still be on screen. Showing the raw
@@ -2749,7 +2772,7 @@ class QAStudio:
                         ft.Column([
                             ft.Text("QA Studio hit an error while drawing this screen.",
                                     size=15, weight=ft.FontWeight.BOLD, color="#E0474D"),
-                            ft.Text(str(ex), size=12, color="#1B1A22"),
+                            ft.Text(str(_err_obj), size=12, color="#1B1A22"),
                             ft.Text("Full details were saved to the local diagnostics log.",
                                     size=11, color=T.INK_2),
                             *details_row,
@@ -2870,7 +2893,17 @@ class QAStudio:
                 if platform_caps.is_mobile():
                     pass
                 elif hasattr(self.page, "window") and self.page.window is not None:
-                    self.page.window.center()
+                    _center = self.page.window.center
+                    import asyncio as _aio
+                    if _aio.iscoroutinefunction(_center):
+                        # Flet 0.85.3: window.center() is a COROUTINE. Calling it
+                        # directly never awaits it (the "coroutine 'Window.center'
+                        # was never awaited" RuntimeWarning) and doesn't actually
+                        # centre the window. Schedule it on Flet's own event loop
+                        # instead — same dispatch as show_drawer()/launch_url().
+                        self.page.run_task(_center)
+                    else:
+                        _center()          # older Flet: center() is synchronous
                 elif hasattr(self.page, "window_center"):
                     self.page.window_center()
             except Exception:
@@ -3333,6 +3366,7 @@ class QAStudio:
             "url": "https://dev.azure.com",
             "url_label": "Open Azure DevOps",
         },
+        **backend_setup.HELP,
         "git_pat": {
             "title": "Git access token (PAT) for pushing tests",
             "steps": [
@@ -3403,8 +3437,8 @@ class QAStudio:
                       "international endpoint; the M2 free trial is time-limited.",
                       "https://platform.minimax.io/user-center/basic-information/interface-key",
                       "Open MiniMax Platform"),
-        "glm":       ("z.ai → sign up (free, no card) → API Keys → Create. "
-                      "glm-4.5-flash is the free model.",
+        "glm":       ("z.ai → sign up (no card) → API Keys → Create. glm-4.5-flash's "
+                      "free quota is a rate-limited trial that runs out — treat as paid.",
                       "https://z.ai/manage-apikey/apikey-list", "Open Z.AI Keys"),
     }
 
@@ -3432,7 +3466,14 @@ class QAStudio:
                                "It is stored only on this device, per provider."],
                      "url": url, "url_label": label}
         else:
-            h = self.HELP.get(key)
+            # backend_setup owns the Jira/Zephyr/Xray topics and builds their
+            # token/key URLs from the saved site, so the "Open …" button lands on
+            # the REAL 'create token' page on this user's own site rather than a
+            # generic docs/admin page (the reported "it sends me to admin.atlassian.com").
+            try:
+                h = backend_setup.help_topic(key, self.creds) or self.HELP.get(key)
+            except Exception:
+                h = self.HELP.get(key)
         if not h:
             return
         step_rows = []
@@ -3471,6 +3512,63 @@ class QAStudio:
         self._show_dialog(dlg)
 
     # ---- connection: editable (not connected) ----
+    def _build_org_row(self):
+        """(Re)build the Azure Organization field + Save/Update button. Separate
+        from _connection_edit so Save/Update patches just this row in place.
+        Deliberately does NOT fall back to E.AZURE_ORG when this account has none
+        saved — that global can hold whichever account last connected, and
+        pre-filling a different account's org here used to get it saved into the
+        wrong creds file on a Save the user didn't scrutinize."""
+        org_has = bool(self.creds.get("org"))
+        org_editable = (not org_has) or self._org_unlocked
+        self.org_field = ft.TextField(
+            value=self.creds.get("org", ""), hint_text="Azure DevOps organization name",
+            read_only=not org_editable,
+            bgcolor=(T.CARD if org_editable else T.CARD_2),
+            border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
+            content_padding=ft.Padding.symmetric(vertical=12, horizontal=12),
+            text_size=13, expand=True)
+        self.org_btn = (green_btn("Save", on_click=self._save_org) if org_editable
+                        else ghost_btn("Update", on_click=self._unlock_org))
+        return ft.Row([hover_field(self.org_field), self.org_btn], spacing=8)
+
+    def _sync_org_cell(self):
+        try:
+            self._org_cell.content = self._build_org_row()
+            self._org_cell.update()
+        except Exception:
+            self.render()
+
+    def _build_ai_key_row(self):
+        """(Re)build the API-key field + its Save/Update button for the CURRENT
+        provider, and return the row. Kept separate from _connection_edit so a
+        provider/model change can patch just this row in place (via
+        _sync_ai_key_cell) instead of a full render."""
+        name = self._provider_choice
+        active = self._provider_active(name)          # has a saved key for this slot
+        key_editable = (not active) or self._key_unlocked
+        self.api_key_field = ft.TextField(
+            value=self._saved_key(name), password=True, can_reveal_password=True,
+            hint_text=f"Paste key for {T.disp_name(name)}",
+            read_only=not key_editable,
+            bgcolor=(T.CARD if key_editable else T.CARD_2),
+            border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
+            content_padding=ft.Padding.symmetric(vertical=12, horizontal=12),
+            text_size=13, expand=True)
+        self.api_btn = (green_btn("Save", on_click=self._save_key) if key_editable
+                        else ghost_btn("Update", on_click=self._unlock_key))
+        return ft.Row([hover_field(self.api_key_field), self.api_btn], spacing=8)
+
+    def _sync_ai_key_cell(self):
+        """Rebuild the API-key row cell in place (new provider's key/state +
+        Save-vs-Update button). Falls back to a full render if the cell isn't
+        mounted (e.g. not on the connection-edit view)."""
+        try:
+            self._ai_key_cell.content = self._build_ai_key_row()
+            self._ai_key_cell.update()
+        except Exception:
+            self.render()
+
     def _connection_edit(self):
         name = self._provider_choice
         # Cap the menu height so the (now grouped) provider list scrolls instead of
@@ -3485,17 +3583,11 @@ class QAStudio:
         except TypeError:
             self.prov_dd = ft.Dropdown(**_prov_kwargs)
 
-        # Key field: editable if no saved key, or unlocked by Update button
-        active = self._provider_active(name)
-        key_editable = (not active) or self._key_unlocked
-        self.api_key_field = ft.TextField(
-            value=self._saved_key(name), password=True, can_reveal_password=True,
-            hint_text=f"Paste key for {T.disp_name(name)}",
-            read_only=not key_editable,
-            bgcolor=(T.CARD if key_editable else T.CARD_2),
-            border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
-            content_padding=ft.Padding.symmetric(vertical=12, horizontal=12), text_size=13, expand=True)
-        self.api_btn = green_btn("Save", on_click=self._save_key) if key_editable                   else ghost_btn("Update", on_click=self._unlock_key)
+        # Key field + Save/Update button are built by _build_ai_key_row() and
+        # wrapped in a stable cell (self._ai_key_cell) below, so a provider/model
+        # change can rebuild JUST that row in place instead of a full render —
+        # scroll_to() is a no-op coroutine on Flet 0.85, so a full render always
+        # snaps the page to the top (the reason the other dropdowns went in-place).
 
         # Model dropdown — populated live from the provider (falls back to a
         # curated list). Editable so an exact model id can also be typed.
@@ -3525,6 +3617,11 @@ class QAStudio:
             except TypeError:
                 self.model_dd = ft.Dropdown(**_dd_kwargs)
 
+        # Stable cell for the API-key row (see _build_ai_key_row): lets provider/
+        # model changes patch just this row in place.
+        self._ai_key_cell = ft.Container(self._build_ai_key_row(),
+                                         padding=ft.Padding.only(top=4, bottom=12))
+
         # PAT / Gmail / sender / sender-name fields are built by _make_cred_field
         # and wrapped in in-place cells (see below) so saving them rebuilds only
         # that one row, not the whole screen.
@@ -3540,16 +3637,10 @@ class QAStudio:
         # falling back to it here used to pre-fill a new/different account's
         # field with someone else's organization, which then got saved into
         # THEIR OWN creds file the moment they clicked Save without noticing.
-        org_val = self.creds.get("org", "")
-        org_has = bool(self.creds.get("org"))
-        org_editable = (not org_has) or self._org_unlocked
-        self.org_field = ft.TextField(
-            value=org_val, hint_text="Azure DevOps organization name",
-            read_only=not org_editable,
-            bgcolor=(T.CARD if org_editable else T.CARD_2),
-            border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
-            content_padding=ft.Padding.symmetric(vertical=12, horizontal=12), text_size=13, expand=True)
-        self.org_btn = green_btn("Save", on_click=self._save_org) if org_editable                   else ghost_btn("Update", on_click=self._unlock_org)
+        # Built by _build_org_row() into a stable cell so Save/Update patches just
+        # this row in place (no full render → no scroll jump).
+        self._org_cell = ft.Container(self._build_org_row(),
+                                      padding=ft.Padding.only(top=4, bottom=12))
 
         # Gmail sender address + display NAME — in-place cells too (Save/Update
         # + lock behaviour identical to every other credential field). Sender
@@ -3560,7 +3651,42 @@ class QAStudio:
         self._sender_name_cell = ft.Container(self._make_cred_field("sender_name"),
                                               padding=ft.Padding.only(top=4, bottom=12))
 
-        _fields = [
+        # ── Test Management (see backend_setup.py / TRACKER_BACKENDS_PLAN.md §0) ──
+        # This section is DELIBERATELY FIRST on the Setup screen and rendered as a
+        # distinct titled banner (backend_setup._section_header): choosing WHERE
+        # tests go is the most consequential decision on this screen — it changes
+        # every credential field below it — so it leads rather than sitting mid-
+        # form after the AI fields. The Azure org/PAT rows are UNCHANGED, just
+        # conditional; a legacy creds file (no "backend" key) resolves to "azure"
+        # and renders exactly what it always did.
+        _fields = backend_setup.picker_rows(self, field_label, hover_field)
+        if backend_setup.is_azure(self.creds):
+            _fields += [
+                field_label("Azure Organization", req=True,
+                            info="How to find your Azure organization name",
+                            on_info=lambda e: self._show_help("org")),
+                self._org_cell,
+                ft.Row([
+                    ft.Column([
+                        field_label("Azure DevOps PAT", req=True,
+                                    info="How to create an Azure DevOps PAT",
+                                    on_info=lambda e: self._show_help("pat")),
+                        self._pat_cell,
+                    ], expand=True, spacing=0),
+                ]),
+            ]
+        elif backend_setup.active(self.creds) == backend_setup.XRAY:
+            _fields += backend_setup.xray_rows(self, field_label, hover_field)
+        elif backend_setup.active(self.creds) == backend_setup.TESTRAIL:
+            _fields += backend_setup.testrail_rows(self, field_label, hover_field)
+        elif backend_setup.is_hybrid(self.creds):
+            _fields += backend_setup.hybrid_rows(self, field_label, hover_field)
+        else:
+            _fields += backend_setup.jira_rows(self, field_label, hover_field)
+
+        # AI provider section follows the test-management section.
+        _fields += [
+            ft.Container(height=6),
             field_label("AI Provider", req=True, info="How to make a provider active",
                         on_info=lambda e: self._show_help("provider")),
             ft.Container(hover_field(self.prov_dd), padding=ft.Padding.only(top=4, bottom=12)),
@@ -3570,21 +3696,7 @@ class QAStudio:
             ft.Container(hover_field(self.model_dd), padding=ft.Padding.only(top=4, bottom=12)),
             field_label("API Key", req=True, info="How to get your AI provider API key",
                         on_info=lambda e: self._show_help("api_key")),
-            ft.Container(ft.Row([hover_field(self.api_key_field), self.api_btn], spacing=8),
-                        padding=ft.Padding.only(top=4, bottom=12)),
-            field_label("Azure Organization", req=True,
-                        info="How to find your Azure organization name",
-                        on_info=lambda e: self._show_help("org")),
-            ft.Container(ft.Row([hover_field(self.org_field), self.org_btn], spacing=8),
-                        padding=ft.Padding.only(top=4, bottom=12)),
-            ft.Row([
-                ft.Column([
-                    field_label("Azure DevOps PAT", req=True,
-                                info="How to create an Azure DevOps PAT",
-                                on_info=lambda e: self._show_help("pat")),
-                    self._pat_cell,
-                ], expand=True, spacing=0),
-            ]),
+            self._ai_key_cell,
         ]
         # Email setup (sender address/name + Gmail App Password) is Admin-only —
         # it's a shared, org-wide credential used to send reports for everyone,
@@ -3677,8 +3789,6 @@ class QAStudio:
 
     def _connection_saved(self):
         name = self.current_provider()
-        pat = self.creds.get("pat", "")
-        masked_pat = "••••••••••" + (pat[-4:] if len(pat) >= 4 else "")
         gm = self.creds.get("gmail", "")
         masked_gm = ("•••• •••• ••••" if gm else "—")
         _sender = self.creds.get("gmail_sender") or "—"
@@ -3686,13 +3796,26 @@ class QAStudio:
         div = ft.Container(height=1, bgcolor=T.BORDER_2, margin=ft.Margin.symmetric(vertical=8))
         _model = self._saved_model(name)
         prov_val = f"{T.disp_name(name)}  ·  {_model}" if _model else T.disp_name(name)
+
+        def _mask(v):
+            return ("••••••••••" + (v[-4:] if len(v) >= 4 else "")) if v else "—"
+
         _rows = [
+            # Keep the Test Management backend visible after connecting (was only
+            # shown in the pre-connect picker) — reuses the same banner so the
+            # active backend (e.g. "Jira → TestRail") is always in view.
+            backend_setup._section_header(
+                ft, T, backend_setup.label_for(backend_setup.active(self.creds))),
             self._cred_saved_row(ft.Icons.AUTO_AWESOME, "AI Provider", prov_val,
                                  badge("Active", "green", ft.Icons.CHECK)),
-            div,
-            self._cred_saved_row(ft.Icons.KEY_OUTLINED, "Azure DevOps PAT", masked_pat,
-                                 badge("Valid", "green", ft.Icons.CHECK)),
         ]
+        # Backend-aware credential rows — was a single hardcoded "Azure DevOps PAT"
+        # row, which showed (and claimed "Valid") on Jira/Xray/TestRail/hybrid
+        # connections too. Now reflects the ACTIVE backend's real credential(s).
+        for _label, _secret in backend_setup.saved_cred_fields(self.creds):
+            _rows += [div, self._cred_saved_row(
+                ft.Icons.KEY_OUTLINED, _label, _mask(_secret),
+                badge("Valid", "green", ft.Icons.CHECK))]
         # Email setup is Admin-only (see _connection_edit) — a non-admin shouldn't
         # even see whether it's configured here either.
         if self._is_admin():
@@ -3782,11 +3905,24 @@ class QAStudio:
         _switch_user_creds) — it just doesn't write back to it anymore."""
         if getattr(self, "readonly", False):
             return
+        _changed = (getattr(self, "tool", None) != k)
         self.tool = k
         if persist:
             try:
                 self.creds["tool"] = k
                 store.save(self.creds)
+            except Exception:
+                pass
+        # The "THIS RUN" estimate is TOOL-SPECIFIC: Titles counts existing test
+        # cases, Steps counts cases-with-steps (count_test_cases vs
+        # count_existing_steps). Switching the toggle left the previous tool's
+        # number on screen, so it read as a stale/wrong count for the newly
+        # selected generator. Clear it and refetch (a no-op until connected +
+        # project + plan + stories are all set).
+        if _changed:
+            self._estimated_tc = None
+            try:
+                self._fetch_estimate()
             except Exception:
                 pass
         self.render()
@@ -3882,18 +4018,15 @@ class QAStudio:
         # on a new provider without re-running Connect — never actually
         # needed self.connected to drop either; only a genuine, no-run-active
         # reconnect should force one.
+        _did_disconnect = False
         if (prev and prev != name and getattr(self, "connected", False)
                 and not getattr(self, "_run_active", False)
                 and not getattr(self, "_auto_running", False)):
             self._disconnect(f"Provider changed to {T.disp_name(name)} — reconnect to continue.")
+            _did_disconnect = True
         # reset the model list so it refetches for the newly selected provider
         self._models_for = None
         self._model_choices = None
-        active = self._provider_active(name)
-        self.api_key_field.value = self._saved_key(name)
-        self.api_key_field.read_only = active
-        self.api_key_field.bgcolor = T.CARD_2 if active else T.CARD
-        self.api_key_field.hint_text = f"Paste key for {T.disp_name(name)}"
         # switch the live engine provider (+ its saved key & model, if any) so a
         # PAUSED automation can Resume on this provider without re-running Connect
         try:
@@ -3901,7 +4034,20 @@ class QAStudio:
                               model=(self._saved_model(name) or None))
         except Exception:
             pass
-        self.render()
+        # A disconnect flips the whole connection view (summary → edit form), so a
+        # full render is genuinely needed there. Otherwise patch only the changed
+        # controls IN PLACE — a full render would snap the page to the top because
+        # scroll_to() is a no-op coroutine on Flet 0.85 (restore can't fix it).
+        if _did_disconnect:
+            self.render()
+            return
+        try:
+            self.model_dd.value = self._saved_model(name) or None
+            self.model_dd.options = self._model_options(name)  # also kicks the live-catalogue refetch
+            self.model_dd.update()
+            self._sync_ai_key_cell()                           # key field + Save/Update button
+        except Exception:
+            self.render()
 
     def _save_key(self, e=None):
         name = self._provider_choice
@@ -3921,7 +4067,14 @@ class QAStudio:
         self._models_for = None
         self._model_choices = None
         self._toast(f"API key saved & {T.disp_name(name)} activated.")
-        self.render()
+        # In-place: the row flips Save→Update and the model catalogue may change.
+        # Patch just those instead of a full render (no scroll jump).
+        try:
+            self.model_dd.options = self._model_options(name)
+            self.model_dd.update()
+            self._sync_ai_key_cell()
+        except Exception:
+            self.render()
 
     def _model_src_hint(self):
         """Small label next to the Model field: 'live' or 'fallback list'."""
@@ -4046,14 +4199,25 @@ class QAStudio:
         if name in self.PER_MODEL_KEY_PROVIDERS:
             self._models_for = None
             self._model_choices = None
-        # changing the model while connected invalidates the connection
+        # changing the model while connected invalidates the connection → the view
+        # flips (summary → edit), so a full render is genuinely needed there.
         if getattr(self, "connected", False):
             self._disconnect(f"Model changed to {val} — reconnect to continue.")
+            self._toast(f"Model set to {val}.")
+            self.render()
+            return
         self._toast(f"Model set to {val}.")
-        self.render()
+        # Not connected: the model dropdown already shows the pick. The only
+        # visible change is the key row on per-model-key providers (the key swaps
+        # with the model) — patch just that in place, no full render (no scroll
+        # jump; scroll_to is a no-op coroutine on Flet 0.85).
+        if name in self.PER_MODEL_KEY_PROVIDERS:
+            self._sync_ai_key_cell()
 
     def _unlock_key(self, e=None):
-        self._key_unlocked = True; self.render()
+        # In-place: unlocking flips the key row from "Update" to an editable field
+        # + "Save" — patch just that row, no full render (no scroll jump).
+        self._key_unlocked = True; self._sync_ai_key_cell()
 
     def _save_pat(self, e=None):
         val = (self.pat_field.value or "").strip()
@@ -4086,10 +4250,11 @@ class QAStudio:
         except Exception:
             pass
         self._org_unlocked = False
-        self._toast("Organization saved."); self.render()
+        self._toast("Organization saved."); self._sync_org_cell()
 
     def _unlock_org(self, e=None):
-        self._org_unlocked = True; self.render()
+        # In-place: flip the org row to editable + "Save", no full render.
+        self._org_unlocked = True; self._sync_org_cell()
 
     def _save_sender(self, e=None):
         val = (self.sender_field.value or "").strip()
@@ -4284,15 +4449,11 @@ class QAStudio:
                 try:
                     # Primary: stories actually in this test plan (its requirement
                     # suites) — works even when the plan has no iteration, which is
-                    # why the picker used to stay empty/disabled.
-                    ss = E.fetch_stories_in_plan(self.project, self.plan_id)
-                    if not ss:
-                        # Fallback: the plan's sprint/iteration stories.
-                        plan = E._azure_get(
-                            f"https://dev.azure.com/{E.AZURE_ORG}/{self.project}"
-                            f"/_apis/testplan/plans/{self.plan_id}?api-version=7.0")
-                        itr = plan.get("iteration")
-                        ss = E.fetch_stories_in_iteration(self.project, itr) if itr else []
+                    # why the picker used to stay empty/disabled. Both that and the
+                    # iteration fallback now live in backend_setup.fetch_stories_for_plan
+                    # (they were duplicated inline here and at _reload_setup_stories,
+                    # including a raw dev.azure.com fetch in the UI layer).
+                    ss = backend_setup.fetch_stories_for_plan(self, self.plan_id)
                 except Exception:
                     ss = []
                 self._setup_stories = ss
@@ -4505,11 +4666,17 @@ class QAStudio:
         # Regression / Sprint screens — type-to-filter + checkboxes). Selecting
         # syncs self.story_ids; picked stories also show as removable chips below.
         def _toggle_setup_story(key, checked):
-            sid = int(key)
+            # `key` is str(s["id"]). Recover the story's REAL id so its type is
+            # preserved: an int work-item id on Azure, a string issue KEY
+            # (e.g. "SCRUM-3") on Jira/Xray. int(key) crashed on Jira keys, and
+            # is what left the picker unusable on those backends. Matches
+            # _all_setup_stories, which already appends s["id"] verbatim.
+            sid = next((s["id"] for s in (self._setup_stories or [])
+                        if str(s["id"]) == key), key)
             if checked and sid not in self.story_ids:
                 self.story_ids.append(sid)
             elif not checked:
-                self.story_ids = [s for s in self.story_ids if s != sid]
+                self.story_ids = [s for s in self.story_ids if str(s) != str(sid)]
             self._err_msg = ""
             self._estimated_tc = None
             _build_chips()   # in-place chip refresh — no full render, scroll stays put
@@ -4630,9 +4797,9 @@ class QAStudio:
         self._open_plan_btn = ft.IconButton(
             ft.Icons.OPEN_IN_NEW, icon_size=17,
             icon_color=(T.VIOLET_INK if (self.plan_id and _can_open_plan) else T.INK_3),
-            tooltip=("Open this test plan in Azure DevOps" if self.plan_id
-                     else "Select a test plan first") if _can_open_plan
-            else "You don’t have permission to open the plan",
+            tooltip=((backend_setup.plan_link_label(self) if self.plan_id
+                      else "Select a test plan first") if _can_open_plan
+                     else "You don’t have permission to open the plan"),
             disabled=not (bool(self.plan_id) and _can_open_plan),
             on_click=lambda e: self._open_azure(),
             style=ft.ButtonStyle(
@@ -4712,7 +4879,38 @@ class QAStudio:
         # Remember where the user was BEFORE selecting — Flet's editable dropdown
         # focus-scrolls the page on selection; we snap back to this afterwards.
         _scroll_keep = getattr(self, "_scroll_offset", 0) or 0
-        self.plan_id = int(self.plan_dd.value)
+        # ROOT CAUSE (two bugs, one line). `int(self.plan_dd.value)` used to
+        # raise "int() argument must be ... not 'NoneType'" on Flet's top-level
+        # red banner. Reading the value off the STORED control ref is the
+        # problem: `self.plan_dd` is rebuilt on every render (see its
+        # construction) with `value=str(self.plan_id) if self.plan_id else None`,
+        # so the FIRST selection fires on_select while that ref still holds
+        # None — hence int(None). Guarding it without fixing the read then
+        # traded the crash for a silent no-op: plan_id stayed None, the Test
+        # Plan ID showed "— none —" and the story dropdown stayed disabled
+        # ("Select a test plan first") even though a plan was visibly picked.
+        # So resolve from the EVENT first, and only fall back to the stored ref.
+        _v = None
+        for _src in (getattr(e, "data", None),
+                     getattr(getattr(e, "control", None), "value", None),
+                     getattr(self.plan_dd, "value", None)):
+            if _src is not None and str(_src).strip():
+                _v = str(_src).strip()
+                break
+        if _v is None:
+            return
+        # An editable Dropdown can hand back the option TEXT ("[103151] Name")
+        # rather than its key, so recover the id when that happens.
+        # NB: plain string parsing on purpose — main.py does not import `re`.
+        _ids = {str(p["id"]) for p in (self._plans or [])}
+        if _v not in _ids and _v.startswith("[") and "]" in _v:
+            _inner = _v[1:_v.index("]")].strip()
+            if _inner in _ids:
+                _v = _inner
+        # Only Azure plan ids are integers; a Zephyr folder, an Xray "Test Plan"
+        # issue key ("PROJ-123") or a TestRail suite id is not — keep those as
+        # the string every backend adapter already accepts.
+        self.plan_id = int(_v) if _v.lstrip("-").isdigit() else _v
         for p in self._plans:
             if p["id"] == self.plan_id:
                 self.plan_name = p["name"]
@@ -4735,7 +4933,7 @@ class QAStudio:
             if hasattr(self, "_open_plan_btn") and self.can("act.open_plan"):
                 self._open_plan_btn.disabled = False
                 self._open_plan_btn.icon_color = T.VIOLET_INK
-                self._open_plan_btn.tooltip = "Open this test plan in Azure DevOps"
+                self._open_plan_btn.tooltip = backend_setup.plan_link_label(self)
                 self._open_plan_btn.style = ft.ButtonStyle(
                     bgcolor={"": T.VIOLET_SOFT},
                     shape=ft.RoundedRectangleBorder(radius=T.R))
@@ -4816,13 +5014,10 @@ class QAStudio:
 
         def work():
             try:
-                ss = E.fetch_stories_in_plan(self.project, pid)
-                if not ss:
-                    plan = E._azure_get(
-                        f"https://dev.azure.com/{E.AZURE_ORG}/{self.project}"
-                        f"/_apis/testplan/plans/{pid}?api-version=7.0")
-                    itr = plan.get("iteration")
-                    ss = E.fetch_stories_in_iteration(self.project, itr) if itr else []
+                # Same two-step as the Setup task-card loader — shared via
+                # backend_setup so the Azure-specific plan/iteration fallback
+                # exists in exactly one place.
+                ss = backend_setup.fetch_stories_for_plan(self, pid)
             except Exception:
                 ss = []
             if pid != self.plan_id:   # plan changed again mid-load — drop stale result
@@ -4852,13 +5047,13 @@ class QAStudio:
         def work():
             try:
                 if self.tool == "steps":
-                    have, total = E.count_existing_steps(self.project, self.plan_id, self.story_ids)
+                    have, total = backend_setup.count_existing_steps(self, self.plan_id, self.story_ids)
                     self._estimated_tc = total
                 else:
                     # Real count of existing test cases across the selected stories
                     # (was a fabricated stories×6 guess).
-                    self._estimated_tc = E.count_test_cases(
-                        self.project, self.plan_id, self.story_ids)
+                    self._estimated_tc = backend_setup.count_test_cases(
+                        self, self.plan_id, self.story_ids)
             except Exception:
                 return
             # Update just the two labels, not the whole page
@@ -4970,8 +5165,12 @@ class QAStudio:
             # down and rebuilds this entire screen from scratch just to swap
             # one line of text. Only meaningful while _connecting is True,
             # since that's the only time this control is actually mounted.
+            # expand=True so a long status ("Validating Azure → TestRail & loading
+            # projects…") WRAPS inside the narrow right panel instead of running
+            # off the edge — the hybrid labels are longer than "Azure DevOps".
             self._connect_status_text = ft.Text(self._connect_status, size=12,
-                                                color=T.INK_2, weight=ft.FontWeight.BOLD)
+                                                color=T.INK_2, weight=ft.FontWeight.BOLD,
+                                                expand=True)
             return card(ft.Column([
                 ft.Text("STEP 1 · CONNECT", size=11, weight=ft.FontWeight.BOLD, color=T.VIOLET_INK),
                 ft.Container(height=13),
@@ -5042,10 +5241,22 @@ class QAStudio:
         # DIFFERENT account's organization into this one's own saved creds. If
         # neither the field nor this account's own creds has an org, that's a
         # real missing-required-field case now, same as the PAT/API key above.
-        org = self._field_or_saved("org_field", self.creds.get("org", ""))
-        if not org:
-            self._err("Azure Organization is required."); return
-        self.creds["org"] = org
+        # Azure org is required only when Azure is the ACTIVE backend. On
+        # Jira+Zephyr there is no org concept at all, and demanding one would
+        # make that backend impossible to connect. backend_setup validates the
+        # Jira/Zephyr credential set instead — including the SSRF check on the
+        # user-supplied site URL, which must happen BEFORE any request carries
+        # the API token to that host.
+        if backend_setup.is_azure(self.creds):
+            org = self._field_or_saved("org_field", self.creds.get("org", ""))
+            if not org:
+                self._err("Azure Organization is required."); return
+            self.creds["org"] = org
+        else:
+            org = self.creds.get("org", "")
+            _ok, _err_msg = backend_setup.validate_for_connect(self)
+            if not _ok:
+                self._err(_err_msg); return
         sender = self._field_or_saved("sender_field", self.creds.get("gmail_sender", "")) or E.GMAIL_SENDER
         self.creds["gmail_sender"] = sender
         store.save(self.creds)
@@ -5094,7 +5305,17 @@ class QAStudio:
                     if kmsg == "auth":
                         self._err(f"{prov}: API key rejected. Check the key is correct and active.")
                     elif kmsg == "network":
-                        self._err(f"{prov}: cannot reach the provider — check your network/firewall.")
+                        # Ollama is LOCAL (localhost:11434), so "check your
+                        # network/firewall" sends the user to the wrong place —
+                        # the fix is starting the local server. Reported live.
+                        if name == "ollama":
+                            _base = ((E.AI_CONFIG.get("ollama") or {}).get("base_url")
+                                     or "localhost:11434")
+                            self._err(f"Ollama isn't reachable at {_base} — it runs "
+                                      f"locally, so start it with `ollama serve`, or "
+                                      f"pick a cloud provider in Setup.")
+                        else:
+                            self._err(f"{prov}: cannot reach the provider — check your network/firewall.")
                     elif kmsg == "timeout":
                         self._err(f"{prov}: the provider timed out. Try again in a moment.")
                     elif kmsg in ("server", "overloaded"):
@@ -5121,17 +5342,35 @@ class QAStudio:
                             f"{prov} key is valid, but it's rate-limited right now — "
                             f"generation may pause and retry.")
                     self.ui_safe(lambda: self._toast(warn))
-                # 2) Validate the Azure PAT
+                # 2) Validate the tracker connection & load projects.
+                # The Azure branch is unchanged. Non-Azure backends go through
+                # backend_setup, which validates BOTH credentials (a Jira token
+                # that works while the Zephyr one doesn't would otherwise pass
+                # Setup and fail later mid-generation, reading as a broken run
+                # rather than a bad token) and returns the same list-of-strings
+                # shape `self._projects` has always held.
                 if not alive():
                     return
-                self._set_connect_status("Validating PAT & loading projects…")
-                ok, msg = E.validate_pat(pat)
-                if not alive():
-                    return
-                if not ok:
-                    self._err(_friendly(msg))
-                    return
-                self._projects = E.fetch_projects(pat)
+                if backend_setup.is_azure(self.creds):
+                    self._set_connect_status("Validating PAT & loading projects…")
+                    ok, msg = E.validate_pat(pat)
+                    if not alive():
+                        return
+                    if not ok:
+                        self._err(_friendly(msg))
+                        return
+                    self._projects = E.fetch_projects(pat)
+                else:
+                    label = backend_setup.label_for(backend_setup.active(self.creds))
+                    self._set_connect_status(f"Validating {label} & loading projects…")
+                    try:
+                        self._projects = backend_setup.connect_and_list_projects(self)
+                    except Exception as ex:
+                        if alive():
+                            self._err(str(ex)[:160])
+                        return
+                    if not alive():
+                        return
                 self.connected = True
                 self._run_finished = False
                 self.last_report = None
@@ -5396,7 +5635,11 @@ class QAStudio:
         if not self.project:
             self._plans = []; return
         try:
-            self._plans = E.fetch_test_plans(self.project)
+            # Azure still calls engine directly inside fetch_plans, so its
+            # behaviour is unchanged; only a non-Azure backend routes through
+            # the tracker adapter, which flattens its Plan DTOs into the same
+            # [{"id","name"}] shape this dropdown and regression.py consume.
+            self._plans = backend_setup.fetch_plans(self, self.project)
         except Exception as ex:
             self._plans = []
             self._err(f"Could not load test plans: {ex}")
@@ -5547,6 +5790,11 @@ class QAStudio:
     def _close_dialog(self):
         return dialogs.close_dialog(self)
 
+    def _close_all_dialogs(self):
+        """Close EVERY stacked dialog — used on session teardown, where leaving
+        a lower one open leaves it floating over the login screen."""
+        return dialogs.close_all_dialogs(self)
+
     def _confirm(self, title, message, on_yes, yes_label="Remove", danger=True,
                  icon=ft.Icons.HELP_OUTLINE):
         return dialogs.confirm(self, title, message, on_yes, yes_label, danger, icon)
@@ -5602,6 +5850,21 @@ class QAStudio:
                or getattr(self, "_remote_run_active", False)):
             self._err("A run is already in progress. Wait for it to finish or stop it first.")
             return
+        # DOUBLE-START GUARD. The checks above only cover a run that has already
+        # LAUNCHED — they say nothing about the window between clicking Start and
+        # the run beginning. On the Steps tool that window includes a background
+        # precheck AND (when cases already have steps) the Skip-vs-Evaluate
+        # dialog waiting on the user. Clicking Start again in there ran a second
+        # precheck and opened a SECOND dialog on top of the first — reported live
+        # as "I can open the evaluate popup twice by keep clicking start run"
+        # (Flet stacks dialogs, so the duplicate really is a second layer).
+        # Two conditions, because they cover different halves of that window:
+        #   _start_pending  → a precheck is in flight
+        #   _dialog_depth>0 → a dialog (e.g. that very prompt) is already open
+        if getattr(self, "_start_pending", False):
+            return
+        if int(getattr(self, "_dialog_depth", 0) or 0) > 0:
+            return
         # RBAC: Viewers (or any role without RUN) can't start a run.
         if not self.can(auth.CAP_RUN):
             self._err("Your role doesn’t allow starting a run. Ask an admin for access.")
@@ -5650,12 +5913,15 @@ class QAStudio:
             return
         # Steps tool: check existing steps first
         if self.tool == "steps":
+            self._start_pending = True      # see the double-start guard above
             self._busy("Checking existing steps…")
             def precheck():
                 # First: confirm every story actually belongs to the selected plan
+                # (Azure only — routed through the seam; non-Azure backends don't
+                # tie stories to a plan, so this is a no-op there instead of a 404).
                 try:
-                    found, missing = E.validate_stories_in_plan(
-                        self.project, self.plan_id, self.story_ids)
+                    found, missing = backend_setup.validate_stories_in_plan(
+                        self, self.plan_id, self.story_ids)
                 except Exception as ex:
                     self._unbusy()
                     self._err(f"Could not verify stories: {str(ex)[:90]}")
@@ -5684,7 +5950,7 @@ class QAStudio:
                 # best-effort precheck — but the user now knows why they didn't see
                 # the Skip/Evaluate choice).
                 try:
-                    have, total = E.count_existing_steps(self.project, self.plan_id, self.story_ids)
+                    have, total = backend_setup.count_existing_steps(self, self.plan_id, self.story_ids)
                 except Exception as ex:
                     # Log it, don't just toast. This failure was diagnosable
                     # only from a screenshot before — it turned out to be the
@@ -5723,14 +5989,25 @@ class QAStudio:
                     # cases exist but none have steps → just generate, no prompt
                     self.existing_mode = "skip"
                     self._launch_run("skip")
-            self._bg(precheck)
+            def _precheck_guarded():
+                # Clear the in-flight flag on EVERY exit path (there are seven,
+                # including three early returns and an exception). Once precheck
+                # is done the other half of the guard takes over: either the
+                # Skip/Evaluate dialog is open (_dialog_depth > 0) or the run has
+                # launched (_run_active), so Start stays blocked either way.
+                try:
+                    precheck()
+                finally:
+                    self._start_pending = False
+            self._bg(_precheck_guarded)
         else:
             # Titles tool: still verify stories belong to the plan first
+            self._start_pending = True
             self._busy("Verifying stories…")
             def precheck_titles():
                 try:
-                    found, missing = E.validate_stories_in_plan(
-                        self.project, self.plan_id, self.story_ids)
+                    found, missing = backend_setup.validate_stories_in_plan(
+                        self, self.plan_id, self.story_ids)
                 except Exception as ex:
                     self._unbusy(); self._err(f"Could not verify stories: {str(ex)[:90]}"); return
                 self._unbusy()
@@ -5740,7 +6017,12 @@ class QAStudio:
                               f"Add it to the plan in Azure, or pick the correct plan.")
                     return
                 self._launch_run(None)
-            self._bg(precheck_titles)
+            def _precheck_titles_guarded():
+                try:
+                    precheck_titles()
+                finally:
+                    self._start_pending = False
+            self._bg(_precheck_titles_guarded)
 
     def _launch_run(self, existing_mode):
         if existing_mode:
@@ -5839,18 +6121,22 @@ class QAStudio:
             self._refresh_run()
 
         def work():
+            # ops routes the generators' tracker calls at the active backend.
+            # Returns None for Azure, which makes engine use its own defaults —
+            # i.e. the Azure path below is byte-for-byte what it always was.
+            _ops = backend_setup.generation_ops(self)
             try:
                 if self.tool == "steps":
                     E.run_steps(self.project, self.plan_id, self.story_ids, cb,
                                 should_stop=lambda: self.stop_flag,
                                 existing_mode=self.existing_mode,
                                 on_ai_error=self._run_on_ai_error,
-                                gate=self._run_gate)
+                                gate=self._run_gate, ops=_ops)
                 else:
                     E.run_titles(self.project, self.plan_id, self.story_ids, cb,
                                  should_stop=lambda: self.stop_flag,
                                  on_ai_error=self._run_on_ai_error,
-                                 gate=self._run_gate)
+                                 gate=self._run_gate, ops=_ops)
             except E.StopRequested:
                 # Defensive backstop: run_steps/run_titles are supposed to
                 # catch StopRequested internally at every AI call site and
@@ -5916,8 +6202,7 @@ class QAStudio:
                 # Test Plan deep link (if we have project + plan)
                 plan_url = None
                 if self.project and self.plan_id:
-                    plan_url = (f"https://dev.azure.com/{E.AZURE_ORG}/{self.project}"
-                                f"/_testPlans/define?planId={self.plan_id}")
+                    plan_url = backend_setup.plan_url(self, self.plan_id)
                 to = [e.strip() for e in self.emails.split(",") if e.strip()]
                 # Build a STRUCTURED log for the email so it renders like the
                 # in-app Run activity log (icon · id · title · detail), not raw text.
@@ -5935,6 +6220,22 @@ class QAStudio:
                         "indent": bool(ln.get("indent")),
                         "ar": bool(ln.get("ar")),
                     })
+                # Backend-aware item links for the email: resolve each item id
+                # through the tracker seam (Jira/Xray/Zephyr/TestRail/Azure) so
+                # the links match the connected backend instead of always
+                # pointing at dev.azure.com.
+                _url_map = {}
+                try:
+                    for _it in (list(rpt.get("action_items", []))
+                                + list(rpt.get("skipped_items", []))
+                                + list(rpt.get("per_story", []))):
+                        _id = _it.get("id") if isinstance(_it, dict) else None
+                        if _id and str(_id) not in _url_map:
+                            _u = backend_setup.item_url(self, _id) or ""
+                            if _u:
+                                _url_map[str(_id)] = _u
+                except Exception:
+                    _url_map = {}
                 html = E.build_report_email(tool_name, rpt.get("summary",""), stats,
                                             rpt.get("action_items",[]),
                                             rpt.get("skipped_items",[]),
@@ -5942,7 +6243,8 @@ class QAStudio:
                                             plan_url=plan_url,
                                             total_secs=_secs,
                                             log_lines=email_log,
-                                            org=E.AZURE_ORG, project=self.project)
+                                            org=E.AZURE_ORG, project=self.project,
+                                            url_map=_url_map)
                 ok, err = E.send_report(to, f"QA Studio — {tool_name} report", html)
                 if not ok:
                     self._log_lines.append({"tone":"warn","ico":"✉",
@@ -6392,8 +6694,7 @@ class QAStudio:
         if not self.can("act.open_plan"):
             return self._toast("You don’t have permission to open the plan.")
         if self.project and self.plan_id:
-            url = (f"https://dev.azure.com/{E.AZURE_ORG}/{self.project}"
-                   f"/_testPlans/define?planId={self.plan_id}")
+            url = backend_setup.plan_url(self, self.plan_id)
             self._open_url(url)
         else:
             self._toast("No test plan selected.")
@@ -7164,17 +7465,98 @@ class QAStudio:
             cond = self._run_pause_cond = _t.Condition()
         return cond
 
+    def _ai_config_signature(self):
+        """What "the AI setup changed" actually means, for the Resume guard.
+
+        Comparing the PROVIDER alone was wrong: switching to a different MODEL
+        on the same provider (an OpenRouter ':free' model, a smaller Gemini,
+        a different NVIDIA model — which on NVIDIA even carries its own API
+        key) is a completely legitimate fix for the failure, and a
+        provider-only check nagged the user for it. The api_key is included
+        because pasting a topped-up / corrected key is also a real change.
+
+        Returns an opaque tuple used ONLY for equality — never logged, never
+        displayed, so the key value can't leak into the run log."""
+        prov = getattr(E, "AI_PROVIDER", "") or ""
+        cfg = (getattr(E, "AI_CONFIG", {}) or {}).get(prov) or {}
+        model = (cfg.get("deployment") if prov == "azure_openai"
+                 else cfg.get("model")) or ""
+        return (prov, str(model).strip(), (cfg.get("api_key") or "").strip())
+
+    def _ai_label(self):
+        """'Provider · model' for user-facing messages (never includes the key)."""
+        prov, model, _ = self._ai_config_signature()
+        disp = E.T_disp(prov) if prov else ""
+        return f"{disp} · {model}" if (disp and model) else (disp or "this provider")
+
+    def _run_logmsg(self, msg, tone="dim", ico=None):
+        """Append a line to the RUN activity log from the UI side.
+
+        The run log is normally fed only by engine's `cb("log", …)`, so
+        UI-initiated events (the manual Pause/Resume button) left NO trace in
+        it — the log jumped straight from one case to the next with no record
+        that the user had paused, which made reading a run back impossible.
+        Automation already had this via _auto_logmsg; this is the Run twin."""
+        try:
+            payload = {"msg": msg, "tone": tone}
+            if ico:
+                payload["ico"] = ico
+            self._log_lines.append(payload)
+            self._rendered_count = -1
+            self._refresh_run()
+        except Exception:
+            pass
+
     def _toggle_run_pause(self):
         """Run-screen Pause/Resume header button (twin of Automation's).
         Pause lets in-flight cases finish, then the run holds before the next
         item; the user can switch the AI provider in Setup meanwhile. Resume
         wakes both the between-items gate and any workers auto-paused on a
-        fatal provider error (_run_on_ai_error)."""
+        fatal provider error (_run_on_ai_error).
+
+        RESUME GUARD: when the run was auto-paused by a provider error, the
+        instruction is "switch the AI provider in Setup, then Resume" — but
+        nothing stopped Resume being clicked with the SAME provider still
+        selected, which just burns another attempt on the thing that had
+        already failed (seen live: NVIDIA 404 → Resume → 'retrying with
+        NVIDIA' → out-of-credits). The first Resume in that state now warns
+        instead of resuming; a second click proceeds anyway, so the user is
+        never actually blocked."""
+        resuming = bool(getattr(self, "_run_paused", False))
+        if resuming and getattr(self, "_run_pause_reason", "") == "provider_error":
+            # Compare the FULL AI signature (provider + model + key), not just
+            # the provider: switching model on the same provider is a valid fix.
+            _same = (self._ai_config_signature() ==
+                     getattr(self, "_run_pause_ai_sig", None))
+            if _same and not getattr(self, "_run_resume_override", False):
+                self._run_resume_override = True
+                _prov = self._ai_label()
+                _warn = (f"Still on {_prov}, which just failed. Change the AI "
+                         f"provider or model in Setup — or click Resume again "
+                         f"to retry anyway.")
+                self._toast(_warn)
+                self._run_logmsg(_warn, tone="warn", ico="⚠")
+                try:
+                    self.render()
+                except Exception:
+                    pass
+                return
         cond = self._run_pause_condition()
         with cond:
             self._run_paused = not getattr(self, "_run_paused", False)
             paused = self._run_paused
             cond.notify_all()
+        if paused:
+            # Manual pause: record it in the run log too (see _run_logmsg).
+            self._run_pause_reason = "manual"
+            self._run_pause_ai_sig = self._ai_config_signature()
+            self._run_logmsg("Paused by you — change the AI provider or model "
+                             "in Setup if needed, then Resume; or Stop to end "
+                             "the run.", tone="warn", ico="⏸")
+        else:
+            self._run_logmsg(f"Resumed on {self._ai_label()}.", tone="ok", ico="▶")
+            self._run_pause_reason = ""
+            self._run_resume_override = False
         self._toast("Run paused — switch the AI provider in Setup if needed, "
                     "then Resume." if paused else "Resuming…")
         try:
@@ -7206,6 +7588,12 @@ class QAStudio:
                 return "stop"
             if not getattr(self, "_run_paused", False):
                 self._run_paused = True
+                # Remember WHY we paused and WHICH provider failed, so the
+                # Resume guard in _toggle_run_pause can tell "user switched
+                # provider" from "user just clicked Resume again".
+                self._run_pause_reason = "provider_error"
+                self._run_pause_ai_sig = self._ai_config_signature()
+                self._run_resume_override = False
                 self.ui_safe(self.render)   # flip the header button to Resume
         with cond:
             while getattr(self, "_run_paused", False) and not self.stop_flag:
@@ -7872,9 +8260,20 @@ class QAStudio:
                     cb(f"Report not emailed — {err}", "warn")
 
             try:
-                # 1) connect to Azure + fetch stories with their test cases/steps
-                cb("Connecting to Azure DevOps...", "dim")
-                E.connect_azure_sdk(self.project)
+                # 1) connect + fetch stories with their test cases/steps.
+                # Compute the seam FIRST: `generation_ops` returns None on Azure
+                # (meaning "use engine's own Azure-SDK functions"), an injected
+                # tracker ops object otherwise. ONLY the Azure path needs the
+                # Azure SDK connect — connect_azure_sdk() raises on a Jira/Xray
+                # connection (no AZURE_ORG via _require_org), which used to crash
+                # the whole automation run at step 1. The Azure path stays
+                # byte-for-byte what it was.
+                _ops = backend_setup.generation_ops(self)
+                if _ops is None:
+                    cb("Connecting to Azure DevOps...", "dim")
+                    E.connect_azure_sdk(self.project)
+                else:
+                    cb(f"Connecting to {backend_setup.story_store_label(self)}…", "dim")
                 # Automation's stories come from its own multi-plan "Source &
                 # stories" picker (app._auto_selected), each tagged with the
                 # plan_id it was picked from — unlike the old single self.plan_id
@@ -7890,11 +8289,16 @@ class QAStudio:
                     if not _pid:
                         continue
                     try:
-                        smap.update(E.discover_suites_for_stories(
-                            self.project, _pid, _sids, create_missing=False))
+                        if _ops is None:
+                            smap.update(E.discover_suites_for_stories(
+                                self.project, _pid, _sids, create_missing=False))
+                        else:
+                            smap.update(_ops.discover_suites(
+                                self.project, _pid, _sids, create_missing=False))
                     except Exception as _ex:
                         cb(f"Couldn't read suites for plan {_pid}: {str(_ex)[:120]}", "warn")
-                stories = E.fetch_stories(_story_ids)
+                stories = (E.fetch_stories(_story_ids) if _ops is None
+                           else _ops.fetch_stories(_story_ids))
                 # Fetching every story's suite test cases + every case's steps
                 # (Phases A/B below) makes NO cb() calls while it runs — on a
                 # large selection that can take a while with nothing on screen
@@ -7915,8 +8319,15 @@ class QAStudio:
                     out = []
                     if suite_id:
                         try:
-                            for tc in E.fetch_test_cases_for_suite(
-                                    self.project, _story_plan.get(s.id), suite_id):
+                            # Seam-routed: Azure uses the engine fn; a tracker
+                            # backend uses ops.cases_for_suite. Both return the
+                            # same [{"workItem":{"id","name"}}] shape.
+                            _cases = (E.fetch_test_cases_for_suite(
+                                          self.project, _story_plan.get(s.id), suite_id)
+                                      if _ops is None else
+                                      _ops.cases_for_suite(
+                                          self.project, _story_plan.get(s.id), suite_id))
+                            for tc in _cases:
                                 wi = tc.get("workItem", {})
                                 tcid = wi.get("id")
                                 if tcid:
@@ -7938,10 +8349,15 @@ class QAStudio:
                 steps_map = {}
                 title_map = {}
                 def _detail(tcid):
-                    # title + steps in one work-item call (the suite listing carries
-                    # only the id, so the title must be fetched here for the classifier)
+                    # title + steps for one case. Seam-routed: Azure fetches both
+                    # in one work-item call; a tracker backend reads steps via
+                    # ops.case_detail (title comes from Phase A's cases_for_suite,
+                    # so ops.case_detail returns "" for it and the caller falls
+                    # back to title_map). Same (title, [{"index","action",
+                    # "expected"}]) shape either way.
                     try:
-                        t, st = E.fetch_test_case_detail(tcid)
+                        t, st = (E.fetch_test_case_detail(tcid) if _ops is None
+                                 else _ops.case_detail(tcid))
                         return tcid, t, st
                     except Exception:
                         return tcid, "", []
@@ -8030,16 +8446,26 @@ class QAStudio:
                         "test_cases": final_tcs,
                     })
                 cb(f"Loaded {len(stories_payload)} story/stories - {total_tc} test case(s) - "
-                   f"{total_steps} step(s) from Azure.", "ok")
+                   f"{total_steps} step(s) from {backend_setup.story_store_label(self)}.", "ok")
 
                 if self._auto_stop:
                     cb("Stopped before scraping.", "warn"); return
 
                 # 2) decide what needs (re)generating vs what we keep
                 project_dir = self._auto_project_dir()
+                # Actually create the output folder if it doesn't exist yet (the
+                # docstring long claimed "created if missing" but nothing did —
+                # classify_selection then read a non-existent dir). makedirs is
+                # recursive, so a brand-new nested path is created in full.
+                try:
+                    if project_dir:
+                        os.makedirs(project_dir, exist_ok=True)
+                except Exception as _mk_ex:
+                    cb(f"Could not create output folder {project_dir}: {_mk_ex}", "err")
+                    return
                 # Show exactly where we're writing — the 'Save project to folder'
-                # value (created if missing). Makes it obvious if it's not the folder
-                # you expected (e.g. an old path left in the field).
+                # value. Makes it obvious if it's not the folder you expected
+                # (e.g. an old path left in the field).
                 cb(f"Output folder: {project_dir}", "info")
                 new_ids, grew_ids, done_ids, new_tcs = E.classify_selection(
                     project_dir, stories_payload)

@@ -264,6 +264,15 @@ def open_create_plan(app):
     if not app.project:
         app._err("Select a project first."); return
 
+    # Route through the backend seam so this modal works for EVERY backend, not
+    # just Azure. Previously it called engine's Azure-only fetch_iterations /
+    # create_test_plan directly, so on a Jira/Xray/TestRail backend sprint-load
+    # hit dev.azure.com and 404'd ("check the project name spelling"). The
+    # per-story "requirement suites" auto-create is Azure-only engine
+    # orchestration; other backends get a plain plan.
+    import backend_setup as _bs
+    _is_azure = _bs.is_azure(getattr(app, "creds", {}) or {})
+
     name_field = ft.TextField(
         hint_text="e.g. Sprint 24 — Regression",
         border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
@@ -278,7 +287,7 @@ def open_create_plan(app):
     modal_err = ft.Text("", size=12, color=T.RED, weight=ft.FontWeight.BOLD)
 
     # Auto-create requirement suites for every sprint story (PAT-only, no AI)
-    auto_suites = ft.Checkbox(value=True, label="", scale=0.9,
+    auto_suites = ft.Checkbox(value=_is_azure, disabled=not _is_azure, label="", scale=0.9,
                               active_color=T.VIOLET, check_color="#FFFFFF")
 
     # In-modal progress UI (design: 8px rounded track + violet gradient fill)
@@ -298,7 +307,7 @@ def open_create_plan(app):
     iters_cache = {"list": []}
     def load_iters():
         try:
-            lst = E.fetch_iterations(app.project)
+            lst = _bs.fetch_sprints(app, app.project)
             iters_cache["list"] = lst
             iter_dd.options = [ft.DropdownOption(key=it["path"], text=it["path"]) for it in lst]
             if lst:
@@ -345,7 +354,11 @@ def open_create_plan(app):
         pth = (iter_dd.value or "").strip()
         if not nm:
             modal_err.value = "Plan name is required."; app.page.update(); return
-        if not pth:
+        # Iteration/Sprint is an Azure-only concept (a plan is created UNDER an
+        # iteration). Non-Azure backends create a plain named plan (TestRail
+        # suite / Xray Test Plan / Zephyr folder) with no iteration — stories
+        # come from the sprint at run time, decoupled from the plan.
+        if _is_azure and not pth:
             modal_err.value = "Select a sprint/iteration."; app.page.update(); return
         modal_err.value = ""
         create_btn.visible = False; cancel_btn.visible = False
@@ -354,6 +367,20 @@ def open_create_plan(app):
 
         def work():
             try:
+                if not _is_azure:
+                    # Non-Azure backends (Jira+Zephyr, Jira+Xray, TestRail): route
+                    # plan creation through the backend seam — Zephyr creates a
+                    # folder, Xray a test plan, TestRail a suite. The Azure-only
+                    # per-story requirement-suite orchestration doesn't apply, so
+                    # we create the plan itself (auto_suites is disabled here).
+                    _set_prog(0.2, "Creating test plan…")
+                    plan = _bs.get_backend(app).create_test_plan(app.project, nm, pth)
+                    app.plan_id = ((getattr(plan.ref, "id", "") or
+                                    getattr(plan.ref, "key", "")) if plan else None)
+                    app.plan_name = nm
+                    _set_prog(1.0, "Done")
+                    app._load_plans(); app._close_dialog(); app.render()
+                    return
                 if not auto_suites.value:
                     _set_prog(0.15, "Creating test plan…")
                     new_id = E.create_test_plan(app.project, nm, pth)
@@ -403,6 +430,66 @@ def open_create_plan(app):
                      alignment=ft.MainAxisAlignment.END, spacing=10,
                      vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
+    def _plan_modal_body():
+        """Fields shown in the Create-plan modal. Iteration/Sprint, the
+        'Will be created at' path, and the requirement-suites checkbox are
+        Azure-only concepts (a plan is created UNDER an iteration and can
+        auto-spawn per-story suites). Non-Azure backends create a plain named
+        plan in the write target (TestRail suite / Xray Test Plan / Zephyr
+        folder), so they show just the name + a one-line note instead of the
+        Azure iteration machinery."""
+        rows = [
+            field_label("Plan name", req=True),
+            ft.Container(hover_field(name_field),
+                         padding=ft.Padding.only(top=4, bottom=14)),
+        ]
+        if _is_azure:
+            rows += [
+                field_label("Iteration / Sprint", req=True),
+                ft.Container(hover_field(iter_dd),
+                             padding=ft.Padding.only(top=4, bottom=10)),
+                ft.Text("Will be created at", size=11, color=T.INK_3,
+                        weight=ft.FontWeight.BOLD),
+                ft.Container(
+                    path_box,
+                    padding=ft.Padding.symmetric(vertical=11, horizontal=13),
+                    bgcolor=T.VIOLET_SOFT, border_radius=T.R,
+                    border=ft.Border.all(1, "#E0DAFF"),
+                    margin=ft.Margin.only(top=5), width=9999),
+                ft.Container(
+                    ft.Row([
+                        auto_suites,
+                        ft.Column([
+                            ft.Text("Add requirement suites for sprint stories",
+                                    size=12.5, color=T.INK, weight=ft.FontWeight.BOLD),
+                            ft.Text("Creates one suite per User Story in the sprint "
+                                    "(Azure only — no AI).",
+                                    size=11, color=T.INK_3, weight=ft.FontWeight.W_500),
+                        ], spacing=1, expand=True),
+                    ], spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    padding=ft.Padding.only(top=12)),
+            ]
+        else:
+            rows += [
+                ft.Container(
+                    ft.Row([
+                        ft.Icon(ft.Icons.INFO_OUTLINE, size=15, color=T.INK_3),
+                        ft.Text(f"Creates a new plan in {_bs.case_store_label(app)}. "
+                                f"User stories are picked separately from your sprint "
+                                f"when you run.", size=11.5, color=T.INK_2,
+                                weight=ft.FontWeight.W_500, expand=True),
+                    ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.START),
+                    padding=ft.Padding.symmetric(vertical=11, horizontal=13),
+                    bgcolor=T.CARD_2, border_radius=T.R,
+                    border=ft.Border.all(1, T.BORDER), margin=ft.Margin.only(top=2)),
+            ]
+        rows += [
+            prog_box,
+            ft.Container(modal_err, padding=ft.Padding.only(top=8)),
+            ft.Container(btn_row, padding=ft.Padding.only(top=18)),
+        ]
+        return rows
+
     dlg = ft.AlertDialog(
         modal=True,
         title=ft.Row([
@@ -411,7 +498,9 @@ def open_create_plan(app):
                          alignment=ft.Alignment.CENTER),
             ft.Column([
                 ft.Text("Create test plan", size=16, weight=ft.FontWeight.W_800, color=T.INK),
-                ft.Text("Created under the selected iteration in this project.",
+                ft.Text(("Created under the selected iteration in this project."
+                         if _is_azure else
+                         f"Creates a new plan in {_bs.case_store_label(app)}."),
                         size=11, color=T.INK_2, weight=ft.FontWeight.W_500),
             ], spacing=1, expand=True),
         ], spacing=10),
@@ -421,37 +510,11 @@ def open_create_plan(app):
             # (onboarding, Sprint Summary below) — let content size to the
             # viewport on mobile instead of a hardcoded 470px.
             width=(None if platform_caps.is_mobile() else 470),
-            content=ft.Column([
-            field_label("Plan name", req=True),
-            ft.Container(hover_field(name_field), padding=ft.Padding.only(top=4, bottom=14)),
-            field_label("Iteration / Sprint", req=True),
-            ft.Container(hover_field(iter_dd), padding=ft.Padding.only(top=4, bottom=10)),
-            ft.Text("Will be created at", size=11, color=T.INK_3, weight=ft.FontWeight.BOLD),
-            ft.Container(
-                path_box,
-                padding=ft.Padding.symmetric(vertical=11, horizontal=13),
-                bgcolor=T.VIOLET_SOFT, border_radius=T.R,
-                border=ft.Border.all(1, "#E0DAFF"), margin=ft.Margin.only(top=5),
-                width=9999),
-            # Auto-suites option
-            ft.Container(
-                ft.Row([
-                    auto_suites,
-                    ft.Column([
-                        ft.Text("Add requirement suites for sprint stories",
-                                size=12.5, color=T.INK, weight=ft.FontWeight.BOLD),
-                        ft.Text("Creates one suite per User Story in the sprint (Azure only — no AI).",
-                                size=11, color=T.INK_3, weight=ft.FontWeight.W_500),
-                    ], spacing=1, expand=True),
-                ], spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                padding=ft.Padding.only(top=12)),
-            prog_box,
-            ft.Container(modal_err, padding=ft.Padding.only(top=8)),
-            ft.Container(btn_row, padding=ft.Padding.only(top=18)),
-        ], spacing=0, tight=True)),
+            content=ft.Column(_plan_modal_body(), spacing=0, tight=True)),
     )
     app._show_dialog(dlg)
     app._bg(load_iters)
+
 
 # ── Sprint summary report (read-only, before a run) ────────────────────
 def open_sprint_summary(app):
@@ -608,6 +671,24 @@ def open_sprint_summary(app):
     app._show_dialog(dlg)
 
     def load():
+        # ADR-002: the Sprint Summary generates via the Azure engine only. On a
+        # non-Azure connection, say so honestly instead of calling E.sprint_summary
+        # and surfacing its misleading "Not found (404) — check project spelling".
+        import backend_setup as _bs
+        if not _bs.sprint_reports_available(app):
+            app._sum_loading = False
+            _label = _bs.plan_link_label(app) if hasattr(_bs, "plan_link_label") else "this backend"
+            def show_unavail():
+                body_col.controls = [ft.Row([
+                    ft.Icon(ft.Icons.INFO_OUTLINE, color=T.INK_3, size=20),
+                    ft.Text(f"The Sprint Summary is currently available on Azure DevOps "
+                            f"only — not on {_label}.",
+                            size=12.5, color=T.INK_2, weight=ft.FontWeight.W_500, expand=True)],
+                    spacing=8)]
+                try: body_col.update()
+                except Exception: app.render()
+            app.ui_safe(show_unavail)
+            return
         try:
             data = E.sprint_summary(app.project, app.plan_id)
         except Exception as ex:

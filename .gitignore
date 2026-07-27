@@ -17,6 +17,7 @@ env/
 *.dat
 creds.dat
 .qa_tool/
+gh_token.txt
 
 # OS
 .DS_Store
@@ -32,8 +33,11 @@ desktop.ini
 build/
 storage/
 
-# Downloaded APK artifacts (build-apk.bat) — never commit binaries
+# Downloaded/built APK artifacts — never commit binaries (exceeds GitHub 100MB
+# limit and breaks `git add -A` pushes in build-apk.bat / release flows).
 apk-out/
+apk_out/
+*.apk
 
-# Runtime perf log
-qa_perf.log
+# Logs (may contain tokens/PII — never commit)
+*.log

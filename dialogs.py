@@ -11,6 +11,9 @@ from ui import danger_btn, green_btn, ghost_btn
 
 def show_dialog(app, dlg):
     app._dialog = dlg
+    # Stack depth (see close_all_dialogs): Flet 0.85 stacks dialogs, so opening
+    # one over another must be counted — `_dialog` alone only remembers the top.
+    app._dialog_depth = int(getattr(app, "_dialog_depth", 0) or 0) + 1
     # Make the dialog BODY text selectable/copyable (the action buttons live in
     # dlg.actions, so they stay outside the selection region — buttons excluded).
     # Also wrap it in the same click-away GestureDetector used for the main
@@ -71,8 +74,37 @@ def show_dialog(app, dlg):
         dlg.open = True
         app.page.update()
 
+def close_all_dialogs(app, limit=8):
+    """Pop EVERY open dialog, not just the top one.
+
+    ROOT CAUSE this fixes: Flet 0.85's dialog API is a STACK — `pop_dialog()`
+    removes exactly ONE entry, and `app._dialog` only ever tracks the most
+    recently shown one. So when two are stacked (the idle-logout warning shown
+    ON TOP of an already-open "Create test plan" modal), sign-out's single
+    `close_dialog()` popped the warning and left the create-plan modal sitting
+    over the login screen — reported live as "the modal is still open after auto
+    logout", with its stale error still visible.
+
+    Drains via the depth counter kept by `show_dialog`/`close_dialog`, and is
+    additionally bounded so a Flet build that never signals "empty" can't spin.
+    Safe to call when nothing is open (it's a no-op).
+    """
+    for _ in range(max(1, int(limit))):
+        if int(getattr(app, "_dialog_depth", 0) or 0) <= 0:
+            break
+        try:
+            close_dialog(app)
+        except Exception:
+            break
+    app._dialog_depth = 0
+    app._dialog = None
+
+
 def close_dialog(app):
     app._sum_loading = False
+    # Track stack depth so close_all_dialogs() knows how many are open (see its
+    # docstring). Floored at 0 — some paths call close on an already-empty stack.
+    app._dialog_depth = max(0, int(getattr(app, "_dialog_depth", 0) or 0) - 1)
     dlg = getattr(app, "_dialog", None)
     # Flet 0.85 uses page.pop_dialog(); older uses page.close(dlg)
     if hasattr(app.page, "pop_dialog"):

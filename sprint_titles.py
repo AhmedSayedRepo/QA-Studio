@@ -19,6 +19,7 @@ from datetime import datetime
 import flet as ft
 import theme as T
 import engine as E
+import backend_setup
 
 # Story states that count as "done" for the report.
 _DONE = {"done", "closed", "completed", "resolved", "accepted"}
@@ -127,7 +128,10 @@ def _load_iterations(app):
 
     def _work():
         try:
-            its = E.fetch_iterations(_proj) or []
+            # Backend-aware: Azure returns its iterations; Jira/Xray return their
+            # board sprints. Was E.fetch_iterations (Azure-only), so the sprint
+            # dropdown was empty on every non-Azure backend.
+            its = backend_setup.fetch_sprints(app, _proj) or []
         except Exception:
             its = []
         sprints = [it for it in its
@@ -271,6 +275,10 @@ def _generate(app):
         app._st_msg = ("err", "Pick at least one sprint first.")
         app.ui_safe(app.render)
         return
+    # The report body now routes through backend_setup.sprint_report_data, which
+    # works on EVERY backend (Azure via the engine; others pull the sprint's
+    # stories from the Jira/read source) — so the earlier Azure-only gate is
+    # removed. Only the execution-rollup Sprint SUMMARY stays Azure-only.
     lang = app._st_lang
     app._st_busy = True
     app._st_done = False
@@ -287,7 +295,7 @@ def _generate(app):
                 if it:
                     names.append(_sprint_num(it["name"]) or it["name"])
                 try:
-                    d = E.sprint_report_data(app.project, p)
+                    d = backend_setup.sprint_report_data(app, p)
                 except Exception:
                     d = {"stories": [], "bugs": []}
                 for s in d.get("stories", []):

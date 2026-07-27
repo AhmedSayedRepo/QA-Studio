@@ -256,7 +256,8 @@ def _save_session(data):
     # through to the file path below if the vault isn't ready yet.
     try:
         import secure_store_mobile as _ssm
-        if _ssm.session_available() and _ssm.save_session(data):
+        _avail = _ssm.session_available()
+        if _avail and _ssm.save_session(data):
             # Remove any pre-existing plaintext-ish file from before this fix.
             try:
                 if data is None or os.path.exists(_cache_file()):
@@ -264,6 +265,16 @@ def _save_session(data):
             except Exception:
                 pass
             return
+        # Mobile + reached here = the vault write did NOT confirm: the durability
+        # gap that loses a rotated refresh token. Surface it (was silent) — no
+        # token material, just the fact of a dropped persist.
+        if _diag:
+            try:
+                _diag.log_warn("auth_supabase._save_session",
+                               f"vault persist NOT confirmed "
+                               f"(session_available={_avail}, data={'none' if data is None else 'set'})")
+            except Exception:
+                pass
     except Exception:
         pass
     # MOBILE: never fall through to the base64 file for the SESSION either —
@@ -405,6 +416,20 @@ def _refresh(refresh_token):
         if _diag: _diag.log("auth_supabase._refresh", ex)
         return None
     if r.status_code != 200:
+        # A non-200 here is THE reason a day-old biometric restore silently
+        # bounces to sign-in (acquire_silent wipes the session on a None return).
+        # Log the status + body so the root cause is visible: e.g.
+        # "invalid_grant / refresh_token_not_found" = the token was rotated/
+        # revoked (Supabase session inactivity time-box, or a reuse), vs a 5xx =
+        # a transient outage that should NOT have wiped the session. Was a silent
+        # `return None`.
+        if _diag:
+            try:
+                _diag.log_warn("auth_supabase._refresh",
+                               f"refresh rejected status={r.status_code} "
+                               f"body={(r.text or '')[:240]}")
+            except Exception:
+                pass
         return None
     return r.json()
 

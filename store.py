@@ -214,6 +214,14 @@ def _load_from_file():
     d.setdefault("models", {})
     d.setdefault("pat", "")
     d.setdefault("gmail", "")
+    # Tracker backend selection + its per-backend credential keys. Defaults to
+    # "azure", so a creds file written before the backend switch existed keeps
+    # behaving exactly as it did (see backend_setup.defaults).
+    try:
+        import backend_setup
+        backend_setup.defaults(d)
+    except Exception:
+        d.setdefault("backend", "azure")
     return d
 
 
@@ -237,6 +245,11 @@ def load():
             d.setdefault("models", {})
             d.setdefault("pat", "")
             d.setdefault("gmail", "")
+            try:
+                import backend_setup
+                backend_setup.defaults(d)
+            except Exception:
+                d.setdefault("backend", "azure")
             return d
     return _load_from_file()
 

@@ -127,15 +127,32 @@ def screen(app):
                 ft.Text("Starting run — discovering suites & test cases…",
                         size=12.5, color=T.INK_3, weight=ft.FontWeight.BOLD),
             ], spacing=10)]
+        # ft.ListView, NOT ft.Column(scroll=…, expand=True).
+        #
+        # That Column shape — a scrolling Column with expand=True — is the one
+        # documented in DEV_ROADMAP (flet-dev/flet#6087) as silently BLANKING
+        # its whole containing card on Windows desktop rather than erroring.
+        # The Automation log hit exactly this and was converted to a ListView;
+        # the Run log kept the broken shape and was never converted, so the
+        # same bug stayed live here. Symptom reported: switching the AI
+        # provider while a run was paused on a credit limit re-rendered the Run
+        # screen and left RECENT ACTIVITY completely empty — scroll track
+        # visible, no content — while the run itself carried on fine.
+        #
+        # ListView is Flet's real scrolling-list control and is what
+        # automation.py:343 already uses successfully. `.controls` works the
+        # same, so _apply()'s append/rebuild bookkeeping below is unaffected.
+        def _make_log_col():
+            return ft.ListView(controls=log_lines, spacing=2,
+                               expand=True, auto_scroll=True)
+
         _log_lock = getattr(app, "_run_log_ui_lock", None)
         if _log_lock:
             with _log_lock:
-                app._log_col = ft.Column(log_lines, spacing=2,
-                                         scroll=ft.ScrollMode.AUTO, expand=True, auto_scroll=True)
+                app._log_col = _make_log_col()
                 app._rendered_count = len(getattr(app, "_log_lines", []))
         else:
-            app._log_col = ft.Column(log_lines, spacing=2,
-                                     scroll=ft.ScrollMode.AUTO, expand=True, auto_scroll=True)
+            app._log_col = _make_log_col()
             app._rendered_count = len(getattr(app, "_log_lines", []))
 
         def _log_tool_btn(icon, tip, cb, danger=False):

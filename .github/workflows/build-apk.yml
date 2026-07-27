@@ -107,6 +107,15 @@ jobs:
           # (reported live: "I need the logos for connected providers like the
           # desktop app"). Stage the whole folder so the real logos show.
           cp -r providers /tmp/mobile/ 2>/dev/null || true
+          # tracker/ — the multi-backend adapter package (Azure / Jira+Zephyr /
+          # …). It's a SUBDIRECTORY, and the `for f in *.py` loop above only
+          # stages top-level .py files, so without this the package never ships
+          # in the APK. `backend_setup` imports it lazily (only on the non-Azure
+          # path), so an Azure phone wouldn't notice — but the moment a mobile
+          # user picks Jira+Zephyr, `import tracker` raises ImportError and Setup
+          # crashes. Any future package dir (e.g. more backends) must be added
+          # here the same way; a bare `cp *.py` will silently skip it.
+          cp -r tracker /tmp/mobile/ 2>/dev/null || true
           # VERSION must ship in the bundle: the mobile update NOTICE compares
           # engine.local_version() (reads this file) against the repo's copy —
           # without it local_version() returns 0.0.0 and every launch nags.

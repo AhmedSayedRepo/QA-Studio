@@ -45,6 +45,40 @@ for pat in patterns:
                     try: os.remove(pyc)
                     except: pass
 
+# Package SUBDIRECTORIES. The glob above is top-level only, so a package like
+# tracker/ (the multi-backend adapter) is invisible to it — the installed copy
+# would be missing the whole package and crash on `import tracker` the moment a
+# non-Azure backend is used. Running `python main.py` from THIS dev folder hides
+# it (tracker/ is right here); only the installed copy is affected. Sync each
+# package dir recursively. Add any future package here.
+PACKAGE_DIRS = ["tracker"]
+for pkg in PACKAGE_DIRS:
+    src_dir = os.path.join(SRC, pkg)
+    if not os.path.isdir(src_dir):
+        continue
+    for root, _dirs, files in os.walk(src_dir):
+        if "__pycache__" in root:
+            continue
+        rel = os.path.relpath(root, SRC)
+        dst_root = os.path.join(DST, rel)
+        os.makedirs(dst_root, exist_ok=True)
+        for fname in files:
+            if not fname.endswith(".py"):
+                continue
+            sp = os.path.join(root, fname)
+            dp = os.path.join(dst_root, fname)
+            if (not os.path.exists(dp)) or _digest(sp) != _digest(dp):
+                shutil.copy2(sp, dp)
+                synced.append(os.path.join(rel, fname))
+                # Drop this package's stale bytecode too — the top-level loop
+                # above clears its own __pycache__, but subpackages have their
+                # own, and copy2 preserves the source mtime, so without this the
+                # installed .pyc could shadow the fresh .py on first launch.
+                for pyc in glob.glob(os.path.join(dst_root, "__pycache__",
+                                                  fname[:-3] + ".cpython-*.pyc")):
+                    try: os.remove(pyc)
+                    except Exception: pass
+
 if synced:
     print("Synced:", ", ".join(synced))
 else:

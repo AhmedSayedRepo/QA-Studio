@@ -7,7 +7,20 @@ import os, re, json, base64, html as _html, requests, time
 # ═══════════════════════════════════════════════════════════════════════════════
 #  CONFIG
 # ═══════════════════════════════════════════════════════════════════════════════
-AZURE_ORG = "worldofsystemsmyportal"
+# Azure DevOps organization — the {org} in https://dev.azure.com/{org}.
+# DELIBERATELY has NO built-in default. It is supplied per-account at runtime from
+# the user's own saved credentials (Setup → "Azure Organization", a required
+# field) via set_credentials(org=…) / reset_session_credentials(org=…).
+#
+# This used to be hardcoded to a real customer's org name, which was wrong twice
+# over: (1) a blank/missing cred silently fell back to it, so the app would issue
+# requests against a STRANGER'S organization instead of saying "you haven't
+# configured this" — the resulting 401/404 looked like a broken PAT rather than
+# missing setup; (2) it shipped one customer's org name in a public repo.
+# Blank is now the honest default, and _require_org() turns it into a clear,
+# actionable error at the point of use. The env var is a headless/CI seed only
+# (run_worker.py already passes AZURE_ORG explicitly for its own runs).
+AZURE_ORG = (os.environ.get("AZURE_ORG") or "").strip()
 
 AI_PROVIDER = "anthropic"   # overridden at runtime by the UI
 
@@ -1130,9 +1143,17 @@ def ai_complete(prompt_text, images=None, max_tokens=4096, timeout=None,
                 _interruptible_sleep(_delay); continue
             raise _classified_error(cat, friendly)
         except Exception as e:
-            if _is_credit_error(str(e)):
-                raise CreditBalanceError(str(e))
             cat, friendly = classify_ai_error(e)
+            # ANY error the classifier calls "credit" must raise CreditBalanceError
+            # so the run PAUSES (via on_ai_error) instead of failing every
+            # remaining case against an exhausted provider. The text-based
+            # _is_credit_error misses an HTTP 402 whose raw string has no "out of
+            # credit" phrase (OpenRouter and others return a bare 402 for
+            # out-of-quota) — classify_ai_error catches it by STATUS, so trust it
+            # too. Reported live: OpenRouter 402s logged per-case with no pause
+            # while NVIDIA/Cerebras out-of-credit paused correctly.
+            if cat == "credit" or _is_credit_error(str(e)):
+                raise CreditBalanceError(friendly)
             last_friendly = friendly
             budget = max(retries, _BUDGET.get(cat, 0)) if cat in TRANSIENT_CATEGORIES else 0
             if budget and attempt <= budget:
@@ -1196,6 +1217,24 @@ _NETWORK_RETRY_WAITS = (20, 40, 80)   # seconds; ~140s of extra patience total
 # _process_story_paused, and the empty-suite seeding path.
 _PAUSED_ON_ERROR_MSG = ("Paused on provider error — switch the AI provider in "
                         "Setup, then click Resume; or Stop to end the run.")
+
+
+def _paused_on_error_msg():
+    """The pause line, NAMING the provider that actually failed.
+
+    The old constant never said WHICH provider broke, so a log read back later
+    (or by someone else) couldn't tell what to switch away from — and with the
+    provider re-read per attempt, "Paused on provider error" could even refer
+    to a different provider than the one currently selected in Setup. Resolved
+    at call time, not import time, for exactly that reason."""
+    try:
+        prov = T_disp(AI_PROVIDER)
+    except Exception:
+        prov = ""
+    if not prov:
+        return _PAUSED_ON_ERROR_MSG
+    return (f"Paused — {prov} failed. Switch the AI provider in Setup, then "
+            f"click Resume; or Stop to end the run.")
 
 
 def _call_with_network_retries(fn, cb, should_stop=None):
@@ -1262,7 +1301,28 @@ def _az_session():
     return _AZ_SESSION
 
 
+def _require_org():
+    """Return the configured Azure organization, or raise a clear, actionable
+    error if none is set.
+
+    Every Azure URL in this module interpolates AZURE_ORG. With no default and
+    no guard, an unconfigured org silently builds `https://dev.azure.com//_apis/…`
+    — a malformed URL whose 404 reads as "check the project name spelling",
+    sending the user to debug entirely the wrong thing. Failing loudly here,
+    naming the exact Setup field to fill in, is the whole point of dropping the
+    hardcoded fallback."""
+    org = (AZURE_ORG or "").strip()
+    if not org:
+        raise RuntimeError(
+            "No Azure DevOps organization is configured. Open Setup and fill in "
+            "'Azure Organization' — it's the {org} part of https://dev.azure.com/{org}.")
+    return org
+
+
 def _azure_get(url, pat=None, timeout=12):
+    # Single choke point for every Azure READ in this module (30 call sites), so
+    # one check here covers them all without touching each URL build.
+    _require_org()
     pat = pat or AZURE_PAT
     try:
         r = _az_session().get(url, auth=("", pat), timeout=timeout)
@@ -1973,7 +2033,10 @@ def connect_azure_sdk(project):
     global _wit_client, _test_client
     from azure.devops.connection import Connection
     from msrest.authentication import BasicAuthentication
-    org_url = f"https://dev.azure.com/{AZURE_ORG}"
+    # The SDK path (every work-item create/update/read) never goes through
+    # _azure_get, so it needs its own guard — otherwise an unconfigured org
+    # builds a base_url of "https://dev.azure.com/" and fails deep inside the SDK.
+    org_url = f"https://dev.azure.com/{_require_org()}"
     creds = BasicAuthentication("", AZURE_PAT)
     conn = Connection(base_url=org_url, creds=creds)
     _wit_client  = conn.clients.get_work_item_tracking_client()
@@ -2137,8 +2200,28 @@ def fetch_project_members(project, pat=None, force=False):
         teams = _azure_get(
             f"https://dev.azure.com/{AZURE_ORG}/_apis/projects/{project}/teams"
             f"?api-version=7.0", pat).get("value", [])
-    except Exception:
+    except Exception as _ex:
+        # Silent [] here is why "the recipient dropdown lists nobody" was
+        # undiagnosable: the teams endpoint needs the PAT to carry
+        # **Project and Team (Read)** scope, which the rest of the app never
+        # exercises — so a PAT that works everywhere else still yields an empty
+        # picker, with no error anywhere. Log the real reason; still fail-soft.
+        try:
+            import diag_log
+            diag_log.log("engine.fetch_project_members.teams", _ex)
+        except Exception:
+            pass
         teams = []
+    if not teams:
+        try:
+            import diag_log
+            diag_log.log_warn(
+                "engine.fetch_project_members",
+                f"no teams returned for project {project!r} (org={AZURE_ORG!r}) — "
+                f"the recipient picker will be empty. Most often the PAT is missing "
+                f"the 'Project and Team (Read)' scope.")
+        except Exception:
+            pass
 
     import concurrent.futures as _cf
 
@@ -4313,12 +4396,66 @@ def _dedupe_titles_ai(candidate_titles, existing_titles, story_title, log=None,
 class StopRequested(Exception):
     pass
 
+class _TrackerOps:
+    """The tracker-facing operations run_titles/run_steps depend on.
+
+    Both generators interleave AI work with 14 direct calls to Azure-specific
+    functions (suite discovery, story fetch, dedupe, case create, step write).
+    That coupling is what stopped generation running on any other tracker.
+
+    Rather than rewrite two ~300-line functions, those calls now go through one
+    injectable object. `ops=None` binds every attribute to the SAME module-level
+    function called before, so the default path is pure indirection with ZERO
+    behaviour change — provable by inspection, asserted by verify_ops.py.
+    A non-Azure backend supplies its own (see backend_setup.generation_ops).
+    """
+
+    __slots__ = ("connect", "discover_suites", "fetch_stories", "dedupe_suite",
+                 "existing_titles", "create_case", "cases_for_suite",
+                 "case_title", "write_steps", "case_detail")
+
+    def __init__(self, **kw):
+        for name in self.__slots__:
+            setattr(self, name, kw[name])
+
+
+def _default_ops():
+    """Azure ops — literally the existing module-level functions."""
+    return _TrackerOps(
+        connect=connect_azure_sdk,
+        discover_suites=discover_suites_for_stories,
+        fetch_stories=fetch_stories,
+        dedupe_suite=dedupe_existing_suite,
+        existing_titles=fetch_existing_titles_for_suite,
+        create_case=create_test_case,
+        cases_for_suite=fetch_test_cases_for_suite,
+        case_title=fetch_test_case_title,
+        write_steps=update_test_case_with_steps,
+        case_detail=fetch_test_case_detail,   # (title, parsed steps) for Automation
+    )
+
+
 def run_titles(project, plan_id, story_ids, cb, should_stop=lambda: False,
-               on_ai_error=None, gate=None):
-    wit, test = connect_azure_sdk(project)
+               on_ai_error=None, gate=None, ops=None):
+    _o = ops or _default_ops()
+    wit, test = _o.connect(project)
     cb("log", {"msg": "Discovering suites for stories…", "tone": "dim"})
-    story_suite_map = discover_suites_for_stories(project, plan_id, set(story_ids))
-    stories = fetch_stories(story_ids)
+    story_suite_map = _o.discover_suites(project, plan_id, set(story_ids))
+    # DO NOT re-add a "one story per suite" guard here (tried in #120, reverted
+    # in #125 after it broke every non-Azure run). `story_suite_map` is NOT
+    # story→suite one-to-one: backend_setup.generation_ops.discover_suites
+    # deliberately keys the SAME story under up to four ALIASES — sid (int),
+    # str(sid), story.ref.id and story.ref.key — all pointing at one suite, so
+    # that `story_suite_map.get(sid)` matches regardless of int-vs-str. A guard
+    # that treats a repeated suite id as "a duplicate story" therefore deletes
+    # that story's own aliases, including the key the caller looks up: seen live
+    # on Azure→TestRail as "Suite 45 already covered by story 101048 — skipping
+    # duplicate story 101048" (the SAME id) followed by "No suite for story
+    # 101048 — skipped", i.e. a run that processed 0 stories.
+    # The hybrid double-count this was meant to fix is already handled where it
+    # actually belongs — the case-level idempotence guard further down, which
+    # dedupes by test-case work-item id and is alias-agnostic.
+    stories = _o.fetch_stories(story_ids)
 
     total_created = 0; errors = 0; stories_done = 0
     total_stories = len(stories)
@@ -4367,7 +4504,7 @@ def run_titles(project, plan_id, story_ids, cb, should_stop=lambda: False,
         # Remove pre-existing duplicate test cases in this suite first, keeping the
         # most complete one of each group (catches dupes from prior runs / manual entry).
         try:
-            dedupe_existing_suite(project, plan_id, suite_id, cb=cb, do_delete=True,
+            _o.dedupe_suite(project, plan_id, suite_id, cb=cb, do_delete=True,
                                   should_stop=should_stop, story_id=sid, story_title=title)
         except Exception as de:
             cb("log", {"msg": f"Dedup skipped: {str(de)[:80]}", "tone": "warn"})
@@ -4376,7 +4513,7 @@ def run_titles(project, plan_id, story_ids, cb, should_stop=lambda: False,
         # make this look empty even when the suite was already full)
         existing_titles = []
         try:
-            for it in fetch_existing_titles_for_suite(project, plan_id, suite_id):
+            for it in _o.existing_titles(project, plan_id, suite_id):
                 nm = (it.get("title") or "").strip()
                 if nm: existing_titles.append(nm)
         except Exception:
@@ -4488,7 +4625,7 @@ def run_titles(project, plan_id, story_ids, cb, should_stop=lambda: False,
             if should_stop(): break
             _tc_start = time.time()
             try:
-                tc_id = create_test_case(project, plan_id, suite_id, tc_title, sid)
+                tc_id = _o.create_case(project, plan_id, suite_id, tc_title, sid)
                 ps_ok += 1
                 _elapsed = time.time() - _tc_start
                 ps_secs += _elapsed
@@ -4577,7 +4714,7 @@ def run_titles(project, plan_id, story_ids, cb, should_stop=lambda: False,
             _friendly = ((res.get("fatal_summary") or "").replace("Stopped — ", "", 1)
                          or "AI provider error")
             cb("log", {"msg": _friendly, "tone": "err"})
-            cb("log", {"msg": _PAUSED_ON_ERROR_MSG, "tone": "warn", "ico": "⏸"})
+            cb("log", {"msg": _paused_on_error_msg(), "tone": "warn", "ico": "⏸"})
             if on_ai_error(_friendly) == "retry":
                 cb("log", {"msg": f"Retrying story {res.get('sid')} with "
                                   f"{T_disp(AI_PROVIDER)}…", "tone": "dim"})
@@ -4633,9 +4770,10 @@ def run_titles(project, plan_id, story_ids, cb, should_stop=lambda: False,
 
 def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
               existing_mode="skip", dedupe_existing=True, on_ai_error=None,
-              gate=None):
+              gate=None, ops=None):
     """existing_mode: 'skip' or 'evaluate'. dedupe_existing: remove pre-existing
     duplicate test cases in each suite before processing."""
+    _o = ops or _default_ops()
     # The step-generation loop below runs a small bounded pool of workers so
     # multiple cases' generate_steps() calls (the dominant per-case cost) can
     # be in flight at once instead of strictly one-at-a-time. Every existing
@@ -4653,7 +4791,7 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
         with _cb_lock:
             _real_cb(kind, payload)
 
-    wit, test = connect_azure_sdk(project)
+    wit, test = _o.connect(project)
     # Timer starts HERE, before suite discovery/removal/seeding — those used to
     # run before _run_start was set further down, so the pre-existing-duplicate
     # removal pass (which can take a while, especially with its AI mop-up) was
@@ -4661,8 +4799,22 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
     # time the user waited through.
     _run_start = time.time()
     cb("log", {"msg": "Discovering suites for stories…", "tone": "dim"})
-    story_suite_map = discover_suites_for_stories(project, plan_id, set(story_ids))
-    stories = fetch_stories(story_ids)
+    story_suite_map = _o.discover_suites(project, plan_id, set(story_ids))
+    # DO NOT re-add a "one story per suite" guard here (tried in #120, reverted
+    # in #125 after it broke every non-Azure run). `story_suite_map` is NOT
+    # story→suite one-to-one: backend_setup.generation_ops.discover_suites
+    # deliberately keys the SAME story under up to four ALIASES — sid (int),
+    # str(sid), story.ref.id and story.ref.key — all pointing at one suite, so
+    # that `story_suite_map.get(sid)` matches regardless of int-vs-str. A guard
+    # that treats a repeated suite id as "a duplicate story" therefore deletes
+    # that story's own aliases, including the key the caller looks up: seen live
+    # on Azure→TestRail as "Suite 45 already covered by story 101048 — skipping
+    # duplicate story 101048" (the SAME id) followed by "No suite for story
+    # 101048 — skipped", i.e. a run that processed 0 stories.
+    # The hybrid double-count this was meant to fix is already handled where it
+    # actually belongs — the case-level idempotence guard further down, which
+    # dedupes by test-case work-item id and is alias-agnostic.
+    stories = _o.fetch_stories(story_ids)
     story_ctx = {}
     _ac_link_cache = {}   # shared across all stories this run — see _resolve_ac_links
     for s in stories:
@@ -4724,7 +4876,7 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
                 if should_stop():
                     break
                 fut = _dedup_ex.submit(
-                    dedupe_existing_suite, project, plan_id, suite_id, cb=cb,
+                    _o.dedupe_suite, project, plan_id, suite_id, cb=cb,
                     do_delete=True, should_stop=should_stop, story_id=sid,
                     story_title=story_ctx.get(sid, {}).get("title", ""))
                 _dedup_futs[fut] = (sid, suite_id)
@@ -4753,7 +4905,7 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
         # docstring) — so every ALREADY-POPULATED suite looked empty and got
         # seeded with a fresh batch of titles on top of what was already there.
         try:
-            has_existing = bool(fetch_test_cases_for_suite(project, plan_id, suite_id))
+            has_existing = bool(_o.cases_for_suite(project, plan_id, suite_id))
         except Exception:
             has_existing = False
         if has_existing:
@@ -4788,7 +4940,7 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
             except CreditBalanceError:
                 if on_ai_error:
                     cb("log", {"msg": "Out of AI credits.", "tone": "err"})
-                    cb("log", {"msg": _PAUSED_ON_ERROR_MSG, "tone": "warn", "ico": "⏸"})
+                    cb("log", {"msg": _paused_on_error_msg(), "tone": "warn", "ico": "⏸"})
                     if on_ai_error("Out of AI credits — add credits or "
                                    "switch to another provider") == "retry":
                         continue
@@ -4798,7 +4950,7 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
                 if cat in ("auth", "bad_model", "not_found", "network"):
                     if on_ai_error:
                         cb("log", {"msg": friendly, "tone": "err"})
-                        cb("log", {"msg": _PAUSED_ON_ERROR_MSG, "tone": "warn", "ico": "⏸"})
+                        cb("log", {"msg": _paused_on_error_msg(), "tone": "warn", "ico": "⏸"})
                         if on_ai_error(friendly) == "retry":
                             continue
                     cb("log", {"msg": friendly, "tone": "err"})
@@ -4855,7 +5007,7 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
         for tc_title in unique:
             if should_stop(): break
             try:
-                new_id = create_test_case(project, plan_id, suite_id, tc_title, sid)
+                new_id = _o.create_case(project, plan_id, suite_id, tc_title, sid)
                 seeded_total += 1
                 cb("log", {"msg": tc_title + " — test case created", "tone": "ok",
                            "id": new_id, "ar": True})
@@ -4870,10 +5022,34 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
     suite_test_cases = []
     for sid, suite_id in story_suite_map.items():
         try:
-            for tc in fetch_test_cases_for_suite(project, plan_id, suite_id):
+            for tc in _o.cases_for_suite(project, plan_id, suite_id):
                 suite_test_cases.append((tc, sid, suite_id))
         except Exception:
             pass
+
+    # IDEMPOTENCE GUARD (roadmap #120): a given test case must be processed at
+    # most once. On the Azure→TestRail hybrid a single story could get its cases
+    # enumerated twice (the run reading both the Azure suite and the TestRail
+    # write-target suite for the same story), which doubled the count (e.g.
+    # "68" = 34×2), showed the suite twice in the Run rail, and listed the story
+    # twice in the report. Collapse by the case's unique work-item id, keeping the
+    # first occurrence. A correct Azure run has no duplicates here, so this is a
+    # no-op there — it never drops a distinct case or story.
+    if suite_test_cases:
+        _seen_tc, _deduped = set(), []
+        for _entry in suite_test_cases:
+            _tc = _entry[0]
+            _cid = (_tc.get("workItem", {}) or {}).get("id") if isinstance(_tc, dict) else None
+            if _cid is not None:
+                if _cid in _seen_tc:
+                    continue
+                _seen_tc.add(_cid)
+            _deduped.append(_entry)
+        if len(_deduped) != len(suite_test_cases):
+            cb("log", {"msg": f"Skipped {len(suite_test_cases) - len(_deduped)} duplicate "
+                              f"test-case enumeration(s) (same case seen twice).",
+                       "tone": "warn", "ico": "⚠"})
+        suite_test_cases = _deduped
 
     # Titles: the suite listing carries only the work-item id (witFields=System.Id),
     # so fetch each case's title CONCURRENTLY → real titles in the log/report instead
@@ -4885,7 +5061,7 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
         try:
             import concurrent.futures as _cf
             with _cf.ThreadPoolExecutor(max_workers=min(16, len(_tc_ids))) as _ex:
-                for _tid, _t in _ex.map(lambda i: (i, fetch_test_case_title(i)), _tc_ids):
+                for _tid, _t in _ex.map(lambda i: (i, _o.case_title(i)), _tc_ids):
                     _title_map[_tid] = _t
         except Exception:
             pass
@@ -5123,7 +5299,7 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
             steps = [s for s in steps if (s.get("action", "").strip() or s.get("expected", "").strip())]
             if not steps:
                 raise RuntimeError("AI returned steps with no action/expected text")
-            update_test_case_with_steps(tc_id, build_steps_xml(steps), project, story_id)
+            _o.write_steps(tc_id, build_steps_xml(steps), project, story_id)
             return {"ok": True, "tc_id": tc_id, "tc_title": tc_title, "story_id": story_id,
                     "steps": steps, "inadequate_reason": inadequate_reason,
                     "tc_start": _tc_start}
@@ -5173,7 +5349,7 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
             else:
                 return res
             cb("log", {"msg": friendly, "tone": "err", "id": res.get("tc_id")})
-            cb("log", {"msg": _PAUSED_ON_ERROR_MSG, "tone": "warn", "ico": "⏸"})
+            cb("log", {"msg": _paused_on_error_msg(), "tone": "warn", "ico": "⏸"})
             if on_ai_error(friendly) == "retry":
                 cb("log", {"msg": (res.get("tc_title") or "") +
                                   f" — retrying with {T_disp(AI_PROVIDER)}…",
@@ -5423,15 +5599,40 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
                 existing_xml, _tc_start, _seq)
             _inflight[fut] = None
 
-        # Drain whatever's still in flight before finishing up — skipped on a
-        # user Stop so Stop stays instant (see the should_stop() branch above);
-        # still done on natural completion AND on a fatal error (credit/auth/
-        # bad_model/not_found/network), since those in-flight calls were
-        # already committed and typically fail/finish fast in that case too.
-        if not _user_stopped:
-            _drain(wait_for_all=True)
+        # Drain whatever's still in flight before finishing up — ALWAYS, including
+        # on a user Stop.
+        #
+        # This used to be skipped when the user stopped (`if not _user_stopped`)
+        # so that Stop would "feel instant". That was wrong on three counts, all
+        # reported live:
+        #   1. It contradicts the button's own label. "Stop after current test
+        #      case" promises the in-flight case finishes. Abandoning it is what
+        #      the OTHER label ("Stop now") would mean.
+        #   2. It left the UI permanently lying. Un-harvested futures never reach
+        #      _apply_result, so the "generating…" line each case logged (wip_id =
+        #      tc_id) never receives its replace_wip — the spinners spin forever
+        #      while the run header says "Stopped".
+        #   3. The abandoned work did NOT stop. Those cases kept running on pool
+        #      threads and kept writing their steps to the tracker, invisibly,
+        #      after the run had reported itself finished.
+        # Draining costs the time of the in-flight AI calls (bounded by the pool
+        # size), and in exchange every case resolves honestly: it either completes
+        # normally or returns its StopRequested result, and BOTH paths log a line
+        # carrying replace_wip — which is what actually clears the spinner.
+        if _user_stopped and _inflight:
+            # Say so. The drain below waits for real AI calls to return, which
+            # can take a while — and this codebase has a long history of silent
+            # waits reading as "the app froze" (see the heartbeat entries in
+            # DEV_ROADMAP). The count makes the wait legible and bounded.
+            _n = len(_inflight)
+            cb("log", {"msg": f"Stop requested — finishing {_n} test case"
+                              f"{'' if _n == 1 else 's'} already in progress…",
+                       "tone": "dim", "ico": "⏳"})
+        _drain(wait_for_all=True)
     finally:
-        _executor.shutdown(wait=not _user_stopped)
+        # wait=True for the same reason: shutting the pool down without waiting
+        # is what let those threads keep writing after the run was "over".
+        _executor.shutdown(wait=True)
 
     if _fatal["hit"]:
         cb("done", {"summary": _fatal["summary"], "reason": _fatal["reason"],
@@ -5638,7 +5839,7 @@ def _logo_tag(size=42):
 
 def build_report_email(tool, summary, stats, action_items=None, skipped_items=None,
                        per_story=None, plan_url=None, total_secs=None, log_lines=None,
-                       org=None, project=None):
+                       org=None, project=None, url_map=None):
     """Restrained, email-safe (table + inline-style) HTML run report.
     Renders consistently across Outlook / Gmail / Apple Mail; web fonts fall
     back to system fonts. Drives off the same data the in-app report uses."""
@@ -5662,6 +5863,16 @@ def build_report_email(tool, summary, stats, action_items=None, skipped_items=No
     AR='"Segoe UI","Tahoma",Arial,sans-serif'
 
     def _wi_url(item_id):
+        # Backend-aware first: `url_map` carries the correct per-item link
+        # (Jira issue / Xray or Zephyr test / TestRail case / Azure work item),
+        # resolved through the backend seam by the caller. The dev.azure.com
+        # form is a last-resort fallback — correct ONLY for Azure, so it must
+        # not fire when a url_map entry exists (that was the "email links point
+        # at Azure on a Jira connection" bug).
+        if item_id and url_map:
+            u = url_map.get(str(item_id))
+            if u:
+                return u
         if not (org and project and item_id):
             return ""
         return f"https://dev.azure.com/{org}/{project}/_workitems/edit/{item_id}"
@@ -9013,6 +9224,16 @@ def _apply_update_zip(cb):
     cb("Installing…", "dim")
     try:
         with zipfile.ZipFile(zpath) as z:
+            # SECURITY (zip-slip): don't trust member names. Even though the zip
+            # is GitHub's zipball pinned to an immutable commit SHA over TLS, a
+            # single malicious/crafted entry ("../…" or an absolute path) would
+            # let extractall() write OUTSIDE tmp. Verify every member resolves
+            # inside tmp before extracting, and fail closed if any doesn't.
+            _tmp_root = os.path.realpath(tmp)
+            for _m in z.namelist():
+                _dest = os.path.realpath(os.path.join(tmp, _m))
+                if _dest != _tmp_root and not _dest.startswith(_tmp_root + os.sep):
+                    raise ValueError(f"unsafe path in update archive: {_m!r}")
             z.extractall(tmp)
     except Exception as e:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -9052,9 +9273,14 @@ def _apply_update_zip(cb):
     # file mtimes can be OLDER than the cached .pyc, in which case Python would keep
     # running the old code even though the .py files were replaced.
     try:
-        _pyc = os.path.join(dst, "__pycache__")
-        if os.path.isdir(_pyc):
-            shutil.rmtree(_pyc, ignore_errors=True)
+        # RECURSIVELY — subpackages (e.g. tracker/) have their OWN __pycache__,
+        # and clearing only the top-level one left their stale .pyc in place, so
+        # a self-update could keep running old package code after the .py sources
+        # were replaced (the same mtime-vs-.pyc trap described above, one level
+        # down). Any package directory added later is covered automatically.
+        for _root, _dirs, _files in os.walk(dst):
+            if os.path.basename(_root) == "__pycache__":
+                shutil.rmtree(_root, ignore_errors=True)
     except Exception:
         pass
     # best-effort: install any new dependencies the update introduced

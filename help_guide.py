@@ -27,6 +27,14 @@ FEATURES = [
          "API key, and Connect validates it before saving. The model list is fetched "
          "live from the provider once a valid key is saved. Then add your Azure "
          "DevOps organization and Personal Access Token (PAT) to load your projects.",
+         "QA Studio isn't Azure-only: a 'Test management backend' selector at the top "
+         "of Setup lets you connect Azure DevOps, Jira + Xray, or a hybrid that reads "
+         "stories from Azure or Jira and writes the test cases into TestRail "
+         "(Azure → TestRail, Jira → TestRail). Each backend keeps its own credentials, "
+         "scoped to your account, and switching backends swaps the credential fields "
+         "below. Everything downstream — Run, Report, the plans, Task Manager — adapts "
+         "to whichever backend is connected. (Jira + Zephyr Scale is temporarily hidden "
+         "while its API access is finalized.)",
          "Finally choose what to generate — test-case Titles or full Steps — and the "
          "output language, Arabic or English. Changing provider, model, project or "
          "plan while connected drops the live connection so you never run against a "
@@ -43,6 +51,8 @@ FEATURES = [
          "and never leave your device except to call that provider.",
          "Each provider keeps its own key; NVIDIA keeps a separate key per model, and "
          "the model dropdown marks which models have a key (● active).",
+         "Pick your Test management backend first (Azure DevOps, Jira + Xray, or a "
+         "Jira/Azure → TestRail hybrid); each keeps its own credentials.",
          "Azure DevOps PAT + organization load projects; pick project → test plan → "
          "stories.",
          "Choose Titles vs Steps and Arabic / English — these defaults also live on "
@@ -213,12 +223,23 @@ FEATURES = [
          "assignee shown by their display name (e.g. \"Ahmed Sayed\"), never their "
          "raw email, in the report itself, every export, and the email subject/"
          "filename.",
-         "Bulk child-task creation selects one or more User Stories from the same "
-         "sprint, then lets you add a batch of up to 10 tasks per story (title, due "
-         "date, original estimate, completed work), all assigned to one chosen "
-         "person and created in a single run.",
+         "Child-task creation selects one or more User Stories from the same "
+         "sprint, then adds a batch of up to 10 tasks per story, created in a "
+         "single run. The fields differ by connected backend:",
+         "On Azure DevOps each task row has a title, due date, original estimate "
+         "and completed work, all assigned to one chosen person.",
+         "On Jira / Xray each row instead builds a real Jira SUB-TASK inline: pick "
+         "the sub-task Work type, type a Summary, then use 'Add a field' to attach "
+         "any of the sub-task's own Jira Details fields — Assignee, Reporter, "
+         "Labels, Story point estimate, End Date, Completed work, Description, "
+         "Flagged, and any custom field your project defines. Each field renders "
+         "the right control (people picker, dropdown, date picker, number, text) "
+         "and is validated/shaped to Jira's format on create (dates and the ADF "
+         "rich-text of Description are handled for you). The Azure-only estimate/"
+         "completed-work fields are hidden on these backends, and 'Assign all to' "
+         "is replaced by the per-sub-task Assignee field.",
          "The Sprint field is fully disabled while the toggle is set to Date range. "
-         "Since bulk child-task creation always needs a sprint (dates have no "
+         "Since child-task creation always needs a sprint (dates have no "
          "equivalent notion of \"which stories\"), the whole 'Create child tasks' "
          "section shows as locked — \"Pick a sprint to load stories\" — whenever "
          "Date range is active; switch the toggle back to Sprint to unlock it.",
@@ -230,8 +251,11 @@ FEATURES = [
          "JSON, or email.",
          "Reports, exports and emails show the assignee's display name, not their "
          "raw email address.",
-         "Bulk-create child Tasks (up to 10 per story) under one or more selected "
-         "User Stories, all assigned to one person in one run.",
+         "Azure: bulk-create child Tasks (up to 10 per story, title/due/estimate/"
+         "completed) assigned to one person in one run.",
+         "Jira / Xray: build real sub-tasks inline — pick a Work type + Summary, "
+         "then 'Add a field' to fill any Jira Details field (Assignee, Reporter, "
+         "Labels, Story points, dates, Description, custom fields).",
          "The Sprint field disables while Date range mode is active — switch back "
          "to Sprint to change it.",
      ]},
@@ -407,8 +431,10 @@ FEATURES = [
          "from the key you save in the app.",
      ],
      "points": [
-         "Many providers supported; free tiers (Gemini, NVIDIA, Groq, Cerebras, "
-         "OpenRouter, Mistral, Ollama) are grouped above paid ones.",
+         "Many providers supported; genuinely free tiers (Gemini, Groq, Cerebras, "
+         "OpenRouter, Mistral, Ollama) are grouped above paid ones. Providers that "
+         "only give expiring trial credits (NVIDIA, GLM, MiniMax, Qwen, DeepSeek) "
+         "sit under Paid, since they stop working once the credit runs out.",
          "Providers and (for NVIDIA) individual models are marked ● active when they "
          "have a saved key.",
          "Each provider keeps its own key; the model list is fetched live once a "

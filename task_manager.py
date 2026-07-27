@@ -25,6 +25,7 @@ from datetime import date, datetime, timedelta
 import flet as ft
 import theme as T
 import engine as E
+import backend_setup
 
 # A story can get up to this many child tasks in one "Create child tasks" run
 # (a batch/patch of tasks per story) — keeps a single run bounded and the UI
@@ -97,9 +98,16 @@ def _tm_period_days(start_str, end_str):
 
 def _tm_default_row(st):
     """A fresh, empty per-task row for the bulk child-task creation section.
-    `st` is the story dict (for the default "Testing - <story title>" title)."""
+    `st` is the story dict (for the default "Testing - <story title>" title).
+
+    Azure uses title/due/estimate/completed. Non-Azure (Jira/Xray) uses
+    `summary` + `type_id` (work type) + `fields` ({field_id: value}, state-backed
+    so inline edits survive re-renders) + `shown` (which optional fields are
+    displayed). Both sets coexist harmlessly; the create path reads whichever
+    the backend needs."""
     return {"title": f"Testing - {st.get('title', '')}", "due": "",
-            "estimate": "", "completed": ""}
+            "estimate": "", "completed": "",
+            "summary": "", "type_id": "", "fields": {}, "shown": []}
 
 
 def _tm_display_name(app, email):
@@ -159,6 +167,15 @@ def _init(app):
         # up to _TM_CT_MAX_ROWS child tasks in one run, not just one.
         ("_tm_ct_rows", {}), ("_tm_ct_user", ""),
         ("_tm_ct_busy", False), ("_tm_ct_result", None), ("_tm_ct_msg", None),
+        # Non-Azure (Jira/Xray) sub-task CREATE: work types + per-type create
+        # fields, both project-level. Rows gain summary/type_id/fields/shown
+        # (see _tm_default_row) so each sub-task can pick a work type and fill
+        # any Jira Details field inline — no modal.
+        ("_tm_worktypes", []), ("_tm_worktypes_loading", False),
+        ("_tm_worktypes_for", None), ("_tm_createschema", {}),
+        # members WITH account id (the name/email cache can't set a Jira user
+        # field — that needs the accountId), for the inline assignee/reporter.
+        ("_tm_members_full", []),
     ):
         if not hasattr(app, k):
             setattr(app, k, v)
@@ -275,7 +292,7 @@ def _load_iterations(app):
 
     def _work():
         try:
-            its = E.fetch_iterations(_proj) or []
+            its = backend_setup.fetch_sprints(app, _proj) or []
         except Exception:
             its = []
         sprints = [it for it in its
@@ -286,6 +303,10 @@ def _load_iterations(app):
             app._tm_iter_for = None
             return
         app._tm_iterations = sprints
+        # Full render, NOT an in-place cell sync: the Sprint dropdown lives in
+        # the static section header (outside _report_dynamic_cell/_ct_section),
+        # so only a full render actually shows the freshly-loaded sprints — an
+        # in-place refresh left the dropdown empty after a backend switch.
         app.ui_safe(app.render)
     threading.Thread(target=_work, daemon=True).start()
 
@@ -297,13 +318,66 @@ def _load_members(app):
 
         def _work():
             try:
-                mem = E.fetch_project_members(app.project)
-            except Exception:
+                mem = backend_setup.fetch_project_members(app, app.project)
+            except Exception as _ex:
+                try:
+                    import diag_log
+                    diag_log.log("task_manager._load_members", _ex)
+                except Exception:
+                    pass
                 mem = []
             app._members_cache = mem
             app._members_loading = False
             app.ui_safe(app.render)
         threading.Thread(target=_work, daemon=True).start()
+
+
+def _load_worktypes(app):
+    """Non-Azure only: the project's sub-task WORK TYPES + the create-field
+    schema for each, so the inline create rows can offer a work-type dropdown
+    and a fillable field picker. Project-level (not per-story), cached; fetched
+    once per project. Silent/empty on failure — the row still creates via the
+    backend's default sub-task type."""
+    if not app.project:
+        return
+    if (getattr(app, "_tm_worktypes_for", None) == app.project
+            or app._tm_worktypes_loading):
+        return
+    app._tm_worktypes_loading = True
+    app._tm_worktypes_for = app.project
+
+    def _work():
+        wts, schema, full = [], {}, []
+        try:
+            be = backend_setup.get_backend(app)
+            wts = be.subtask_work_types(app.project) or []
+            for w in wts:
+                try:
+                    schema[w["id"]] = be.subtask_create_field_schema(
+                        app.project, w["id"]) or []
+                except Exception:
+                    schema[w["id"]] = []
+            try:
+                full = [{"id": u.id, "name": (u.display_name or u.email or u.id)}
+                        for u in be.fetch_project_members(app.project)]
+            except Exception:
+                full = []
+        except Exception as _ex:
+            try:
+                import diag_log
+                diag_log.log("task_manager._load_worktypes", _ex)
+            except Exception:
+                pass
+        app._tm_worktypes = wts
+        app._tm_createschema = schema
+        app._tm_members_full = full
+        app._tm_worktypes_loading = False
+        if app._tm_worktypes_for == app.project:
+            # Full render: the work-type dropdown + assignee/reporter people
+            # pickers must show the freshly-loaded options; an in-place cell
+            # sync alone left the assignee picker empty (couldn't pick anyone).
+            app.ui_safe(app.render)
+    threading.Thread(target=_work, daemon=True).start()
 
 
 def _load_stories(app):
@@ -321,7 +395,7 @@ def _load_stories(app):
 
     def _work():
         try:
-            rows = E.fetch_stories_in_iteration(app.project, it) or []
+            rows = backend_setup.fetch_stories_in_sprint(app, it) or []
         except Exception:
             rows = []
         app._tm_ct_stories_loading = False
@@ -429,10 +503,10 @@ def _calc_report(app, on_update=None):
     def _work():
         try:
             if it:
-                res = E.fetch_user_task_stats(app.project, iteration_path=it, assignee=user)
+                res = backend_setup.fetch_task_stats(app, iteration_path=it, assignee=user)
             else:
-                res = E.fetch_user_task_stats(app.project, assignee=user,
-                                              start_date=start, end_date=end)
+                res = backend_setup.fetch_task_stats(app, assignee=user,
+                                                     start_date=start, end_date=end)
             res["assignee_name"] = _tm_display_name(app, res.get("assignee", ""))
             err = None
         except Exception as ex:
@@ -446,6 +520,13 @@ def _calc_report(app, on_update=None):
             app._tm_report_result = res
             if res.get("count", 0) == 0:
                 app._tm_report_msg = ("err", "No tasks assigned to this person in that period.")
+            elif res.get("partial"):
+                # Non-Azure backends return a per-assignee rollup with no
+                # per-task rows, so totals are real but the task table is empty.
+                # Say so, rather than letting it read as "no tasks found".
+                app._tm_report_msg = (
+                    "warn", res.get("unsupported_detail")
+                    or "Per-task detail isn't available on this backend.")
         else:
             app._tm_report_msg = ("err", f"Couldn't load task stats: {err}")
         app._tm_report_busy = False
@@ -454,21 +535,78 @@ def _calc_report(app, on_update=None):
 
 
 def _create_tasks(app):
+    # Refresh the Create-tasks SECTION in place (button/banner/errors) rather
+    # than a full app.render(), which resets the scroll to the top (scroll_to is
+    # a no-op on Flet 0.85). Falls back to a full render if the in-place hook
+    # isn't available (e.g. the screen was rebuilt out from under us).
+    def _refresh():
+        fn = getattr(app, "_tm_sync_ct_section", None)
+        app.ui_safe(fn if callable(fn) else app.render)
+
     if getattr(app, "readonly", False):
         app._tm_ct_msg = ("err", "Your role doesn't allow using Task Manager.")
-        app.ui_safe(app.render)
+        _refresh()
         return
     sel = list(app._tm_ct_selected or [])
     user = app._tm_ct_user
     if not sel:
         app._tm_ct_msg = ("err", "Select at least one user story first.")
-        app.ui_safe(app.render)
-        return
-    if not user:
-        app._tm_ct_msg = ("err", "Pick who the tasks should be assigned to.")
-        app.ui_safe(app.render)
+        _refresh()
         return
     stories_by_id = {s["id"]: s for s in app._tm_ct_stories}
+
+    # Non-Azure sub-task mode: create each row as a sub-task of its chosen work
+    # type with the inline-filled fields. Assignee is a per-field option here,
+    # so the global "Assign all to" is NOT required (unlike the Azure path).
+    try:
+        _be = backend_setup.get_backend(app)
+        _subtask_mode = bool(_be.supports("edit_subtasks"))
+    except Exception:
+        _be, _subtask_mode = None, False
+
+    if _subtask_mode:
+        plan = []   # (sid, parent_key, type_id, summary, fields)
+        for sid in sel:
+            st = stories_by_id.get(sid, {})
+            for row in (app._tm_ct_rows.get(sid) or [])[:_TM_CT_MAX_ROWS]:
+                summ = (row.get("summary") or "").strip()
+                if not summ:
+                    continue
+                plan.append((sid, st.get("id") or sid, row.get("type_id") or "",
+                             summ, dict(row.get("fields") or {})))
+        if not plan:
+            app._tm_ct_msg = ("err", "Add a summary for at least one sub-task first.")
+            _refresh()
+            return
+        app._tm_ct_busy = True
+        app._tm_ct_result = None
+        app._tm_ct_msg = None
+        _refresh()
+
+        def _work_sub():
+            made, errors = 0, []
+            for sid, parent, tid, summ, fields in plan:
+                try:
+                    _be.create_subtask(app.project, parent, tid, summ, fields)
+                    made += 1
+                except Exception as ex:
+                    errors.append({"story_id": sid, "title": summ, "error": str(ex)[:160]})
+            app._tm_ct_result = {"ok": made, "errors": errors}
+            if made and not errors:
+                app._tm_ct_msg = ("ok", f"Created {made} sub-task(s).")
+            elif made and errors:
+                app._tm_ct_msg = ("warn", f"Created {made}; {len(errors)} failed — see below.")
+            else:
+                app._tm_ct_msg = ("err", f"{len(errors)} failed — see details below.")
+            app._tm_ct_busy = False
+            _refresh()
+        threading.Thread(target=_work_sub, daemon=True).start()
+        return
+
+    if not user:
+        app._tm_ct_msg = ("err", "Pick who the tasks should be assigned to.")
+        _refresh()
+        return
     items = []
     for sid in sel:
         st = stories_by_id.get(sid, {})
@@ -485,17 +623,17 @@ def _create_tasks(app):
             })
     if not items:
         app._tm_ct_msg = ("err", "Nothing to create — add at least one task with a title.")
-        app.ui_safe(app.render)
+        _refresh()
         return
 
     app._tm_ct_busy = True
     app._tm_ct_result = None
     app._tm_ct_msg = None
-    app.ui_safe(app.render)
+    _refresh()
 
     def _work():
         try:
-            res = E.create_child_tasks(app.project, items)
+            res = backend_setup.create_child_tasks(app, items, app.project)
             app._tm_ct_result = res
             if res.get("ok"):
                 app._tm_ct_msg = ("ok", f"Created {res['ok']} task(s).")
@@ -504,7 +642,7 @@ def _create_tasks(app):
         except Exception as ex:
             app._tm_ct_msg = ("err", f"Couldn't create tasks: {str(ex)[:160]}")
         app._tm_ct_busy = False
-        app.ui_safe(app.render)
+        _refresh()
     threading.Thread(target=_work, daemon=True).start()
 
 
@@ -512,15 +650,22 @@ def _status_banner(msg, busy):
     if not msg or busy:
         return None
     kind, text = msg
+    # Three tones, not two: a "warn" (e.g. "per-task detail isn't available on
+    # this backend") is informational — rendering it in error-red made a
+    # successful-but-partial result look like a failure.
     ok = (kind == "ok")
+    warn = (kind == "warn")
+    colour = T.GREEN if ok else (T.AMBER if warn else T.RED)
+    soft = T.GREEN_SOFT if ok else (T.AMBER_SOFT if warn else T.RED_SOFT)
+    icon = (ft.Icons.CHECK_CIRCLE if ok else
+            ft.Icons.INFO_OUTLINE if warn else ft.Icons.ERROR_OUTLINE)
     return ft.Container(
-        ft.Row([ft.Icon(ft.Icons.CHECK_CIRCLE if ok else ft.Icons.ERROR_OUTLINE,
-                       color=(T.GREEN if ok else T.RED), size=18),
-               ft.Text(text, color=(T.GREEN if ok else T.RED), size=12.5, expand=True)],
+        ft.Row([ft.Icon(icon, color=colour, size=18),
+               ft.Text(text, color=colour, size=12.5, expand=True)],
               spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
         padding=ft.Padding.symmetric(vertical=11, horizontal=14),
         margin=ft.Margin.only(top=14), border_radius=T.R,
-        bgcolor=(T.GREEN_SOFT if ok else T.RED_SOFT))
+        bgcolor=soft)
 
 
 def _tm_out_dir():
@@ -949,9 +1094,47 @@ def screen(app):
     # first place.
     _ro = getattr(app, "readonly", False)
 
+    # Sub-task EDITING (load a story's existing Jira sub-tasks, pick fields,
+    # fill) is a Jira/Xray-only capability — the per-story "Edit sub-tasks"
+    # button below is shown only when the connected backend advertises it, so
+    # Azure and TestRail-only stay exactly as they were.
+    try:
+        _can_edit_subtasks = backend_setup.get_backend(app).supports("edit_subtasks")
+    except Exception:
+        _can_edit_subtasks = False
+
+    # EVERYTHING loaded here — sprints, members, work types, stories, the
+    # selection — belongs to ONE backend+project. Several caches had no project
+    # key (`_members_cache` refetched only when None; iterations/worktypes keyed
+    # only by project name), so after a backend switch the "Assigned to" picker
+    # kept the OLD backend's people and the sprint list went stale. Invalidate
+    # them all when the active backend or project changes, forcing a clean
+    # refetch for the new connection.
+    _ct_proj_key = f"{backend_setup.active(getattr(app, 'creds', {}) or {})}:{app.project}"
+    if getattr(app, "_tm_ct_project", None) != _ct_proj_key:
+        app._tm_ct_project = _ct_proj_key
+        app._tm_ct_selected = []
+        app._tm_ct_rows = {}
+        app._tm_ct_result = None
+        app._tm_ct_msg = None
+        # per-backend member/sprint/work-type caches → force a refetch
+        app._members_cache = None
+        app._members_loading = False
+        app._tm_members_full = []
+        app._tm_worktypes = []
+        app._tm_worktypes_for = None
+        app._tm_createschema = {}
+        app._tm_iterations = []
+        app._tm_iter_for = None
+        app._tm_iteration = ""
+        app._tm_ct_stories = []
+        app._tm_ct_stories_for = None
+
     _load_iterations(app)
     _load_members(app)
     _load_stories(app)
+    if _can_edit_subtasks:
+        _load_worktypes(app)
 
     members = getattr(app, "_members_cache", None) or []
 
@@ -989,11 +1172,12 @@ def screen(app):
         app._tm_report_msg = None
         app._tm_ct_result = None
         app._tm_ct_msg = None
-        # A sprint change reshapes THREE areas at once (report reset, story
-        # list reload, bulk-create reset) and Section 2's stories need a
-        # fresh _load_stories() call, which only happens on screen()'s own
-        # top-level path — a full render is genuinely needed here, unlike
-        # the smaller per-field updates below.
+        # A sprint change reshapes BOTH sections (report reset, story-list
+        # reload, bulk-create reset) and the story reload only happens on
+        # screen()'s top-level path — a full render is genuinely needed here
+        # (an in-place refresh left the story picker stale). The scroll jump on
+        # a sprint switch is accepted; the frequent interactions (Create, add
+        # field, work type) stay in-place.
         app.render()
 
     # ── Sprint vs. Date range — an explicit toggle, not "fill in whichever".
@@ -1458,6 +1642,259 @@ def screen(app):
 
     # ── Section 2: bulk child-task creation ────────────────────────────────
     _ct_dynamic_cell = [None]   # rebuilt-in-place: title rows + Create button
+    # Stable per-(sid,idx) containers so ADDING a field appends in place instead
+    # of rebuilding the row — recreating sibling controls is what wiped a value
+    # you'd just typed. Repointed on every full rebuild to the latest instances.
+    _ct_fields_cols = {}
+    _ct_chips_rows = {}
+
+    # ── Non-Azure INLINE sub-task create (work type + summary + fillable
+    #    fields, all beneath the row — no modal). Values live in the row dict
+    #    (row["fields"]) so an in-place _sync_ct_dynamic() rebuild never wipes
+    #    what was typed — the bug that made added fields feel "not fillable".
+    _CT_ARRAY_OK = {"string", "option", "version", "component", "user"}
+
+    def _ct_renderable(spec):
+        t = spec.get("type")
+        if t in ("string", "number", "date", "datetime", "user", "option", "priority"):
+            return True
+        if t == "array" and spec.get("items") in _CT_ARRAY_OK:
+            return True
+        return False
+
+    def _ct_schema_for(row):
+        return (getattr(app, "_tm_createschema", None) or {}).get(row.get("type_id") or "", [])
+
+    def _ct_row(sid, idx):
+        r = app._tm_ct_rows.get(sid) or []
+        return r[idx] if idx < len(r) else None
+
+    def _set_ct_summary(sid, idx):
+        def _h(e):
+            row = _ct_row(sid, idx)
+            if row is not None:
+                row["summary"] = e.control.value
+        return _h
+
+    def _set_ct_field(sid, idx, fid):
+        def _h(v_or_e):
+            row = _ct_row(sid, idx)
+            if row is None:
+                return
+            val = v_or_e if isinstance(v_or_e, str) else v_or_e.control.value
+            row.setdefault("fields", {})[fid] = val
+        return _h
+
+    def _set_ct_worktype(sid, idx):
+        def _h(e):
+            row = _ct_row(sid, idx)
+            if row is not None:
+                row["type_id"] = e.control.value or ""
+                row["fields"] = {}       # fields are per work type — reset
+                row["shown"] = []
+            _sync_ct_dynamic()
+        return _h
+
+    _CT_SKIP_FIELDS = {"summary", "issuetype", "parent", "project"}
+
+    def _ct_spec(row, fid):
+        return next((s for s in _ct_schema_for(row) if s.get("id") == fid), None)
+
+    def _add_ct_field(sid, idx, fid):
+        # APPEND the new field IN PLACE (never rebuild the row) so sibling
+        # controls — and whatever you'd just typed into them — are untouched.
+        # Triggered from a TextButton, not a dropdown, so no mid-event rebuild.
+        def _h(e):
+            row = _ct_row(sid, idx)
+            if row is None or fid in row.get("shown", []):
+                return
+            row.setdefault("shown", []).append(fid)
+            row.setdefault("fields", {}).setdefault(fid, "")
+            spec = _ct_spec(row, fid)
+            col = _ct_fields_cols.get((sid, idx))
+            chips = _ct_chips_rows.get((sid, idx))
+            if col is not None and spec is not None:
+                col.controls.append(_ct_field_block(sid, idx, spec))
+                if chips is not None:
+                    chips.controls = _ct_chips(sid, idx)
+                try:
+                    col.update()
+                    if chips is not None:
+                        chips.update()
+                except Exception:
+                    _sync_ct_dynamic()
+            else:
+                _sync_ct_dynamic()
+        return _h
+
+    def _remove_ct_field(sid, idx, fid):
+        def _h(e):
+            row = _ct_row(sid, idx)
+            if row is None:
+                return
+            if fid in row.get("shown", []):
+                row["shown"].remove(fid)
+            row.get("fields", {}).pop(fid, None)
+            col = _ct_fields_cols.get((sid, idx))
+            chips = _ct_chips_rows.get((sid, idx))
+            if col is not None:
+                col.controls = [_ct_field_block(sid, idx, _ct_spec(row, f))
+                                for f in row.get("shown", []) if _ct_spec(row, f)]
+                if chips is not None:
+                    chips.controls = _ct_chips(sid, idx)
+                try:
+                    col.update()
+                    if chips is not None:
+                        chips.update()
+                except Exception:
+                    _sync_ct_dynamic()
+            else:
+                _sync_ct_dynamic()
+        return _h
+
+    def _ct_field_control(sid, idx, spec):
+        row = _ct_row(sid, idx) or {}
+        fid = spec["id"]
+        cur = (row.get("fields") or {}).get(fid, "")
+        t, items = spec.get("type"), spec.get("items")
+        name = (spec.get("name") or fid)
+        allowed = spec.get("allowed") or []
+        h = _set_ct_field(sid, idx, fid)
+        pad = ft.Padding.symmetric(vertical=8, horizontal=10)
+
+        def _mk_dd(opts, val, hint):
+            d = ft.Dropdown(options=opts, value=(val or None), hint_text=hint, text_size=12.5,
+                            dense=True, border_color=T.BORDER, focused_border_color=T.VIOLET,
+                            border_radius=T.R, disabled=_ro, content_padding=pad)
+            d.on_change = h
+            return d
+
+        def _mk_tf(hint, numeric=False, multiline=False):
+            return ft.TextField(
+                value=cur, on_change=h, hint_text=hint, multiline=multiline,
+                min_lines=1, max_lines=(4 if multiline else 1),
+                keyboard_type=(ft.KeyboardType.NUMBER if numeric else ft.KeyboardType.TEXT),
+                text_size=12.5, dense=True, border_color=T.BORDER,
+                focused_border_color=T.VIOLET, border_radius=T.R, disabled=_ro,
+                content_padding=pad)
+
+        if t == "user":
+            opts = [ft.DropdownOption(key=m["id"], text=m["name"])
+                    for m in (getattr(app, "_tm_members_full", None) or [])]
+            return _mk_dd(opts, cur, "Select a person")
+        if t in ("option", "priority") or (t == "array" and items in ("option", "version", "component")):
+            first = (cur.split(",")[0] if isinstance(cur, str) and cur else cur) or None
+            return _mk_dd([ft.DropdownOption(key=a["id"], text=a["label"]) for a in allowed],
+                          first, f"Select {name.lower()}")
+        if t == "number":
+            return _mk_tf("e.g. 5", numeric=True)
+        if t == "date":
+            # Native calendar picker — respects the date type. on_after rebuilds
+            # the section in place (shows the picked date) without a full render.
+            return _date_field(app, "", cur, h, on_after=_sync_ct_dynamic, disabled=_ro)
+        if t == "datetime":
+            # Datetime — clear ISO-ish placeholder; backend fills the time to
+            # midnight if only a date is given, and appends the offset.
+            return _mk_tf("YYYY-MM-DD HH:MM  (time optional)")
+        if t == "array" and items == "string":
+            return _mk_tf("comma, separated  (e.g. regression, smoke)")
+        if fid == "description":
+            return _mk_tf("Describe the sub-task…", multiline=True)
+        if fid == "environment":
+            return _mk_tf("e.g. Staging / Chrome 126", multiline=True)
+        return _mk_tf(f"Enter {name.lower()}")
+
+    def _ct_field_block(sid, idx, spec):
+        """One labelled, removable field control — the unit the add/remove
+        handlers append/drop in place."""
+        fid = spec["id"]
+        req = spec.get("required")
+        return ft.Container(
+            ft.Row([
+                ft.Container(
+                    ft.Column([
+                        ft.Text((spec.get("name") or fid) + (" *" if req else ""),
+                                size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_2),
+                        _ct_field_control(sid, idx, spec),
+                    ], spacing=4, tight=True), expand=True),
+                ft.IconButton(ft.Icons.CLOSE_ROUNDED, icon_size=14, icon_color=T.INK_3,
+                              tooltip="Remove field", disabled=_ro, width=28, height=28,
+                              on_click=(None if _ro else _remove_ct_field(sid, idx, fid))),
+            ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.START),
+            padding=ft.Padding.symmetric(vertical=6, horizontal=10),
+            margin=ft.Margin.only(bottom=6), bgcolor=T.CARD,
+            border=ft.Border.all(1, T.BORDER_2), border_radius=T.R)
+
+    def _ct_chips(sid, idx):
+        """The 'Add a field' chip buttons for the fields not yet shown."""
+        row = _ct_row(sid, idx) or {}
+        schema = _ct_schema_for(row)
+        shown = row.get("shown", []) or []
+        specs = [s for s in schema
+                 if _ct_renderable(s) and s["id"] not in shown and s["id"] not in _CT_SKIP_FIELDS]
+        if not specs or _ro:
+            return [ft.Text(("Pick a work type to add fields" if not schema
+                             else "All available fields added"),
+                            size=11, color=T.INK_3)]
+        return [ft.TextButton(
+                    content=ft.Row([ft.Icon(ft.Icons.ADD, size=13, color=T.VIOLET_INK),
+                                    ft.Text(s.get("name") or s["id"], size=11.5,
+                                            color=T.VIOLET_INK)], spacing=3, tight=True),
+                    on_click=_add_ct_field(sid, idx, s["id"]))
+                for s in specs]
+
+    def _build_subtask_create_row(sid, idx, row, rows):
+        pad = ft.Padding.symmetric(vertical=8, horizontal=10)
+        lead = (R._id_link(app, sid, color=T.VIOLET_INK, weight=ft.FontWeight.BOLD,
+                           width=70, font_family=T.F_MONO, size=12)
+                if idx == 0 else
+                ft.Text(f"#{idx + 1}", size=11.5, color=T.INK_3, width=70,
+                        font_family=T.F_MONO, text_align=ft.TextAlign.CENTER))
+        remove_btn = (ft.IconButton(icon=ft.Icons.CLOSE_ROUNDED, icon_size=15,
+                                    icon_color=T.INK_3, tooltip="Remove this sub-task",
+                                    on_click=(None if _ro else _remove_row(sid, idx)),
+                                    disabled=_ro, width=30, height=30)
+                      if len(rows) > 1 else ft.Container(width=30))
+        wts = getattr(app, "_tm_worktypes", None) or []
+        if not row.get("type_id") and wts:
+            row["type_id"] = wts[0]["id"]
+        wt_dd = ft.Dropdown(
+            options=[ft.DropdownOption(key=w["id"], text=w["name"]) for w in wts],
+            value=(row.get("type_id") or None),
+            hint_text=("Loading work types…" if not wts else "Work type"),
+            text_size=12.5, dense=True, border_color=T.BORDER, focused_border_color=T.VIOLET,
+            border_radius=T.R, width=220, disabled=(_ro or not wts), content_padding=pad)
+        wt_dd.on_change = _set_ct_worktype(sid, idx)
+        summ_tf = ft.TextField(
+            value=row.get("summary", ""), on_change=_set_ct_summary(sid, idx),
+            hint_text="Sub-task summary", text_size=12.5, dense=True, border_color=T.BORDER,
+            focused_border_color=T.VIOLET, border_radius=T.R, disabled=_ro, content_padding=pad)
+        top_row = ft.Row([lead, ft.Container(hover_field(summ_tf), expand=True), remove_btn],
+                         spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+
+        row_shown = row.get("shown", []) or []
+        fields_col = ft.Column([_ct_field_block(sid, idx, _ct_spec(row, f))
+                                for f in row_shown if _ct_spec(row, f)],
+                               spacing=0, tight=True)
+        _ct_fields_cols[(sid, idx)] = fields_col
+        chips_row = ft.Row(_ct_chips(sid, idx), wrap=True, spacing=4, run_spacing=2, expand=True)
+        _ct_chips_rows[(sid, idx)] = chips_row
+
+        return ft.Container(ft.Column([
+            top_row,
+            ft.Container(height=8),
+            ft.Row([ft.Text("Work type", size=10.5, weight=ft.FontWeight.BOLD,
+                            color=T.INK_3, width=70), wt_dd],
+                   spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            ft.Container(height=8),
+            ft.Container(fields_col, padding=ft.Padding.only(left=80)),
+            ft.Row([ft.Text("Add a field", size=10.5, weight=ft.FontWeight.BOLD,
+                            color=T.INK_3, width=70), chips_row],
+                   spacing=10, vertical_alignment=ft.CrossAxisAlignment.START),
+        ], spacing=0),
+            padding=ft.Padding.only(top=(14 if idx else 2), bottom=14),
+            border=(ft.Border.only(bottom=ft.BorderSide(1, T.BORDER_2))
+                    if idx < len(rows) - 1 else None))
 
     def _build_ct_dynamic():
         stories_by_id = {s["id"]: s for s in app._tm_ct_stories}
@@ -1470,6 +1907,11 @@ def screen(app):
 
             row_blocks = []
             for idx, row in enumerate(rows):
+                if _can_edit_subtasks:
+                    # Non-Azure: inline sub-task builder (work type + summary +
+                    # fillable Details fields), no modal.
+                    row_blocks.append(_build_subtask_create_row(sid, idx, row, rows))
+                    continue
                 tf = ft.TextField(
                     value=row.get("title", ""), on_change=_set_row_field(sid, idx, "title"),
                     text_size=12.5, dense=True, border_color=T.BORDER,
@@ -1539,8 +1981,16 @@ def screen(app):
                         due_field, est_block, comp_block,
                     ], spacing=14, vertical_alignment=ft.CrossAxisAlignment.END)
 
+                # Due date / Original estimate / Completed work are Azure
+                # time-tracking fields — the Jira create path never sends them
+                # (create_child_tasks only uses title + parent). Hide them on
+                # backends that edit sub-tasks via the rich "Edit sub-tasks"
+                # dialog instead, so the row shows only the summary here.
+                if _can_edit_subtasks:
+                    fields_row = ft.Container(height=0)
                 row_blocks.append(ft.Container(
-                    ft.Column([title_row, ft.Container(height=10), fields_row], spacing=0),
+                    ft.Column([title_row, ft.Container(height=(0 if _can_edit_subtasks else 10)),
+                               fields_row], spacing=0),
                     padding=ft.Padding.only(top=(10 if idx else 0), bottom=10),
                     border=(ft.Border.only(bottom=ft.BorderSide(1, T.BORDER_2))
                            if idx < len(rows) - 1 else None)))
@@ -1574,10 +2024,14 @@ def screen(app):
                 padding=14, margin=ft.Margin.only(bottom=10), bgcolor=T.CARD_2,
                 border=ft.Border.all(1, T.BORDER_2), border_radius=T.R))
 
-        _can_create = (bool(app._tm_ct_selected) and bool(app._tm_ct_user)
+        # Non-Azure sub-task mode assigns via a per-field option, so it does NOT
+        # require the global "Assign all to" — only a story selection.
+        _can_create = (bool(app._tm_ct_selected)
+                      and (bool(app._tm_ct_user) or _can_edit_subtasks)
                       and not app._tm_ct_busy and not _ro)
         btn = green_btn(
-            "Creating…" if app._tm_ct_busy else "Create child tasks",
+            ("Creating…" if app._tm_ct_busy
+             else ("Create sub-tasks" if _can_edit_subtasks else "Create child tasks")),
             icon=ft.Icons.ADD_TASK,
             on_click=((lambda e: _create_tasks(app)) if _can_create else None))
         try:
@@ -1635,8 +2089,15 @@ def screen(app):
         try:
             cell.content = _build_ct_dynamic()
             cell.update()
-        except Exception:
-            pass
+        except Exception as _ex:
+            # Was silent — a raise while building a per-story row (e.g. an
+            # unsupported Flet control) left the section blank with no clue.
+            try:
+                import diag_log
+                diag_log.log("task_manager._sync_ct_dynamic", _ex)
+            except Exception:
+                pass
+            app.render()
 
     def _toggle_story(key, checked):
         s = set(app._tm_ct_selected)
@@ -1733,8 +2194,13 @@ def screen(app):
             ft.Container(height=10),
             ft.Column([field_label("User stories", req=True), story_picker], spacing=6),
             ft.Container(height=14),
-            ft.Column([field_label("Assign all to", req=True), hover_field(ct_user_dd)],
-                      spacing=6),
+            # "Assign all to" is an Azure-only bulk field — on Jira/Xray the
+            # assignee is chosen per sub-task via the inline "＋ Add a field"
+            # picker, so hide this to avoid a required-looking control the
+            # sub-task create path never reads.
+            (ft.Container(height=0) if _can_edit_subtasks else
+             ft.Column([field_label("Assign all to", req=True), hover_field(ct_user_dd)],
+                       spacing=6)),
             ct_dynamic,
         ], spacing=0))]
 
@@ -1767,6 +2233,11 @@ def screen(app):
     ct_section = ft.Container(ft.Column(_build_ct_section(), spacing=0))
     _ct_section_cell[0] = ct_section
     ct_body = [ct_section]
+    # Expose the in-place section refresh so _create_tasks (module-level) can
+    # update the button/banner/errors WITHOUT a full app.render() — a full
+    # render resets scroll to the top (scroll_to is a no-op on Flet 0.85), which
+    # is the "Create jumps me to the top" complaint.
+    app._tm_sync_ct_section = _sync_ct_section
 
     body = ft.Column(
         report_body + [ft.Container(height=24)] + ct_body,

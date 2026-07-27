@@ -354,6 +354,9 @@ def _email_report(E, run, status, summary, rpt):
             stats["Time"] = E._fmt_secs(_secs)
         plan_url = None
         if run.get("project") and run.get("plan_id"):
+            # Remote runs are Azure-only today (run_worker has no `app` object
+            # for backend_setup to read creds from), so this stays a direct URL
+            # build. Revisit when remote runs learn about non-Azure backends.
             plan_url = (f"https://dev.azure.com/{E.AZURE_ORG}/{run['project']}"
                         f"/_testPlans/define?planId={run['plan_id']}")
         # Same structured-log shape as the desktop's email_log build (icon ·

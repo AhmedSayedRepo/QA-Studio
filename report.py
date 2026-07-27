@@ -6,6 +6,7 @@ summary cards from app state.
 import flet as ft
 import theme as T
 import engine as E
+import backend_setup
 from ui import card, _btn_shadow, primary_btn, ghost_btn, progress_ring, stat_tile, badge
 
 
@@ -72,8 +73,10 @@ def screen(app):
             if skipped: chips.append(badge(f"⏭ {skipped}", "amber"))
             if err: chips.append(badge(f"✕ {err}", "red"))
             _sid = sp.get('id', '')
-            _su = (f"https://dev.azure.com/{E.AZURE_ORG}/{app.project}"
-                   f"/_workitems/edit/{_sid}") if _sid else None
+            # Follows the WRITE target: Azure run → Azure work item; a
+            # →TestRail hybrid → the TestRail section holding this story's
+            # cases. See backend_setup.story_row_url.
+            _su = backend_setup.story_row_url(app, _sid, sp.get("suite")) or None
             story_rows.append(ft.Container(
                 ft.Row([
                     progress_ring(pct, ring_c, size=46, label=pct),
@@ -144,7 +147,12 @@ def screen(app):
             # run.py's identical log panel and automation.py's Activity log —
             # see either for the full writeup.
             ft.Container(
-                ft.Column(log_lines, spacing=2, scroll=ft.ScrollMode.AUTO, expand=True),
+                # ListView, not Column(scroll=…, expand=True) — same known-broken
+                # shape (flet-dev/flet#6087) that silently blanked the Automation
+                # log and then the Run log. This panel is static (built once from a
+                # finished run), so it is far less likely to trigger than the live
+                # ones, but the shape is identical and there is no reason to keep it.
+                ft.ListView(controls=log_lines, spacing=2, expand=True),
                 height=240, bgcolor=T.CARD_2, border=ft.Border.all(1, T.BORDER),
                 border_radius=T.R, padding=12),
         ], spacing=0))
@@ -155,8 +163,10 @@ def screen(app):
         review_items = []
         for a in action_items:
             _tc_id = a.get("id")
-            _tc_url = (f"https://dev.azure.com/{E.AZURE_ORG}/{app.project}"
-                       f"/_workitems/edit/{_tc_id}") if _tc_id else None
+            # case_url, NOT item_url: these are TEST CASE ids, which live in the
+            # WRITE target — on a hybrid item_url would build a dev.azure.com
+            # work-item link carrying a TestRail case number.
+            _tc_url = backend_setup.case_url(app, _tc_id) or None
             review_items.append(ft.Container(
                 ft.Column([
                     ft.Row([badge("Review", "amber", ft.Icons.WARNING_AMBER_ROUNDED),
@@ -170,7 +180,8 @@ def screen(app):
                 ], spacing=4),
                 padding=ft.Padding.symmetric(vertical=12, horizontal=11), border=ft.Border.all(1, T.BORDER),
                 border_radius=T.R, bgcolor=T.CARD_2, margin=ft.Margin.only(bottom=9),
-                tooltip=(f"Open test case #{_tc_id} in Azure DevOps" if _tc_url else None),
+                tooltip=(f"Open test case #{_tc_id} in "
+                         f"{backend_setup.case_store_label(app)}" if _tc_url else None),
                 on_click=(lambda e, u=_tc_url: app._open_url(u)) if _tc_url else None,
                 ink=bool(_tc_url)))
         if not review_items:
@@ -214,7 +225,8 @@ def screen(app):
             ft.Container(card(review_body, expand=True), expand=True),
             primary_btn("New run", icon=ft.Icons.ARROW_FORWARD, expand=True,
                         on_click=lambda e: app._new_run()),
-            ghost_btn("Open plan in Azure", icon=ft.Icons.FOLDER_OUTLINED, expand=True,
+            ghost_btn(backend_setup.plan_link_label(app),
+                      icon=ft.Icons.FOLDER_OUTLINED, expand=True,
                       on_click=lambda e: app._open_azure(),
                       disabled=not app.can("act.open_plan"), ignore_ro=True),
         ], spacing=14, expand=True)
