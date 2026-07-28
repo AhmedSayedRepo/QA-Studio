@@ -187,6 +187,7 @@ _USAGE_TAG_LABELS = {
     "automation_compile":      "Automation · Compile",
     "automation_tiebreak":     "Automation · Tie-break",
     "automation_match_element": "Automation · Element match",
+    "sprint_plan_complexity":  "Sprint Plan · Complexity",
 }
 
 

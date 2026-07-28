@@ -263,7 +263,16 @@ def perf_on():
 def _fetch_meta(app, ids):
     """Fetch work item metadata with per-story caching (fast on re-generate)."""
     cache = getattr(app, "_reg_meta_cache", {})
-    missing = [i for i in ids if i not in cache]
+    # Re-fetch any id whose CACHED entry has no parent_id key — those predate
+    # System.Parent being stored (an older on-disk cache from _cache_load), and
+    # because the old entry sits in the cache it's never refreshed, so feature
+    # grouping stays stuck on "No Feature" forever. A freshly-fetched entry ALWAYS
+    # carries the parent_id key (value may be None when the item has no parent),
+    # so this re-hits Azure only for genuinely stale rows, once, then self-heals
+    # via _cache_save. (Was: `i not in cache` — which shadowed the fix behind the
+    # stale cache.)
+    missing = [i for i in ids
+               if i not in cache or "parent_id" not in (cache.get(i) or {})]
     if missing and not backend_setup.reads_stories_from_azure(getattr(app, "creds", {}) or {}):
         # Non-Azure: fill from the backend's own story fetch instead of building
         # a dev.azure.com work-items URL here. Priority has no cross-backend
@@ -641,6 +650,13 @@ def _fetch_cp_ai_complexity(app, texts):
                 else:
                     data = []
             if not isinstance(data, list):
+                try:
+                    import diag_log as _dl
+                    _dl.log_warn("regression.cp_ai_chunk",
+                                 f"reply not a JSON list for {len(chunk_ids)} ids — "
+                                 f"discarded, fell back to heuristic")
+                except Exception:
+                    pass
                 return
             wanted = set(chunk_ids)
             seen, scored = set(), {}
@@ -685,10 +701,23 @@ def _fetch_cp_ai_complexity(app, texts):
                     + len((texts[s].get("desc") or "").split())) >= 8)
             need = max(1, contentful * 0.7) if contentful else 1
             if len(scored) < need:
+                try:
+                    import diag_log as _dl
+                    _dl.log_warn("regression.cp_ai_chunk",
+                                 f"unreliable reply: scored {len(scored)} of "
+                                 f"{len(chunk_ids)} ids (needed ≥{need:.0f}) — chunk "
+                                 f"discarded, fell back to heuristic")
+                except Exception:
+                    pass
                 return
             with lock:
                 out.update(scored)
-        except Exception:
+        except Exception as _ce:
+            try:
+                import diag_log as _dl
+                _dl.log("regression.cp_ai_chunk", _ce)
+            except Exception:
+                pass
             return   # this chunk's ids simply fall back to the heuristic
 
     import concurrent.futures as _cf
@@ -2237,6 +2266,7 @@ def _init(app):
                  ("_cp_sprint_paths", []), ("_cp_sprint_name", ""),
                  ("_cp_stories_loading", False), ("_cp_enriching", False),
                  ("_cp_ai_timeout", False),
+                 ("_cp_ai_scored", None), ("_cp_ai_total", 0),
                  ("_cp_rows", []), ("_cp_all_rows", []),
                  ("_cp_story_ids", []), ("_cp_story_open", False),
                  ("_cp_res_names", []),
@@ -3478,10 +3508,12 @@ def _cp_load_stories(app):
         app._cp_stories_loading = False
         app._cp_enriching = False
         app._cp_ai_timeout = False
+        app._cp_ai_scored = None
         _repaint_unless_open(app, "_cp_sprint_open")
         return
     app._cp_stories_loading = True
     app._cp_ai_timeout = False
+    app._cp_ai_scored = None
     # Enrichment (Azure priority + content heuristic + the AI complexity call)
     # runs AFTER the story list loads and can take 20–30s. Estimates aren't
     # trustworthy until it finishes, so track it separately from
@@ -3605,10 +3637,13 @@ def _cp_load_stories(app):
                 # _cp_rows for the next Generate regardless of this repaint.)
                 if (getattr(app, "active", None) == "testplan"
                         and getattr(app, "_cp_calculated", False)):
-                    try:
-                        _repaint_unless_open(app, "_cp_sprint_open")
-                    except Exception:
-                        pass
+                    # In-place refresh (badge off, real hours, AI banner) so the
+                    # enrichment-completion update doesn't jump the scroll.
+                    if not _cp_refresh_inplace(app):
+                        try:
+                            _repaint_unless_open(app, "_cp_sprint_open")
+                        except Exception:
+                            pass
     threading.Thread(target=_work, daemon=True).start()
 
 
@@ -3677,6 +3712,25 @@ def _cp_run_enrichment(app, gen):
             # leaves ai_scores empty and the blend falls back to the heuristic.
             comp, texts = _fetch_cp_complexity(app, [_sid(r["id"]) for r in agg])
             ai_scores = _cp_ai_scores_with_timeout(app, texts)
+            # Observability: how many stories got a USABLE AI score (survived the
+            # parse/validation guards in _fetch_cp_ai_complexity) vs fell back to
+            # the heuristic. Stored for the plan card + logged, so "did the AI
+            # actually contribute?" is answerable without guessing.
+            app._cp_ai_scored = len(ai_scores or {})
+            app._cp_ai_total = len(texts or {})
+            try:
+                import diag_log as _dl2
+                _prov = getattr(E, "AI_PROVIDER", "") or "?"
+                try:
+                    _model = (E._ai_cfg() or {}).get("model", "?")
+                except Exception:
+                    _model = "?"
+                _dl2.log_warn("regression.cp_ai_enrichment",
+                              f"AI scored {app._cp_ai_scored}/{app._cp_ai_total} "
+                              f"stories (provider={_prov}, model={_model}, "
+                              f"timeout={'yes' if getattr(app, '_cp_ai_timeout', False) else 'no'})")
+            except Exception:
+                pass
             comp = _cp_blend_complexity(comp, ai_scores)
             for r in agg:
                 r["work_units"] = comp.get(_sid(r["id"]), 1.0)
@@ -3689,6 +3743,22 @@ def _cp_run_enrichment(app, gen):
     if gen != getattr(app, "_cp_stories_gen", gen):
         return                          # selection changed mid-enrich -> drop
     _cp_estimate_and_assign(app)
+
+
+def _cp_refresh_inplace(app):
+    """Prefer an in-place plan refresh (app._cp_apply_state, set while a plan is
+    rendered) over a full render, so provisional/Generate/Regenerate transitions
+    don't jump the scroll. Returns True if it dispatched an in-place update; the
+    caller full-renders only when this returns False."""
+    fn = getattr(app, "_cp_apply_state", None)
+    if (callable(fn) and getattr(app, "active", None) == "testplan"
+            and getattr(app, "_cp_calculated", False)):
+        try:
+            app.ui_safe(fn)
+            return True
+        except Exception:
+            pass
+    return False
 
 
 def _cp_replan(app):
@@ -3706,7 +3776,9 @@ def _cp_replan(app):
     app._cp_enriching = True
     app._cp_ai_timeout = False
     # Keep the current plan on screen; badge it provisional while re-enriching.
-    _repaint_unless_open(app, "_cp_sprint_open")
+    # Prefer an in-place refresh so re-clicking Regenerate doesn't jump the scroll.
+    if not _cp_refresh_inplace(app):
+        _repaint_unless_open(app, "_cp_sprint_open")
 
     def _work():
         try:
@@ -3722,10 +3794,11 @@ def _cp_replan(app):
                 app._cp_enriching = False
                 if (getattr(app, "active", None) == "testplan"
                         and getattr(app, "_cp_calculated", False)):
-                    try:
-                        _repaint_unless_open(app, "_cp_sprint_open")
-                    except Exception:
-                        pass
+                    if not _cp_refresh_inplace(app):
+                        try:
+                            _repaint_unless_open(app, "_cp_sprint_open")
+                        except Exception:
+                            pass
     threading.Thread(target=_work, daemon=True).start()
 
 
@@ -4730,6 +4803,45 @@ def _create_screen(app):
             border=ft.Border.all(1, ft.Colors.with_opacity(0.4, T.RED)),
             margin=ft.Margin.only(top=12), visible=_cp_timed_out)
 
+        # Did the AI actually contribute? A prominent banner — icon chip + bold
+        # title + detail — answering "is the AI enrichment really working?".
+        # Hidden while refining (badge covers it) and on timeout (note covers it).
+        def _ai_style():
+            n = getattr(app, "_cp_ai_scored", None)
+            m = getattr(app, "_cp_ai_total", 0) or 0
+            if n and n > 0:
+                return ("AI complexity applied",
+                        f"Scored {n} of {m} stories — hours reflect AI-assessed "
+                        f"complexity, not just story size.",
+                        T.GREEN, ft.Icons.AUTO_AWESOME, T.GREEN_SOFT,
+                        ft.Colors.with_opacity(0.35, T.GREEN))
+            return ("AI signal unavailable",
+                    "Estimate uses story size only — check the AI provider in "
+                    "Setup, then Regenerate.",
+                    T.INK_2, ft.Icons.INFO_OUTLINE, T.CARD_2, T.BORDER_2)
+
+        def _ai_banner_row():
+            title, sub, col, icon, _bg, _bd = _ai_style()
+            return ft.Row([
+                ft.Container(ft.Icon(icon, size=19, color=col),
+                             width=36, height=36, alignment=ft.Alignment.CENTER,
+                             bgcolor=ft.Colors.with_opacity(0.14, col), border_radius=10),
+                ft.Column([
+                    _txt(title, color=col, size=13.5, weight=ft.FontWeight.BOLD),
+                    _txt(sub, color=T.INK_2, size=11.5, weight=ft.FontWeight.W_500,
+                         no_wrap=False),
+                ], spacing=1, tight=True, expand=True),
+            ], spacing=11, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+
+        _cp_ai_n = getattr(app, "_cp_ai_scored", None)
+        _show_ai_line = (_cp_ai_n is not None) and (not _cp_prov) and (not _cp_timed_out)
+        _ai0 = _ai_style()
+        ai_line = ft.Container(
+            _ai_banner_row(),
+            padding=ft.Padding.symmetric(vertical=11, horizontal=13),
+            bgcolor=_ai0[4], border_radius=T.R, border=ft.Border.all(1, _ai0[5]),
+            margin=ft.Margin.only(top=12), visible=_show_ai_line)
+
         _exports_ui = ft.Container(exports_col, disabled=_cp_prov,
                                    opacity=0.5 if _cp_prov else 1.0)
         _email_ui = ft.Container(email_row, disabled=_cp_prov,
@@ -4745,9 +4857,51 @@ def _create_screen(app):
         except Exception:
             pass
 
+        def _apply_cp_state():
+            """In-place refresh when the enrichment state flips (provisional →
+            final, or → timeout): toggles the badge / timeout note / AI banner +
+            the Export/Email/Assign locks AND rebuilds the table + KPIs (hours
+            change when enrichment lands) WITHOUT a full app.render(). The full
+            render was what jumped the scroll on every Generate/Regenerate and
+            provisional transition. Any stale-ref failure falls back to a render."""
+            if getattr(app, "active", None) != "testplan":
+                return
+            prov = bool(getattr(app, "_cp_enriching", False))
+            timed = bool(getattr(app, "_cp_ai_timeout", False)) and not prov
+            n = getattr(app, "_cp_ai_scored", None)
+            show_ai = (n is not None) and (not prov) and (not timed)
+            try:
+                prov_badge.visible = prov
+                timeout_note.visible = timed
+                _bg, _bd = _ai_style()[4], _ai_style()[5]
+                ai_line.content = _ai_banner_row()
+                ai_line.bgcolor = _bg
+                ai_line.border = ft.Border.all(1, _bd)
+                ai_line.visible = show_ai
+                _exports_ui.disabled = prov
+                _exports_ui.opacity = 0.5 if prov else 1.0
+                _email_ui.disabled = prov
+                _email_ui.opacity = 0.5 if prov else 1.0
+                _assign_btn.on_click = (None if (getattr(app, "_cp_assigning", False) or prov)
+                                        else _assign_testers)
+                _assign_btn.opacity = 0.5 if prov else 1.0
+                _refresh_all()   # table + KPIs + workload with the (possibly new) hours
+                for _c in (prov_badge, timeout_note, ai_line,
+                           _exports_ui, _email_ui, _assign_btn):
+                    try:
+                        _c.update()
+                    except Exception:
+                        pass
+            except Exception:
+                try:
+                    app.ui_safe(app.render)
+                except Exception:
+                    pass
+        app._cp_apply_state = _apply_cp_state
+
         results = card(ft.Column([
             sec_head("3", "Plan"), prov_badge, timeout_note,
-            ft.Container(height=12), kpi_strip,
+            ft.Container(height=12), kpi_strip, ai_line,
             ft.Container(height=14), table, workload_ui,
             ft.Divider(height=22, color=T.BORDER),
             ft.Text("EXPORT", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),

@@ -406,32 +406,40 @@ def sign_in(email, password):
 
 
 def _refresh(refresh_token):
+    """Attempt a token refresh. Returns a (payload, dead) tuple:
+
+      - (dict, False)  — success; caller stores the rotated session.
+      - (None, True)   — the refresh token is DEFINITIVELY dead: an HTTP 400/401
+                         from the token endpoint is an auth REJECTION (invalid_grant
+                         / refresh_token_not_found — rotated, revoked, or past
+                         Supabase's session time-box). Caller signs out.
+      - (None, False)  — TRANSIENT failure: network error, timeout, 429, or 5xx.
+                         The token is (as far as we know) still valid; the caller
+                         MUST keep the session. Destroying a good token over a
+                         cold-start network blip is exactly the "reopen after a
+                         while → biometric restore bounced to login" bug.
+    """
     try:
         r = _post_retry(f"{SUPABASE_URL}/auth/v1/token?grant_type=refresh_token",
                         json={"refresh_token": refresh_token})
     except Exception as ex:
-        # Feeds acquire_silent()'s decision to wipe the session and bounce to
-        # the sign-in screen — worth a trace so a real outage vs. a token
-        # actually being dead aren't indistinguishable after the fact.
+        # Network/timeout — transient by definition; never proof of a dead token.
         if _diag: _diag.log("auth_supabase._refresh", ex)
-        return None
-    if r.status_code != 200:
-        # A non-200 here is THE reason a day-old biometric restore silently
-        # bounces to sign-in (acquire_silent wipes the session on a None return).
-        # Log the status + body so the root cause is visible: e.g.
-        # "invalid_grant / refresh_token_not_found" = the token was rotated/
-        # revoked (Supabase session inactivity time-box, or a reuse), vs a 5xx =
-        # a transient outage that should NOT have wiped the session. Was a silent
-        # `return None`.
-        if _diag:
-            try:
-                _diag.log_warn("auth_supabase._refresh",
-                               f"refresh rejected status={r.status_code} "
-                               f"body={(r.text or '')[:240]}")
-            except Exception:
-                pass
-        return None
-    return r.json()
+        return None, False
+    if r.status_code == 200:
+        return r.json(), False
+    # Non-200. Only 400/401 from THIS endpoint means the refresh token itself was
+    # rejected (invalid_grant / refresh_token_not_found) → dead. 429 (rate limit)
+    # and 5xx (outage) are transient and must NOT wipe the session.
+    dead = r.status_code in (400, 401)
+    if _diag:
+        try:
+            _diag.log_warn("auth_supabase._refresh",
+                           f"refresh rejected status={r.status_code} "
+                           f"dead={dead} body={(r.text or '')[:240]}")
+        except Exception:
+            pass
+    return None, dead
 
 
 def acquire_silent():
@@ -446,11 +454,17 @@ def acquire_silent():
             return None
         if int(time.time()) < int(data.get("expires_at", 0)) - _REFRESH_SKEW:
             return _user_dict(data.get("user"))         # still valid
-        payload = _refresh(data["refresh_token"])       # expired → refresh
-        if not payload or not payload.get("access_token"):
-            _save_session(None)                         # refresh token dead → sign out
+        payload, dead = _refresh(data["refresh_token"])  # expired → refresh
+        if payload and payload.get("access_token"):
+            return _store_session(payload)
+        if dead:
+            _save_session(None)                         # token revoked/expired → sign out
             return None
-        return _store_session(payload)
+        # TRANSIENT failure (network/5xx/timeout on cold start): DO NOT destroy the
+        # token. Stay signed in on the cached identity — access_token() will refresh
+        # again once connectivity returns. This is the fix for the biometric restore
+        # bouncing to the login screen after the app sat killed for a while.
+        return _user_dict(data.get("user"))
 
 
 def access_token():
@@ -463,12 +477,17 @@ def access_token():
         if not data:
             return ""
         if int(time.time()) >= int(data.get("expires_at", 0)) - _REFRESH_SKEW:
-            payload = _refresh(data.get("refresh_token", ""))
+            payload, dead = _refresh(data.get("refresh_token", ""))
             if payload and payload.get("access_token"):
                 _store_session(payload)
                 data = _load_session()
+            elif dead:
+                return ""     # token revoked → no bearer (session cleared at next
+                              # acquire_silent); never emit a known-dead token
             else:
-                return ""
+                # transient — hand back the cached (expired) token rather than "";
+                # the protected call may 401, but we don't treat a blip as signed-out
+                return data.get("access_token", "")
         return data.get("access_token", "")
 
 
