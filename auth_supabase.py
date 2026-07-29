@@ -419,6 +419,20 @@ def _refresh(refresh_token):
                          cold-start network blip is exactly the "reopen after a
                          while → biometric restore bounced to login" bug.
     """
+    # Fingerprint the token we're about to present (sha256[:8], NOT the token).
+    # Cross-reference with secure_store_mobile.save_session's rt_fp: if a refresh
+    # is rejected (dead) and this fp == the last persisted fp, the token expired
+    # SERVER-SIDE (Supabase session time-box / reuse) — a dashboard-config issue,
+    # not a client bug; if it DIFFERS, the app presented a rotated-away token (a
+    # durability drop) and the bug is on our side.
+    if _diag:
+        try:
+            import hashlib
+            _fp = (hashlib.sha256((refresh_token or "").encode("utf-8")).hexdigest()[:8]
+                   if refresh_token else "none")
+            _diag.log_warn("auth_supabase._refresh", f"presenting rt_fp={_fp}")
+        except Exception:
+            pass
     try:
         r = _post_retry(f"{SUPABASE_URL}/auth/v1/token?grant_type=refresh_token",
                         json={"refresh_token": refresh_token})

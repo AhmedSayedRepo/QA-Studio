@@ -290,6 +290,140 @@ def open_create_plan(app):
     auto_suites = ft.Checkbox(value=_is_azure, disabled=not _is_azure, label="", scale=0.9,
                               active_color=T.VIOLET, check_color="#FFFFFF")
 
+    # ── Story picker: choose WHICH sprint stories get a requirement suite ──
+    # Shown only for Azure with auto-suites on. Loads the selected sprint's
+    # stories (board order — see engine.fetch_stories_in_iteration) and defaults
+    # to ALL selected, so the plan behaves exactly as before unless the user
+    # narrows it. do_create passes the checked ids to
+    # create_plan_with_sprint_suites(story_ids=…).
+    stories_state = {"rows": [], "sel": set(), "path": None}
+    story_cbs = {}
+    sel_all_cb = ft.Checkbox(value=True, scale=0.85,
+                             active_color=T.VIOLET, check_color="#FFFFFF")
+    stories_count = ft.Text("Loading sprint stories…", size=11, color=T.INK_3,
+                            weight=ft.FontWeight.BOLD)
+
+    def _stories_msg(text, spin=False):
+        row = []
+        if spin:
+            row.append(ft.ProgressRing(width=14, height=14, stroke_width=2,
+                                       color=T.VIOLET))
+        row.append(ft.Text(text, size=12, color=T.INK_3, italic=not spin))
+        return ft.Row(row, spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+
+    # Start with a loading placeholder so the box never renders as an empty void
+    # during the initial sprint fetch (load_iters warms it once sprints land).
+    stories_col = ft.Column([_stories_msg("Loading sprint stories…", spin=True)],
+                            spacing=1, scroll=ft.ScrollMode.AUTO, height=180)
+
+    def _stories_visible():
+        return _is_azure and bool(auto_suites.value)
+
+    def _refresh_count():
+        n, m = len(stories_state["sel"]), len(stories_state["rows"])
+        stories_count.value = (f"{n} of {m} stories selected" if m
+                               else "No stories in this sprint")
+        sel_all_cb.value = (m > 0 and n == m)
+        try:
+            stories_count.update(); sel_all_cb.update()
+        except Exception:
+            pass
+
+    def _toggle_story(sid):
+        def _h(e):
+            if e.control.value:
+                stories_state["sel"].add(sid)
+            else:
+                stories_state["sel"].discard(sid)
+            _refresh_count()
+        return _h
+
+    def _toggle_all(e):
+        on = bool(e.control.value)
+        stories_state["sel"] = ({s["id"] for s in stories_state["rows"]} if on else set())
+        for _sid, _cb in story_cbs.items():
+            _cb.value = on
+            try: _cb.update()
+            except Exception: pass
+        _refresh_count()
+    sel_all_cb.on_change = _toggle_all
+
+    def _build_story_rows():
+        story_cbs.clear()
+        ctrls = []
+        for s in stories_state["rows"]:
+            sid = s["id"]
+            cb = ft.Checkbox(value=(sid in stories_state["sel"]), scale=0.8,
+                             active_color=T.VIOLET, check_color="#FFFFFF",
+                             on_change=_toggle_story(sid))
+            story_cbs[sid] = cb
+            ctrls.append(ft.Row(
+                [cb, ft.Text(f"[{sid}] {(s.get('title') or '')[:70]}", size=12,
+                             color=T.INK_2, weight=ft.FontWeight.W_500,
+                             expand=True, no_wrap=False)],
+                spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER))
+        stories_col.controls = ctrls or [
+            ft.Text("No stories in this sprint.", size=12, color=T.INK_3,
+                    italic=True)]
+        try: stories_col.update()
+        except Exception: pass
+
+    def load_stories(path):
+        if not _stories_visible():
+            return
+        if not path:
+            stories_state["rows"] = []
+            stories_state["sel"] = set()
+            stories_state["path"] = None
+            stories_col.controls = [_stories_msg("Select a sprint to load its stories.")]
+            _refresh_count()
+            try: stories_col.update()
+            except Exception: pass
+            return
+        stories_state["path"] = path
+        stories_col.controls = [_stories_msg("Loading sprint stories…", spin=True)]
+        try: stories_col.update()
+        except Exception: pass
+        try:
+            lst = _bs.fetch_stories_in_sprint(app, path) or []
+        except Exception:
+            lst = []
+        # Drop if the sprint changed again while this load was in flight.
+        if stories_state["path"] != path:
+            return
+        stories_state["rows"] = lst
+        stories_state["sel"] = {s["id"] for s in lst}     # default: all selected
+        _build_story_rows()
+        _refresh_count()
+
+    stories_box = ft.Container(
+        ft.Column([
+            ft.Row([
+                ft.Text("STORIES TO INCLUDE", size=10.5, weight=ft.FontWeight.BOLD,
+                        color=T.INK_3),
+                ft.Container(expand=True),
+                ft.Row([sel_all_cb, ft.Text("All", size=11.5, color=T.INK_2,
+                                            weight=ft.FontWeight.BOLD)],
+                       spacing=2, tight=True),
+            ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            ft.Container(
+                stories_col,
+                padding=ft.Padding.symmetric(vertical=6, horizontal=8),
+                bgcolor=T.CARD, border=ft.Border.all(1, T.BORDER),
+                border_radius=T.R, margin=ft.Margin.only(top=6)),
+            ft.Container(stories_count, padding=ft.Padding.only(top=6)),
+        ], spacing=0),
+        padding=ft.Padding.only(top=12), visible=_stories_visible())
+
+    def _on_auto_suites(e):
+        vis = _stories_visible()
+        stories_box.visible = vis
+        try: stories_box.update()
+        except Exception: pass
+        if vis and not stories_state["rows"]:
+            app._bg(lambda: load_stories(iter_dd.value))
+    auto_suites.on_change = _on_auto_suites
+
     # In-modal progress UI (design: 8px rounded track + violet gradient fill)
     prog_label = ft.Text("", size=12, color=T.INK_2, weight=ft.FontWeight.BOLD)
     prog_pct = ft.Text("", size=12, color=T.VIOLET_INK, weight=ft.FontWeight.BOLD)
@@ -328,10 +462,18 @@ def open_create_plan(app):
             app.page.update()
         except Exception:
             pass
+        # Warm the story picker for the default sprint (Azure + auto-suites on).
+        try:
+            if _stories_visible():
+                load_stories(iter_dd.value)
+        except Exception:
+            pass
 
     def on_iter_change(e):
         path_box.value = iter_dd.value or "—"
         app.page.update()
+        # Reload the story picker for the newly chosen sprint.
+        app._bg(lambda: load_stories(iter_dd.value))
     iter_dd.on_select = on_iter_change
 
     def _set_prog(pct, label):
@@ -360,6 +502,13 @@ def open_create_plan(app):
         # come from the sprint at run time, decoupled from the plan.
         if _is_azure and not pth:
             modal_err.value = "Select a sprint/iteration."; app.page.update(); return
+        # Auto-suites on with stories loaded → require at least one pick, so a plan
+        # isn't created with zero suites by an empty selection the user didn't mean.
+        if (_is_azure and auto_suites.value and stories_state["rows"]
+                and not stories_state["sel"]):
+            modal_err.value = ("Pick at least one story, or turn off "
+                               "auto-create suites.")
+            app.page.update(); return
         modal_err.value = ""
         create_btn.visible = False; cancel_btn.visible = False
         # show the progress bar immediately at 0% (before any slow work begins)
@@ -412,7 +561,13 @@ def open_create_plan(app):
                         _set_prog(1.0, f"Done · {c} created · {s} existed"
                                   + (f" · {f} failed" if f else ""))
 
-                E.create_plan_with_sprint_suites(app.project, nm, pth, cb=cb)
+                # Only build suites for the CHECKED stories. Pass the selected ids
+                # when the picker has loaded rows; None (all) only if it never
+                # populated, preserving the original all-stories behaviour.
+                _sel_ids = (list(stories_state["sel"])
+                            if stories_state["rows"] else None)
+                E.create_plan_with_sprint_suites(app.project, nm, pth, cb=cb,
+                                                 story_ids=_sel_ids)
                 import time as _t; _t.sleep(0.4)
                 app._load_plans(); app._close_dialog(); app.render()
             except Exception as ex:
@@ -468,6 +623,7 @@ def open_create_plan(app):
                         ], spacing=1, expand=True),
                     ], spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                     padding=ft.Padding.only(top=12)),
+                stories_box,
             ]
         else:
             rows += [
@@ -486,9 +642,25 @@ def open_create_plan(app):
         rows += [
             prog_box,
             ft.Container(modal_err, padding=ft.Padding.only(top=8)),
-            ft.Container(btn_row, padding=ft.Padding.only(top=18)),
         ]
         return rows
+
+    def _plan_modal_content():
+        # Keep Cancel/Create ALWAYS visible: the field area scrolls inside a
+        # viewport-capped height (the story checklist can make this tall), and the
+        # button row is PINNED below it — so on a short window the actions are
+        # never pushed off-screen. Short (non-Azure) forms size naturally.
+        _rows = _plan_modal_body()
+        _mobile = platform_caps.is_mobile()
+        _ph = getattr(getattr(app, "page", None), "height", None) or 800
+        _cap = max(240, min(440, int(_ph) - 300)) if _is_azure else None
+        fields = ft.Column(_rows, spacing=0, tight=True,
+                           scroll=(ft.ScrollMode.AUTO if _cap else None))
+        footer = ft.Container(btn_row, padding=ft.Padding.only(top=14))
+        return ft.Container(
+            width=(None if _mobile else 470),
+            content=ft.Column([ft.Container(fields, height=_cap), footer],
+                              spacing=0, tight=True))
 
     dlg = ft.AlertDialog(
         modal=True,
@@ -504,13 +676,7 @@ def open_create_plan(app):
                         size=11, color=T.INK_2, weight=ft.FontWeight.W_500),
             ], spacing=1, expand=True),
         ], spacing=10),
-        content=ft.Container(
-            # Same "fixed desktop width forces the phone to squeeze
-            # everything down to fit" bug fixed elsewhere this session
-            # (onboarding, Sprint Summary below) — let content size to the
-            # viewport on mobile instead of a hardcoded 470px.
-            width=(None if platform_caps.is_mobile() else 470),
-            content=ft.Column(_plan_modal_body(), spacing=0, tight=True)),
+        content=_plan_modal_content(),
     )
     app._show_dialog(dlg)
     app._bg(load_iters)

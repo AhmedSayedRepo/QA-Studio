@@ -263,16 +263,7 @@ def perf_on():
 def _fetch_meta(app, ids):
     """Fetch work item metadata with per-story caching (fast on re-generate)."""
     cache = getattr(app, "_reg_meta_cache", {})
-    # Re-fetch any id whose CACHED entry has no parent_id key — those predate
-    # System.Parent being stored (an older on-disk cache from _cache_load), and
-    # because the old entry sits in the cache it's never refreshed, so feature
-    # grouping stays stuck on "No Feature" forever. A freshly-fetched entry ALWAYS
-    # carries the parent_id key (value may be None when the item has no parent),
-    # so this re-hits Azure only for genuinely stale rows, once, then self-heals
-    # via _cache_save. (Was: `i not in cache` — which shadowed the fix behind the
-    # stale cache.)
-    missing = [i for i in ids
-               if i not in cache or "parent_id" not in (cache.get(i) or {})]
+    missing = [i for i in ids if i not in cache]
     if missing and not backend_setup.reads_stories_from_azure(getattr(app, "creds", {}) or {}):
         # Non-Azure: fill from the backend's own story fetch instead of building
         # a dev.azure.com work-items URL here. Priority has no cross-backend
@@ -353,17 +344,29 @@ def _fetch_feature_names(app, parent_ids):
             pass
         return names
     if missing:
-        org, proj = E.AZURE_ORG, app.project
+        org = E.AZURE_ORG
         for i in range(0, len(missing), 200):
             batch = missing[i:i + 200]
             joined = ",".join(map(str, batch))
-            url = (f"https://dev.azure.com/{org}/{proj}/_apis/wit/workitems"
-                   f"?ids={joined}&fields=System.Id,System.Title&api-version=7.0")
+            # ORG-level (NO project in the path). A story's parent Feature very
+            # often lives in a DIFFERENT project (a portfolio/parent project),
+            # and the old project-scoped query returned NOTHING for those — so
+            # feature_id resolved but the NAME came back empty and every story
+            # fell under "No Feature" (diagnosed live: 447/454 feature_ids, 0/454
+            # names). The org-level work-items batch resolves ids across every
+            # project the user can read, so cross-project Feature titles come
+            # back. In-project ids are unaffected. (errorPolicy=omit so one
+            # missing/forbidden id can't 404 the whole batch.)
+            url = (f"https://dev.azure.com/{org}/_apis/wit/workitems"
+                   f"?ids={joined}&fields=System.Id,System.Title"
+                   f"&errorPolicy=Omit&api-version=7.0")
             try:
                 data = E._azure_get(url)
             except Exception:
                 data = {}
             for w in data.get("value", []):
+                if not isinstance(w, dict):
+                    continue           # errorPolicy=Omit yields null entries
                 f2 = w.get("fields", {})
                 nm = f2.get("System.Title", str(w["id"]))
                 names[_sid(w["id"])] = nm

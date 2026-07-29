@@ -231,21 +231,56 @@ async def _bootstrap():
     prompts and never risks wiping creds."""
     global _cache
     key = _key
+    # Snapshot the prior cache so a populated→empty read (the observable
+    # signature of reset_on_error silently wiping a vault it couldn't decrypt) is
+    # detectable. set_user() nulls _cache BEFORE re-bootstrapping, so a legitimate
+    # account switch reads here as prev=none — never mistaken for a wipe.
+    _prev_secret = (None if _cache is None else (not _is_empty_creds(_cache)))
+    _migrated = False
+    _raw_present = False
     try:
         raw = await _storage.get(key)
+        _raw_present = bool(raw)
         data = json.loads(raw) if raw else None
         if data is None:
             data = _migrate_legacy_file()
             if data:
+                _migrated = True
                 # Await the vault write, and only THEN drop the legacy file —
                 # never the other way round (see _migrate_legacy_file).
                 await _storage.set(key, json.dumps(data))
                 _delete_legacy_file()
         if _key == key:      # a later set_user() may have moved on already
             _cache = data if data is not None else {}
-    except Exception:
+        # DIAGNOSTIC (intermittent "setup credentials wiped" reports): record the
+        # read outcome with NO secret material — only booleans + the slot name
+        # (already logged by save_blocked). An EMPTY read of a slot that just held
+        # secrets, with no account switch (prev!=none) and no migration, is the
+        # fingerprint of reset_on_error wiping an undecryptable vault.
+        try:
+            import diag_log as _dl_b
+            _now_secret = not _is_empty_creds(_cache)
+            _wipe = (_prev_secret is True) and (not _now_secret) and (not _migrated)
+            _dl_b.log_warn(
+                "secure_store_mobile._bootstrap",
+                f"creds read key={key} raw={'present' if _raw_present else 'EMPTY'} "
+                f"parsed={'secret' if _now_secret else 'empty'} "
+                f"prev={'secret' if _prev_secret else ('empty' if _prev_secret is False else 'none')} "
+                f"migrated={'yes' if _migrated else 'no'}"
+                + ("  <-- POSSIBLE WIPE (populated vault read back empty)" if _wipe else ""))
+        except Exception:
+            pass
+    except Exception as _ex:
         if _key == key:
             _cache = _cache or {}
+        # A read that raises (rather than returning empty) also matters — under
+        # reset_on_error=True the library usually swallows the decrypt error and
+        # returns empty, so an exception here is a distinct, loggable failure mode.
+        try:
+            import diag_log as _dl_b
+            _dl_b.log("secure_store_mobile._bootstrap", _ex)
+        except Exception:
+            pass
     if _on_ready:
         try:
             _on_ready()
@@ -686,13 +721,20 @@ def save_session(data):
     # asyncio loop thread, which is what runs _writer) until the write confirms.
     # Timeout is a backstop so a stuck vault can't freeze auth forever.
     confirmed = done.wait(timeout=6.0)
-    if not (confirmed and ok["v"]):
-        try:
-            import diag_log
-            diag_log.log_warn("secure_store_mobile.save_session",
-                              f"vault write did not confirm (confirmed={confirmed})")
-        except Exception:
-            pass
+    # Log every session persist with the refresh-token FINGERPRINT (sha256[:8],
+    # never the token) so a later auth_supabase._refresh "presenting rt_fp=…" can
+    # be matched against the last token we actually stored — that comparison is
+    # what separates a server-side expiry from a client durability drop.
+    try:
+        import diag_log, hashlib
+        _rt = (data or {}).get("refresh_token", "") if isinstance(data, dict) else ""
+        _fp = (hashlib.sha256(_rt.encode("utf-8")).hexdigest()[:8] if _rt
+               else ("cleared" if data is None else "none"))
+        diag_log.log_warn(
+            "secure_store_mobile.save_session",
+            f"kind=session confirmed={confirmed} ok={ok['v']} rt_fp={_fp}")
+    except Exception:
+        pass
     return bool(confirmed and ok["v"])
 
 

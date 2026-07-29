@@ -1616,9 +1616,15 @@ def fetch_stories_in_iteration(project, iteration_path, pat=None):
                                   "title": w["fields"].get("System.Title", "")}
     return [by_id[i] for i in ids if i in by_id]
 
-def create_plan_with_sprint_suites(project, name, iteration_path, cb=None, pat=None):
+def create_plan_with_sprint_suites(project, name, iteration_path, cb=None, pat=None,
+                                   story_ids=None):
     """Create a test plan, then add a requirement-based suite for every User Story
     in the chosen sprint (iteration_path). PAT-only — no AI calls.
+
+    story_ids (optional): restrict the requirement suites to this SUBSET of the
+    sprint's User Story ids (as chosen in the Create-plan dialog). None keeps the
+    original behaviour — a suite for every story in the sprint. Order still
+    follows the sprint board (fetch_stories_in_iteration).
     cb(event, payload) events:
         "plan"     -> {"plan_id": id}
         "stories"  -> {"total": N}
@@ -1633,8 +1639,11 @@ def create_plan_with_sprint_suites(project, name, iteration_path, cb=None, pat=N
     plan_id = create_test_plan(project, name, iteration_path, pat)
     cb("plan", {"plan_id": plan_id})
 
-    # 2) all User Stories in the sprint
+    # 2) User Stories in the sprint — filtered to the caller's selection if given.
     stories = fetch_stories_in_iteration(project, iteration_path, pat)
+    if story_ids is not None:
+        _want = {str(s) for s in story_ids}
+        stories = [s for s in stories if str(s["id"]) in _want]
     total = len(stories)
     cb("stories", {"total": total})
 
