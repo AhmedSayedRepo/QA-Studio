@@ -121,6 +121,13 @@ class Story:
     state: str = ""
     url: str = ""
     sprint_path: str = ""
+    #: Parent Epic/Feature, used to GROUP the Regression/Sprint Plan (Azure fills
+    #: these from System.Parent→Feature; Jira from the issue's parent epic). Empty
+    #: when the story has no resolvable parent — the plan then groups it under
+    #: "No Feature", exactly as before. `epic_id` is the parent's key/id,
+    #: `epic_name` its title (carried inline so no extra lookup is needed).
+    epic_id: str = ""
+    epic_name: str = ""
 
     def __str__(self):
         return f"{self.ref.key} · {self.title}"

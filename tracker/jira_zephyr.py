@@ -472,10 +472,21 @@ class JiraZephyrBackend(Backend):
     def fetch_stories_in_sprint(self, project, sprint_path):
         key = jql_escape(self._project_key(project))
         sprint = jql_escape(sprint_path)
-        jql = (f'project = "{key}" AND sprint = "{sprint}" '
-               f'AND issuetype in (Story, "User Story", Task) ORDER BY key ASC')
-        return [self._to_story(i, sprint_path)
-                for i in self._search(jql, fields=self._STORY_FIELDS)]
+        base = (f'project = "{key}" AND sprint = "{sprint}" '
+                f'AND issuetype in (Story, "User Story", Task)')
+        # Order by the board's manual Rank so the multiselect / plan match the
+        # sprint board's top-to-bottom order (the Azure board-order parity). Rank
+        # is standard JQL on any sprint-using project, but guard defensively: if
+        # the rank query raises OR comes back empty (a site without Rank), fall
+        # back to the guaranteed-valid key order. A legitimately empty sprint just
+        # runs the cheap second query and still returns [].
+        try:
+            issues = self._search(base + " ORDER BY Rank ASC", fields=self._STORY_FIELDS)
+        except Exception:
+            issues = []
+        if not issues:
+            issues = self._search(base + " ORDER BY key ASC", fields=self._STORY_FIELDS)
+        return [self._to_story(i, sprint_path) for i in issues]
 
     def fetch_bugs_in_sprint(self, project, sprint_path):
         """Bugs in a sprint, in the Sprint Report's `{id,state,tags}` dict shape.
@@ -529,6 +540,16 @@ class JiraZephyrBackend(Backend):
                 criteria = adf.to_html(fval)
                 break
         key = issue.get("key") or ""
+        # Parent Epic → the "Feature" the Regression/Sprint Plan groups by. On
+        # team-managed Jira the epic is the issue's `parent` (key + summary inline,
+        # so we get id AND name in one shot, no extra call). Classic "Epic Link"
+        # (a custom field) isn't resolved here — those stories fall back to
+        # "No Feature", same as before. Fail-soft: any odd shape leaves it empty.
+        epic_id, epic_name = "", ""
+        _par = fields.get("parent")
+        if isinstance(_par, dict):
+            epic_id = _par.get("key") or ""
+            epic_name = ((_par.get("fields") or {}).get("summary")) or ""
         return Story(
             ref=Ref(id=str(issue.get("id") or key), key=key),
             title=fields.get("summary") or "",
@@ -537,7 +558,8 @@ class JiraZephyrBackend(Backend):
             assignee=assignee,
             state=((fields.get("status") or {}).get("name") or ""),
             url=f"{self.site}/browse/{key}" if self.site and key else "",
-            sprint_path=sprint_path)
+            sprint_path=sprint_path,
+            epic_id=epic_id, epic_name=epic_name)
 
     # ── core: plans & suites (D1/D2) ──────────────────────────────────────
     def _folders(self, project_key, folder_type="TEST_CASE"):

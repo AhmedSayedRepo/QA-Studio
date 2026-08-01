@@ -434,18 +434,13 @@ def _export_docx(app):
 
     r = app._st_report or {}
     lang = r.get("lang", "ar")
-    # LTR ALWAYS (requested): the exported Word document is laid out
-    # left-to-right regardless of the report language. This single flag is what
-    # drives every direction-dependent decision below — the paragraph <w:bidi>
-    # and RIGHT alignment (_set_bidi), the run-level <w:rtl/> (_rtl_run), the
-    # bullet side in _bullet, and the logo's alignment — so pinning it False is
-    # all that's needed; nothing else reads the language for layout.
-    # NOTE: this only changes DIRECTION/ALIGNMENT, not content. An Arabic report
-    # still exports Arabic text (Unicode's bidi algorithm still shapes the
-    # Arabic glyphs correctly inside each run); it's just left-aligned in an
-    # LTR paragraph rather than right-aligned in an RTL one.
-    # To restore language-driven direction, change this back to (lang == "ar").
-    rtl = False
+    # Direction follows the report LANGUAGE (requested): Arabic → RTL, English →
+    # LTR. `rtl` drives every direction-dependent decision below — paragraph
+    # <w:bidi> + RIGHT alignment (_set_bidi), run-level <w:rtl/> (_rtl_run), the
+    # bullet side in _bullet, and the logo alignment. Content is unchanged either
+    # way — Unicode's bidi algorithm shapes the Arabic glyphs correctly inside
+    # each run regardless of paragraph direction.
+    rtl = (lang == "ar")
     L = _L[lang]
     BLUE = RGBColor(0x4C, 0x94, 0xD8)         # brand blue from the reference report
     INK = RGBColor(0x1F, 0x1F, 0x1F)
@@ -469,13 +464,22 @@ def _export_docx(app):
         sec.right_margin = Inches(0.9)
 
     def _set_bidi(p):
-        # Set the paragraph base direction to RTL. CRITICAL: <w:bidi> must precede
-        # <w:spacing>/<w:ind>/<w:jc> in <w:pPr> per the schema, otherwise Word
-        # silently ignores it (LibreOffice is lenient). So insert it *before* the
-        # first of those rather than appending at the end.
+        # RTL paragraph. Two things matter:
+        #  1) <w:bidi> sets the base direction (must precede <w:spacing>/<w:ind>/
+        #     <w:jc>/<w:rPr> in <w:pPr> per the schema, or Word ignores it —
+        #     LibreOffice is lenient).
+        #  2) Alignment uses the LOGICAL value w:jc="start" (start-of-line = the
+        #     RIGHT in RTL), NOT physical "right". Word SWAPS the meaning of
+        #     jc=left/right inside a bidi paragraph, so "right" visually LEFT-aligns
+        #     RTL text — the reported "Arabic still left aligned" bug — and Word
+        #     versions disagree on that swap. "start"/"end" are unambiguous across
+        #     every Word 2010+, so the export is right-aligned on all of them.
         try:
-            p.alignment = RIGHT
+            p.alignment = RIGHT               # python-docx places <w:jc> correctly…
             pPr = p._p.get_or_add_pPr()
+            _jc = pPr.find(qn("w:jc"))
+            if _jc is not None:
+                _jc.set(qn("w:val"), "start")  # …then make it logical-start = RIGHT in RTL
             if pPr.find(qn("w:bidi")) is None:
                 bidi = OxmlElement("w:bidi")
                 bidi.set(qn("w:val"), "1")
@@ -970,17 +974,33 @@ def screen(app):
         def _download(e):
             def _w():
                 try:
+                    import platform_caps as _pc
+                    # Ask WHERE to save (native 'Save As') — same flow as the Sprint
+                    # Plan / Regression exporters. Mobile has no tkinter dialog, so
+                    # _ask_save_path returns False and we fall back to the download
+                    # popup. Runs off the UI thread (app._bg), as _ask_save_path needs.
+                    _rr = getattr(app, "_st_report", None) or {}
+                    _base = (re.sub(r"[^A-Za-z0-9_-]+", "_",
+                                    (_rr.get("sprint_name") or "sprint")).strip("_")
+                             or "sprint")
+                    _default = f"SprintReport_{_base}_{datetime.now():%Y%m%d-%H%M}.docx"
+                    dest = R._ask_save_path("docx", _default)
+                    if dest is None:
+                        return                        # user cancelled the dialog
                     p = _export_docx(app)
-                    try:
-                        import platform_caps as _pc
-                        if _pc.is_mobile():
-                            app.ui_safe(lambda pp=p: app._mobile_download_popup(
-                                pp, "Word document ready"))
-                        else:
-                            _pc.open_folder(os.path.dirname(p))
-                            app.ui_safe(lambda: app._toast(f"Saved Word document: {p}"))
-                    except Exception:
-                        app.ui_safe(lambda: app._toast(f"Saved Word document: {p}"))
+                    if dest and dest is not False:    # a location was chosen → move there
+                        if not dest.lower().endswith(".docx"):
+                            dest += ".docx"
+                        import shutil
+                        if os.path.abspath(dest) != os.path.abspath(p):
+                            shutil.move(p, dest)
+                        p = dest
+                    if _pc.is_mobile():
+                        app.ui_safe(lambda pp=p: app._mobile_download_popup(
+                            pp, "Word document ready"))
+                    else:
+                        _pc.open_folder(os.path.dirname(p))
+                        app.ui_safe(lambda pp=p: app._toast(f"Saved Word document: {pp}"))
                 except ImportError:
                     app.ui_safe(lambda: app._err("Word export needs python-docx."))
                 except Exception as ex:

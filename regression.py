@@ -272,15 +272,29 @@ def _fetch_meta(app, ids):
         try:
             backend = backend_setup.get_backend(app)
             from tracker.models import Ref
+            # Pre-warm the feature-NAME cache from the epic carried inline on the
+            # Story DTO, so _fetch_feature_names resolves the group titles with no
+            # extra round-trip (the epic key+name came back with the story).
+            _fnc = getattr(app, "_reg_feature_name_cache", None)
+            if _fnc is None:
+                _fnc = app._reg_feature_name_cache = {}
             for st in backend.fetch_stories([Ref(id=str(i), key=str(i))
                                              for i in missing]) or []:
                 # Key by the canonical id (issue KEY on Jira, work-item id on
                 # Azure) matching what callers pass in — never int(), which
                 # dropped every Jira story here (see _sid / ADR-001).
                 _key = _sid(st.ref.key or st.ref.id)
+                # Parent Epic → the "Feature" the plan groups by. The Jira adapter
+                # puts the epic key/name on the Story (team-managed parent); Azure
+                # uses its own System.Parent path above. None → "No Feature", as
+                # before, when the story has no resolvable parent epic.
+                _epic = _sid(getattr(st, "epic_id", "") or "") or None
                 cache[_key] = {"title": getattr(st, "title", "") or "",
                                "state": getattr(st, "state", "") or "Unknown",
-                               "priority": DEFAULT_PRIORITY, "parent_id": None}
+                               "priority": DEFAULT_PRIORITY, "parent_id": _epic}
+                _en = getattr(st, "epic_name", "") or ""
+                if _epic and _en:
+                    _fnc[_epic] = _en
         except Exception:
             pass
         app._reg_meta_cache = cache
