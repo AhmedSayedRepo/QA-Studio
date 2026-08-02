@@ -711,6 +711,18 @@ def _log(msg):
         pass
 
 
+def _set_app_user_model_id():
+    """Give this process its own Windows taskbar identity so the installer groups
+    under QA Studio (with app.ico) instead of inheriting pythonw.exe's icon."""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("QAStudio.Setup")
+    except Exception:
+        pass
+
+
 def _ensure_pywebview():
     """Make sure pywebview (and its Windows backend) is importable. If it isn't,
     pip-install it on the fly so the native window works even when the installer
@@ -782,8 +794,8 @@ def _open_app_window(url):
             # background slab around the card. A solid frameless card is reliable
             # everywhere; the CSS makes the card fill the window edge-to-edge.
             _win = None
-            for _opts in (dict(frameless=True, easy_drag=True),
-                          dict()):
+            for _opts in (dict(frameless=True, easy_drag=True, on_top=True),
+                          dict(on_top=True)):
                 try:
                     _win = webview.create_window(
                         f"{APP_NAME} Setup", url,
@@ -795,10 +807,37 @@ def _open_app_window(url):
             if _win is None:
                 raise RuntimeError("could not create a native window")
             _api.set_window(_win)
+
+            # Bring the window to the foreground on open. A process launched via
+            # `start` is subject to Windows' foreground-lock policy and would
+            # otherwise open behind the active app. We create it on_top=True to
+            # force it in front, then relax that shortly after so it isn't
+            # permanently pinned above everything else.
+            def _relax_on_top():
+                time.sleep(1.2)
+                try:
+                    _win.on_top = False
+                except Exception:
+                    pass
+
+            def _on_shown():
+                threading.Thread(target=_relax_on_top, daemon=True).start()
+
             try:
-                webview.start(gui="edgechromium")
+                _win.events.shown += _on_shown
             except Exception:
-                webview.start()   # let pywebview pick any available backend
+                pass
+
+            _start_kw = {}
+            if os.path.exists(ICON_ICO):
+                _start_kw["icon"] = ICON_ICO   # taskbar/window icon = app.ico
+            try:
+                webview.start(gui="edgechromium", **_start_kw)
+            except Exception:
+                try:
+                    webview.start(**_start_kw)     # any backend, keep the icon
+                except Exception:
+                    webview.start()                # last resort: no icon kwarg
             os._exit(0)           # native window closed → stop the installer
         except Exception as ex:
             _log(f"pywebview failed ({ex}) — trying Edge/Chrome app window")
@@ -858,6 +897,7 @@ def _find_chromium():
 
 
 def main():
+    _set_app_user_model_id()
     lock = _acquire_single_instance()
     if lock is None:
         return

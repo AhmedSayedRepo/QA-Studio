@@ -61,12 +61,13 @@ FEATURES = [
          "once and shared with every user — not a per-device setting.",
      ]},
     {"key": "run", "icon": ft.Icons.PLAY_ARROW, "title": "Run",
-     "blurb": "Generates test cases into your Azure test plan — either test-case "
-              "titles or full step-by-step steps.",
+     "blurb": "Generates test cases into your connected backend's test plan — either "
+              "test-case titles or full step-by-step steps.",
      "details": [
          "Run reads the stories you selected on Setup together with their acceptance "
-         "criteria, and writes results straight back into your Azure DevOps test "
-         "plan. It works in one of two modes depending on your Setup choice.",
+         "criteria, and writes results straight back into your connected backend's "
+         "test plan — Azure DevOps, Jira + Xray, or TestRail. It works in one of two "
+         "modes depending on your Setup choice.",
          "In Titles mode it proposes new test-case titles per story and skips any it "
          "recognizes as duplicates already in the suite. In Steps mode it writes "
          "detailed precondition / action / expected steps into the story's test "
@@ -81,10 +82,10 @@ FEATURES = [
          "has the most complete steps and removing the rest, with the kept/removed "
          "test case IDs logged.",
          "Progress is live — elapsed time, an ETA, and a running log — and you can "
-         "Stop at any point; work already written to Azure is kept.",
+         "Stop at any point; work already written to your backend is kept.",
          "This local Run screen is DESKTOP ONLY. On mobile the work runs on the "
          "server instead: flip Setup's \"Run remotely\" toggle and watch progress "
-         "on the Remote Runs screen — the results land in Azure DevOps just the same.",
+         "on the Remote Runs screen — the results land in your backend just the same.",
          "The RECENT ACTIVITY log has Copy and Clear buttons pinned next to its "
          "title, same as Automation's Activity log — copy the whole log to your "
          "clipboard, or clear it, without losing your place elsewhere on screen.",
@@ -114,7 +115,7 @@ FEATURES = [
          "list of anything the AI wasn't fully confident about, so you can spot-check "
          "the edge cases rather than re-reading everything.",
          "From here you can email the report to stakeholders or jump straight to the "
-         "test plan in Azure DevOps to see the generated cases in context.",
+         "test plan in your tracker to see the generated cases in context.",
          "Report is DESKTOP ONLY — it summarizes a local Run. On mobile the "
          "equivalent live results appear on the Remote Runs screen as the server "
          "run progresses.",
@@ -122,7 +123,7 @@ FEATURES = [
      "points": [
          "Created / Skipped / Failed counters and a per-story pass indicator.",
          "'Needs your review' surfaces low-confidence items for a quick check.",
-         "Email the report, or open the test plan directly in Azure DevOps.",
+         "Email the report, or open the test plan directly in your tracker.",
      ]},
     {"key": "remote_runs", "icon": ft.Icons.CLOUD_QUEUE_OUTLINED, "title": "Remote Runs",
      "blurb": "Watch test-case generation that runs on the server (GitHub "
@@ -132,8 +133,8 @@ FEATURES = [
          "server-side. Instead of your own machine doing the work (that's the "
          "desktop's local Run screen), the job is dispatched to a GitHub Actions "
          "worker that executes with your synced credentials and writes the results "
-         "straight into Azure DevOps — so it keeps going even after you close the "
-         "app or lock your phone.",
+         "straight into your connected backend — so it keeps going even after you "
+         "close the app or lock your phone.",
          "On mobile this is the primary way to run: Setup's \"Run remotely\" toggle "
          "queues the job, and Remote Runs streams each test case as it's generated, "
          "with the same one-line-per-case log the desktop shows. On desktop it's "
