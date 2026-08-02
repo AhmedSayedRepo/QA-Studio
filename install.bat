@@ -3,6 +3,14 @@ setlocal
 title QA Studio Installer
 cd /d "%~dp0"
 
+echo.
+echo   ===========================================================
+echo      QA Studio  -  Setup
+echo      Getting everything ready. Please keep this window open;
+echo      the graphical installer opens automatically in a moment.
+echo   ===========================================================
+echo.
+
 rem ============================ QA Studio one-file bootstrapper ============================
 rem Download this single file, double-click it, and it installs everything:
 rem it pulls the project from GitHub, then runs the real installer (installer.py)
@@ -141,4 +149,5 @@ if not defined PY ( py -3.12 --version >nul 2>&1 && ( set "PY=py -3.12" & set "P
 if not defined PY ( py -3 --version   >nul 2>&1 && ( set "PY=py -3"    & set "PYW=pyw -3" ) )
 if not defined PY ( python --version  >nul 2>&1 && ( set "PY=python"   & set "PYW=pythonw" ) )
 goto :eof
+
 

@@ -57,7 +57,7 @@ def _logo_data_uri(names=("qa-logo-full.png", "qa-logo.png", "app.png")):
 # ── Event bus (worker → browser via SSE), with replay buffer ──────────────────
 _EVENTS = []
 _COND = threading.Condition()
-_STATE = {"started": False, "finished": False, "ok": False}
+_STATE = {"started": False, "finished": False, "ok": False, "shortcut": True}
 
 
 def emit(ev):
@@ -101,30 +101,104 @@ def _run(cmd, lo, hi, progress):
 
 
 def _make_shortcut(py):
+    """Create a Desktop shortcut for QA Studio. Returns (ok, path_or_error).
+
+    The Desktop is resolved with the Windows shell known-folder API
+    ([Environment]::GetFolderPath('Desktop')) so it follows OneDrive
+    "Known Folder Move" redirection (e.g. %USERPROFILE%\\OneDrive\\Desktop) and
+    localized profiles. The old code used os.path.expanduser('~') + '\\Desktop',
+    which points at %USERPROFILE%\\Desktop even when the real Desktop lives under
+    OneDrive — so the .lnk was written to a folder the user never sees, or the
+    save failed outright. That is why shortcuts silently didn't appear.
+    """
     if os.name != "nt":
-        return
+        return False, "not Windows"
     try:
         pythonw = os.path.join(os.path.dirname(py), "pythonw.exe")
         if not os.path.exists(pythonw):
             pythonw = py
-        desktop = os.path.join(os.path.expanduser("~"), "Desktop")
-        lnk = os.path.join(desktop, f"{APP_NAME}.lnk")
         icon = ICON_ICO if os.path.exists(ICON_ICO) else pythonw
+
+        def _q(s):  # escape a value for a single-quoted PowerShell literal
+            return str(s).replace("'", "''")
+
         ps = (
-            "$ws = New-Object -ComObject WScript.Shell; "
-            f"$s = $ws.CreateShortcut('{lnk}'); "
-            f"$s.TargetPath = '{pythonw}'; "
-            f"$s.Arguments = '\"{MAIN_PY}\"'; "
-            f"$s.WorkingDirectory = '{HERE}'; "
-            f"$s.IconLocation = '{icon}'; "
-            f"$s.Description = '{APP_NAME} — AI Test Case Generator'; "
-            "$s.Save()"
+            "$ErrorActionPreference='Stop'; "
+            "$desktop=[Environment]::GetFolderPath('Desktop'); "
+            "if(-not $desktop -or -not (Test-Path $desktop)){ $desktop=Join-Path $env:USERPROFILE 'Desktop' }; "
+            "if(-not (Test-Path $desktop)){ New-Item -ItemType Directory -Force -Path $desktop | Out-Null }; "
+            f"$lnk=Join-Path $desktop '{_q(APP_NAME)}.lnk'; "
+            "$ws=New-Object -ComObject WScript.Shell; "
+            "$s=$ws.CreateShortcut($lnk); "
+            f"$s.TargetPath='{_q(pythonw)}'; "
+            f"$s.Arguments='\"{_q(MAIN_PY)}\"'; "
+            f"$s.WorkingDirectory='{_q(HERE)}'; "
+            f"$s.IconLocation='{_q(icon)}'; "
+            f"$s.Description='{_q(APP_NAME)} — AI Test Case Generator'; "
+            "$s.Save(); "
+            "if(Test-Path $lnk){ Write-Output $lnk } else { throw 'shortcut not written' }"
         )
-        subprocess.run(["powershell", "-NoProfile", "-Command", ps],
-                       creationflags=0x08000000, check=False)
-        emit({"type": "log", "tone": "ok", "msg": "Desktop shortcut created."})
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],
+            capture_output=True, text=True, creationflags=0x08000000, check=False)
+        out = (r.stdout or "").strip()
+        path = out.splitlines()[-1].strip() if out else ""
+        if r.returncode == 0 and path:
+            emit({"type": "log", "tone": "ok", "msg": f"Desktop shortcut created: {path}"})
+            return True, path
+        err = (r.stderr or "").strip() or "PowerShell could not create the shortcut."
+        emit({"type": "log", "tone": "warn", "msg": f"Could not create desktop shortcut: {err}"})
+        return False, err
     except Exception as e:
         emit({"type": "log", "tone": "warn", "msg": f"Shortcut note: {e}"})
+        return False, str(e)
+
+
+def _read_version():
+    try:
+        with open(os.path.join(HERE, "VERSION"), encoding="utf-8") as f:
+            return f.read().strip() or APP_VER
+    except Exception:
+        return APP_VER
+
+
+def _register_uninstall(py):
+    """Register QA Studio in Windows 'Installed apps' (Settings > Apps) by writing
+    a per-user Uninstall key under HKCU — no admin rights needed. The entry points
+    at uninstall.py (shipped alongside this file). Idempotent: re-running an install
+    just refreshes the values. Without this key Windows has no record of the app, so
+    it never appears in the Installed-apps list."""
+    if os.name != "nt":
+        return False
+    try:
+        import winreg
+        pythonw = os.path.join(os.path.dirname(py), "pythonw.exe")
+        if not os.path.exists(pythonw):
+            pythonw = py
+        uninstaller = os.path.join(HERE, "uninstall.py")
+        icon = ICON_ICO if os.path.exists(ICON_ICO) else pythonw
+        key_path = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\QAStudio"
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path) as k:
+            def _s(name, val):
+                winreg.SetValueEx(k, name, 0, winreg.REG_SZ, str(val))
+
+            def _d(name, val):
+                winreg.SetValueEx(k, name, 0, winreg.REG_DWORD, int(val))
+
+            _s("DisplayName", APP_NAME)
+            _s("DisplayVersion", _read_version())
+            _s("DisplayIcon", icon)
+            _s("Publisher", APP_NAME)
+            _s("InstallLocation", HERE)
+            _s("UninstallString", f'"{pythonw}" "{uninstaller}"')
+            _s("QuietUninstallString", f'"{pythonw}" "{uninstaller}" /quiet')
+            _d("NoModify", 1)
+            _d("NoRepair", 1)
+        emit({"type": "log", "tone": "ok", "msg": "Registered in Windows 'Installed apps'."})
+        return True
+    except Exception as e:
+        emit({"type": "log", "tone": "warn", "msg": f"Could not register in Installed apps: {e}"})
+        return False
 
 
 def _work():
@@ -150,11 +224,25 @@ def _work():
     emit({"type": "step", "i": 1, "state": "done", "meta": "done"})
     emit({"type": "step", "i": 2, "state": "active", "meta": "working"})
     emit({"type": "progress", "value": 94})
-    _make_shortcut(py)
+    want_shortcut = _STATE.get("shortcut", True)
+    if want_shortcut:
+        ok, _info = _make_shortcut(py)
+        if ok:
+            emit({"type": "step", "i": 2, "state": "done", "meta": "done"})
+            sc_state = "ok"
+        else:
+            emit({"type": "step", "i": 2, "state": "error", "meta": "not created"})
+            sc_state = "failed"
+    else:
+        emit({"type": "log", "tone": "dim", "msg": "Desktop shortcut skipped (option unchecked)."})
+        emit({"type": "step", "i": 2, "state": "done", "meta": "skipped"})
+        sc_state = "skipped"
 
-    emit({"type": "step", "i": 2, "state": "done", "meta": "done"})
+    emit({"type": "progress", "value": 97})
+    _register_uninstall(py)
+
     emit({"type": "progress", "value": 100})
-    emit({"type": "done"})
+    emit({"type": "done", "shortcut": sc_state})
     _STATE["finished"] = True
     _STATE["ok"] = True
 
@@ -309,6 +397,10 @@ body{background:var(--paper);font-family:var(--ui);color:var(--ink);
 .body{padding:0 36px 28px;display:flex;flex-direction:column}
 .lead{font-size:17px;font-weight:800;color:var(--ink);margin:0}
 .leadsub{font-size:13px;font-weight:500;color:var(--ink2);margin:7px 0 0;line-height:1.55}
+.optrow{display:flex;align-items:center;gap:10px;margin:14px 0 0;font-size:13.5px;font-weight:600;color:var(--ink);cursor:pointer;user-select:none}
+.optrow input{width:17px;height:17px;accent-color:var(--violet);cursor:pointer;flex:0 0 auto}
+.optrow.locked{opacity:.6;cursor:default}
+.optrow.locked input{cursor:default}
 .steps{margin:16px 0 4px;border:1px solid var(--line);border-radius:16px;background:var(--card);overflow:hidden}
 .step{display:flex;align-items:center;gap:13px;padding:13px 16px;border-top:1px solid var(--line2)}
 .step:first-child{border-top:0}
@@ -374,7 +466,12 @@ body{background:var(--paper);font-family:var(--ui);color:var(--ink);
   <div class="divider"></div>
   <div class="body">
     <p class="lead" id="lead">Ready to install</p>
-    <p class="leadsub" id="leadsub">This installs the Python packages QA Studio needs and adds a Desktop shortcut so you can launch it any time. Takes about a minute.</p>
+    <p class="leadsub" id="leadsub">This installs the Python packages QA Studio needs and, if you like, adds a Desktop shortcut so you can launch it any time. Takes about a minute.</p>
+
+    <label class="optrow" id="optshortcut">
+      <input type="checkbox" id="mkshortcut" checked/>
+      <span>Create a desktop shortcut</span>
+    </label>
 
     <div class="steps" id="steps">
       <div class="step wait" data-i="0"><span class="dot">1</span><span class="stext">Check Python &amp; upgrade pip</span><span class="smeta">~5s</span></div>
@@ -428,14 +525,21 @@ function logLine(tone,msg){
 }
 function setProgress(v){$('#fill').style.width=v+'%';$('#pct').textContent=Math.round(v)+'%';}
 function startInstall(){
+  var mk=$('#mkshortcut'); var wantSc=mk?mk.checked:true;
+  if(mk)mk.disabled=true;
+  var row=$('#optshortcut'); if(row)row.classList.add('locked');
   $('#install').disabled=true;$('#install').innerHTML='Installing&hellip;';
   $('#progwrap').classList.add('show');
-  fetch('/install',{method:'POST'});
+  fetch('/install',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({shortcut:wantSc})});
 }
-function onDone(){
+function onDone(sc){
   var ps=$('#pspin'); if(ps)ps.style.display='none';
   $('#lead').textContent='Installation complete';$('#lead').style.color='var(--green)';
-  $('#leadsub').textContent='QA Studio is ready. A shortcut has been added to your Desktop.';
+  var sub='QA Studio is ready.';
+  if(sc==='ok')sub+=' A shortcut has been added to your Desktop.';
+  else if(sc==='skipped')sub+=' No desktop shortcut was created.';
+  else if(sc==='failed')sub+=" We couldn't place a desktop shortcut — use Launch below any time.";
+  $('#leadsub').textContent=sub;
   $('#proglbl').textContent='All set';
   $('#actions').innerHTML=
     '<div class="done-note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8 12l3 3 5-6"/></svg>Setup finished successfully</div>'+
@@ -467,7 +571,7 @@ es.onmessage=function(e){
   else if(ev.type==='progress')setProgress(ev.value);
   else if(ev.type==='step')setStep(ev.i,ev.state,ev.meta);
   else if(ev.type==='status'){if(ev.title)$('#lead').textContent=ev.title;if(ev.desc)$('#leadsub').textContent=ev.desc;}
-  else if(ev.type==='done')onDone();
+  else if(ev.type==='done')onDone(ev.shortcut);
   else if(ev.type==='fail')onFail(ev.msg);
 };
 </script>
@@ -501,6 +605,12 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path == "/install":
             if not _STATE["started"]:
+                try:
+                    n = int(self.headers.get("Content-Length") or 0)
+                    body = self.rfile.read(n).decode("utf-8") if n else ""
+                    _STATE["shortcut"] = bool(json.loads(body).get("shortcut", True)) if body else True
+                except Exception:
+                    _STATE["shortcut"] = True
                 _STATE["started"] = True
                 threading.Thread(target=_work, daemon=True).start()
             self._send(200, "ok", "text/plain")
