@@ -154,6 +154,54 @@ def _make_shortcut(py):
         return False, str(e)
 
 
+def _make_start_menu_shortcut(py):
+    """Create a Start-Menu shortcut so QA Studio appears in Windows Search and the
+    All-apps list. Windows indexes apps from Start-Menu .lnk files, so a desktop
+    shortcut alone is not searchable. Uses the per-user Start Menu Programs folder
+    (%AppData%\\Microsoft\\Windows\\Start Menu\\Programs) - no admin needed."""
+    if os.name != "nt":
+        return False, "not Windows"
+    try:
+        pythonw = os.path.join(os.path.dirname(py), "pythonw.exe")
+        if not os.path.exists(pythonw):
+            pythonw = py
+        icon = ICON_ICO if os.path.exists(ICON_ICO) else pythonw
+
+        def _q(s):
+            return str(s).replace("'", "''")
+
+        ps = (
+            "$ErrorActionPreference='Stop'; "
+            "$dir=[Environment]::GetFolderPath('Programs'); "
+            "if(-not $dir){ $dir=Join-Path $env:APPDATA 'Microsoft\\Windows\\Start Menu\\Programs' }; "
+            "if(-not (Test-Path $dir)){ New-Item -ItemType Directory -Force -Path $dir | Out-Null }; "
+            f"$lnk=Join-Path $dir '{_q(APP_NAME)}.lnk'; "
+            "$ws=New-Object -ComObject WScript.Shell; "
+            "$s=$ws.CreateShortcut($lnk); "
+            f"$s.TargetPath='{_q(pythonw)}'; "
+            f"$s.Arguments='\"{_q(MAIN_PY)}\"'; "
+            f"$s.WorkingDirectory='{_q(HERE)}'; "
+            f"$s.IconLocation='{_q(icon)}'; "
+            f"$s.Description='{_q(APP_NAME)} — AI Test Case Generator'; "
+            "$s.Save(); "
+            "if(Test-Path $lnk){ Write-Output $lnk } else { throw 'shortcut not written' }"
+        )
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],
+            capture_output=True, text=True, creationflags=0x08000000, check=False)
+        out = (r.stdout or "").strip()
+        path = out.splitlines()[-1].strip() if out else ""
+        if r.returncode == 0 and path:
+            emit({"type": "log", "tone": "ok", "msg": f"Start-Menu shortcut created: {path}"})
+            return True, path
+        err = (r.stderr or "").strip() or "PowerShell could not create the Start-Menu shortcut."
+        emit({"type": "log", "tone": "warn", "msg": f"Could not create Start-Menu shortcut: {err}"})
+        return False, err
+    except Exception as e:
+        emit({"type": "log", "tone": "warn", "msg": f"Start-Menu shortcut note: {e}"})
+        return False, str(e)
+
+
 def _read_version():
     try:
         with open(os.path.join(HERE, "VERSION"), encoding="utf-8") as f:
@@ -237,6 +285,10 @@ def _work():
         emit({"type": "log", "tone": "dim", "msg": "Desktop shortcut skipped (option unchecked)."})
         emit({"type": "step", "i": 2, "state": "done", "meta": "skipped"})
         sc_state = "skipped"
+
+    # Always add a Start-Menu shortcut (independent of the desktop option) so QA
+    # Studio is findable in Windows Search / All apps.
+    _make_start_menu_shortcut(py)
 
     emit({"type": "progress", "value": 97})
     _register_uninstall(py)
