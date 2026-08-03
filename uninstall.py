@@ -157,15 +157,31 @@ def _schedule_folder_delete():
     DETACHED = 0x00000008
     NEW_GROUP = 0x00000200
     h = HERE
-    cmd = (
-        f'ping 127.0.0.1 -n 4 >nul & rmdir /s /q "{h}" '
-        f'& if exist "{h}" (ping 127.0.0.1 -n 3 >nul & rmdir /s /q "{h}") '
-        f'& if exist "{h}" (echo REMAINED "{h}">>"{LOG}") else (echo REMOVED "{h}">>"{LOG}")'
+    bat = os.path.join(tempfile.gettempdir(), "qastudio_cleanup.bat")
+    # Write a standalone .bat and run THAT, instead of passing a complex one-liner
+    # (quotes + & + () + >> redirects) through `cmd /c`. subprocess re-quotes such
+    # a string and Windows then mis-parses it, so the previous version silently did
+    # nothing and left the folder in place. Batch-file contents are read literally,
+    # so there is no quoting to mangle. Each step is its own simple line; the folder
+    # is retried a few times (in case a handle is briefly still held) and the result
+    # is logged, then the .bat deletes itself.
+    script = (
+        "@echo off\r\n"
+        "ping 127.0.0.1 -n 4 >nul\r\n"
+        f'rmdir /s /q "{h}"\r\n'
+        f'if exist "{h}" ping 127.0.0.1 -n 4 >nul\r\n'
+        f'if exist "{h}" rmdir /s /q "{h}"\r\n'
+        f'if exist "{h}" ping 127.0.0.1 -n 6 >nul\r\n'
+        f'if exist "{h}" rmdir /s /q "{h}"\r\n'
+        f'if exist "{h}" (>>"{LOG}" echo [uninstall] REMAINED "{h}") else (>>"{LOG}" echo [uninstall] REMOVED "{h}")\r\n'
+        '(goto) 2>nul & del "%~f0"\r\n'
     )
     try:
-        subprocess.Popen(["cmd", "/c", cmd], cwd=tempfile.gettempdir(),
+        with open(bat, "w", encoding="ascii", errors="ignore", newline="") as f:
+            f.write(script)
+        subprocess.Popen(["cmd", "/c", bat], cwd=tempfile.gettempdir(),
                          creationflags=DETACHED | NEW_GROUP, close_fds=True)
-        _log(f"scheduled folder delete: {h}")
+        _log(f"scheduled folder delete via {bat}")
     except Exception as e:
         _log(f"schedule delete failed: {e}")
 
