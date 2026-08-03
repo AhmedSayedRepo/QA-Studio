@@ -96,12 +96,15 @@ $dirs = @(
   [Environment]::GetFolderPath('Desktop'),
   [Environment]::GetFolderPath('CommonDesktopDirectory'),
   [Environment]::GetFolderPath('Programs'),
-  [Environment]::GetFolderPath('CommonPrograms'),
-  (Join-Path $env:USERPROFILE 'Desktop'),
-  (Join-Path $env:OneDrive 'Desktop'),
-  (Join-Path $env:OneDriveConsumer 'Desktop'),
-  (Join-Path $env:OneDriveCommercial 'Desktop')
-) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
+  [Environment]::GetFolderPath('CommonPrograms')
+)
+# Add OneDrive-redirected desktops ONLY when the env var exists. Passing an empty
+# value to Join-Path throws a terminating error that would abort the whole list
+# (which is why nothing was being removed on machines with only one OneDrive kind).
+foreach ($base in @($env:USERPROFILE, $env:OneDrive, $env:OneDriveConsumer, $env:OneDriveCommercial)) {
+  if ($base) { $dirs += (Join-Path $base 'Desktop') }
+}
+$dirs = $dirs | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
 foreach ($d in $dirs) {
   $p = Join-Path $d 'QA Studio.lnk'
   if (Test-Path $p) { try { Remove-Item -Force $p -ErrorAction Stop; $targets += $p } catch {} }
