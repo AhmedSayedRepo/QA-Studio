@@ -433,9 +433,19 @@ def _refresh(refresh_token):
             _diag.log_warn("auth_supabase._refresh", f"presenting rt_fp={_fp}")
         except Exception:
             pass
+    # SINGLE-SHOT on purpose — do NOT use _post_retry here. A refresh ROTATES the
+    # token, so the call is NOT idempotent: if the server rotates it but the
+    # response is lost (or a 5xx after the backend already processed it), a retry
+    # re-presents a token the server just rotated away, which reuse-detection
+    # ("Detect and revoke compromised refresh tokens") treats as theft and revokes
+    # the WHOLE session family — the freshly-minted token included. That was
+    # diagnosed live: presenting rt_fp == the last persisted rt_fp, i.e. the app
+    # held the correct token and the server had revoked it (server-side, not a
+    # client durability drop). A network/timeout/5xx here is transient — we keep
+    # the session and retry on the NEXT launch with the still-valid token.
     try:
-        r = _post_retry(f"{SUPABASE_URL}/auth/v1/token?grant_type=refresh_token",
-                        json={"refresh_token": refresh_token})
+        r = _client().post(f"{SUPABASE_URL}/auth/v1/token?grant_type=refresh_token",
+                           json={"refresh_token": refresh_token}, timeout=_TIMEOUT)
     except Exception as ex:
         # Network/timeout — transient by definition; never proof of a dead token.
         if _diag: _diag.log("auth_supabase._refresh", ex)
