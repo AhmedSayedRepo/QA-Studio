@@ -1,0 +1,46 @@
+QA Studio — Proprietary Software License
+Copyright © 2026 Ahmed Sayed. All Rights Reserved.
+
+This software, including its source code, user interface, design, images, and
+documentation (collectively, the "Software"), is the proprietary and confidential
+property of Ahmed Sayed (the "Owner"). The Software is published in a public
+repository for transparency and distribution convenience only. Public availability
+does NOT place the Software in the public domain and does NOT grant any license or
+rights to it.
+
+NO LICENSE IS GRANTED.
+Except with the prior, express, written permission of the Owner, you may NOT, in
+whole or in part:
+  - use, run, execute, or deploy the Software for any purpose;
+  - copy, reproduce, host, or store the Software;
+  - modify, adapt, translate, or create derivative works of the Software;
+  - merge, publish, distribute, sublicense, sell, rent, lease, or lend the Software;
+  - reverse engineer, decompile, or disassemble any compiled portion of the
+    Software, except to the limited extent this restriction is prohibited by
+    applicable law; or
+  - remove, obscure, or alter any copyright, trademark, or other proprietary notice.
+
+TRADEMARKS.
+"QA Studio", its logos, and associated branding are trademarks of the Owner and may
+not be used without the Owner's prior written permission.
+
+OFFICIAL BUILDS.
+If the Owner provides you with an official installer or build of the Software (for
+example, via an official release), you may install and run that official build for
+your own internal evaluation only, subject to any terms that accompany it. Nothing
+in this paragraph grants any right to the source code or to redistribute the build.
+
+RESERVATION OF RIGHTS.
+All rights not expressly granted in writing by the Owner are reserved by the Owner.
+
+NO WARRANTY.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL THE OWNER BE LIABLE FOR
+ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR
+OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+OTHER DEALINGS IN THE SOFTWARE.
+
+CONTACT.
+For licensing inquiries or permission requests, contact the Owner through the
+project's official repository: https://github.com/AhmedSayedRepo/QA-Studio

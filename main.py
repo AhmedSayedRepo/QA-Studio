@@ -2,6 +2,9 @@
 Run:  pip install flet pillow anthropic openai azure-devops requests
       flet run main.py        (or)   python main.py
 """
+# Copyright © 2026 Ahmed Sayed. All rights reserved.
+# QA Studio is proprietary software; see the LICENSE file. No part of this source
+# may be used, copied, modified, or distributed without prior written permission.
 # ── Stale-bytecode guard ───────────────────────────────────────────────────
 # This folder commonly lives under Downloads, which is often OneDrive-synced.
 # mtime-based .pyc cache invalidation can misfire across cloud sync/clock skew,

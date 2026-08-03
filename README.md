@@ -20,6 +20,8 @@ One clean **Setup → Run → Report** flow.
 
 <sub>Windows 10/11 · Python auto-installed · your keys stay on your device</sub>
 
+<sub>© 2026 Ahmed Sayed. All rights reserved. · Proprietary software — see <a href="LICENSE">LICENSE</a>. No use, copying, modification, or distribution without written permission.</sub>
+
 </div>
 
 ---

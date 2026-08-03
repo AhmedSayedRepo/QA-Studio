@@ -9,6 +9,9 @@ progress streams over Server-Sent Events.
 
 Run:  python installer.py
 """
+# Copyright © 2026 Ahmed Sayed. All rights reserved.
+# QA Studio is proprietary software; see the LICENSE file. No part of this source
+# may be used, copied, modified, or distributed without prior written permission.
 
 import os
 import sys
