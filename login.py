@@ -595,8 +595,8 @@ def login_gate(app):
         ft.Text("Ship better\ntests, faster.", size=52, weight=ft.FontWeight.W_700,
                 color=LEFT_HEAD, font_family=DISP, style=ft.TextStyle(height=1.05)),
         ft.Container(height=16),
-        ft.Text("AI-generated Azure DevOps test cases, regression & sprint plans, "
-                "and one-click sprint closure reports.",
+        ft.Text("AI-generated test cases for Azure DevOps, Jira + Xray & TestRail, "
+                "regression & sprint plans, and one-click sprint closure reports.",
                 size=14, color=INK2, no_wrap=False),
         ft.Container(height=34),
         _feature(ft.Icons.AUTO_AWESOME, "Generate test titles & steps with AI",

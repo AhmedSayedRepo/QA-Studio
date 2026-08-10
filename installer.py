@@ -517,7 +517,7 @@ body{background:var(--paper);font-family:var(--ui);color:var(--ink);
     <button class="wbtn close" title="Close" onclick="winClose()">&#10005;</button>
   </div>
   <div class="accent pywebview-drag-region"></div>
-  <div class="head">__LOGO__<div class="tagline">AI-powered Azure DevOps test-case generator</div></div>
+  <div class="head">__LOGO__<div class="tagline">AI test cases for Azure DevOps, Jira &amp; TestRail</div></div>
   <div class="divider"></div>
   <div class="body">
     <p class="lead" id="lead">Ready to install</p>

@@ -17,12 +17,13 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from typing import List, Optional, Tuple
 from urllib.parse import urlparse
 from xml.sax.saxutils import escape
 
-from ..models import (AssertionKind, DataSource, LoadProfile, PerfCapability,
-                      PerfRequest, PerfResult, PerfScenario, RequestStat)
+from ..models import (AssertionKind, DataSource, FailureGroup, LoadProfile,
+                      PerfCapability, PerfRequest, PerfResult, PerfScenario, RequestStat)
 from ..ports import OnEvent, PerfTarget, ProjectPaths, noop_event
 
 _VAR_RE = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
@@ -137,6 +138,30 @@ def _sampler(req: PerfRequest) -> str:
     )
 
 
+def _headermanager(req: PerfRequest) -> str:
+    """Replay captured request headers (auth token, content-type, custom X-*).
+    Emitted as a sampler child so it applies to just this request. Empty when the
+    request carries no headers (e.g. heuristic/AI scenarios)."""
+    if not req.headers:
+        return ""
+    rows = ""
+    for k, v in req.headers.items():
+        if not k:
+            continue
+        rows += (
+            '<elementProp name="" elementType="Header">'
+            f'<stringProp name="Header.name">{escape(k)}</stringProp>'
+            f'<stringProp name="Header.value">{_x(v)}</stringProp>'
+            '</elementProp>'
+        )
+    return (
+        '<HeaderManager guiclass="HeaderPanel" testclass="HeaderManager" '
+        'testname="HTTP Header Manager" enabled="true">'
+        f'<collectionProp name="HeaderManager.headers">{rows}</collectionProp>'
+        '</HeaderManager><hashTree/>'
+    )
+
+
 def _assertion_children(req: PerfRequest) -> str:
     out = ""
     for a in req.assertions:
@@ -229,6 +254,7 @@ def parse_jtl(jtl_path: str, scenario_id: str = "", report_dir: str = "") -> Per
     ts_min = None
     ts_max = None
     per: dict = {}
+    failmap: dict = {}          # (label, code, message) -> count
     with open(jtl_path, "r", encoding="utf-8", newline="") as f:
         for row in csv.DictReader(f):
             try:
@@ -246,6 +272,13 @@ def parse_jtl(jtl_path: str, scenario_id: str = "", report_dir: str = "") -> Per
             elapsed.append(e)
             if not ok:
                 errors += 1
+                # Capture WHY it failed: an assertion's failureMessage if present,
+                # else the HTTP response code + message (e.g. "403 / Forbidden").
+                code = (row.get("responseCode", "") or "").strip()
+                msg = ((row.get("failureMessage", "") or "").strip()
+                       or (row.get("responseMessage", "") or "").strip())
+                fkey = (label, code, msg)
+                failmap[fkey] = failmap.get(fkey, 0) + 1
             b = per.setdefault(label, {"e": [], "err": 0})
             b["e"].append(e)
             if not ok:
@@ -260,13 +293,16 @@ def parse_jtl(jtl_path: str, scenario_id: str = "", report_dir: str = "") -> Per
             label=label, samples=len(bs), errors=b["err"],
             avg_ms=(sum(bs) / len(bs)) if bs else 0.0, p95_ms=_pct(bs, 95),
             min_ms=(bs[0] if bs else 0.0), max_ms=(bs[-1] if bs else 0.0)))
+    failures = [FailureGroup(label=lbl, code=code, message=msg, count=cnt)
+                for (lbl, code, msg), cnt in
+                sorted(failmap.items(), key=lambda kv: kv[1], reverse=True)][:30]
     return PerfResult(
         scenario_id=scenario_id, target="jmeter", samples=n, errors=errors,
         duration_s=duration_s,
         p50_ms=_pct(sv, 50), p90_ms=_pct(sv, 90), p95_ms=_pct(sv, 95), p99_ms=_pct(sv, 99),
         avg_ms=(sum(sv) / n) if n else 0.0,
         throughput_rps=(n / duration_s) if duration_s else 0.0,
-        per_request=per_request, raw_report_dir=report_dir)
+        per_request=per_request, failures=failures, raw_report_dir=report_dir)
 
 
 # ---- the target -------------------------------------------------------------
@@ -306,7 +342,8 @@ class JMeterTarget(PerfTarget):
             for req in sc.requests:
                 if req.is_wait:
                     continue
-                children = _assertion_children(req) + _extractor_children(req) + _timer_children(req)
+                children = (_headermanager(req) + _assertion_children(req)
+                            + _extractor_children(req) + _timer_children(req))
                 samplers += _sampler(req) + "<hashTree>" + children + "</hashTree>"
             tg_children += _transaction(sc.title) + "<hashTree>" + samplers + "</hashTree>"
 
@@ -345,22 +382,67 @@ class JMeterTarget(PerfTarget):
                            "Install a JRE 8+ and re-check.")
         return (True, "JMeter and Java found.")
 
-    def run(self, project: ProjectPaths, on_event: OnEvent = noop_event) -> PerfResult:
+    def run(self, project: ProjectPaths, on_event: OnEvent = noop_event,
+            remote_hosts: str = "") -> PerfResult:
         ok, msg = self.preflight()
         if not ok:
             raise RuntimeError(msg)
-        jtl = os.path.join(project.root, "results.jtl")
-        report = project.report_dir or os.path.join(project.root, "report")
-        if os.path.exists(jtl):
-            os.remove(jtl)          # JMeter refuses to overwrite an existing .jtl
-        if os.path.isdir(report):
-            shutil.rmtree(report, ignore_errors=True)
+        # Uniquely-named output per run. JMeter's -e -o REFUSES to write into a
+        # non-empty report folder or over an existing .jtl; when the output dir is
+        # a OneDrive-synced folder (e.g. Desktop), OneDrive keeps handles open on
+        # the previous run's files so a delete can't fully clear them, and JMeter
+        # then fails with "folder is not empty". A fresh timestamped name sidesteps
+        # that entirely and keeps each run's dashboard instead of overwriting it.
+        _prune_old_runs(project.root)          # keep the last few, don't fill the disk
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        jtl = os.path.join(project.root, f"results-{stamp}.jtl")
+        report = os.path.join(project.root, f"report-{stamp}")
         on_event({"type": "log", "msg": "Running JMeter (non-GUI)..."})
-        cmd = ["jmeter", "-n", "-t", project.entry, "-l", jtl, "-e", "-o", report]
-        subprocess.run(cmd, cwd=project.root, check=False)
+        # On Windows `jmeter` is jmeter.bat - subprocess won't resolve the .bat
+        # from the bare name (that's the WinError 2), so use the full resolved path.
+        jm = shutil.which("jmeter") or shutil.which("jmeter.bat") or "jmeter"
+        cmd = [jm, "-n", "-t", project.entry, "-l", jtl, "-e", "-o", report]
+        # Distributed load: hand the plan to remote jmeter-server engines with -R.
+        _hosts = ",".join(h.strip() for h in re.split(r"[,\s]+", remote_hosts or "") if h.strip())
+        if _hosts:
+            cmd += ["-R", _hosts]
+            on_event({"type": "log", "msg": f"Distributed run across engines: {_hosts}"})
+        # Capture JMeter's live output and STREAM it to on_event so its periodic
+        # "summary +/=" lines show up in the app's activity log instead of only a
+        # console (run() inheriting the parent stdout is why it was terminal-only).
+        flags = 0x08000000 if os.name == "nt" else 0  # CREATE_NO_WINDOW
+        proc = subprocess.Popen(cmd, cwd=project.root, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True, bufsize=1,
+                                creationflags=flags)
+        try:
+            for line in proc.stdout:
+                line = (line or "").rstrip()
+                if line:
+                    on_event({"type": "log", "msg": line})
+        except Exception:
+            pass
+        proc.wait()
         if not os.path.exists(jtl):
             raise RuntimeError("JMeter produced no results.jtl - see console output.")
         return parse_jtl(jtl, report_dir=report)
+
+
+def _prune_old_runs(root: str, keep: int = 5) -> None:
+    """Keep only the newest `keep` report-*/results-* artifacts in the output
+    folder so repeated runs don't fill the disk. Best-effort; never raises."""
+    try:
+        for prefix, is_dir in (("report-", True), ("results-", False)):
+            items = [os.path.join(root, n) for n in os.listdir(root)
+                     if n.startswith(prefix)
+                     and (os.path.isdir(os.path.join(root, n)) == is_dir)]
+            items.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+            for old in items[keep:]:
+                try:
+                    shutil.rmtree(old, ignore_errors=True) if is_dir else os.remove(old)
+                except Exception:
+                    pass
+    except Exception:
+        pass
 
 
 def apply_thresholds(result: PerfResult, profile: LoadProfile) -> PerfResult:

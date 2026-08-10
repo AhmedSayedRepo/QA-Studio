@@ -41,3 +41,7 @@ apk_out/
 
 # Logs (may contain tokens/PII — never commit)
 *.log
+
+# Performance-test generated artifacts (emitted JMeter projects / run output)
+perf_out/
+qastudio_perf/

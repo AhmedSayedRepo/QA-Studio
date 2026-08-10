@@ -61,8 +61,12 @@ class PerfTarget(ABC):
     def preflight(self) -> Tuple[bool, str]:
         """Is the tool (and its runtime) available? (ok, message-or-hint)."""
 
-    def run(self, project: ProjectPaths, on_event: OnEvent = noop_event) -> PerfResult:
+    def run(self, project: ProjectPaths, on_event: OnEvent = noop_event,
+            remote_hosts: str = "") -> PerfResult:
         """Execute the emitted project and return a normalized result.
+
+        remote_hosts: optional comma/space list of distributed engines (targets
+        that don't support distribution ignore it).
 
         Optional: a target may emit-only (design/export) and leave running to
         the remote worker. Default raises so a missing impl is loud, not silent.

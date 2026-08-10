@@ -443,6 +443,51 @@ FEATURES = [
          "Automation's self-healing key is set in your IDE (QA_AI_API_KEY env var), "
          "separate from the app, because the generated tests run on their own.",
      ]},
+    {"key": "performance", "icon": ft.Icons.SPEED, "title": "Performance",
+     "blurb": "Turn real requests into an Apache JMeter load test, run it locally or "
+              "across distributed engines, and read a plain-language report of the result.",
+     "details": [
+         "Performance load-tests your app with JMeter. Instead of guessing requests "
+         "from prose, you feed it the REAL traffic of a user journey, two ways: import "
+         "a HAR (in Chrome DevTools → Network, do the flow once, then 'Save all as HAR'), "
+         "or paste one or more 'Copy as cURL' commands. Both become exact requests — "
+         "method, URL, headers and body — so the test faithfully replays what the app "
+         "actually does. 'Add to plan' lets you combine several captures into one plan.",
+         "Set the load profile — virtual users, ramp-up, hold duration — and pass/fail "
+         "budgets (p95 and error rate, optionally p99 and minimum throughput). Generate "
+         "& Emit builds the JMeter project; Run JMeter executes it and streams live "
+         "progress. For thousands of users, list distributed engines (hosts running "
+         "jmeter-server) and the load is split across them, since one machine caps out "
+         "at a few hundred threads.",
+         "For authenticated tests, three tools cover per-user credentials: an Auth "
+         "header (use 'Bearer {{token}}' with a Data CSV so each user carries its own "
+         "token), an in-test Login step (each virtual user logs in at run time and reuses "
+         "its own fresh token), and a Prepare-tokens helper that logs a whole CSV of "
+         "users in up front — it can auto-detect your login API from a login HAR so you "
+         "don't configure it by hand. Parameterize turns captured literals into per-user "
+         "{{variables}}, and Correlation extracts a value from one response (a cart id, "
+         "CSRF token) to reuse in later requests.",
+         "After a run you get two reports: QA Studio's one-page summary — a PASS/FAIL "
+         "verdict in plain English, a metric grid, a response-time spread, a per-request "
+         "breakdown, a 'why requests failed' section (status codes + messages), and a "
+         "glossary — which you can export or email (like the sprint/regression reports); "
+         "and JMeter's own interactive dashboard. A run-history list tracks p95 and "
+         "errors across runs in the session.",
+     ],
+     "points": [
+         "Sources are real requests: Import HAR or Paste cURL — no prose guessing.",
+         "Load profile: users, ramp, duration; budgets: p95, error rate, optional p99 "
+         "and min throughput decide the PASS/FAIL gate.",
+         "Per-user auth: 'Bearer {{token}}' + a Data CSV, an in-test Login step, or the "
+         "Prepare-tokens helper (auto-detects your login API from a login HAR).",
+         "Parameterize (literal => {{var}}) and Correlation (var = $.json.path @ /url) "
+         "handle per-user and response-derived values.",
+         "Run locally, or across distributed jmeter-server engines for large loads.",
+         "Two reports — QA Studio's plain-language summary (export/email) and JMeter's "
+         "interactive dashboard — plus a failure breakdown and run history.",
+         "Needs Apache JMeter + a Java runtime installed; the preflight check confirms "
+         "both before you run.",
+     ]},
 ]
 
 

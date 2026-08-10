@@ -102,6 +102,7 @@ NAV = [
     {"id": "run",    "label": "Run",    "ix": "Ru", "icon": "MONITOR_HEART"},
     {"id": "report", "label": "Report", "ix": "Rp", "icon": "DESCRIPTION_OUTLINED"},
     {"id": "automation", "label": "Automation", "ix": "A", "icon": "CODE"},
+    {"id": "performance", "label": "Performance", "ix": "P", "icon": "SPEED"},
 ]
 
 # Provider smart-casing

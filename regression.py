@@ -3132,7 +3132,7 @@ def _checkbox_multiselect(options, selected, on_toggle, on_all, *, is_open, on_o
 
 
 def email_recipient_picker(app, state_key, *, is_open_key, sync_key, height=260,
-                           trailing=None):
+                           trailing=None, on_change=None):
     """Searchable multiselect for email recipients — same search + multiselect
     pattern as the stories/plans/sprints pickers above (_checkbox_multiselect),
     sourced from the Azure DevOps project's team members, PLUS a small field to
@@ -3163,16 +3163,27 @@ def email_recipient_picker(app, state_key, *, is_open_key, sync_key, height=260,
 
     def _set_list(lst):
         setattr(app, state_key, ", ".join(lst))
-
-    # Member directory — loaded once per project, cached on the app instance so
-    # every picker on every screen shares one fetch instead of one each.
-    if (getattr(app, "_members_cache", None) is None
-            and not getattr(app, "_members_loading", False) and app.project):
-        app._members_loading = True
-
-        def _load_members():
+        # Notify the caller so it can refresh a dependent summary in place
+        # (e.g. Setup's "THIS RUN → Email" recipient count).
+        if on_change:
             try:
-                mem = backend_setup.fetch_project_members(app, app.project)
+                on_change()
+            except Exception:
+                pass
+
+    # Member directory — cached on the app instance, KEYED BY PROJECT so every
+    # picker shares one fetch, and switching projects re-fetches the new project's
+    # members (the old guard only re-fetched while the cache was None, so changing
+    # project kept showing the first project's people — reported live).
+    if (app.project and not getattr(app, "_members_loading", False)
+            and (getattr(app, "_members_cache", None) is None
+                 or getattr(app, "_members_cache_project", None) != app.project)):
+        app._members_loading = True
+        _proj_for_members = app.project
+
+        def _load_members(_proj=_proj_for_members):
+            try:
+                mem = backend_setup.fetch_project_members(app, _proj)
             except Exception as _ex:
                 # Was a silent `mem = []`, which then LATCHED: the retry guard
                 # above only re-fetches while _members_cache is None, so one
@@ -3184,6 +3195,7 @@ def email_recipient_picker(app, state_key, *, is_open_key, sync_key, height=260,
                     pass
                 mem = []
             app._members_cache = mem
+            app._members_cache_project = _proj
             app._members_loading = False
             app.ui_safe(app.render)
         threading.Thread(target=_load_members, daemon=True).start()
@@ -3355,13 +3367,15 @@ def resource_name_picker(app, list_key, *, is_open_key, sync_key, height=220,
     def _set_list(lst):
         setattr(app, list_key, lst)
 
-    if (getattr(app, "_members_cache", None) is None
-            and not getattr(app, "_members_loading", False) and app.project):
+    if (app.project and not getattr(app, "_members_loading", False)
+            and (getattr(app, "_members_cache", None) is None
+                 or getattr(app, "_members_cache_project", None) != app.project)):
         app._members_loading = True
+        _proj_for_members = app.project
 
-        def _load_members():
+        def _load_members(_proj=_proj_for_members):
             try:
-                mem = backend_setup.fetch_project_members(app, app.project)
+                mem = backend_setup.fetch_project_members(app, _proj)
             except Exception as _ex:
                 # Was a silent `mem = []`, which then LATCHED: the retry guard
                 # above only re-fetches while _members_cache is None, so one
@@ -3373,6 +3387,7 @@ def resource_name_picker(app, list_key, *, is_open_key, sync_key, height=220,
                     pass
                 mem = []
             app._members_cache = mem
+            app._members_cache_project = _proj
             app._members_loading = False
             app.ui_safe(app.render)
         threading.Thread(target=_load_members, daemon=True).start()

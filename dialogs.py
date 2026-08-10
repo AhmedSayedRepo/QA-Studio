@@ -85,13 +85,19 @@ def close_all_dialogs(app, limit=8):
     over the login screen — reported live as "the modal is still open after auto
     logout", with its stale error still visible.
 
-    Drains via the depth counter kept by `show_dialog`/`close_dialog`, and is
-    additionally bounded so a Flet build that never signals "empty" can't spin.
-    Safe to call when nothing is open (it's a no-op).
+    Pops UNCONDITIONALLY (bounded) rather than trusting `_dialog_depth` as the
+    stop condition. That counter drifts: a click-away / barrier dismissal that
+    Flet handled WITHOUT routing through close_dialog leaves it out of sync, and
+    an UNDER-count would stop the drain early — popping the idle-logout warning,
+    seeing "depth 0", and stranding the modal underneath (e.g. the PAT help
+    sheet) over the login screen after an auto-logout (reported live). Since
+    pop_dialog on an empty stack is a harmless no-op, a few guaranteed passes are
+    safe; the floor of 4 covers any realistic stack (a modal + the idle warning).
+    Only ever called from sign-out, where closing everything is the intent.
     """
-    for _ in range(max(1, int(limit))):
-        if int(getattr(app, "_dialog_depth", 0) or 0) <= 0:
-            break
+    depth = int(getattr(app, "_dialog_depth", 0) or 0)
+    passes = min(max(depth, 4), max(1, int(limit)))
+    for _ in range(passes):
         try:
             close_dialog(app)
         except Exception:

@@ -132,6 +132,16 @@ class RequestStat:
 
 
 @dataclass(frozen=True)
+class FailureGroup:
+    """Why some requests failed, aggregated: a response code + message (or an
+    assertion's failure message) and how many samples hit it, for one request."""
+    label: str
+    code: str = ""
+    message: str = ""
+    count: int = 0
+
+
+@dataclass(frozen=True)
 class PerfResult:
     """Normalized run outcome - every tool's output is mapped onto this so
     reporting/export (report.py) is tool-agnostic."""
@@ -147,6 +157,7 @@ class PerfResult:
     avg_ms: float = 0.0
     throughput_rps: float = 0.0
     per_request: List[RequestStat] = field(default_factory=list)
+    failures: List[FailureGroup] = field(default_factory=list)
     threshold_pass: Optional[bool] = None
     raw_report_dir: str = ""
 
@@ -157,5 +168,6 @@ class PerfResult:
 
 __all__ = [
     "PerfCapability", "AssertionKind", "Assertion", "Extraction", "PerfRequest",
-    "PerfScenario", "DataSource", "LoadProfile", "RequestStat", "PerfResult",
+    "PerfScenario", "DataSource", "LoadProfile", "RequestStat", "FailureGroup",
+    "PerfResult",
 ]

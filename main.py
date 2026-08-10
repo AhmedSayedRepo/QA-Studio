@@ -82,6 +82,7 @@ import settings
 import run
 import report
 import automation
+import performance
 import setup
 import dialogs
 import updater_ui
@@ -1275,6 +1276,7 @@ class QAStudio:
                          or (n["id"] == "report" and self.last_report is not None)
                          or (n["id"] == "setup")
                          or (n["id"] == "automation")
+                         or (n["id"] == "performance")
                          or (n["id"] == "regression")
                          or (n["id"] == "testplan")
                          or (n["id"] == "titles")
@@ -2342,6 +2344,8 @@ class QAStudio:
             ("Go to Sprint Plan", _ic("EVENT_NOTE_OUTLINED","DESCRIPTION_OUTLINED"), "sprint plan capacity", nav("testplan")),
             *((("Go to Automation", ft.Icons.CODE, "automation selenium tests",
                 nav("automation")),) if platform_caps.has_automation() else ()),
+            ("Go to Performance", getattr(ft.Icons, "SPEED", ft.Icons.CIRCLE),
+             "performance load test jmeter", nav("performance")),
             ("Go to Useful Links", _ic("BOOKMARK_BORDER","BOOKMARKS"), "links bookmarks", nav("links")),
             *((("Go to Remote Runs", ft.Icons.CLOUD_QUEUE_OUTLINED,
                 "remote run github actions status activity", nav("remote_runs")),)
@@ -2647,6 +2651,8 @@ class QAStudio:
                 view = self.run_screen()
             elif self.active == "automation":
                 view = self.automation_screen()
+            elif self.active == "performance":
+                view = performance.screen(self)
             elif self.active == "regression":
                 view = regression.screen(self)
             elif self.active == "testplan":
@@ -3344,7 +3350,7 @@ class QAStudio:
                 "Set Scopes: Test Management (Read & write) and Work Items (Read).",
                 "Set an expiry, click Create, then copy the token (shown once).",
             ],
-            "url": f"https://dev.azure.com/{E.AZURE_ORG}/_usersSettings/tokens",
+            "url": "https://dev.azure.com/",  # placeholder — recomputed live in _show_help (org is empty at import)
             "url_label": "Open PAT settings",
         },
         "gmail": {
@@ -3479,6 +3485,18 @@ class QAStudio:
                 h = self.HELP.get(key)
         if not h:
             return
+        if key == "pat":
+            # AZURE_ORG is set at RUNTIME (Setup), but HELP is a class-level dict
+            # baked at import when the org is still empty — which left the PAT link
+            # as https://dev.azure.com//_usersSettings/tokens (double slash, broken)
+            # forever. Build it from the CURRENT org here; tolerate an empty org or
+            # a pasted full URL in the org field.
+            _org = (E.AZURE_ORG or "").strip().strip("/")
+            _org = _org.replace("https://dev.azure.com/", "").replace(
+                "http://dev.azure.com/", "").strip("/")
+            h = dict(h)
+            h["url"] = (f"https://dev.azure.com/{_org}/_usersSettings/tokens"
+                        if _org else "https://dev.azure.com/")
         step_rows = []
         for i, s in enumerate(h["steps"], 1):
             step_rows.append(ft.Row([
@@ -4770,7 +4788,8 @@ class QAStudio:
             self._chip_wrap], spacing=0, tight=True)
 
         self.email_picker = regression.email_recipient_picker(
-            self, "emails", is_open_key="_email_open", sync_key="setup_emails")
+            self, "emails", is_open_key="_email_open", sync_key="setup_emails",
+            on_change=self._refresh_email_summary)
 
         # Sprint summary button — green (like Create) when a plan is selected,
         # grey/disabled when no plan is chosen yet.
@@ -4875,6 +4894,12 @@ class QAStudio:
     def _on_project_change(self, e):
         self.project = self.project_dd.value
         self.plan_id = None; self.plan_name = None
+        # Project changed → drop project-scoped caches so EVERY dependent picker/
+        # dropdown (member & email pickers across Regression / Sprint / Task
+        # Manager / Performance, plans, stories) refetches for the new project
+        # instead of showing the previous project's data.
+        self._members_cache = None
+        self._members_cache_project = None
         self._load_plans()
         self.render()
 
@@ -5104,6 +5129,23 @@ class QAStudio:
                 alignment=ft.Alignment.CENTER, expand=True),
         ]), expand=True)
 
+    def _email_summary_text(self):
+        """'N recipients' (or '—') for the THIS RUN → Email summary line."""
+        n = len([e for e in (self.emails or "").split(",") if e.strip()])
+        return f"{n} recipient{'s' if n != 1 else ''}" if n else "—"
+
+    def _refresh_email_summary(self):
+        """Update the THIS RUN → Email line the moment recipients change, without a
+        full re-render (the email picker updates in place)."""
+        lbl = getattr(self, "_sum_email", None)
+        if lbl is None:
+            return
+        try:
+            lbl.value = self._email_summary_text()
+            lbl.update()
+        except Exception:
+            pass
+
     # ---- right rail ----
     def _setup_right(self):
         if self.connected:
@@ -5118,7 +5160,7 @@ class QAStudio:
                     ("Project", (self.project or "—")[:16]),
                     ("Test plan", f"#{self.plan_id}" if self.plan_id else "—"),
                     ("Stories", f"{len(self.story_ids)} selected"),
-                    ("Email", "1 recipient" if self.emails.strip() else "—")]
+                    ("Email", self._email_summary_text())]
             if self.tool == "steps":
                 rows.insert(5, ("Existing", self.existing_mode.title()))
             full_vals = {"Project": (self.project or "—"),
@@ -5131,6 +5173,8 @@ class QAStudio:
                     self._sum_stories = val_text
                 if k == "Test plan":
                     self._sum_plan = val_text
+                if k == "Email":
+                    self._sum_email = val_text
                 detail_rows.append(ft.Container(
                     ft.Row([ft.Text(k, size=12, color=T.INK_2, weight=ft.FontWeight.BOLD),
                             ft.Container(expand=True),

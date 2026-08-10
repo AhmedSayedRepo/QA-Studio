@@ -312,13 +312,15 @@ def _load_iterations(app):
 
 
 def _load_members(app):
-    if (getattr(app, "_members_cache", None) is None
-            and not getattr(app, "_members_loading", False) and app.project):
+    if (app.project and not getattr(app, "_members_loading", False)
+            and (getattr(app, "_members_cache", None) is None
+                 or getattr(app, "_members_cache_project", None) != app.project)):
         app._members_loading = True
+        _proj_for_members = app.project
 
-        def _work():
+        def _work(_proj=_proj_for_members):
             try:
-                mem = backend_setup.fetch_project_members(app, app.project)
+                mem = backend_setup.fetch_project_members(app, _proj)
             except Exception as _ex:
                 try:
                     import diag_log
@@ -327,6 +329,7 @@ def _load_members(app):
                     pass
                 mem = []
             app._members_cache = mem
+            app._members_cache_project = _proj
             app._members_loading = False
             app.ui_safe(app.render)
         threading.Thread(target=_work, daemon=True).start()

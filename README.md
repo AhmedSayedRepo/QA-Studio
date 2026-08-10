@@ -4,10 +4,10 @@
 
 # QA Studio
 
-### AI test cases for Azure DevOps, in minutes
+### AI test cases for Azure DevOps, Jira &amp; TestRail, in minutes
 
 QA Studio reads your sprints &amp; stories and generates test-case titles or full steps —
-in **English or Arabic** — straight into your Azure DevOps test plans.
+in **English or Arabic** — straight into your Azure DevOps, Jira + Xray, or TestRail test plans.
 One clean **Setup → Run → Report** flow.
 
 <br>
@@ -110,5 +110,5 @@ third-party servers.
 ---
 
 <div align="center">
-<sub>QA Studio · Windows desktop app · built for Azure DevOps test teams</sub>
+<sub>QA Studio · Windows desktop app · built for Azure DevOps, Jira &amp; TestRail test teams</sub>
 </div>
