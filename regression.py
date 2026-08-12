@@ -4717,8 +4717,10 @@ def _create_screen(app):
             if not to:
                 app._err("Enter at least one recipient email.")
                 return
-            if not getattr(E, "GMAIL_APP_PASS", ""):
-                app._err("Set the Gmail App Password on the Setup screen first.")
+            if not (E.ensure_sender_creds() if hasattr(E, "ensure_sender_creds")
+                    else getattr(E, "GMAIL_APP_PASS", "")):
+                app._err("No Gmail App Password is configured — an admin can set "
+                         "it in Setup → Connection.")
                 return
             app._cp_email_to = ", ".join(to)
             app._cp_emailing = True
@@ -5585,8 +5587,10 @@ def screen(app):
         if not to:
             app._err("Enter at least one recipient email.")
             return
-        if not E.GMAIL_APP_PASS:
-            app._err("Set the Gmail App Password on the Setup screen first.")
+        if not (E.ensure_sender_creds() if hasattr(E, "ensure_sender_creds")
+                else E.GMAIL_APP_PASS):
+            app._err("No Gmail App Password is configured — an admin can set "
+                     "it in Setup → Connection.")
             return
         app._reg_email_to = ", ".join(to)
         app._reg_emailing = True

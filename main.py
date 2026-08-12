@@ -454,6 +454,13 @@ class QAStudio:
         # Idle auto-logout: sign out after 30 min with no user activity.
         self._last_activity = time.time()
         self._start_idle_watch()
+        # Just-in-time shared-sender refresh: engine calls this right before any
+        # email send so an admin's org-wide Gmail creds set AFTER this user signed
+        # in are picked up without needing a re-login (see _ensure_org_email_fresh).
+        try:
+            E.set_sender_refresher(self._ensure_org_email_fresh)
+        except Exception:
+            pass
 
     # Providers with a GENUINELY ongoing free tier — permanent + rate-limited (or
     # local), NOT expiring trial credits. Trial-credit providers (nvidia, minimax,
@@ -4366,19 +4373,26 @@ class QAStudio:
         remain the fallback in every one of those cases, so a user is never
         blocked from sending email just because the shared fetch didn't work.
 
-        SECURITY: gated on the 'act.export' capability (the same capability
-        that gates the Report screen's send/export actions, the only feature
-        that actually uses this credential). Without this check, EVERY
-        signed-in user — including a self-registered Viewer with zero
-        capabilities — would have the org's shared Gmail App Password fetched
-        into their own local process on every sign-in, which is a real secret
-        exposure for a desktop app the user fully controls (readable via a
-        debugger or process-memory dump), not just a UI-level restriction.
-        Users without act.export never had a legitimate reason to hold this
-        credential in memory, so we simply never fetch it for them."""
+        SECURITY: gated on holding at least one action capability — i.e. any
+        user who is not a pure Viewer. Report / plan / usage emails can be sent
+        from pickers spread across the app (the Run screen's end-of-run
+        auto-email, the Report screen, Sprint Plan / Regression / Sprint Report
+        exports+email, and the AI-Usage screen's 'Email report' — which every
+        non-Viewer can use for their own usage), so the shared sender credential
+        must reach anyone the app already lets send mail from ANYWHERE. That set
+        is exactly 'has any act.* capability': the same rule used elsewhere
+        (see the read-only handling for no-action-cap screens) to decide who can
+        perform actions at all. This used to be gated on act.export alone, which
+        was wrong — emailing is triggered from many screens, so e.g. a member who
+        could run but lacked the Report-screen export cap would fire an email
+        attempt that then found no password. We still withhold it from a pure
+        zero-capability Viewer, for whom every send button is read-only anyway,
+        preserving the secret-exposure guard: the org's Gmail App Password is
+        never fetched into the process of a user who can't send from anywhere."""
         if not auth.configured():
             return
-        if not auth.can(getattr(self, "user", None), "act.export"):
+        _caps = auth.caps_for(getattr(self, "user", None))
+        if not any(str(_c).startswith("act.") for _c in _caps):
             return
 
         def work():
@@ -4400,6 +4414,38 @@ class QAStudio:
                 pass
         try:
             threading.Thread(target=work, daemon=True).start()
+        except Exception:
+            pass
+
+    def _ensure_org_email_fresh(self):
+        """SYNCHRONOUS, best-effort refresh of the shared org-wide sender creds,
+        run just-in-time before an email is sent (registered with engine via
+        E.set_sender_refresher; engine calls it from ensure_sender_creds()).
+
+        Same gate + apply as _refresh_org_settings, but blocking rather than
+        threaded — the caller is already a send path about to do network I/O, so
+        a short get_org_settings() call here is fine and guarantees the value is
+        current at send time (fixing the 'admin updated it after I signed in, so
+        my cached copy is stale' timing gap). Silent on EVERY failure path so it
+        can never block or break a send: it only upgrades the cached credential
+        to the latest server value when the server is reachable, and otherwise
+        leaves whatever is already in memory untouched."""
+        try:
+            if not auth.configured():
+                return
+            _caps = auth.caps_for(getattr(self, "user", None))
+            if not any(str(_c).startswith("act.") for _c in _caps):
+                return
+            ok, data = auth.get_org_settings()
+            if not ok or not isinstance(data, dict):
+                return
+            em = data.get("email")
+            if not isinstance(em, dict):
+                return
+            E.set_credentials(
+                gmail=(em.get("app_password") or None),
+                gmail_sender=(em.get("sender") or None),
+                gmail_sender_name=(em.get("sender_name") or None))
         except Exception:
             pass
 
@@ -6222,9 +6268,11 @@ class QAStudio:
                 self._log_lines.append({"tone": "dim",
                     "msg": "No report email sent — Report Emails field is empty."})
                 self._refresh_run()
-            elif not E.GMAIL_APP_PASS:
+            elif not E.ensure_sender_creds():
                 self._log_lines.append({"tone": "warn",
-                    "msg": "No email sent — Gmail App Password not set in Setup → Connection."})
+                    "msg": "No email sent — no Gmail App Password is configured. "
+                           "An admin can set it in Setup → Connection (it's shared "
+                           "with the whole org)."})
                 self._refresh_run()
             if self.emails.strip() and rpt:
                 tool_name = "Test Case Steps" if self.tool == "steps" else "Test Case Titles"
@@ -8262,9 +8310,10 @@ class QAStudio:
                 to_raw = (getattr(self, "_auto_email_to", "") or "").strip()
                 if not to_raw:
                     return
-                if not E.GMAIL_APP_PASS:
-                    cb("No report sent — Gmail App Password not set in Setup → "
-                       "Connection.", "warn")
+                if not E.ensure_sender_creds():
+                    cb("No report sent — no Gmail App Password is configured. An "
+                       "admin can set it in Setup → Connection (shared org-wide).",
+                       "warn")
                     return
                 import re as _re
                 to = [a.strip() for a in _re.split(r"[,\s;]+", to_raw) if a.strip()]

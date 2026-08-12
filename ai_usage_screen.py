@@ -122,8 +122,9 @@ def _email(app):
         if not report:
             app._toast("Generate the report first.")
             return
-        if not E.GMAIL_APP_PASS:
-            app._usage_email_status = "Set a Gmail App Password in Setup → Connection first."
+        if not E.ensure_sender_creds():
+            app._usage_email_status = ("No Gmail App Password is configured — an "
+                                       "admin can set it in Setup → Connection.")
             app.ui_safe(app.render)
             return
         to = [x.strip() for x in re.split(r"[,\s;]+", (app._usage_email_to or "")) if x.strip()]

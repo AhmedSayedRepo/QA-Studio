@@ -4554,16 +4554,24 @@ def run_titles(project, plan_id, story_ids, cb, should_stop=lambda: False,
             cb("log", {"msg": f"Story {sid} · {title} — Suite already has "
                               f"{len(existing_titles)} test case(s) — only new added",
                        "tone": "warn", "ar": _title_is_ar})
+        # Move the headline status off "Starting…" while the (often slow) title
+        # generation runs — otherwise, since the per-case progress event only
+        # fires once the FIRST case starts, a long free-tier title call leaves the
+        # status stuck on "Starting…" even though it's working. Label only (no pct)
+        # so the % and bar are untouched; the per-case progress below overrides it.
+        cb("progress", {"label": "Generating test-case titles…"})
         try:
             titles = _call_with_network_retries(lambda: generate_titles(
                 title, criteria, existing_titles,
                 log=lambda m, t="warn": cb("log", {"msg": m, "tone": t}),
                 should_stop=should_stop,
-                on_slow=lambda s: cb("log", {
+                on_slow=lambda s: (cb("progress",
+                                      {"label": f"Generating test-case titles… {s}s"}),
+                                   cb("log", {
                     "msg": f"Still generating titles with {T_disp(AI_PROVIDER)} "
                            f"({current_model() or 'model'}) — {s}s so far. Large models "
                            f"on free tiers can be slow; click Stop to cancel.",
-                    "tone": "dim", "ico": "⏳", "hb_id": f"titles:{sid}"}),
+                    "tone": "dim", "ico": "⏳", "hb_id": f"titles:{sid}"})),
                 on_retry=lambda m: cb("log", {"msg": m, "tone": "warn", "ico": "⏳",
                                               "hb_id": f"titles:{sid}"}),
             ), cb, should_stop=should_stop)
@@ -5746,6 +5754,49 @@ def count_existing_steps(project, plan_id, story_ids):
 # ═══════════════════════════════════════════════════════════════════════════════
 #  EMAIL REPORT
 # ═══════════════════════════════════════════════════════════════════════════════
+# ── just-in-time shared-sender credential refresh ──────────────────────────
+# The Gmail sender credential (App Password / sender / sender name) can be set
+# org-wide by an admin AFTER a user is already signed in. The app fetches it at
+# sign-in and caches it in GMAIL_APP_PASS, so a long-signed-in session would
+# otherwise keep sending with a stale/empty value — the exact "admin set it but
+# the member's report never sent" bug. main.py registers a best-effort refresher
+# via set_sender_refresher(); every send site calls ensure_sender_creds() right
+# before it checks/uses the credential, so the latest server value is always
+# picked up just-in-time. It is debounced so a screen's own pre-check plus
+# send_report()'s backstop don't double-fetch within one send.
+_SENDER_REFRESHER = None
+_sender_refresh_ts = 0.0
+_SENDER_REFRESH_MIN_GAP = 8.0   # seconds
+
+
+def set_sender_refresher(fn):
+    """Register (or clear, with None) a best-effort callable that refreshes the
+    shared sender creds. main.py wires this to a synchronous org-settings fetch."""
+    global _SENDER_REFRESHER
+    _SENDER_REFRESHER = fn
+
+
+def ensure_sender_creds():
+    """Best-effort: pull the latest org-shared sender creds just-in-time, then
+    report whether a Gmail App Password is now available. NEVER raises; on any
+    failure (offline, not signed in, no refresher registered) it falls back to
+    whatever GMAIL_APP_PASS already holds, so it can only ever upgrade the cached
+    value, never break a send. Debounced so repeated calls a few seconds apart
+    (a screen pre-check followed by send_report) only fetch once."""
+    global _sender_refresh_ts
+    fn = _SENDER_REFRESHER
+    if fn is not None:
+        import time as _t
+        now = _t.time()
+        if now - _sender_refresh_ts >= _SENDER_REFRESH_MIN_GAP:
+            _sender_refresh_ts = now
+            try:
+                fn()
+            except Exception:
+                pass
+    return bool(GMAIL_APP_PASS)
+
+
 def send_report(to_addrs, subject, html_body, attachments=None):
     """Send an HTML email via Gmail SMTP, with optional file attachments.
     Returns (ok, error_msg)."""
@@ -5754,6 +5805,9 @@ def send_report(to_addrs, subject, html_body, attachments=None):
     from email.mime.text import MIMEText
     from email.mime.image import MIMEImage
     from email.mime.application import MIMEApplication
+    # Backstop: refresh the shared sender creds just before sending, in case this
+    # site reached us without its own pre-check having done so.
+    ensure_sender_creds()
     if not GMAIL_APP_PASS or not to_addrs:
         return False, "No Gmail password or recipients configured."
     # multipart/related so the HTML can reference the logo as cid:qastudio-logo
