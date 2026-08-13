@@ -757,8 +757,9 @@ def open_sprint_summary(app):
     def do_email(e=None):
         if not app._sum_data:
             return
-        if not E.GMAIL_APP_PASS:
-            email_status.value = "Set a Gmail App Password in Setup → Connection first."
+        if not E.ensure_sender_creds():
+            email_status.value = ("No Gmail App Password is configured — an admin "
+                                   "can set it in Setup → Connection.")
             email_status.color = T.AMBER
             email_status.visible = True
             try: email_status.update()
@@ -1051,7 +1052,11 @@ def open_sprint_summary(app):
             # AI Usage's own results table — so columns keep their natural
             # size and a phone just scrolls sideways to see the rest,
             # instead of every column being squeezed to fit.
-            _COL_STORY, _COL_ASSIGNED, _COL_TC, _COL_STATE, _COL_DEL = 200, 118, 54, 110, 34
+            # STORY fills the remaining width on desktop so the table spans the
+            # dialog instead of leaving a wide gap and ellipsizing titles; phones
+            # keep the narrow fixed width + horizontal scroll (wrapper below).
+            _COL_STORY = 200 if platform_caps.is_mobile() else 420
+            _COL_ASSIGNED, _COL_TC, _COL_STATE, _COL_DEL = 118, 54, 110, 34
             table_header = ft.Row([
                 ft.Container(ft.Text("STORY", size=10, weight=ft.FontWeight.BOLD,
                                      color=T.INK_3), width=_COL_STORY),

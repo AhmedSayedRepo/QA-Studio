@@ -1616,6 +1616,54 @@ def fetch_stories_in_iteration(project, iteration_path, pat=None):
                                   "title": w["fields"].get("System.Title", "")}
     return [by_id[i] for i in ids if i in by_id]
 
+def board_order_rank(project, story_ids, pat=None):
+    # {str(id): index} in Azure sprint-board order (StackRank/BacklogPriority,
+    # then Id). Empty when not Azure / PAT-less, no numeric ids, or the WIQL
+    # can't order (process lacks the fields) -- caller keeps its own order.
+    pat = pat or AZURE_PAT
+    ids = [str(i) for i in (story_ids or []) if str(i).isdigit()]
+    if not ids or not pat or not AZURE_ORG:
+        return {}
+    url = ("https://dev.azure.com/" + AZURE_ORG + "/" + str(project) +
+           "/_apis/wit/wiql?api-version=7.0")
+    q = ("SELECT [System.Id] FROM WorkItems WHERE [System.Id] IN ("
+         + ",".join(ids) + ") ORDER BY [Microsoft.VSTS.Common.StackRank], "
+         "[Microsoft.VSTS.Common.BacklogPriority], [System.Id]")
+    try:
+        r = requests.post(url, json={"query": q}, auth=("", pat), timeout=30)
+        if r.status_code != 200:
+            return {}
+        ordered = [str(w["id"]) for w in r.json().get("workItems", [])]
+    except Exception:
+        return {}
+    return {sid: idx for idx, sid in enumerate(ordered)}
+
+
+def sort_stories_by_board(project, stories, pat=None):
+    # Sort story dicts (id + optional sprint) IN PLACE into Azure sprint-board
+    # order: numbered sprints first (numeric), then each story by the board's
+    # stack rank, then id. Non-Azure / unrankable stories fall back to a stable
+    # (sprint, numeric-id) order. Returns the list.
+    if not stories:
+        return stories
+    try:
+        rank = board_order_rank(project, [s.get("id") for s in stories], pat)
+    except Exception:
+        rank = {}
+    _big = len(rank)
+    def _key(s):
+        sp = re.search(r"\d+", str(s.get("sprint", "") or ""))
+        sprint_key = (0, int(sp.group())) if sp else (1, 0)
+        sid = str(s.get("id", ""))
+        id_key = (0, int(sid)) if sid.isdigit() else (1, sid)
+        return (sprint_key, rank.get(sid, _big), id_key)
+    try:
+        stories.sort(key=_key)
+    except Exception:
+        pass
+    return stories
+
+
 def create_plan_with_sprint_suites(project, name, iteration_path, cb=None, pat=None,
                                    story_ids=None):
     """Create a test plan, then add a requirement-based suite for every User Story
@@ -1934,6 +1982,7 @@ def _sprint_summary_impl(project, plan_id, pat=None):
     for s in stories:
         by_state[s["state"]] = by_state.get(s["state"], 0) + 1
 
+    sort_stories_by_board(project, stories)
     return {
         "plan_name": plan_name,
         "iteration": iteration,

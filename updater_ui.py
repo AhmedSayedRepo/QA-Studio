@@ -115,10 +115,7 @@ def _update_error_hint(msg):
             "couldn't reach github", "couldn't resolve the update branch",
             "name or service not known", "timed out", "timeout",
             "failed to establish a new connection", "getaddrinfo")):
-        return ("This looks like a network problem reaching GitHub (no "
-                "internet, or a firewall/proxy/VPN blocking api.github.com) "
-                "rather than an issue with the release itself. Check your "
-                "connection and try again.")
+        return ("This is a network problem reaching GitHub, not a problem with the release itself. The update downloads from github.com, codeload.github.com and objects.githubusercontent.com, and a VPN, firewall or corporate proxy is most likely blocking one of them (codeload.github.com is the usual culprit). Turn off any VPN, try a different network (such as a phone hotspot), or ask IT to allow those hosts, then retry. Or use \"Download manually\" below to get the installer from the Releases page and run it.")
     if "checksum" in low:
         return ("The downloaded update failed its integrity check and was "
                 "rejected for safety. Try again, or download the latest "
@@ -143,7 +140,13 @@ def show_update_error(app, msg):
                 ft.Text(_update_error_hint(msg),
                         size=11.5, color=T.INK_3, weight=ft.FontWeight.W_500),
             ], spacing=2, tight=True), width=460),
-        actions=[green_btn("OK", on_click=lambda e: app._close_dialog())],
+        actions=[ft.Row([
+            ghost_btn("Download manually", on_click=lambda e: (
+                app._open_url(
+                    "https://github.com/AhmedSayedRepo/QA-Studio/releases/latest"),
+                app._close_dialog())),
+            green_btn("OK", on_click=lambda e: app._close_dialog()),
+        ], alignment=ft.MainAxisAlignment.END, spacing=10, tight=True)],
         actions_alignment=ft.MainAxisAlignment.END)
     app._show_dialog(dlg)
 

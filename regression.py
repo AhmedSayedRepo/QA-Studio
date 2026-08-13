@@ -644,7 +644,11 @@ def _fetch_cp_ai_complexity(app, texts):
         chunk = [(sid, texts[sid]) for sid in chunk_ids]
         prompt = _cp_facet_prompt(chunk)
         try:
-            raw = E.ai_complete(prompt, max_tokens=1536, want_json=True,
+            # ~400 tokens/story (+overhead) so a full chunk's JSON is never
+            # truncated; a flat 1536 cut off the last ~1 story per 10-story
+            # chunk, which is the "scored 18 of 20" (2 always missing) case.
+            _mt = min(8000, max(1536, 400 * len(chunk_ids) + 512))
+            raw = E.ai_complete(prompt, max_tokens=_mt, want_json=True,
                                 usage_tag="sprint_plan_complexity")
             data = E.parse_json_robust(raw)
             if isinstance(data, dict):
@@ -740,6 +744,29 @@ def _fetch_cp_ai_complexity(app, texts):
     import concurrent.futures as _cf
     with _cf.ThreadPoolExecutor(max_workers=_CP_AI_WORKERS) as ex:
         list(ex.map(_do_chunk, chunks))
+    # Recovery pass: weak models sometimes OMIT a few ids from the list even
+    # with ample tokens. Re-request the CONTENTFUL ids that came back unscored
+    # (a near-empty story is excluded by the content guard on purpose, so a
+    # retry there would only invite a hallucinated score). One extra pass.
+    def _contentful(_sid_):
+        _t = texts.get(_sid_, {}) or {}
+        return (len((_t.get("crit") or "").split())
+                + len((_t.get("desc") or "").split())) >= 8
+    _retry = [i for i in ids if i not in out and _contentful(i)]
+    if _retry:
+        _rchunks = [_retry[k:k + _CP_CHUNK_SIZE]
+                    for k in range(0, len(_retry), _CP_CHUNK_SIZE)]
+        with _cf.ThreadPoolExecutor(max_workers=_CP_AI_WORKERS) as ex2:
+            list(ex2.map(_do_chunk, _rchunks))
+    _missing = [i for i in ids if i not in out]
+    if _missing:
+        try:
+            import diag_log as _dl
+            _dl.log_warn("regression.cp_ai_complexity",
+                         f"{len(_missing)} of {len(ids)} stories fell back to the "
+                         f"heuristic (no AI score): {_missing}")
+        except Exception:
+            pass
     return out
 
 
@@ -911,20 +938,26 @@ def _count_cases(app, selected, progress=None):
 def build_rows(app, selected, progress=None):
     _cache_load(app)   # warm caches from disk on the first generate of a session
     ids = [_sid(s["id"]) for s in selected]
+    # meta (System.Parent/priority/state) and per-suite test-case counting are
+    # independent Azure fetches -- run them CONCURRENTLY so Generate waits
+    # max(meta, counts) instead of their sum.
+    _brc = {}
+    def _brc_counts():
+        try:
+            if getattr(app, "_reg_effort_mode", True):
+                with _perf(f"build_rows.count_cases ({len(selected)} stories)"):
+                    _brc["counts"] = _count_cases(app, selected, progress=progress)
+            else:
+                _brc["counts"] = {_sid(s["id"]): 0 for s in selected}
+        except Exception:
+            _brc["counts"] = {_sid(s["id"]): 0 for s in selected}
+    import threading as _th_br
+    _brc_t = _th_br.Thread(target=_brc_counts, daemon=True)
+    _brc_t.start()
     with _perf(f"build_rows.fetch_meta ({len(ids)} stories)"):
         meta = _fetch_meta(app, ids)
-    if getattr(app, "_reg_effort_mode", True):
-        with _perf(f"build_rows.count_cases ({len(selected)} stories)"):
-            counts = _count_cases(app, selected, progress=progress)
-    else:
-        # Effort mode OFF (Section 3 toggle): skip the expensive per-suite
-        # test-case counting entirely — normally the single slowest part of
-        # Generate (qa_perf_installed.log shows it costing 3–11+ s on
-        # 400+-story plans). Every row's hours end up 0, and
-        # assign_resources() already has a built-in "0-hour -> spread evenly
-        # by headcount" branch, so distribution falls back to a plain even
-        # split automatically with no other change needed.
-        counts = {_sid(s["id"]): 0 for s in selected}
+    _brc_t.join()
+    counts = _brc.get("counts", {}) or {}
     _cache_save(app)   # persist freshly-fetched counts/meta/features for next launch
     story_features = getattr(app, "_reg_story_features", {})
     feat_cache = getattr(app, "_reg_feature_name_cache", {}) or {}
@@ -2459,7 +2492,7 @@ def _reload_plan_stories(app):
                             "sprint": sprint or _sprint_num(s.get("sprint", "")),
                             "plan_id": pid})
         # group by sprint then id so the picker lists them clustered by sprint
-        agg.sort(key=lambda s: (s.get("sprint", "") or "~", s["id"]))
+        E.sort_stories_by_board(getattr(app, "project", ""), agg)
         if _gen != getattr(app, "_reg_stories_gen", _gen):
             return                      # selection changed mid-fetch -> drop results
         # Resolve each story's parent → Feature WHILE we're still loading (covered by
@@ -2547,7 +2580,7 @@ def _reload_auto_plan_stories(app):
                 agg.append({"id": s["id"], "title": s.get("title", ""),
                             "sprint": sprint or _sprint_num(s.get("sprint", "")),
                             "plan_id": pid})
-        agg.sort(key=lambda s: (s.get("sprint", "") or "~", s["id"]))
+        E.sort_stories_by_board(getattr(app, "project", ""), agg)
         if _gen != getattr(app, "_auto_stories_gen", _gen):
             return
         app._auto_plan_stories = agg
@@ -3599,6 +3632,7 @@ def _cp_load_stories(app):
         # holds the SAME dict objects (by reference) as the master, so the
         # enrichment below (priority/feature/work-units, which mutates `agg`)
         # still lands on the selected rows.
+        E.sort_stories_by_board(getattr(app, "project", ""), agg)
         app._cp_all_rows = agg
         app._cp_story_ids = [r["id"] for r in agg]
         app._cp_rows = list(agg)
@@ -3724,6 +3758,20 @@ def _cp_run_enrichment(app, gen):
         return
     try:
         with _perf(f"cp.fetch_meta+features ({len(agg)} stories)"):
+            # complexity+AI runs CONCURRENTLY with the meta->feature resolve
+            # below (independent). The feature resolve alone has been seen
+            # taking minutes on a slow Azure org; overlapping the AI call makes
+            # enrichment wait max(meta+features, AI), not their sum.
+            _cx = {}
+            def _cx_chain():
+                try:
+                    _c, _t = _fetch_cp_complexity(app, [_sid(r["id"]) for r in agg])
+                    _cx["comp"], _cx["texts"], _cx["ai"] = _c, _t, _cp_ai_scores_with_timeout(app, _t)
+                except Exception:
+                    _cx["comp"], _cx["texts"], _cx["ai"] = {}, {}, {}
+            import threading as _th_cp
+            _cx_t = _th_cp.Thread(target=_cx_chain, daemon=True)
+            _cx_t.start()
             meta = _fetch_meta(app, [_sid(r["id"]) for r in agg])
             parent_ids = []
             for r in agg:
@@ -3742,8 +3790,9 @@ def _cp_run_enrichment(app, gen):
             # Content-complexity units per story → drives a non-random estimate.
             # The AI signal is best-effort: timeout / failure / no-credit just
             # leaves ai_scores empty and the blend falls back to the heuristic.
-            comp, texts = _fetch_cp_complexity(app, [_sid(r["id"]) for r in agg])
-            ai_scores = _cp_ai_scores_with_timeout(app, texts)
+            _cx_t.join()
+            comp, texts = (_cx.get("comp") or {}), (_cx.get("texts") or {})
+            ai_scores = _cx.get("ai") or {}
             # Observability: how many stories got a USABLE AI score (survived the
             # parse/validation guards in _fetch_cp_ai_complexity) vs fell back to
             # the heuristic. Stored for the plan card + logged, so "did the AI

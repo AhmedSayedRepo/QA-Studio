@@ -5096,6 +5096,10 @@ class QAStudio:
                 ss = []
             if pid != self.plan_id:   # plan changed again mid-load — drop stale result
                 return
+            try:
+                E.sort_stories_by_board(getattr(self, "project", ""), ss)
+            except Exception:
+                pass
             self._setup_stories = ss
             self._setup_stories_loading = False
             self.ui_safe(getattr(self, "_sync_setup_story_cell", self.render))
