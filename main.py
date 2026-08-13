@@ -296,14 +296,18 @@ class QAStudio:
         self.connected = False
         self.active = "setup"          # setup | run | report
         self.tool = "steps"            # steps | titles
-        self.lang = "ar"               # ar | en  (output language for titles/steps)
+        self.lang = "ar"               # DEFAULT output language (persisted via Settings)
         try:
-            self.lang = "en" if (self.creds.get("lang") == "en") else "ar"
+            _saved = str(self.creds.get("lang") or "").strip().lower()
+            self.lang = _saved if _saved in E.LANGUAGES else "ar"
             # remember the default generator (what to generate) from Settings
             _t = self.creds.get("tool")
             self.tool = _t if _t in ("titles", "steps") else "steps"
         except Exception:
             self.lang = "ar"
+        # Per-RUN override (Setup's picker): starts at the saved default each
+        # launch, is never persisted, so Setup never changes the Settings default.
+        self.run_lang = self.lang
         self.nav_state = {"setup": "active"}
 
         # task selections
@@ -1033,7 +1037,9 @@ class QAStudio:
             pass
         try:
             if self.creds.get("lang"):
-                self.lang = "en" if self.creds.get("lang") == "en" else "ar"
+                _saved = str(self.creds.get("lang")).strip().lower()
+                self.lang = _saved if _saved in E.LANGUAGES else "ar"
+            self.run_lang = self.lang   # a fresh session resets the run override
             _t = self.creds.get("tool")
             if _t in ("titles", "steps"):
                 self.tool = _t
@@ -1043,7 +1049,7 @@ class QAStudio:
             # perf logging is a runtime global — re-apply THIS user's saved value;
             # keep the generator's output language in sync with their pref too.
             regression.set_perf(bool(self.creds.get("perf", True)))
-            E.set_output_lang(self.lang)
+            E.set_output_lang(getattr(self, "run_lang", self.lang))
         except Exception:
             pass
         # Reset the per-account engine globals (org + PAT) to THIS account's own
@@ -2305,6 +2311,7 @@ class QAStudio:
         except Exception:
             pass
         self.lang = "en"
+        self.run_lang = "en"
         try:
             regression.set_perf(True)
         except Exception:
@@ -3985,8 +3992,24 @@ class QAStudio:
                         pass
                 c.on_hover = _h
             return c
+        # Language dropdown built from engine.LANGUAGES (native names). Replaces
+        # the old 2-button ar/en toggle so all supported languages are pickable.
+        _lang_opts = [ft.DropdownOption(key=_code, text=_info["native"])
+                      for _code, _info in E.LANGUAGES.items()]
+        _lang_val = self.lang if persist else getattr(self, "run_lang", self.lang)
+        _lang_kwargs = dict(
+            value=(_lang_val if _lang_val in E.LANGUAGES else "ar"),
+            options=_lang_opts,
+            on_select=lambda e: self._set_lang(e.control.value or self.lang, persist=persist),
+            border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
+            content_padding=ft.Padding.symmetric(vertical=10, horizontal=10),
+            text_size=13, filled=True, bgcolor=T.CARD, width=200)
+        try:
+            _lang_dd = ft.Dropdown(menu_height=300, **_lang_kwargs)
+        except TypeError:
+            _lang_dd = ft.Dropdown(**_lang_kwargs)
         return ft.Container(
-            ft.Row([seg("العربية", "ar"), seg("English", "en")], spacing=4, tight=True),
+            _lang_dd, width=210,
             padding=4, bgcolor=T.CARD_2, border_radius=T.R, border=ft.Border.all(1, T.BORDER))
 
     def _set_lang(self, k, persist=True):
@@ -3994,14 +4017,38 @@ class QAStudio:
         session-only override of Settings' saved default language."""
         if getattr(self, "readonly", False):
             return
-        self.lang = "en" if k == "en" else "ar"
+        code = k if k in E.LANGUAGES else "ar"
         if persist:
+            # Settings: set the saved DEFAULT (and the live session with it).
+            self.lang = code
+            self.run_lang = code
             try:
-                self.creds["lang"] = self.lang
+                self.creds["lang"] = code
                 store.save(self.creds)
             except Exception:
                 pass
-        self.render()
+            self.render()
+            return
+        # Setup: per-RUN override for THIS session only. Update IN PLACE
+        # (like the provider/model pickers) so the page never jump-scrolls.
+        self.run_lang = code
+        updated = False
+        try:
+            _fn = getattr(self, "_setup_desc_build", None)
+            _cell = getattr(self, "_setup_desc_cell", None)
+            if _fn is not None and _cell is not None:
+                _cell.content = _fn()
+                _cell.update()
+                updated = True
+            _lt = getattr(self, "_sum_lang", None)
+            if _lt is not None:
+                _lt.value = E.LANGUAGES.get(code, E.LANGUAGES["en"])["native"]
+                _lt.update()
+                updated = True
+        except Exception:
+            updated = False
+        if not updated:
+            self.render()
 
     # ---- credential handlers ----
     def _on_provider_change(self, e):
@@ -5206,7 +5253,7 @@ class QAStudio:
             self._est_sub = ft.Text(f"test cases\nacross {len(self.story_ids)} stories", size=12,
                                     color=T.INK_2, weight=ft.FontWeight.BOLD)
             rows = [("Generator", "Steps" if self.tool == "steps" else "Titles"),
-                    ("Language", "Arabic" if self.lang == "ar" else "English"),
+                    ("Language", E.LANGUAGES.get(getattr(self, "run_lang", self.lang), E.LANGUAGES["en"])["native"]),
                     ("Project", (self.project or "—")[:16]),
                     ("Test plan", f"#{self.plan_id}" if self.plan_id else "—"),
                     ("Stories", f"{len(self.story_ids)} selected"),
@@ -5225,6 +5272,8 @@ class QAStudio:
                     self._sum_plan = val_text
                 if k == "Email":
                     self._sum_email = val_text
+                if k == "Language":
+                    self._sum_lang = val_text
                 detail_rows.append(ft.Container(
                     ft.Row([ft.Text(k, size=12, color=T.INK_2, weight=ft.FontWeight.BOLD),
                             ft.Container(expand=True),
@@ -6126,7 +6175,7 @@ class QAStudio:
             self.existing_mode = existing_mode
         # apply the chosen output language for this run
         try:
-            E.set_output_lang(self.lang)
+            E.set_output_lang(getattr(self, "run_lang", self.lang))
         except Exception:
             pass
         self.stop_flag = False
@@ -6425,7 +6474,10 @@ class QAStudio:
                 return []
             return [ft.Container(
                 ft.Row([ft.ProgressRing(width=14, height=14, stroke_width=2, color=T.VIOLET),
-                        ft.Text("Preparing stories…", size=12.5, color=T.INK_3,
+                        ft.Text(((self._progress.get("label") or "Preparing stories…")
+                                 if getattr(self, "_run_started", False)
+                                 else "Preparing stories…"),
+                                size=12.5, color=T.INK_3,
                                 weight=ft.FontWeight.BOLD)], spacing=10),
                 padding=14)]
         # MOBILE_PLAN.md Phase 2 explicitly called this out: "the Run

@@ -36,7 +36,7 @@ FEATURES = [
          "to whichever backend is connected. (Jira + Zephyr Scale is temporarily hidden "
          "while its API access is finalized.)",
          "Finally choose what to generate — test-case Titles or full Steps — and the "
-         "output language, Arabic or English. Changing provider, model, project or "
+         "output language — any of seven (English, Arabic, French, Spanish, German, Turkish, Dutch). Changing provider, model, project or "
          "plan while connected drops the live connection so you never run against a "
          "stale selection.",
          "Email sender setup (the address, display name, and Gmail App Password used "
@@ -55,7 +55,7 @@ FEATURES = [
          "Jira/Azure → TestRail hybrid); each keeps its own credentials.",
          "Azure DevOps PAT + organization load projects; pick project → test plan → "
          "stories.",
-         "Choose Titles vs Steps and Arabic / English — these defaults also live on "
+         "Choose Titles vs Steps and the output language (English, Arabic, French, Spanish, German, Turkish, Dutch) — the language picked on Setup applies to that run only, and the saved defaults also live on "
          "the Settings screen.",
          "Email sender (address / name / Gmail App Password): Admin-only, configured "
          "once and shared with every user — not a per-device setting.",
@@ -194,17 +194,17 @@ FEATURES = [
      ]},
     {"key": "titles", "icon": ft.Icons.ARTICLE_OUTLINED, "title": "Sprint Report",
      "blurb": "A sprint-closure report: stories grouped by status plus a bug "
-              "summary, in Arabic or English.",
+              "summary, in any of the seven supported languages.",
      "details": [
          "Sprint Report produces an end-of-sprint summary: the sprint's stories "
          "grouped by their status, together with a bug summary, formatted for "
-         "sharing. Pick Arabic or English and the whole report — including "
+         "sharing. Pick any of the seven languages and the whole report — including "
          "right-to-left layout for Arabic — is generated accordingly.",
          "Export the finished report or email it directly to your stakeholders.",
      ],
      "points": [
          "Groups the sprint's stories by status and summarizes its bugs.",
-         "Arabic or English output, with correct RTL layout for Arabic.",
+         "Multi-language output (seven languages), with correct RTL layout for Arabic.",
          "Export or email the finished report.",
      ]},
     {"key": "task_manager", "icon": ft.Icons.TASK_ALT, "title": "Task Manager",

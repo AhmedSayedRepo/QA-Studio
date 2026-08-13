@@ -24,15 +24,41 @@ AZURE_ORG = (os.environ.get("AZURE_ORG") or "").strip()
 
 AI_PROVIDER = "anthropic"   # overridden at runtime by the UI
 
-# Output language for generated titles/steps: "ar" (Arabic) or "en" (English).
-# Overridden at runtime by the UI via set_output_lang().
+# ── Output language for generated content + the Sprint Report ───────────────
+# The registry is the SINGLE SOURCE OF TRUTH for every supported language: its
+# dropdown label (native), the name handed to the AI prompt, and whether it
+# lays out right-to-left. Add a row here to support a new language.
+LANGUAGES = {
+    "en": {"name": "English", "native": "English",    "rtl": False},
+    "ar": {"name": "Arabic",  "native": "العربية",     "rtl": True},
+    "fr": {"name": "French",  "native": "Français",    "rtl": False},
+    "tr": {"name": "Turkish", "native": "Türkçe",      "rtl": False},
+    "es": {"name": "Spanish", "native": "Español",     "rtl": False},
+    "de": {"name": "German",  "native": "Deutsch",     "rtl": False},
+    "nl": {"name": "Dutch",   "native": "Nederlands",  "rtl": False},
+}
+
+# Overridden at runtime by the UI via set_output_lang(). Holds a registry code.
 OUTPUT_LANG = "ar"
 
 def set_output_lang(lang):
-    """Set the language for generated titles/steps. 'ar' or 'en'."""
+    """Set the language for generated content. Accepts any LANGUAGES code
+    (ar/en/fr/tr/es/de/nl); unknown values fall back to English. Legacy callers
+    passing 'ar'/'en' or 'Arabic'/'English' keep working."""
     global OUTPUT_LANG
-    OUTPUT_LANG = "en" if str(lang).lower().startswith("en") else "ar"
+    code = str(lang or "").strip().lower()
+    if code not in LANGUAGES:
+        code = code[:2]
+    OUTPUT_LANG = code if code in LANGUAGES else "en"
     return OUTPUT_LANG
+
+def out_lang_name():
+    """The language NAME to instruct the AI with (e.g. 'French')."""
+    return LANGUAGES.get(OUTPUT_LANG, LANGUAGES["en"])["name"]
+
+def out_is_rtl():
+    """True when the OUTPUT language lays out right-to-left (Arabic today)."""
+    return LANGUAGES.get(OUTPUT_LANG, LANGUAGES["en"])["rtl"]
 
 AI_CONFIG = {
     "anthropic":    {"api_key": "your-anthropic-key-here", "model": "claude-sonnet-4-6", "vision": True},
@@ -2861,7 +2887,10 @@ def fetch_existing_titles_for_suite(project, plan_id, suite_id):
 import time
 
 def _is_arabic_out():
-    return OUTPUT_LANG != "en"
+    # Arabic SPECIFICALLY (not merely "non-English") — otherwise fr/tr/es/de/nl
+    # would wrongly take the Arabic prompt + RTL layout. Arabic is the only
+    # RTL output language today, so this doubles as the RTL gate.
+    return OUTPUT_LANG == "ar"
 
 def _coerce_step_list(data):
     """Flatten an AI JSON result into a list of step dicts, tolerating the same
@@ -2948,7 +2977,7 @@ def generate_steps(tc_title, acceptance_criteria, ui_description="", log=None,
         ui_block = f"\n        UI description (extracted from screenshots):\n        {ui_description}\n" if ui_description else ""
         text = f"""
         You are an expert QA engineer. Generate detailed test steps for the following test case.
-        Write ALL steps in English only.
+        Write ALL steps in {out_lang_name()} only.
         Return ONLY a JSON object with a "steps" key whose value is an array of step objects — no extra text or markdown.
         Important: do not use double quotes inside the string values.
 
@@ -3108,7 +3137,7 @@ def evaluate_existing_steps(tc_title, criteria, existing_steps_xml, should_stop=
         Test case title: {tc_title}
         Acceptance criteria: {criteria}
         Current steps: {plain}
-        Return ONLY a JSON object: {{"adequate": true/false, "reason": "short reason in English"}}
+        Return ONLY a JSON object: {{"adequate": true/false, "reason": "short reason in {out_lang_name()}"}}
     """
         fallback_reason = "Could not understand the AI's evaluation reply — left the existing steps unchanged as a precaution"
     # One retry before giving up on a parse failure — cheap (a bad JSON reply
@@ -3392,7 +3421,7 @@ def generate_titles(story_title, criteria, existing_titles=None, log=None,
 """ if ac_ids else "")
         prompt = f"""
         You are an expert QA engineer. Generate test case titles for the following user story.
-        Write the titles in English only. Do not use double quotes inside the text.
+        Write the titles in {out_lang_name()} only. Do not use double quotes inside the text.
         Return ONLY a JSON object with a "titles" key whose value is an array of
         {{"ac":"ACn","title":"..."}} objects.
 
@@ -6220,7 +6249,10 @@ def build_report_email(tool, summary, stats, action_items=None, skipped_items=No
             msg = _html.escape(str(ln.get("msg", "")))
             item_id = _html.escape(str(ln.get("id", "")))
             detail = _html.escape(str(ln.get("detail", "")))
-            is_ar = bool(ln.get("ar")) or _is_ar(ln.get("msg", ""))
+            # Align each line by the TITLE's own script, not the legacy "ar"
+            # flag (hardcoded True in the run engine from the Arabic-only era),
+            # so French/German/etc. titles align LTR in the email.
+            is_ar = _is_ar(ln.get("msg", ""))
             is_story = (tone == "story")
             indent = "padding-left:30px;" if ln.get("indent") else ""
             u = _wi_url(ln.get("id"))

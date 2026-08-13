@@ -24,6 +24,12 @@ import backend_setup
 # Story states that count as "done" for the report.
 _DONE = {"done", "closed", "completed", "resolved", "accepted"}
 
+# States that count as "completed" in the SPRINT CLOSURE REPORT specifically.
+# Per the team's Azure workflow a story is done for the report once it reaches
+# "Product Owner Review"; every OTHER state is in-progress / carried. Kept
+# separate from _DONE (which still colours the state-distribution chips).
+_REPORT_DONE = {"product owner review"}
+
 # Localized labels (headings are fixed strings; story titles are AI-translated).
 _L = {
     "ar": {
@@ -42,6 +48,46 @@ _L = {
         "by_status": "By status", "stories": "stories", "none": "None.",
         "other": "Other objectives", "objectives": "Sprint objectives",
     },
+    "fr": {
+        "title": "Rapport de clôture du sprint", "sprint": "Sprint", "date": "Date",
+        "completed": "Terminés", "carried": "En cours / reportés",
+        "bugs": "Bugs", "total_bugs": "Total des bugs",
+        "regression_bugs": "Bugs de régression", "sprint_bugs": "Bugs du sprint",
+        "by_status": "Par statut", "stories": "récits", "none": "Aucun.",
+        "other": "Autres objectifs", "objectives": "Objectifs du sprint",
+    },
+    "tr": {
+        "title": "Sprint Kapanış Raporu", "sprint": "Sprint", "date": "Tarih",
+        "completed": "Tamamlanan", "carried": "Devam eden / aktarılan",
+        "bugs": "Hatalar", "total_bugs": "Toplam hata",
+        "regression_bugs": "Regresyon hataları", "sprint_bugs": "Sprint hataları",
+        "by_status": "Duruma göre", "stories": "hikaye", "none": "Yok.",
+        "other": "Diğer hedefler", "objectives": "Sprint hedefleri",
+    },
+    "es": {
+        "title": "Informe de cierre del sprint", "sprint": "Sprint", "date": "Fecha",
+        "completed": "Completadas", "carried": "En progreso / trasladadas",
+        "bugs": "Errores", "total_bugs": "Total de errores",
+        "regression_bugs": "Errores de regresión", "sprint_bugs": "Errores del sprint",
+        "by_status": "Por estado", "stories": "historias", "none": "Ninguna.",
+        "other": "Otros objetivos", "objectives": "Objetivos del sprint",
+    },
+    "de": {
+        "title": "Sprint-Abschlussbericht", "sprint": "Sprint", "date": "Datum",
+        "completed": "Abgeschlossen", "carried": "In Bearbeitung / übertragen",
+        "bugs": "Fehler", "total_bugs": "Fehler gesamt",
+        "regression_bugs": "Regressionsfehler", "sprint_bugs": "Sprint-Fehler",
+        "by_status": "Nach Status", "stories": "Storys", "none": "Keine.",
+        "other": "Weitere Ziele", "objectives": "Sprint-Ziele",
+    },
+    "nl": {
+        "title": "Sprint-afsluitrapport", "sprint": "Sprint", "date": "Datum",
+        "completed": "Voltooid", "carried": "In uitvoering / doorgeschoven",
+        "bugs": "Bugs", "total_bugs": "Totaal aantal bugs",
+        "regression_bugs": "Regressiebugs", "sprint_bugs": "Sprintbugs",
+        "by_status": "Op status", "stories": "stories", "none": "Geen.",
+        "other": "Overige doelen", "objectives": "Sprintdoelen",
+    },
 }
 
 # Ordinal prefixes for epic group headings (mirrors the reference report's
@@ -51,6 +97,17 @@ _ORD = {
            "سابعاً", "ثامناً", "تاسعاً", "عاشراً"],
     "en": ["First", "Second", "Third", "Fourth", "Fifth", "Sixth",
            "Seventh", "Eighth", "Ninth", "Tenth"],
+    "fr": ["Premièrement", "Deuxièmement", "Troisièmement", "Quatrièmement",
+           "Cinquièmement", "Sixièmement", "Septièmement", "Huitièmement",
+           "Neuvièmement", "Dixièmement"],
+    "tr": ["Birincisi", "İkincisi", "Üçüncüsü", "Dördüncüsü", "Beşincisi",
+           "Altıncısı", "Yedincisi", "Sekizincisi", "Dokuzuncusu", "Onuncusu"],
+    "es": ["Primero", "Segundo", "Tercero", "Cuarto", "Quinto", "Sexto",
+           "Séptimo", "Octavo", "Noveno", "Décimo"],
+    "de": ["Erstens", "Zweitens", "Drittens", "Viertens", "Fünftens",
+           "Sechstens", "Siebtens", "Achtens", "Neuntens", "Zehntens"],
+    "nl": ["Ten eerste", "Ten tweede", "Ten derde", "Ten vierde", "Ten vijfde",
+           "Ten zesde", "Ten zevende", "Ten achtste", "Ten negende", "Ten tiende"],
 }
 
 
@@ -217,22 +274,108 @@ def _parse_numbered(out, n):
     return mapped
 
 
+def _parse_json_items(out, n):
+    """Pull a JSON OBJECT wrapping the array of `n` strings — the shape strict
+    json_object providers (Groq) require. Reads {"items":[...]} or any single
+    list value / invented key. None if it cannot."""
+    try:
+        s = out[out.index("{"):out.rindex("}") + 1]
+        obj = json.loads(s)
+    except Exception:
+        return None
+    if not isinstance(obj, dict):
+        return None
+    arr = None
+    for k in ("items", "translations", "result", "results", "strings", "values"):
+        v = obj.get(k)
+        if isinstance(v, list):
+            arr = v
+            break
+    if arr is None:
+        lists = [v for v in obj.values() if isinstance(v, list)]
+        arr = lists[0] if lists else None
+    if isinstance(arr, list) and len(arr) == n:
+        return [(_clean_line(str(a)) or None) for a in arr]
+    return None
+
+
+_ARABIC_RE = re.compile(r"[\u0600-\u06FF]")
+
+
+def _has_arabic(s):
+    return bool(_ARABIC_RE.search(s or ""))
+
+
+def _strip_bilingual(s, lang):
+    """Clean one translated title. Groq's model sometimes (a) echoes
+    'original -> translation', (b) self-corrects a word as 'typo -> fix', and
+    (c) appends an editorial note like '(typo in thought, fixed)'. Strip all of
+    that: drop model-commentary parentheticals, then collapse any arrow artifact
+    to the fullest segment in the target language. Legit titles (no arrow, no
+    commentary) pass through unchanged; real product parentheticals survive."""
+    if not s:
+        return s
+    s = s.strip().strip("`").strip()
+    # Cut model "thinking out loud" — deliberation that leaks into the string,
+    # e.g. a title followed by "or I'll stick with ...?". Keep the text BEFORE the
+    # first English deliberation marker (the first, usually-correct rendering); the
+    # markers are specific enough not to hit real titles ("Add or Edit" is safe).
+    _cut = re.sub(r"\s*(?:\bor\s+)?(?:i['’]?ll\b|let me\b|on second thought\b|"
+                  r"i think\b|alternatively\b|\bhmm\b|wait,).*$",
+                  "", s, flags=re.I | re.S).strip()
+    if _cut:
+        s = _cut
+    s = re.sub(r"\s*[\(\[][^)\]]*(?:typo|corrected|correction|mistranslat|"
+               r"in thought|thinking)[^)\]]*[\)\]]", "", s, flags=re.I)
+    for sep in (" -> ", " → "):
+        if sep in s:
+            parts = [x.strip() for x in s.split(sep) if x.strip()]
+            if len(parts) >= 2:
+                if lang == "ar":
+                    cand = [x for x in parts if _has_arabic(x)] or parts
+                else:
+                    cand = [x for x in parts if not _has_arabic(x)] or parts
+                s = max(cand, key=len)
+    # Collapse an immediately repeated word ("VALID VALID" -> "VALID"), a
+    # common small-model garble. Safe: real titles rarely repeat a word
+    # back-to-back.
+    s = re.sub(r"(\b\w+\b)(?:\s+\1\b)+", r"\1", s, flags=re.I)
+    return re.sub(r"\s{2,}", " ", s).strip()
+
+
 def _translate_chunk(texts, target):
     """Translate one batch; returns a list aligned 1:1 (per-item fallback to the
-    original on any miss). Asks for a JSON array (most robust), falls back to a
+    original on any miss). Asks for a JSON object wrapping the array (safe for
+    strict json_object providers like Groq); falls back to bare-array then a
     numbered/positional line parse if the model ignores the JSON instruction."""
     payload = json.dumps(texts, ensure_ascii=False)
     prompt = (
-        f"Translate each string in this JSON array into {target}. Translate the "
-        "meaning naturally and concisely; keep IDs, version numbers and obvious "
-        "product names sensible. Return ONLY a JSON array of the translated "
-        "strings — same length, same order, no keys, no commentary, no code "
-        f"fences.\n\n{payload}")
+        f"Translate each string in this JSON array into {target}. "
+        f"Output ONLY the {target} translation of each item. Do NOT include the "
+        "original text, do NOT return both languages, and do NOT join the original "
+        "to the translation with arrows (->), slashes or dashes. Do NOT correct, "
+        "comment on, or annotate typos, and add NO notes, parentheses, brackets, "
+        "or explanations about your translation — return the final translated text "
+        "only. Give exactly ONE final translation per item; never deliberate or "
+        "offer alternatives, and never add a question mark. Translate the meaning "
+        "naturally and concisely; keep IDs, version "
+        "numbers and well-known product names intelligible. Return ONLY a JSON "
+        "array of the translated strings, same length and same order as the input, "
+        f"no keys, no commentary, no code fences.\n\n{payload}")
     # Let credit/error bubble up so the caller can tell the user (don't silently
     # fall back to English on an out-of-credit / failed provider).
-    out = E.ai_complete(prompt, max_tokens=4096, want_json=True) or ""
-    mapped = _parse_json_array(out, len(texts)) or _parse_numbered(out, len(texts))
-    return [(mapped[i] or texts[i]) for i in range(len(texts))]
+    # want_json is OFF on purpose. Groq's json_object mode 400s with
+    # "Failed to validate JSON" when the model returns a top-level array
+    # (or anything not a bare object), which is exactly what a translation
+    # list is. We ask for JSON in the prompt and parse it defensively below,
+    # so we don't need — and don't want — the provider's strict JSON grammar.
+    out = E.ai_complete(prompt, max_tokens=4096) or ""
+    mapped = (_parse_json_items(out, len(texts))
+              or _parse_json_array(out, len(texts))
+              or _parse_numbered(out, len(texts)))
+    tlang = "ar" if target == "Arabic" else "en"
+    return [_strip_bilingual(mapped[i] or texts[i], tlang)
+            for i in range(len(texts))]
 
 
 def _translate(texts, lang):
@@ -244,7 +387,7 @@ def _translate(texts, lang):
     texts = [t or "" for t in texts]
     if not any(t.strip() for t in texts):
         return list(texts), None
-    target = "Arabic" if lang == "ar" else "English"
+    target = E.LANGUAGES.get(lang, {}).get("name") or "English"
     out, CHUNK, err = [], 20, None
     for i in range(0, len(texts), CHUNK):
         chunk = texts[i:i + CHUNK]
@@ -309,6 +452,11 @@ def _generate(app):
                     seen_b.add(b["id"])
                     bugs.append(b)
 
+            # Sort into Azure sprint-board order (StackRank/BacklogPriority/Id)
+            # so the report lists stories like the other screens; _group_by_epic
+            # below preserves this order within each epic group. Non-Azure /
+            # unrankable backends fall back to a stable (sprint, id) order.
+            stories = E.sort_stories_by_board(getattr(app, "project", ""), stories)
             # translate every title once, then split into sections by state
             originals = [s["title"] for s in stories]
             titles, terr = _translate(originals, lang)
@@ -319,8 +467,8 @@ def _generate(app):
                 s["t"] = _plain_text(tr)
             n_changed = sum(1 for o, t in zip(originals, titles)
                             if (t or "").strip() != (o or "").strip())
-            completed = [s for s in stories if (s.get("state", "").lower() in _DONE)]
-            carried = [s for s in stories if (s.get("state", "").lower() not in _DONE)]
+            completed = [s for s in stories if (s.get("state", "").lower() in _REPORT_DONE)]
+            carried = [s for s in stories if (s.get("state", "").lower() not in _REPORT_DONE)]
 
             from collections import Counter
             reg = sum(1 for b in bugs if "regression" in (b.get("tags", "") or "").lower())
@@ -441,7 +589,7 @@ def _export_docx(app):
     # way — Unicode's bidi algorithm shapes the Arabic glyphs correctly inside
     # each run regardless of paragraph direction.
     rtl = (lang == "ar")
-    L = _L[lang]
+    L = _L.get(lang, _L["en"])
     BLUE = RGBColor(0x4C, 0x94, 0xD8)         # brand blue from the reference report
     INK = RGBColor(0x1F, 0x1F, 0x1F)
     LEFT = WD_ALIGN_PARAGRAPH.LEFT
@@ -641,7 +789,7 @@ def _export_docx(app):
         show_groups = any(e for e, _ in groups)
         for gi, (epic, grp) in enumerate(groups):
             if show_groups:
-                ordn = _ORD[lang][gi] if gi < len(_ORD[lang]) else str(gi + 1)
+                ordn = _ORD.get(lang, _ORD["en"])[gi] if gi < len(_ORD.get(lang, _ORD["en"])) else str(gi + 1)
                 _para(f"{ordn}: {epic or L['other']}:", size=12, bold=True,
                       underline=True, color=INK, rtl_p=rtl, before=6, after=2)
             for s in grp:
@@ -708,7 +856,7 @@ def screen(app):
 
     _load_iterations(app)
     lang = app._st_lang
-    L = _L[lang]
+    L = _L.get(lang, _L["en"])
     rtl = (lang == "ar")
     _ral = ft.TextAlign.RIGHT if rtl else ft.TextAlign.LEFT
 
@@ -730,7 +878,7 @@ def screen(app):
             pass
 
     def _set_lang(k):
-        new = "en" if k == "en" else "ar"
+        new = k if k in E.LANGUAGES else "ar"
         if new == app._st_lang:
             return
         app._st_lang = new
@@ -752,8 +900,21 @@ def screen(app):
                 bgcolor=(T.VIOLET_SOFT if sel else None), border_radius=T.R_SM,
                 border=ft.Border.all(1, T.VIOLET if sel else ft.Colors.TRANSPARENT),
                 on_click=lambda e, k=key: _set_lang(k))
+        _lang_opts = [ft.DropdownOption(key=_code, text=_info["native"])
+                      for _code, _info in E.LANGUAGES.items()]
+        _lang_kwargs = dict(
+            value=(app._st_lang if app._st_lang in E.LANGUAGES else "ar"),
+            options=_lang_opts,
+            on_select=lambda e: _set_lang(e.control.value or app._st_lang),
+            border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
+            content_padding=ft.Padding.symmetric(vertical=8, horizontal=10),
+            text_size=12, filled=True, bgcolor=T.CARD, width=190)
+        try:
+            _lang_dd = ft.Dropdown(menu_height=280, **_lang_kwargs)
+        except TypeError:
+            _lang_dd = ft.Dropdown(**_lang_kwargs)
         return ft.Container(
-            ft.Row([seg("العربية", "ar"), seg("English", "en")], spacing=4, tight=True),
+            _lang_dd, width=200,
             padding=4, bgcolor=T.CARD_2, border_radius=T.R, border=ft.Border.all(1, T.BORDER))
 
     def _toggle(key, checked):
@@ -846,14 +1007,16 @@ def screen(app):
                 border_radius=T.R_SM,
                 bgcolor=(T.CARD_2 if stripe else ft.Colors.TRANSPARENT))
 
-        def _epic_head(text_val, accent):
-            # Soft tinted chip instead of a plain underline — matches the
-            # rounded-badge idiom used throughout the redesigned plan email
-            # (cont'd #29) rather than a bare border, which read as an
-            # afterthought next to the accent-bar section headers below.
+        def _epic_head(ordn, epic, accent):
+            # Ordinal, an explicit ":" separator, and the (often English) epic
+            # name as THREE separate spans in a direction-aware row — not one
+            # mixed string, whose colon bidi-reorders unpredictably. For Arabic
+            # the ordinal sits on the RIGHT, then ":", then the epic name on the
+            # LEFT ("ثانياً : Member Portal"); for English it reads naturally.
+            _mk = lambda v: R._txt(v, color=accent, weight=ft.FontWeight.W_800,
+                                   size=12)
             return ft.Container(
-                _drow([R._txt(text_val, color=accent, weight=ft.FontWeight.W_800,
-                              size=12, text_align=_ral)], alignment=_main),
+                _drow([_mk(ordn), _mk(":"), _mk(epic)], spacing=4, alignment=_main),
                 padding=ft.Padding.symmetric(vertical=6, horizontal=10),
                 bgcolor=ft.Colors.with_opacity(0.10, accent),
                 border_radius=999,
@@ -888,8 +1051,8 @@ def screen(app):
                 body, stripe = [], 0
                 for gi, (epic, grp) in enumerate(groups):
                     if show_groups:
-                        ordn = _ORD[lang][gi] if gi < len(_ORD[lang]) else str(gi + 1)
-                        body.append(_epic_head(f"{ordn}: {epic or L['other']}", accent))
+                        ordn = _ORD.get(lang, _ORD["en"])[gi] if gi < len(_ORD.get(lang, _ORD["en"])) else str(gi + 1)
+                        body.append(_epic_head(ordn, epic or L['other'], accent))
                     for s in grp:
                         body.append(_item(s.get("t") or s.get("title") or "",
                                           accent, stripe % 2 == 1))

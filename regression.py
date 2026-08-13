@@ -648,7 +648,10 @@ def _fetch_cp_ai_complexity(app, texts):
             # truncated; a flat 1536 cut off the last ~1 story per 10-story
             # chunk, which is the "scored 18 of 20" (2 always missing) case.
             _mt = min(8000, max(1536, 400 * len(chunk_ids) + 512))
-            raw = E.ai_complete(prompt, max_tokens=_mt, want_json=True,
+            # want_json OFF: Groq's json_object mode 400s on the top-level
+            # JSON array this prompt asks for; parse_json_robust handles the
+            # plain/fenced reply, so we don't need strict provider JSON mode.
+            raw = E.ai_complete(prompt, max_tokens=_mt,
                                 usage_tag="sprint_plan_complexity")
             data = E.parse_json_robust(raw)
             if isinstance(data, dict):

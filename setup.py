@@ -38,7 +38,16 @@ def screen(app):
         ], spacing=0))
 
         # ── Tool selector card ──
-        _lang_word = "Arabic" if app.lang == "ar" else "English"
+        # Output-language description as a STABLE cell so the language picker
+        # can refresh it in place (like the provider/model pickers) — no render.
+        def _lang_desc_ctrl():
+            _lw = E.LANGUAGES.get(getattr(app, "run_lang", app.lang), E.LANGUAGES["en"])["name"]
+            _txt = (f"Adds detailed {_lw} steps — precondition · action · expected — to existing test cases."
+                    if app.tool == "steps" else
+                    f"Reads each user story and writes {_lw} test-case titles into the plan, skipping duplicates.")
+            return ft.Text(_txt, size=12.5, color=T.INK_2, weight=ft.FontWeight.W_500)
+        app._setup_desc_build = _lang_desc_ctrl
+        app._setup_desc_cell = ft.Container(_lang_desc_ctrl())
         tool_card = card(ft.Column([
             sec_head("2", "What to generate",
                      ft.Text("one app · two generators", size=11, color=T.INK_3, weight=ft.FontWeight.BOLD)),
@@ -58,11 +67,7 @@ def screen(app):
                 app._lang_segment(persist=False),
             ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
             ft.Container(height=10),
-            ft.Text(
-                f"Adds detailed {_lang_word} steps — precondition · action · expected — to existing test cases."
-                if app.tool == "steps" else
-                f"Reads each user story and writes {_lang_word} test-case titles into the plan, skipping duplicates.",
-                size=12.5, color=T.INK_2, weight=ft.FontWeight.W_500),
+            app._setup_desc_cell,
         ], spacing=0))
 
         # ── Task card (gated) ──

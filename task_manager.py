@@ -2138,7 +2138,12 @@ def screen(app):
         # _task_locked), just with a message specific to this case. Read
         # fresh every call (not captured once) so this cell's own rebuild
         # always reflects whatever the toggle is set to AT THAT MOMENT.
-        locked = (getattr(app, "_tm_scope_mode", "sprint") == "dates")
+        mode = getattr(app, "_tm_scope_mode", "sprint")
+        # Lock Section 2 until stories can actually be loaded: Date range has
+        # no sprint concept, AND Sprint mode with no sprint chosen yet has
+        # nothing to load — both show the "Pick a sprint" locked card. Picking
+        # a sprint (_set_iteration) full-renders and rebuilds this to unlock.
+        locked = (mode == "dates") or not (getattr(app, "_tm_iteration", "") or "").strip()
 
         if locked:
             return [card(ft.Stack([
