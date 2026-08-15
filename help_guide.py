@@ -11,6 +11,7 @@ import flet as ft
 import theme as T
 import platform_caps
 from ui import ghost_btn
+import strings
 
 
 # Each feature: key, icon, title, one-line blurb, `details` (fuller prose
@@ -505,9 +506,9 @@ PLATFORM_OF = {
 }
 
 PLATFORM_META = {
-    "both": ("Mobile & desktop", ft.Icons.DEVICES),
-    "desktop": ("Desktop only", ft.Icons.DESKTOP_WINDOWS_OUTLINED),
-    "mobile": ("Mobile only", ft.Icons.PHONE_IPHONE_OUTLINED),
+    "both": ft.Icons.DEVICES,
+    "desktop": ft.Icons.DESKTOP_WINDOWS_OUTLINED,
+    "mobile": ft.Icons.PHONE_IPHONE_OUTLINED,
 }
 
 
@@ -519,7 +520,8 @@ def _platform_badge(plat, compact=False):
     """A small themed pill: 'Mobile & desktop' (green) or 'Desktop only'
     (amber). Amber = the not-everywhere case, so a desktop-only screen visibly
     stands out from the ones that work everywhere."""
-    label, icon = PLATFORM_META.get(plat, PLATFORM_META["both"])
+    icon = PLATFORM_META.get(plat, PLATFORM_META["both"])
+    label = strings.t("help_plat_" + plat)
     both = (plat == "both")
     ink = T.GREEN if both else T.AMBER
     bg = T.GREEN_SOFT if both else T.AMBER_SOFT
@@ -542,26 +544,26 @@ def _content(feat):
             ft.Container(ft.Icon(feat["icon"], size=20, color=T.VIOLET_INK),
                          width=40, height=40, bgcolor=T.VIOLET_SOFT, border_radius=10,
                          alignment=ft.Alignment.CENTER),
-            ft.Text(feat["title"], size=19, weight=ft.FontWeight.BOLD, color=T.INK),
+            ft.Text(strings.t("help_" + feat["key"] + "_title"), size=19, weight=ft.FontWeight.BOLD, color=T.INK),
             ft.Container(expand=True),
             _platform_badge(_platform_of(feat)),
         ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER),
         ft.Container(height=10),
-        ft.Text(feat["blurb"], size=13.5, color=T.INK_2, weight=ft.FontWeight.W_500),
+        ft.Text(strings.t("help_" + feat["key"] + "_blurb"), size=13.5, color=T.INK_2, weight=ft.FontWeight.W_500),
         ft.Container(height=14),
     ]
-    for para in feat.get("details", []):
-        rows.append(ft.Text(para, size=13, color=T.INK_2, weight=ft.FontWeight.W_500))
+    for _i, para in enumerate(feat.get("details", [])):
+        rows.append(ft.Text(strings.t("help_" + feat["key"] + "_d" + str(_i)), size=13, color=T.INK_2, weight=ft.FontWeight.W_500))
         rows.append(ft.Container(height=10))
     if feat.get("points"):
-        rows.append(ft.Text("KEY POINTS", size=10.5, weight=ft.FontWeight.W_800,
+        rows.append(ft.Text(strings.t("help_key_points"), size=10.5, weight=ft.FontWeight.W_800,
                             color=T.INK_3))
         rows.append(ft.Container(height=8))
-    for p in feat["points"]:
+    for _j, p in enumerate(feat["points"]):
         rows.append(ft.Row([
             ft.Container(width=7, height=7, border_radius=4, bgcolor=T.VIOLET,
                          margin=ft.Margin.only(top=6)),
-            ft.Text(p, size=13, color=T.INK_2, weight=ft.FontWeight.W_500, expand=True),
+            ft.Text(strings.t("help_" + feat["key"] + "_p" + str(_j)), size=13, color=T.INK_2, weight=ft.FontWeight.W_500, expand=True),
         ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.START))
         rows.append(ft.Container(height=9))
     return rows
@@ -582,7 +584,7 @@ def show(app, initial=None):
 
     nav_col = ft.Column(spacing=3, scroll=ft.ScrollMode.AUTO, expand=True)
     content_col = ft.Column(spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
-    empty_hint = ft.Text("No features match your search.", size=12.5, color=T.INK_3)
+    empty_hint = ft.Text(strings.t("help_no_match"), size=12.5, color=T.INK_3)
     # Mobile single-pane holder — _refresh swaps its content between the topic
     # LIST and the selected topic's DETAIL. Unused on desktop.
     mobile_holder = ft.Column(spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
@@ -600,7 +602,7 @@ def show(app, initial=None):
             ft.Row([
                 ft.Icon(feat["icon"], size=15,
                         color=(T.VIOLET_INK if selected else T.INK_2)),
-                ft.Text(feat["title"], size=12.5,
+                ft.Text(strings.t("help_" + feat["key"] + "_title"), size=12.5,
                         weight=ft.FontWeight.BOLD,
                         color=(T.VIOLET_INK if selected else T.INK_2)),
                 *tail,
@@ -614,7 +616,7 @@ def show(app, initial=None):
     def _matches(feat, q):
         if not q:
             return True
-        hay = (feat["title"] + " " + feat["blurb"] + " " + " ".join(feat["points"])).lower()
+        hay = (strings.t("help_"+feat["key"]+"_title") + " " + strings.t("help_"+feat["key"]+"_blurb") + " " + " ".join(strings.t("help_"+feat["key"]+"_p"+str(_k)) for _k in range(len(feat["points"])))).lower()
         return q in hay
 
     def _refresh():
@@ -628,7 +630,7 @@ def show(app, initial=None):
                 mobile_holder.controls = [
                     ft.Container(
                         ft.Row([ft.Icon(ft.Icons.ARROW_BACK, size=16, color=T.VIOLET_INK),
-                                ft.Text("All topics", size=12.5,
+                                ft.Text(strings.t("help_all_topics"), size=12.5,
                                         weight=ft.FontWeight.BOLD, color=T.VIOLET_INK)],
                                spacing=6, tight=True),
                         on_click=_back_to_list, ink=True, border_radius=8,
@@ -661,7 +663,7 @@ def show(app, initial=None):
         _refresh()
 
     search = ft.TextField(
-        hint_text="Search features…", on_change=_on_search,
+        hint_text=strings.t("help_search_ph"), on_change=_on_search,
         prefix_icon=ft.Icons.SEARCH, dense=True, text_size=12.5,
         border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
         content_padding=ft.Padding.symmetric(vertical=8, horizontal=10),
@@ -697,9 +699,9 @@ def show(app, initial=None):
             ft.Container(ft.Icon(ft.Icons.MENU_BOOK_OUTLINED, size=18, color=T.VIOLET_INK),
                          width=34, height=34, bgcolor=T.VIOLET_SOFT, border_radius=9,
                          alignment=ft.Alignment.CENTER),
-            ft.Text("Feature guide", size=16, weight=ft.FontWeight.W_800, color=T.INK, expand=True),
+            ft.Text(strings.t("help_feature_guide"), size=16, weight=ft.FontWeight.W_800, color=T.INK, expand=True),
         ], spacing=10),
         content=body,
-        actions=[ghost_btn("Close", on_click=lambda e: app._close_dialog())],
+        actions=[ghost_btn(strings.t("help_close"), on_click=lambda e: app._close_dialog())],
         actions_alignment=ft.MainAxisAlignment.END)
     app._show_dialog(dlg)

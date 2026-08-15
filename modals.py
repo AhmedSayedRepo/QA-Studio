@@ -3,6 +3,7 @@ existing-steps). Extracted from main.py (Step-11). Each takes the QAStudio app;
 the app keeps thin delegator methods so the call-sites keep working.
 """
 import re
+import strings
 import threading
 import flet as ft
 import theme as T
@@ -36,65 +37,60 @@ def open_onboarding(app):
 
     def _welcome():
         return ft.Column([
-            ft.Text("Generate Azure DevOps test cases with AI, plan regression "
-                    "and sprint effort, and build self-healing Selenium tests — "
-                    "all from one place.",
+            ft.Text(strings.t("mdl_welcome_blurb"),
                     size=13, color=T.INK_2, weight=ft.FontWeight.W_500),
             ft.Container(height=12),
-            _item(ft.Icons.AUTO_AWESOME, "Titles or full steps",
-                  "Concise titles or complete step-by-step cases — your choice per run."),
-            _item(_ic("LANGUAGE", "DESCRIPTION_OUTLINED"), "English & Arabic",
-                  "Produce test content in either language with one toggle.", "green"),
-            _item(ft.Icons.DOWNLOAD, "Writes back to Azure DevOps",
-                  "Pushes the generated cases straight into your test plans.", "amber"),
+            _item(ft.Icons.AUTO_AWESOME, strings.t("m2_titles_or_steps"),
+                  strings.t("m2_titles_or_steps_d")),
+            _item(_ic(strings.t("m2_language"), "DESCRIPTION_OUTLINED"), strings.t("m2_english_arabic"),
+                  strings.t("m2_language_d"), "green"),
+            _item(ft.Icons.DOWNLOAD, strings.t("m2_writes_azure"),
+                  strings.t("m2_writes_azure_d"), "amber"),
         ], spacing=0, tight=True)
 
     def _how():
         return ft.Column([
-            _item(ft.Icons.TUNE, "1 · Setup",
-                  "Connect your AI provider and Azure DevOps, then pick a project, "
-                  "test plan and stories."),
-            _item(ft.Icons.MONITOR_HEART, "2 · Run",
-                  "Generate test-case titles or detailed steps in English or Arabic."),
-            _item(ft.Icons.DESCRIPTION_OUTLINED, "3 · Report",
-                  "Review what was created and email the summary."),
-            _item(_ic("CHECKLIST","LAYERS_OUTLINED"), "Plan & automate", "Regression and Sprint "
-                  "plans estimate effort; Automation builds Selenium tests.", "green"),
+            _item(ft.Icons.TUNE, strings.t("m2_step1_setup"),
+                  strings.t("m2_step1_d")),
+            _item(ft.Icons.MONITOR_HEART, strings.t("m2_step2_run"),
+                  strings.t("m2_step2_d")),
+            _item(ft.Icons.DESCRIPTION_OUTLINED, strings.t("m2_step3_report"),
+                  strings.t("m2_step3_d")),
+            _item(_ic(strings.t("m2_checklist"),"LAYERS_OUTLINED"), strings.t("m2_plan_automate"), strings.t("m2_plan_automate_d"), "green"),
         ], spacing=0, tight=True)
 
     def _connect():
         return ft.Column([
-            ft.Text("On the Setup screen you'll add three credentials "
-                    "(stored only on this device):",
+            ft.Text(strings.t("mdl_setup_creds_intro"),
                     size=12.5, color=T.INK_2, weight=ft.FontWeight.W_500),
             ft.Container(height=8),
-            _item(ft.Icons.AUTO_AWESOME, "AI provider key",
-                  "Anthropic, OpenAI, Gemini, and more — powers the generation."),
-            _item(ft.Icons.KEY_OUTLINED, "Azure DevOps PAT",
-                  "Read/write access to your test plans and work items."),
-            _item(ft.Icons.MAIL_OUTLINED, "Gmail app password",
-                  "Optional — only needed to email reports.", "amber"),
+            _item(ft.Icons.AUTO_AWESOME, strings.t("m2_ai_key"),
+                  strings.t("m2_ai_key_d")),
+            _item(ft.Icons.KEY_OUTLINED, strings.t("m2_azure_pat"),
+                  strings.t("m2_azure_pat_d")),
+            _item(ft.Icons.MAIL_OUTLINED, strings.t("m2_gmail_pw"),
+                  strings.t("m2_gmail_pw_d"), "amber"),
         ], spacing=0, tight=True)
 
     def _ready():
         return ft.Column([
-            _item(_ic("KEYBOARD_COMMAND_KEY","TERMINAL"), "Command palette",
-                  "Press Ctrl/⌘-K anywhere to jump between screens and run actions."),
-            _item(ft.Icons.DARK_MODE_OUTLINED, "Light & dark",
-                  "Toggle the theme from the sidebar or Settings."),
-            _item(ft.Icons.SETTINGS_OUTLINED, "Settings",
-                  "Defaults, cache controls, and this walkthrough live there."),
+            _item(_ic("KEYBOARD_COMMAND_KEY",strings.t("m2_terminal")), strings.t("m2_cmd_palette"),
+                  strings.t("m2_cmd_palette_d")),
+            _item(ft.Icons.DARK_MODE_OUTLINED, strings.t("m2_light_dark"),
+                  strings.t("m2_light_dark_d")),
+            _item(ft.Icons.SETTINGS_OUTLINED, strings.t("m2_settings"),
+                  strings.t("m2_settings_d")),
         ], spacing=0, tight=True)
 
     steps = [
-        (_ic("WAVING_HAND_OUTLINED","AUTO_AWESOME"), "violet", "Welcome to QA Studio",
-         "Your AI test-engineering workspace.", _welcome),
-        (_ic("ACCOUNT_TREE_OUTLINED","LAYERS_OUTLINED"), "violet", "How it works",
-         "A simple pipeline, plus planning tools.", _how),
-        (ft.Icons.LINK, "green", "Get connected",
-         "Three quick credentials and you're set.", _connect),
-        (_ic("ROCKET_LAUNCH_OUTLINED","PLAY_ARROW"), "violet", "You're ready",
-         "A couple of shortcuts worth knowing.", _ready),
+        (_ic("WAVING_HAND_OUTLINED","AUTO_AWESOME"), "violet", strings.t("m2_welcome"),
+         strings.t("m2_welcome_d"), _welcome),
+        (_ic("ACCOUNT_TREE_OUTLINED","LAYERS_OUTLINED"), "violet", strings.t("m2_how_works"),
+         strings.t("m2_how_works_d"), _how),
+        (ft.Icons.LINK, "green", strings.t("m2_get_connected"),
+         strings.t("m2_get_connected_d"), _connect),
+        (_ic("ROCKET_LAUNCH_OUTLINED","PLAY_ARROW"), "violet", strings.t("m2_youre_ready"),
+         strings.t("m2_youre_ready_d"), _ready),
     ]
 
     import threading
@@ -163,13 +159,13 @@ def open_onboarding(app):
                          animate=ft.Animation(180, ft.AnimationCurve.EASE_OUT))
             for j in range(len(steps))]
         last = (i == len(steps) - 1)
-        back_holder.content = (ghost_btn("Back", on_click=lambda e: _go(-1))
+        back_holder.content = (ghost_btn(strings.t("mdl_back"), on_click=lambda e: _go(-1))
                                if i > 0 else ft.Container(width=0))
         next_holder.content = (
-            green_btn("Get started", icon=ft.Icons.ARROW_FORWARD,
+            green_btn(strings.t("m2_get_started"), icon=ft.Icons.ARROW_FORWARD,
                       on_click=lambda e: app._finish_onboarding(goto_setup=True))
             if last else
-            primary_btn("Next", icon=ft.Icons.ARROW_FORWARD,
+            primary_btn(strings.t("mdl_next"), icon=ft.Icons.ARROW_FORWARD,
                         on_click=lambda e: _go(1)))
         # set the "from" state (invisible + slid + small badge), then animate to "to"
         body.opacity = 0
@@ -198,7 +194,7 @@ def open_onboarding(app):
         app._onb_i = max(0, min(len(steps) - 1, app._onb_i + delta))
         _paint()
 
-    skip = ft.TextButton("Skip", on_click=lambda e: app._finish_onboarding())
+    skip = ft.TextButton(strings.t("m2_skip"), on_click=lambda e: app._finish_onboarding())
     import platform_caps as _pc_foot
     if _pc_foot.is_mobile():
         # Phone: Skip + Back + Next/Get-started in ONE nav row still overflowed
@@ -260,9 +256,9 @@ def open_onboarding(app):
 # ---- navigation ----
 def open_create_plan(app):
     if not app.can("act.create_plan"):
-        return app._toast("You don’t have permission to create a test plan.")
+        return app._toast(strings.t("mdl_no_perm_create_plan"))
     if not app.project:
-        app._err("Select a project first."); return
+        app._err(strings.t("au_md_select_project")); return
 
     # Route through the backend seam so this modal works for EVERY backend, not
     # just Azure. Previously it called engine's Azure-only fetch_iterations /
@@ -274,12 +270,12 @@ def open_create_plan(app):
     _is_azure = _bs.is_azure(getattr(app, "creds", {}) or {})
 
     name_field = ft.TextField(
-        hint_text="e.g. Sprint 24 — Regression",
+        hint_text=strings.t("mdl_plan_name_hint"),
         border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
         content_padding=ft.Padding.symmetric(vertical=12, horizontal=12),
         text_size=13, expand=True)
     iter_dd = ft.Dropdown(
-        hint_text="Loading sprints…", options=[],
+        hint_text=strings.t("mdl_loading_sprints"), options=[],
         border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
         content_padding=ft.Padding.symmetric(vertical=12, horizontal=8),
         text_size=13, filled=True, bgcolor=T.CARD, expand=True)
@@ -300,7 +296,7 @@ def open_create_plan(app):
     story_cbs = {}
     sel_all_cb = ft.Checkbox(value=True, scale=0.85,
                              active_color=T.VIOLET, check_color="#FFFFFF")
-    stories_count = ft.Text("Loading sprint stories…", size=11, color=T.INK_3,
+    stories_count = ft.Text(strings.t("mdl_loading_sprint_stories"), size=11, color=T.INK_3,
                             weight=ft.FontWeight.BOLD)
 
     def _stories_msg(text, spin=False):
@@ -313,7 +309,7 @@ def open_create_plan(app):
 
     # Start with a loading placeholder so the box never renders as an empty void
     # during the initial sprint fetch (load_iters warms it once sprints land).
-    stories_col = ft.Column([_stories_msg("Loading sprint stories…", spin=True)],
+    stories_col = ft.Column([_stories_msg(strings.t("mdl_loading_sprint_stories"), spin=True)],
                             spacing=1, scroll=ft.ScrollMode.AUTO, height=180)
 
     def _stories_visible():
@@ -322,7 +318,7 @@ def open_create_plan(app):
     def _refresh_count():
         n, m = len(stories_state["sel"]), len(stories_state["rows"])
         stories_count.value = (f"{n} of {m} stories selected" if m
-                               else "No stories in this sprint")
+                               else strings.t("m2_no_stories_sprint"))
         sel_all_cb.value = (m > 0 and n == m)
         try:
             stories_count.update(); sel_all_cb.update()
@@ -363,7 +359,7 @@ def open_create_plan(app):
                              expand=True, no_wrap=False)],
                 spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER))
         stories_col.controls = ctrls or [
-            ft.Text("No stories in this sprint.", size=12, color=T.INK_3,
+            ft.Text(strings.t("mdl_no_stories_sprint"), size=12, color=T.INK_3,
                     italic=True)]
         try: stories_col.update()
         except Exception: pass
@@ -375,13 +371,13 @@ def open_create_plan(app):
             stories_state["rows"] = []
             stories_state["sel"] = set()
             stories_state["path"] = None
-            stories_col.controls = [_stories_msg("Select a sprint to load its stories.")]
+            stories_col.controls = [_stories_msg(strings.t("m2_select_sprint_load"))]
             _refresh_count()
             try: stories_col.update()
             except Exception: pass
             return
         stories_state["path"] = path
-        stories_col.controls = [_stories_msg("Loading sprint stories…", spin=True)]
+        stories_col.controls = [_stories_msg(strings.t("mdl_loading_sprint_stories"), spin=True)]
         try: stories_col.update()
         except Exception: pass
         try:
@@ -399,10 +395,10 @@ def open_create_plan(app):
     stories_box = ft.Container(
         ft.Column([
             ft.Row([
-                ft.Text("STORIES TO INCLUDE", size=10.5, weight=ft.FontWeight.BOLD,
+                ft.Text(strings.t("mdl_stories_to_include"), size=10.5, weight=ft.FontWeight.BOLD,
                         color=T.INK_3),
                 ft.Container(expand=True),
-                ft.Row([sel_all_cb, ft.Text("All", size=11.5, color=T.INK_2,
+                ft.Row([sel_all_cb, ft.Text(strings.t("mdl_all"), size=11.5, color=T.INK_2,
                                             weight=ft.FontWeight.BOLD)],
                        spacing=2, tight=True),
             ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
@@ -447,12 +443,12 @@ def open_create_plan(app):
             if lst:
                 iter_dd.value = lst[-1]["path"]
                 path_box.value = iter_dd.value
-                iter_dd.hint_text = "Select sprint"
+                iter_dd.hint_text = strings.t("mdl_select_sprint")
             else:
-                iter_dd.hint_text = "No sprints found"
+                iter_dd.hint_text = strings.t("mdl_no_sprints")
             modal_err.value = ""
         except Exception as ex:
-            iter_dd.hint_text = "Failed to load"
+            iter_dd.hint_text = strings.t("mdl_failed_load")
             modal_err.value = f"Could not load sprints: {str(ex)[:100]}"
         try:
             iter_dd.update()
@@ -495,24 +491,23 @@ def open_create_plan(app):
         nm = (name_field.value or "").strip()
         pth = (iter_dd.value or "").strip()
         if not nm:
-            modal_err.value = "Plan name is required."; app.page.update(); return
+            modal_err.value = strings.t("m2_plan_name_required"); app.page.update(); return
         # Iteration/Sprint is an Azure-only concept (a plan is created UNDER an
         # iteration). Non-Azure backends create a plain named plan (TestRail
         # suite / Xray Test Plan / Zephyr folder) with no iteration — stories
         # come from the sprint at run time, decoupled from the plan.
         if _is_azure and not pth:
-            modal_err.value = "Select a sprint/iteration."; app.page.update(); return
+            modal_err.value = strings.t("m2_select_iteration"); app.page.update(); return
         # Auto-suites on with stories loaded → require at least one pick, so a plan
         # isn't created with zero suites by an empty selection the user didn't mean.
         if (_is_azure and auto_suites.value and stories_state["rows"]
                 and not stories_state["sel"]):
-            modal_err.value = ("Pick at least one story, or turn off "
-                               "auto-create suites.")
+            modal_err.value = (strings.t("m2_pick_story_or_off"))
             app.page.update(); return
         modal_err.value = ""
         create_btn.visible = False; cancel_btn.visible = False
         # show the progress bar immediately at 0% (before any slow work begins)
-        _set_prog(0.0, "Starting…")
+        _set_prog(0.0, strings.t("m2_starting"))
 
         def work():
             try:
@@ -522,29 +517,29 @@ def open_create_plan(app):
                     # folder, Xray a test plan, TestRail a suite. The Azure-only
                     # per-story requirement-suite orchestration doesn't apply, so
                     # we create the plan itself (auto_suites is disabled here).
-                    _set_prog(0.2, "Creating test plan…")
+                    _set_prog(0.2, strings.t("m2_creating_plan"))
                     plan = _bs.get_backend(app).create_test_plan(app.project, nm, pth)
                     app.plan_id = ((getattr(plan.ref, "id", "") or
                                     getattr(plan.ref, "key", "")) if plan else None)
                     app.plan_name = nm
-                    _set_prog(1.0, "Done")
+                    _set_prog(1.0, strings.t("m2_done"))
                     app._load_plans(); app._close_dialog(); app.render()
                     return
                 if not auto_suites.value:
-                    _set_prog(0.15, "Creating test plan…")
+                    _set_prog(0.15, strings.t("m2_creating_plan"))
                     new_id = E.create_test_plan(app.project, nm, pth)
                     app.plan_id = new_id; app.plan_name = nm
-                    _set_prog(1.0, "Done")
+                    _set_prog(1.0, strings.t("m2_done"))
                     app._load_plans(); app._close_dialog(); app.render()
                     return
 
                 def cb(ev, payload):
                     if ev == "plan":
-                        _set_prog(0.10, "Plan created · finding sprint stories…")
+                        _set_prog(0.10, strings.t("m2_plan_created_finding"))
                     elif ev == "stories":
                         n = payload["total"]
                         if n == 0:
-                            _set_prog(1.0, "Plan created · no stories in this sprint")
+                            _set_prog(1.0, strings.t("m2_plan_created_nostories"))
                         else:
                             _set_prog(0.15, f"Found {n} stories · creating suites…")
                     elif ev == "suite":
@@ -578,8 +573,8 @@ def open_create_plan(app):
                 except Exception: pass
         app._bg(work)
 
-    cancel_btn = ghost_btn("Cancel", on_click=lambda e: app._close_dialog())
-    create_btn = green_btn("Create plan", icon=ft.Icons.ADD, on_click=do_create,
+    cancel_btn = ghost_btn(strings.t("mdl_cancel"), on_click=lambda e: app._close_dialog())
+    create_btn = green_btn(strings.t("m2_create_plan"), icon=ft.Icons.ADD, on_click=do_create,
                            height=46)
     btn_row = ft.Row([cancel_btn, create_btn],
                      alignment=ft.MainAxisAlignment.END, spacing=10,
@@ -594,16 +589,16 @@ def open_create_plan(app):
         folder), so they show just the name + a one-line note instead of the
         Azure iteration machinery."""
         rows = [
-            field_label("Plan name", req=True),
+            field_label(strings.t("au_md_plan_name"), req=True),
             ft.Container(hover_field(name_field),
                          padding=ft.Padding.only(top=4, bottom=14)),
         ]
         if _is_azure:
             rows += [
-                field_label("Iteration / Sprint", req=True),
+                field_label(strings.t("au_md_iteration_sprint"), req=True),
                 ft.Container(hover_field(iter_dd),
                              padding=ft.Padding.only(top=4, bottom=10)),
-                ft.Text("Will be created at", size=11, color=T.INK_3,
+                ft.Text(strings.t("mdl_will_be_created"), size=11, color=T.INK_3,
                         weight=ft.FontWeight.BOLD),
                 ft.Container(
                     path_box,
@@ -615,10 +610,9 @@ def open_create_plan(app):
                     ft.Row([
                         auto_suites,
                         ft.Column([
-                            ft.Text("Add requirement suites for sprint stories",
+                            ft.Text(strings.t("mdl_add_req_suites"),
                                     size=12.5, color=T.INK, weight=ft.FontWeight.BOLD),
-                            ft.Text("Creates one suite per User Story in the sprint "
-                                    "(Azure only — no AI).",
+                            ft.Text(strings.t("mdl_creates_suite"),
                                     size=11, color=T.INK_3, weight=ft.FontWeight.W_500),
                         ], spacing=1, expand=True),
                     ], spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER),
@@ -669,8 +663,8 @@ def open_create_plan(app):
                          width=34, height=34, bgcolor=T.GREEN_SOFT, border_radius=9,
                          alignment=ft.Alignment.CENTER),
             ft.Column([
-                ft.Text("Create test plan", size=16, weight=ft.FontWeight.W_800, color=T.INK),
-                ft.Text(("Created under the selected iteration in this project."
+                ft.Text(strings.t("mdl_create_plan_btn"), size=16, weight=ft.FontWeight.W_800, color=T.INK),
+                ft.Text((strings.t("m2_created_under_iteration")
                          if _is_azure else
                          f"Creates a new plan in {_bs.case_store_label(app)}."),
                         size=11, color=T.INK_2, weight=ft.FontWeight.W_500),
@@ -685,9 +679,9 @@ def open_create_plan(app):
 # ── Sprint summary report (read-only, before a run) ────────────────────
 def open_sprint_summary(app):
     if not app.can("act.sprint_summary"):
-        return app._toast("You don’t have permission to generate the sprint summary.")
+        return app._toast(strings.t("mdl_no_perm_sprint_summary"))
     if not (app.project and app.plan_id):
-        app._toast("Select a test plan first.")
+        app._toast(strings.t("mdl_select_plan_first"))
         return
 
     # State → brand color/soft-bg mapping for status chips
@@ -695,14 +689,14 @@ def open_sprint_summary(app):
         s = (state or "").lower()
         if s in ("done", "closed", "completed", "resolved"):
             return "green"
-        if s in ("active", "in progress", "committed", "doing"):
+        if s in ("active", strings.t("m2_in_progress"), "committed", "doing"):
             return "violet"
-        if s in ("new", "to do", "proposed", "open"):
+        if s in ("new", strings.t("m2_to_do"), "proposed", "open"):
             return "amber"
         return "grey"
 
     # animated 'scanning' loading state — motion while the summary is generated
-    _sum_status = ft.Text("Connecting to Azure DevOps…", size=12.5, color=T.INK_2,
+    _sum_status = ft.Text(strings.t("mdl_connecting_azure"), size=12.5, color=T.INK_2,
                           weight=ft.FontWeight.W_500)
     _scan = ft.Column([
         ft.Container(ft.Stack([
@@ -713,7 +707,7 @@ def open_sprint_summary(app):
                          alignment=ft.Alignment.CENTER, left=11, top=11),
         ], width=76, height=76), width=76, height=76, alignment=ft.Alignment.CENTER),
         ft.Container(height=18),
-        ft.Text("Generating sprint summary", size=16, weight=ft.FontWeight.BOLD,
+        ft.Text(strings.t("mdl_generating_summary"), size=16, weight=ft.FontWeight.BOLD,
                 color=T.INK),
         ft.Container(height=5),
         _sum_status,
@@ -726,8 +720,8 @@ def open_sprint_summary(app):
     # cycle the status line every ~0.9s until the data arrives
     app._sum_loading = True
     def _cycle_status():
-        msgs = ["Connecting to Azure DevOps…", "Fetching sprint results…",
-                "Counting test cases…", "Summarizing stories…"]
+        msgs = [strings.t("mdl_connecting_azure"), strings.t("m2_fetching_results"),
+                strings.t("m2_counting_cases"), strings.t("m2_summarizing")]
         ev = threading.Event()
         i = 0
         while getattr(app, "_sum_loading", False):
@@ -767,13 +761,13 @@ def open_sprint_summary(app):
             return
         to = [x.strip() for x in re.split(r"[,\s;]+", (app._sum_email_to or "")) if x.strip()]
         if not to:
-            email_status.value = "Enter at least one recipient."
+            email_status.value = strings.t("m2_enter_recipient")
             email_status.color = T.RED
             email_status.visible = True
             try: email_status.update()
             except Exception: app.render()
             return
-        email_status.value = "Sending…"; email_status.color = T.INK_2
+        email_status.value = strings.t("m2_sending"); email_status.color = T.INK_2
         email_status.visible = True
         try: email_status.update()
         except Exception: app.render()
@@ -795,9 +789,9 @@ def open_sprint_summary(app):
             app.ui_safe(show)
         app._bg(work)
 
-    email_btn = green_btn("Email summary", icon=ft.Icons.MAIL_OUTLINED,
+    email_btn = green_btn(strings.t("m2_email_summary"), icon=ft.Icons.MAIL_OUTLINED,
                           on_click=do_email)
-    close_btn = ghost_btn("Close", on_click=lambda e: app._close_dialog())
+    close_btn = ghost_btn(strings.t("mdl_close"), on_click=lambda e: app._close_dialog())
 
     email_picker = email_recipient_picker(
         app, "_sum_email_to", is_open_key="_sum_email_open",
@@ -806,7 +800,7 @@ def open_sprint_summary(app):
     email_bar = ft.Column([
         ft.Container(height=1, bgcolor=T.BORDER_2),
         ft.Container(height=6),
-        ft.Text("EMAIL THIS SUMMARY", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
+        ft.Text(strings.t("mdl_email_summary"), size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
         ft.Container(height=5),
         email_picker,
         email_status,
@@ -818,7 +812,7 @@ def open_sprint_summary(app):
         title=ft.Row([ft.Container(logo_img(32, ft.Icons.SUMMARIZE_OUTLINED, T.VIOLET_INK),
                                    width=46, height=46, bgcolor=T.VIOLET_SOFT,
                                    border_radius=12, alignment=ft.Alignment.CENTER),
-                      ft.Text("Sprint Summary", weight=ft.FontWeight.W_800, size=16,
+                      ft.Text(strings.t("mdl_sprint_summary"), weight=ft.FontWeight.W_800, size=16,
                               color=T.INK)],
                      spacing=10, tight=True),
         content=ft.Container(
@@ -844,7 +838,7 @@ def open_sprint_summary(app):
         import backend_setup as _bs
         if not _bs.sprint_reports_available(app):
             app._sum_loading = False
-            _label = _bs.plan_link_label(app) if hasattr(_bs, "plan_link_label") else "this backend"
+            _label = _bs.plan_link_label(app) if hasattr(_bs, "plan_link_label") else strings.t("m2_this_backend")
             def show_unavail():
                 body_col.controls = [ft.Row([
                     ft.Icon(ft.Icons.INFO_OUTLINE, color=T.INK_3, size=20),
@@ -891,17 +885,17 @@ def open_sprint_summary(app):
                 data["stories"] = [s for s in data["stories"] if s["id"] != sid]
                 render_summary()
                 try:
-                    app._toast(f"Removed story {sid} from the summary.")
+                    app._toast(strings.t("mdl_removed_story", sid=sid))
                 except Exception:
                     pass
             def _d(e):
                 if getattr(app, "readonly", False):
-                    return app._toast("Read-only — your role can't modify the summary.")
+                    return app._toast(strings.t("mdl_readonly_summary"))
                 app._confirm(
-                    "Remove story?",
+                    strings.t("au_remove_story_q"),
                     f"Remove story {sid} from this summary and recalculate the "
                     "totals? This doesn't change anything in Azure DevOps.",
-                    _do, yes_label="Remove")
+                    _do, yes_label=strings.t("mdl_remove"))
             return _d
 
         def render_summary():
@@ -920,7 +914,7 @@ def open_sprint_summary(app):
             # Header line
             header = ft.Column([
                 ft.Row([ft.Container(
-                    ft.Text("SPRINT SNAPSHOT", size=10, weight=ft.FontWeight.BOLD,
+                    ft.Text(strings.t("mdl_sprint_snapshot"), size=10, weight=ft.FontWeight.BOLD,
                             color=T.VIOLET_INK),
                     bgcolor=T.VIOLET_SOFT, border_radius=20,
                     padding=ft.Padding.symmetric(vertical=4, horizontal=11))], tight=True),
@@ -932,9 +926,9 @@ def open_sprint_summary(app):
 
             # Stat tiles: total stories + total test cases
             _tiles = [
-                stat_tile("Stories", total, tone="violet"),
-                stat_tile("Test Cases", total_tc, tone="green"),
-                stat_tile("Statuses", len(by_state), tone="amber"),
+                stat_tile(strings.t("au_md_stories"), total, tone="violet"),
+                stat_tile(strings.t("au_md_test_cases"), total_tc, tone="green"),
+                stat_tile(strings.t("au_md_statuses"), len(by_state), tone="amber"),
             ]
             if platform_caps.is_mobile():
                 # Inside this dialog the usable width is only ~300 logical px on
@@ -1019,7 +1013,7 @@ def open_sprint_summary(app):
                                 run_spacing=10,
                                 scroll=(ft.ScrollMode.AUTO if _m_status else None),
                                 tight=bool(_m_status)) \
-                if state_cards else ft.Text("No stories in this sprint.",
+                if state_cards else ft.Text(strings.t("mdl_no_stories_sprint"),
                                             size=12, color=T.INK_3, weight=ft.FontWeight.W_500)
             dist_bar = ft.Container(
                 ft.Row([ft.Container(expand=max(1, c),
@@ -1058,14 +1052,14 @@ def open_sprint_summary(app):
             _COL_STORY = 200 if platform_caps.is_mobile() else 420
             _COL_ASSIGNED, _COL_TC, _COL_STATE, _COL_DEL = 118, 54, 110, 34
             table_header = ft.Row([
-                ft.Container(ft.Text("STORY", size=10, weight=ft.FontWeight.BOLD,
+                ft.Container(ft.Text(strings.t("mdl_col_story"), size=10, weight=ft.FontWeight.BOLD,
                                      color=T.INK_3), width=_COL_STORY),
-                ft.Container(ft.Text("ASSIGNED", size=10, weight=ft.FontWeight.BOLD,
+                ft.Container(ft.Text(strings.t("mdl_col_assigned"), size=10, weight=ft.FontWeight.BOLD,
                                      color=T.INK_3), width=_COL_ASSIGNED),
-                ft.Container(ft.Text("TC", size=10, weight=ft.FontWeight.BOLD,
+                ft.Container(ft.Text(strings.t("mdl_col_tc"), size=10, weight=ft.FontWeight.BOLD,
                                      color=T.INK_3, text_align=ft.TextAlign.CENTER),
                              width=_COL_TC, alignment=ft.Alignment.CENTER),
-                ft.Container(ft.Text("STATUS", size=10, weight=ft.FontWeight.BOLD,
+                ft.Container(ft.Text(strings.t("mdl_col_status"), size=10, weight=ft.FontWeight.BOLD,
                                      color=T.INK_3, text_align=ft.TextAlign.CENTER),
                              width=_COL_STATE, alignment=ft.Alignment.CENTER),
                 ft.Container(width=_COL_DEL),
@@ -1080,7 +1074,7 @@ def open_sprint_summary(app):
                              font_family=T.F_MONO),
                     ft.Icon(ft.Icons.OPEN_IN_NEW, size=11, color=T.VIOLET_INK),
                 ], spacing=3, tight=True, vertical_alignment=ft.CrossAxisAlignment.CENTER)
-                assigned_name = s.get("assigned_to") or "Unassigned"
+                assigned_name = s.get("assigned_to") or strings.t("m2_unassigned")
                 assigned_cell = ft.Container(
                     ft.Row([
                         ft.Icon(ft.Icons.PERSON_OUTLINE, size=13,
@@ -1094,7 +1088,7 @@ def open_sprint_summary(app):
                     width=_COL_ASSIGNED)
                 del_btn = ft.IconButton(
                     icon=ft.Icons.DELETE_OUTLINE, icon_size=18, icon_color=T.RED,
-                    tooltip="Remove from this summary",
+                    tooltip=strings.t("mdl_remove_from_summary"),
                     on_click=_delete_story(s["id"]),
                     width=_COL_DEL, height=34,
                     style=ft.ButtonStyle(padding=ft.Padding.all(0),
@@ -1102,7 +1096,7 @@ def open_sprint_summary(app):
                 story_rows.append(ft.Container(
                     ft.Row([
                         ft.Column([
-                            ft.Text(s["title"] or "(no title)", size=12.5,
+                            ft.Text(s["title"] or strings.t("m2_no_title"), size=12.5,
                                     weight=ft.FontWeight.BOLD, color=T.INK,
                                     font_family=(T.F_AR if rtl else None),
                                     text_align=(ft.TextAlign.RIGHT if rtl else ft.TextAlign.LEFT),
@@ -1120,7 +1114,7 @@ def open_sprint_summary(app):
                     bgcolor=(T.CARD if i % 2 == 0 else T.CARD_2),
                     border=ft.Border.only(bottom=ft.BorderSide(1, T.BORDER_2))))
             if not story_rows:
-                story_rows = [ft.Text("No user stories found in this sprint.",
+                story_rows = [ft.Text(strings.t("mdl_no_stories_found"),
                                       size=12, color=T.INK_3, weight=ft.FontWeight.W_500)]
 
             body_col.controls = [
@@ -1130,10 +1124,10 @@ def open_sprint_summary(app):
                 ft.Container(height=10),
                 dist_bar,
                 ft.Container(height=8),
-                ft.Text("STATUS BREAKDOWN", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
+                ft.Text(strings.t("mdl_status_breakdown"), size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
                 status_row,
                 ft.Container(height=6),
-                ft.Text("STORIES", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
+                ft.Text(strings.t("mdl_stories"), size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
                 ft.Container(
                     ft.Row([ft.Column([
                                 ft.Container(table_header,
@@ -1165,7 +1159,7 @@ def open_existing_steps_modal(app, have, total, on_choice):
         head = [ft.Icon(icon, size=15, color=(T.VIOLET_INK if key == "evaluate" else T.INK_2)),
                 ft.Text(title, size=13, weight=ft.FontWeight.BOLD, color=T.INK)]
         if recommended:
-            head.append(badge("Recommended", "violet"))
+            head.append(badge(strings.t("m2_recommended"), "violet"))
         box = ft.Container(
             ft.Row([
                 ft.Container(width=16, height=16, border_radius=10,
@@ -1187,10 +1181,10 @@ def open_existing_steps_modal(app, have, total, on_choice):
         rebuild()
     def rebuild():
         body.controls = [
-            opt("Skip existing steps",
-                "Leave them untouched and only fill the empty ones. Fast — uses no AI credits on cases that already have steps.",
+            opt(strings.t("m2_skip_existing"),
+                strings.t("m2_skip_existing_d"),
                 "skip", ft.Icons.CHECK),
-            opt("Evaluate with AI",
+            opt(strings.t("m2_evaluate_ai"),
                 "Checks each existing test case against the requirements and regenerates only the inadequate ones. Flagged cases appear in the report.",
                 "evaluate", ft.Icons.AUTO_AWESOME, recommended=True),
         ]
@@ -1211,7 +1205,7 @@ def open_existing_steps_modal(app, have, total, on_choice):
                              width=34, height=34, bgcolor=T.AMBER_SOFT, border_radius=9,
                              alignment=ft.Alignment.CENTER),
                 ft.Column([
-                    ft.Text("Some test cases already have steps", size=16,
+                    ft.Text(strings.t("mdl_existing_steps"), size=16,
                             weight=ft.FontWeight.W_800, color=T.INK),
                     ft.Text(f"{have} of {total} test cases in this plan already contain steps. Choose how to handle them.",
                             size=13, color=T.INK_2, weight=ft.FontWeight.W_500),
@@ -1224,8 +1218,8 @@ def open_existing_steps_modal(app, have, total, on_choice):
             # Single Row so Flet's action bar doesn't stack them (Cancel was
             # floating above a full-width Continue). Compact, right-aligned pair.
             ft.Row([
-                ghost_btn("Cancel", on_click=lambda e: app._close_dialog()),
-                primary_btn("Continue", icon=ft.Icons.ARROW_FORWARD, on_click=cont),
+                ghost_btn(strings.t("mdl_cancel"), on_click=lambda e: app._close_dialog()),
+                primary_btn(strings.t("mdl_continue"), icon=ft.Icons.ARROW_FORWARD, on_click=cont),
             ], alignment=ft.MainAxisAlignment.END, spacing=10, tight=True),
         ],
         actions_alignment=ft.MainAxisAlignment.END,

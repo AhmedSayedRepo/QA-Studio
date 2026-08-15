@@ -41,6 +41,7 @@ def _utc_today() -> date:
 import flet as ft
 import theme as T
 import engine as E
+import strings
 import auth_supabase as auth
 from ui import (card, ghost_btn, green_btn, primary_btn, hover_field,
                 stat_tile)
@@ -94,7 +95,7 @@ def _export(app, fmt):
     def _do(e):
         report = app._usage_report
         if not report:
-            app._toast("Generate the report first.")
+            app._toast(strings.t("usage_generate_first"))
             return
 
         def work():
@@ -104,14 +105,14 @@ def _export(app, fmt):
                     import platform_caps as _pc
                     if _pc.is_mobile():
                         app.ui_safe(lambda p=path, f=fmt: app._mobile_download_popup(
-                            p, f"{f.upper()} export ready"))
+                            p, strings.t("usage_export_ready", fmt=f.upper())))
                     else:
-                        app.ui_safe(lambda p=path: app._toast(f"Saved {fmt.upper()}: {p}"))
+                        app.ui_safe(lambda p=path: app._toast(strings.t("usage_saved", fmt=fmt.upper(), path=p)))
                         _pc.open_folder(os.path.dirname(path))
                 except Exception:
-                    app.ui_safe(lambda p=path: app._toast(f"Saved {fmt.upper()}: {p}"))
+                    app.ui_safe(lambda p=path: app._toast(strings.t("usage_saved", fmt=fmt.upper(), path=p)))
             except Exception as ex:
-                app.ui_safe(lambda ex=ex: app._err(f"Export failed: {ex}"))
+                app.ui_safe(lambda ex=ex: app._err(strings.t("usage_export_failed", err=ex)))
         threading.Thread(target=work, daemon=True).start()
     return _do
 
@@ -120,27 +121,26 @@ def _email(app):
     def _do(e):
         report = app._usage_report
         if not report:
-            app._toast("Generate the report first.")
+            app._toast(strings.t("usage_generate_first"))
             return
         if not E.ensure_sender_creds():
-            app._usage_email_status = ("No Gmail App Password is configured — an "
-                                       "admin can set it in Setup → Connection.")
+            app._usage_email_status = strings.t("usage_no_gmail")
             app.ui_safe(app.render)
             return
         to = [x.strip() for x in re.split(r"[,\s;]+", (app._usage_email_to or "")) if x.strip()]
         if not to:
-            app._usage_email_status = "Enter at least one recipient."
+            app._usage_email_status = strings.t("usage_enter_recipient")
             app.ui_safe(app.render)
             return
-        app._usage_email_status = "Sending…"
+        app._usage_email_status = strings.t("usage_sending")
         app.ui_safe(app.render)
 
         def work():
             html = E.build_ai_usage_email(report)
             ok, err = E.send_report(to, "QA Studio — AI Usage Report", html)
             def show():
-                app._usage_email_status = (f"Report emailed to {', '.join(to)}" if ok
-                                           else f"Email failed — {err}")
+                app._usage_email_status = (strings.t("usage_email_sent", to=', '.join(to)) if ok
+                                           else strings.t("usage_email_failed", err=err))
                 app.render()
             app.ui_safe(show)
         threading.Thread(target=work, daemon=True).start()
@@ -167,7 +167,7 @@ def _date_field(app, label, value_str, on_pick, disabled=False):
         val = _utc_today()
 
     ink = T.INK_3 if disabled else T.INK
-    value_text = ft.Text(value_str or "Pick a date", size=12.5, weight=ft.FontWeight.W_600,
+    value_text = ft.Text(value_str or strings.t("usage_pick_date"), size=12.5, weight=ft.FontWeight.W_600,
                          color=ink, font_family=T.F_MONO)
     box = ft.Container(
         ft.Row([ft.Icon(ft.Icons.CALENDAR_MONTH_OUTLINED, size=15, color=T.INK_3),
@@ -265,10 +265,10 @@ def _report_body(app, is_admin):
         return _do
 
     provider_filter = ft.Row([
-        ft.Text("Provider", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
+        ft.Text(strings.t("usage_provider"), size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
         hover_field(ft.Dropdown(
             value=app._usage_provider_filter, width=170, text_size=12.5, dense=True,
-            options=[ft.DropdownOption(key="All", text="All providers")]
+            options=[ft.DropdownOption(key="All", text=strings.t("usage_all_providers"))]
                    + [ft.DropdownOption(key=p, text=p) for p in providers],
             on_select=lambda e: _set_provider(e.control.value)(e),
             border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
@@ -276,10 +276,10 @@ def _report_body(app, is_admin):
     ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
     _stat_tiles = [
-        stat_tile("Calls", t.get("calls", 0), tone="violet"),
-        stat_tile("Input Tokens", t.get("input_tokens", 0)),
-        stat_tile("Output Tokens", t.get("output_tokens", 0)),
-        stat_tile("Est. Cost", f'${t.get("cost_usd", 0):.2f}', tone="green"),
+        stat_tile(strings.t("usage_stat_calls"), t.get("calls", 0), tone="violet"),
+        stat_tile(strings.t("usage_stat_input_tokens"), t.get("input_tokens", 0)),
+        stat_tile(strings.t("usage_stat_output_tokens"), t.get("output_tokens", 0)),
+        stat_tile(strings.t("usage_stat_cost"), f'${t.get("cost_usd", 0):.2f}', tone="green"),
     ]
     import platform_caps as _pc_tiles
     if _pc_tiles.is_mobile():
@@ -298,8 +298,7 @@ def _report_body(app, is_admin):
 
     unpriced_note = (ft.Container(
         ft.Row([ft.Icon(ft.Icons.INFO_OUTLINE, size=15, color=T.AMBER),
-                ft.Text(f"{unpriced} call(s) use a model with no published price — "
-                        "excluded from the cost total.", size=11.5, color=T.AMBER,
+                ft.Text(strings.t("usage_unpriced", n=unpriced), size=11.5, color=T.AMBER,
                         weight=ft.FontWeight.W_600, expand=True)], spacing=8),
         bgcolor=T.AMBER_SOFT, border_radius=T.R,
         padding=ft.Padding.symmetric(vertical=8, horizontal=12))
@@ -315,7 +314,7 @@ def _report_body(app, is_admin):
     _cols += [
         ("Provider", 96, False, False, lambda r: r["provider"]),
         ("Model", 160, False, True, lambda r: r["model"]),
-        ("Module", 150, False, False, lambda r: r.get("module") or "Other"),
+        ("Module", 150, False, False, lambda r: r.get("module") or strings.t("usage_module_other")),
         ("Calls", 52, True, True, lambda r: str(r["calls"])),
         ("Input", 76, True, True, lambda r: str(r["input_tokens"])),
         ("Output", 76, True, True, lambda r: str(r["output_tokens"])),
@@ -323,7 +322,7 @@ def _report_body(app, is_admin):
          lambda r: (f'${r["cost_usd"]:.4f}' if r["cost_usd"] is not None else "—")),
     ]
     header_row = ft.Row([
-        ft.Text(name, size=10, weight=ft.FontWeight.BOLD, color=T.INK_3, width=w,
+        ft.Text(strings.t("usage_col_" + name.lower()), size=10, weight=ft.FontWeight.BOLD, color=T.INK_3, width=w,
                text_align=(ft.TextAlign.RIGHT if right else ft.TextAlign.LEFT))
         for (name, w, right, mono, _get) in _cols
     ], spacing=8)
@@ -348,7 +347,7 @@ def _report_body(app, is_admin):
             border=ft.Border.only(bottom=ft.BorderSide(1, T.BORDER_2)))
 
     table_rows = [_row(i, r) for i, r in enumerate(rows)] if rows else [
-        ft.Container(ft.Text("No AI usage recorded for this range/filter.", size=12.5,
+        ft.Container(ft.Text(strings.t("usage_no_rows"), size=12.5,
                              color=T.INK_3, weight=ft.FontWeight.W_500),
                     padding=ft.Padding.symmetric(vertical=24),
                     alignment=ft.Alignment.CENTER)]
@@ -398,7 +397,7 @@ def _report_body(app, is_admin):
     ]
     export_row = ft.Row(_export_row_ctls, spacing=8, wrap=True)
 
-    email_btn = green_btn("Email report", icon=ft.Icons.MAIL_OUTLINED,
+    email_btn = green_btn(strings.t("usage_email_btn"), icon=ft.Icons.MAIL_OUTLINED,
                           on_click=(None if _ro else _email(app)))
     if _ro:
         email_btn.opacity = 0.45
@@ -411,8 +410,7 @@ def _report_body(app, is_admin):
                      visible=bool(app._usage_email_status))
 
     truncated_note = (ft.Text(
-        "The server returned the maximum row cap for one request — narrow the "
-        "date range for a complete report.", size=11, color=T.AMBER,
+        strings.t("usage_truncated"), size=11, color=T.AMBER,
         weight=ft.FontWeight.W_600)
         if report.get("truncated") else ft.Container(height=0))
 
@@ -424,10 +422,10 @@ def _report_body(app, is_admin):
         ft.Container(height=2),
         table,
         ft.Container(height=6),
-        ft.Text("EXPORT", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
+        ft.Text(strings.t("usage_export_head"), size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
         export_row,
         ft.Container(height=4),
-        ft.Text("EMAIL THIS REPORT", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
+        ft.Text(strings.t("usage_email_head"), size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
         email_picker,
         status,
     ], spacing=10)
@@ -437,8 +435,8 @@ def screen(app):
     _init(app)
     me = getattr(app, "user", None)
     is_admin = auth.configured() and auth.is_admin(me)
-    sub = ("Whole-organization AI usage & cost (admin)" if is_admin
-           else "Your AI usage & cost")
+    sub = (strings.t("usage_sub_admin") if is_admin
+           else strings.t("usage_sub_user"))
 
     # NOTE: body is wrapped in a bare ft.Column([...card...]) rather than
     # returning the card() Container directly — shell()'s _install_top_gap
@@ -449,15 +447,13 @@ def screen(app):
     if not auth.configured():
         body = ft.Column([card(ft.Column([
             ft.Row([ft.Icon(ft.Icons.INFO_OUTLINE, color=T.INK_3, size=20),
-                    ft.Text("Multi-user accounts aren't set up", size=16,
+                    ft.Text(strings.t("usage_no_accounts"), size=16,
                             weight=ft.FontWeight.W_800, color=T.INK)], spacing=10),
             ft.Container(height=6),
-            ft.Text("Per-user reporting (and an admin's whole-org view) needs Supabase "
-                    "sign-in configured. Your own usage is still tracked locally on this "
-                    "machine regardless.", size=12.5,
+            ft.Text(strings.t("usage_no_accounts_body"), size=12.5,
                     color=T.INK_3, no_wrap=False),
         ], spacing=2))], spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
-        return app.shell("AI Usage", sub, body)
+        return app.shell(strings.t("usage_title"), sub, body)
 
     if app._usage_report is None and not app._usage_loading and not app._usage_msg:
         _load(app)
@@ -490,11 +486,11 @@ def screen(app):
     # just re-fetch the same read-only view) isn't actually "view only".
     _ro = getattr(app, "readonly", False)
 
-    start_field = _date_field(app, "Start date", app._usage_start, _set_start, disabled=_ro)
-    end_field = _date_field(app, "End date", app._usage_end, _set_end, disabled=_ro)
-    gen_btn = primary_btn("Generate", icon=ft.Icons.QUERY_STATS,
+    start_field = _date_field(app, strings.t("usage_start_date"), app._usage_start, _set_start, disabled=_ro)
+    end_field = _date_field(app, strings.t("usage_end_date"), app._usage_end, _set_end, disabled=_ro)
+    gen_btn = primary_btn(strings.t("usage_generate"), icon=ft.Icons.QUERY_STATS,
                           on_click=_generate, disabled=(app._usage_loading or _ro))
-    reset_btn = ghost_btn("Reset", icon=ft.Icons.RESTART_ALT,
+    reset_btn = ghost_btn(strings.t("usage_reset"), icon=ft.Icons.RESTART_ALT,
                           on_click=_reset, disabled=(app._usage_loading or _ro))
 
     import platform_caps as _pc_dates
@@ -513,7 +509,7 @@ def screen(app):
     if app._usage_loading and app._usage_report is None:
         controls.append(ft.Container(
             ft.Row([ft.ProgressRing(width=18, height=18, stroke_width=2, color=T.VIOLET),
-                    ft.Text("Loading usage…", size=12.5, color=T.INK_2)], spacing=10),
+                    ft.Text(strings.t("usage_loading"), size=12.5, color=T.INK_2)], spacing=10),
             padding=ft.Padding.symmetric(vertical=20)))
     elif app._usage_msg and app._usage_msg[0] == "err":
         controls.append(ft.Container(
@@ -539,4 +535,4 @@ def screen(app):
     body = ft.Column([
         card(ft.Column(controls, spacing=16)),
     ], spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
-    return app.shell("AI Usage", sub, body)
+    return app.shell(strings.t("usage_title"), sub, body)

@@ -7,6 +7,7 @@ import flet as ft
 import theme as T
 import engine as E
 import backend_setup
+import strings
 from ui import card, _btn_shadow, primary_btn, ghost_btn, progress_ring, stat_tile, badge
 
 
@@ -21,14 +22,13 @@ def screen(app):
         total_stories = r.get("total_stories", 0)
         action_items = r.get("action_items", [])
 
+        _stw = strings.t("report_story_one") if total_stories == 1 else strings.t("report_story_many")
         if is_steps:
-            _sub = (f"Test Case Steps · {created} created · {updated} updated with steps · "
-                    f"{skipped} skipped · {errors} failed across {total_stories} "
-                    f"{'story' if total_stories == 1 else 'stories'}.")
+            _sub = strings.t("report_sub_steps", created=created, updated=updated,
+                             skipped=skipped, errors=errors, total=total_stories, stories=_stw)
         else:
-            _sub = (f"Test Case Titles · {updated} created · {skipped} skipped · "
-                    f"{errors} failed across {total_stories} "
-                    f"{'story' if total_stories == 1 else 'stories'}.")
+            _sub = strings.t("report_sub_titles", created=updated, skipped=skipped,
+                             errors=errors, total=total_stories, stories=_stw)
 
         head_card = ft.Container(
             ft.Row([
@@ -37,7 +37,7 @@ def screen(app):
                              alignment=ft.Alignment.CENTER,
                              shadow=_btn_shadow(T.GREEN, 0.45)),
                 ft.Column([
-                    ft.Text("Run complete", size=18, weight=ft.FontWeight.BOLD, color=T.INK),
+                    ft.Text(strings.t("report_run_complete"), size=18, weight=ft.FontWeight.BOLD, color=T.INK),
                     ft.Text(_sub, size=12.5, color=T.INK_2, weight=ft.FontWeight.W_500),
                 ], spacing=3, expand=True),
             ], spacing=16, vertical_alignment=ft.CrossAxisAlignment.CENTER),
@@ -45,18 +45,18 @@ def screen(app):
 
         if is_steps:
             stats = ft.Row([
-                stat_tile("Created", created, tone="violet"),
-                stat_tile("Updated", updated, tone="green"),
-                stat_tile("Skipped", skipped, tone="amber"),
-                stat_tile("Failed", errors, tone="red"),
-                stat_tile("Stories", stories_done, tone="violet", sub=f"/{total_stories}"),
+                stat_tile(strings.t("report_stat_created"), created, tone="violet"),
+                stat_tile(strings.t("report_stat_updated"), updated, tone="green"),
+                stat_tile(strings.t("report_stat_skipped"), skipped, tone="amber"),
+                stat_tile(strings.t("report_stat_failed"), errors, tone="red"),
+                stat_tile(strings.t("report_stat_stories"), stories_done, tone="violet", sub=f"/{total_stories}"),
             ], spacing=11)
         else:
             stats = ft.Row([
-                stat_tile("Created", updated, tone="green"),
-                stat_tile("Skipped", skipped, tone="amber"),
-                stat_tile("Failed", errors, tone="red"),
-                stat_tile("Stories", stories_done, tone="violet", sub=f"/{total_stories}"),
+                stat_tile(strings.t("report_stat_created"), updated, tone="green"),
+                stat_tile(strings.t("report_stat_skipped"), skipped, tone="amber"),
+                stat_tile(strings.t("report_stat_failed"), errors, tone="red"),
+                stat_tile(strings.t("report_stat_stories"), stories_done, tone="violet", sub=f"/{total_stories}"),
             ], spacing=11)
 
         # Per-story breakdown (matches design)
@@ -91,16 +91,16 @@ def screen(app):
                 ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                 padding=ft.Padding.symmetric(vertical=12, horizontal=14),
                 border=ft.Border.only(bottom=ft.BorderSide(1, T.BORDER_2)),
-                tooltip=(f"{sp.get('title','')}  ·  open #{_sid}" if sp.get('title') else None),
+                tooltip=(strings.t("report_story_open_tip", title=sp.get('title',''), id=_sid) if sp.get('title') else None),
                 on_click=(lambda e, u=_su: app._open_url(u)) if _su else None,
                 ink=bool(_su)))
         if not story_rows:
-            story_rows = [ft.Text("No per-story data.", size=12, color=T.INK_3,
+            story_rows = [ft.Text(strings.t("report_no_per_story"), size=12, color=T.INK_3,
                                   weight=ft.FontWeight.W_500)]
         breakdown_card = card(ft.Column([
-            ft.Row([ft.Text("Per-story breakdown", size=13, weight=ft.FontWeight.BOLD, color=T.INK),
+            ft.Row([ft.Text(strings.t("report_per_story"), size=13, weight=ft.FontWeight.BOLD, color=T.INK),
                     ft.Container(expand=True),
-                    ft.Text(f"{len(per_story)} stories", size=11, color=T.INK_3,
+                    ft.Text(strings.t("report_stories_count", n=len(per_story)), size=11, color=T.INK_3,
                             weight=ft.FontWeight.BOLD)]),
             ft.Container(height=6),
             ft.Column(story_rows, spacing=0, scroll=ft.ScrollMode.AUTO, expand=True),
@@ -108,7 +108,7 @@ def screen(app):
 
         # Collapsible run activity log below the breakdown
         log_lines = app._render_log_lines() if getattr(app, "_log_lines", None) else [
-            ft.Text("No activity recorded.", size=12, color=T.INK_3, weight=ft.FontWeight.W_500)]
+            ft.Text(strings.t("report_no_activity"), size=12, color=T.INK_3, weight=ft.FontWeight.W_500)]
 
         def _log_tool_btn(icon, tip, cb, danger=False):
             # Same small rounded icon-button "chip" as the Run/Automation
@@ -127,15 +127,15 @@ def screen(app):
                 border_radius=8)
 
         log_card = card(ft.Column([
-            ft.Row([ft.Text("Run activity log", size=13, weight=ft.FontWeight.BOLD, color=T.INK),
+            ft.Row([ft.Text(strings.t("report_activity_log"), size=13, weight=ft.FontWeight.BOLD, color=T.INK),
                     ft.Container(expand=True),
-                    ft.Text(f"{len(getattr(app,'_log_lines',[]))} lines", size=11,
+                    ft.Text(strings.t("report_lines_count", n=len(getattr(app,'_log_lines',[]))), size=11,
                             color=T.INK_3, weight=ft.FontWeight.BOLD),
                     ft.Container(width=10),
-                    _log_tool_btn(ft.Icons.COPY_ALL_OUTLINED, "Copy entire log",
+                    _log_tool_btn(ft.Icons.COPY_ALL_OUTLINED, strings.t("report_copy_log"),
                                  app._copy_run_log),
                     ft.Container(width=6),
-                    _log_tool_btn(ft.Icons.DELETE_OUTLINE, "Clear log",
+                    _log_tool_btn(ft.Icons.DELETE_OUTLINE, strings.t("report_clear_log"),
                                  app._clear_run_log, danger=True)],
                    vertical_alignment=ft.CrossAxisAlignment.CENTER),
             ft.Container(height=8),
@@ -169,7 +169,7 @@ def screen(app):
             _tc_url = backend_setup.case_url(app, _tc_id) or None
             review_items.append(ft.Container(
                 ft.Column([
-                    ft.Row([badge("Review", "amber", ft.Icons.WARNING_AMBER_ROUNDED),
+                    ft.Row([badge(strings.t("report_review_badge"), "amber", ft.Icons.WARNING_AMBER_ROUNDED),
                             ft.Text(f"#{a['id']}", size=11, color=T.INK_3, weight=ft.FontWeight.BOLD,
                                     font_family=T.F_MONO),
                             ft.Container(expand=True),
@@ -180,12 +180,12 @@ def screen(app):
                 ], spacing=4),
                 padding=ft.Padding.symmetric(vertical=12, horizontal=11), border=ft.Border.all(1, T.BORDER),
                 border_radius=T.R, bgcolor=T.CARD_2, margin=ft.Margin.only(bottom=9),
-                tooltip=(f"Open test case #{_tc_id} in "
-                         f"{backend_setup.case_store_label(app)}" if _tc_url else None),
+                tooltip=(strings.t("report_open_case_tip", id=_tc_id,
+                         store=backend_setup.case_store_label(app)) if _tc_url else None),
                 on_click=(lambda e, u=_tc_url: app._open_url(u)) if _tc_url else None,
                 ink=bool(_tc_url)))
         if not review_items:
-            review_items = [ft.Text("Nothing flagged — all good.", size=12, color=T.INK_3,
+            review_items = [ft.Text(strings.t("report_nothing_flagged"), size=12, color=T.INK_3,
                                     weight=ft.FontWeight.W_500)]
 
         # email confirmation chip (if a report was emailed)
@@ -194,7 +194,7 @@ def screen(app):
         if emailed_to:
             email_chip = ft.Container(
                 ft.Row([ft.Icon(ft.Icons.MAIL_OUTLINED, size=15, color=T.GREEN),
-                        ft.Text(f"Report emailed to {emailed_to}", size=12,
+                        ft.Text(strings.t("report_emailed_to", to=emailed_to), size=12,
                                 color=T.GREEN, weight=ft.FontWeight.BOLD, expand=True)],
                        spacing=8),
                 padding=ft.Padding.symmetric(vertical=11, horizontal=13),
@@ -204,13 +204,13 @@ def screen(app):
         # Header (+ optional subtitle), then scrollable list that expands,
         # then the email chip pinned at the bottom of the card.
         review_header = [
-            ft.Row([ft.Text("Needs your review", size=13, weight=ft.FontWeight.BOLD, color=T.INK),
+            ft.Row([ft.Text(strings.t("report_needs_review"), size=13, weight=ft.FontWeight.BOLD, color=T.INK),
                     ft.Container(expand=True),
                     ft.Text(str(len(action_items)), size=12, color=T.INK_3, weight=ft.FontWeight.BOLD)]),
         ]
         if action_items:
             review_header.append(
-                ft.Text("Existing steps were judged inadequate and regenerated.",
+                ft.Text(strings.t("report_regen_note"),
                         size=11.5, color=T.INK_2, weight=ft.FontWeight.W_500))
         review_body = ft.Column([
             *review_header,
@@ -223,7 +223,7 @@ def screen(app):
 
         right = ft.Column([
             ft.Container(card(review_body, expand=True), expand=True),
-            primary_btn("New run", icon=ft.Icons.ARROW_FORWARD, expand=True,
+            primary_btn(strings.t("report_new_run"), icon=ft.Icons.ARROW_FORWARD, expand=True,
                         on_click=lambda e: app._new_run()),
             ghost_btn(backend_setup.plan_link_label(app),
                       icon=ft.Icons.FOLDER_OUTLINED, expand=True,
@@ -235,8 +235,8 @@ def screen(app):
                       vertical_alignment=ft.CrossAxisAlignment.STRETCH, expand=True)
         tag = ft.Container(
             ft.Row([ft.Icon(ft.Icons.CHECK, size=13, color=T.GREEN),
-                    ft.Text("Completed", size=11, color=T.GREEN, weight=ft.FontWeight.BOLD)], spacing=5, tight=True),
+                    ft.Text(strings.t("report_completed"), size=11, color=T.GREEN, weight=ft.FontWeight.BOLD)], spacing=5, tight=True),
             padding=ft.Padding.symmetric(vertical=10, horizontal=5), bgcolor=T.GREEN_SOFT, border_radius=20,
             border=ft.Border.all(1, "#CFEAD9"))
-        return app.shell("Report", app._relative_time(), body, tag)
+        return app.shell(strings.t("report_title"), app._relative_time(), body, tag)
 

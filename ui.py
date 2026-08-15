@@ -182,14 +182,18 @@ def grad(stops, diagonal=True):
 
 
 def _grad_button(text, icon, on_click, stops, shadow_rgb, shadow_a,
-                 expand=False, disabled=False, height=46):
+                 expand=False, disabled=False, height=46, wrap=False):
     """Gradient pill button (Container-based) matching the mockup CTAs.
     Same call shape as primary_btn/green_btn so call sites don't change."""
     inner = []
     if icon:
         inner.append(ft.Icon(icon, size=17, color="#FFFFFF"))
-    inner.append(ft.Text(text, size=14, weight=ft.FontWeight.W_700, color="#FFFFFF"))
-    row = ft.Row(inner, spacing=8, tight=True,
+    if wrap:
+        inner.append(ft.Text(text, size=14, weight=ft.FontWeight.W_700, color="#FFFFFF",
+                             text_align=ft.TextAlign.CENTER, max_lines=2, expand=True))
+    else:
+        inner.append(ft.Text(text, size=14, weight=ft.FontWeight.W_700, color="#FFFFFF"))
+    row = ft.Row(inner, spacing=8, tight=(not wrap),
                  alignment=ft.MainAxisAlignment.CENTER,
                  vertical_alignment=ft.CrossAxisAlignment.CENTER)
     c = ft.Container(
@@ -353,9 +357,9 @@ def logo_img(size=38, fallback_icon=None, fallback_color="#FFFFFF"):
 _READONLY = False
 
 
-def primary_btn(text, icon=None, on_click=None, expand=False, disabled=False):
+def primary_btn(text, icon=None, on_click=None, expand=False, disabled=False, wrap=False):
     return _grad_button(text, icon, on_click, T.GRAD_PRIMARY, T.VIOLET, 0.6,
-                        expand=expand, disabled=disabled or _READONLY, height=46)
+                        expand=expand, disabled=disabled or _READONLY, height=46, wrap=wrap)
 
 
 def _disabled_wrap(w, disabled, op=0.45):

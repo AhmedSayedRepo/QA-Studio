@@ -13,6 +13,7 @@ import time
 import threading
 
 import flet as ft
+import strings
 import theme as T
 import auth_supabase as auth
 from ui import primary_btn, ghost_btn
@@ -36,7 +37,7 @@ def set_idle_minutes(app, minutes):
     except Exception:
         pass
     app._last_activity = time.time()
-    app._toast("Auto-logout " + ("turned off." if not minutes else f"set to {minutes} min."))
+    app._toast((strings.t("idle_autologout_off") if not minutes else strings.t("idle_autologout_set", minutes=minutes)))
     app.render()
 
 
@@ -113,18 +114,17 @@ def show_idle_warning(app):
             ft.Container(ft.Icon(ft.Icons.TIMER_OUTLINED, size=18, color=T.VIOLET_INK),
                          width=34, height=34, bgcolor=T.VIOLET_SOFT, border_radius=9,
                          alignment=ft.Alignment.CENTER),
-            ft.Text("Are you still there?", size=16, weight=ft.FontWeight.W_800,
+            ft.Text(strings.t("idle_still_there"), size=16, weight=ft.FontWeight.W_800,
                     color=T.INK, expand=True),
         ], spacing=10),
         content=ft.Container(width=380, content=ft.Column([
-            ft.Text("You've been inactive. For your security you'll be signed out "
-                    "automatically.", size=13, color=T.INK_2, weight=ft.FontWeight.W_500),
+            ft.Text(strings.t("idle_inactive"), size=13, color=T.INK_2, weight=ft.FontWeight.W_500),
             ft.Container(height=8),
             app._idle_warn_txt,
         ], tight=True, spacing=2)),
         actions=[ft.Row([
-            ghost_btn("Sign out now", on_click=lambda e: signout_now(app)),
-            primary_btn("Stay signed in", on_click=lambda e: renew(app)),
+            ghost_btn(strings.t("idle_signout_now"), on_click=lambda e: signout_now(app)),
+            primary_btn(strings.t("idle_stay"), on_click=lambda e: renew(app)),
         ], alignment=ft.MainAxisAlignment.END, spacing=10, tight=True)],
         actions_alignment=ft.MainAxisAlignment.END)
     # Remember WHICH dialog is the countdown, so any later close only ever
@@ -212,7 +212,7 @@ def renew(app):
     app._last_activity = time.time()
     try: app._close_dialog()
     except Exception: pass
-    app._toast("Session renewed.")
+    app._toast(strings.t("idle_renewed"))
 
 
 def signout_now(app):
@@ -228,5 +228,5 @@ def sign_out(app):
     app._idle_warning_active = False
     try: app._close_dialog()
     except Exception: pass
-    app._toast(f"Signed out after {idle_minutes(app)} minutes of inactivity.")
+    app._toast(strings.t("idle_signed_out_after", minutes=idle_minutes(app)))
     app._sign_out()

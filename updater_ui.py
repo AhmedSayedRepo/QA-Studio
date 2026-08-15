@@ -9,6 +9,7 @@ import flet as ft
 import theme as T
 import engine as E
 from ui import ghost_btn, green_btn
+import strings
 
 
 def banner(app):
@@ -23,19 +24,19 @@ def banner(app):
     if app._updating:
         inner = ft.Row([
             ft.ProgressRing(width=16, height=16, stroke_width=2, color=T.VIOLET),
-            ft.Text("Updating…", size=12.5, color=T.INK, weight=ft.FontWeight.BOLD),
+            ft.Text(strings.t("upd_updating"), size=12.5, color=T.INK, weight=ft.FontWeight.BOLD),
         ], spacing=10, tight=True)
     else:
         update_btn = ft.Container(
             ft.Row([
                 ft.Icon(ft.Icons.DOWNLOAD, size=16, color="#FFFFFF"),
-                ft.Text("Update now", size=13, color="#FFFFFF",
+                ft.Text(strings.t("upd_update_now"), size=13, color="#FFFFFF",
                         weight=ft.FontWeight.BOLD),
             ], spacing=8, tight=True),
             bgcolor=T.VIOLET, border_radius=T.R_SM,
             padding=ft.Padding.symmetric(horizontal=18, vertical=11),
             on_click=lambda e: app._do_update(), ink=True,
-            tooltip="Download and install the latest version",
+            tooltip=strings.t("upd_update_now_tip"),
             animate_scale=ft.Animation(110, ft.AnimationCurve.EASE_OUT),
             shadow=ft.BoxShadow(blur_radius=14, spread_radius=-4,
                                 offset=ft.Offset(0, 4),
@@ -54,15 +55,15 @@ def banner(app):
                          bgcolor=T.VIOLET_SOFT,
                          alignment=ft.Alignment.CENTER),
             ft.Column([
-                ft.Text("Update available", size=12.5, color=T.INK,
+                ft.Text(strings.t("upd_update_available"), size=12.5, color=T.INK,
                         weight=ft.FontWeight.BOLD),
-                ft.Text(f"Version {remote} is ready \u2014 you\u2019re on {local}",
+                ft.Text(strings.t("upd_version_ready", remote=remote, local=local),
                         size=11, weight=ft.FontWeight.W_500, color=T.INK_2),
             ], spacing=1, tight=True),
             ft.Container(width=4),
             update_btn,
             ft.IconButton(ft.Icons.CLOSE, icon_size=15, icon_color=T.INK_3,
-                          tooltip="Dismiss",
+                          tooltip=strings.t("upd_dismiss"),
                           on_click=lambda e: app._dismiss_update()),
         ], spacing=11, tight=True, vertical_alignment=ft.CrossAxisAlignment.CENTER)
     # Floating card that pops OVER the app: theme surface (white in light, dark navy
@@ -107,21 +108,16 @@ def _update_error_hint(msg):
     asset) that has nothing to do with their actual problem."""
     low = (msg or "").lower()
     if "no .exe attached" in low or "exe attached" in low:
-        return ("If a new .exe isn't attached to the latest GitHub release, "
-                "the app can't app-update — attach it as a release asset and "
-                "try again.")
+        return (strings.t("upd_hint_no_exe"))
     if any(s in low for s in (
             "max retries exceeded", "connectionerror", "connection error",
             "couldn't reach github", "couldn't resolve the update branch",
             "name or service not known", "timed out", "timeout",
             "failed to establish a new connection", "getaddrinfo")):
-        return ("This is a network problem reaching GitHub, not a problem with the release itself. The update downloads from github.com, codeload.github.com and objects.githubusercontent.com, and a VPN, firewall or corporate proxy is most likely blocking one of them (codeload.github.com is the usual culprit). Turn off any VPN, try a different network (such as a phone hotspot), or ask IT to allow those hosts, then retry. Or use \"Download manually\" below to get the installer from the Releases page and run it.")
+        return (strings.t("upd_hint_network"))
     if "checksum" in low:
-        return ("The downloaded update failed its integrity check and was "
-                "rejected for safety. Try again, or download the latest "
-                "release manually from GitHub.")
-    return ("If this keeps happening, download the latest release manually "
-            "from the GitHub releases page.")
+        return (strings.t("upd_hint_checksum"))
+    return (strings.t("upd_hint_generic"))
 
 
 def show_update_error(app, msg):
@@ -131,7 +127,7 @@ def show_update_error(app, msg):
             ft.Container(ft.Icon(ft.Icons.ERROR_OUTLINE, size=18, color=T.RED),
                          width=34, height=34, bgcolor=T.RED_SOFT, border_radius=9,
                          alignment=ft.Alignment.CENTER),
-            ft.Text("Update failed", size=16, weight=ft.FontWeight.W_800, color=T.INK),
+            ft.Text(strings.t("upd_update_failed"), size=16, weight=ft.FontWeight.W_800, color=T.INK),
         ], spacing=10, tight=True),
         content=ft.Container(
             ft.Column([
@@ -141,11 +137,11 @@ def show_update_error(app, msg):
                         size=11.5, color=T.INK_3, weight=ft.FontWeight.W_500),
             ], spacing=2, tight=True), width=460),
         actions=[ft.Row([
-            ghost_btn("Download manually", on_click=lambda e: (
+            ghost_btn(strings.t("upd_download_manually"), on_click=lambda e: (
                 app._open_url(
                     "https://github.com/AhmedSayedRepo/QA-Studio/releases/latest"),
                 app._close_dialog())),
-            green_btn("OK", on_click=lambda e: app._close_dialog()),
+            green_btn(strings.t("upd_ok"), on_click=lambda e: app._close_dialog()),
         ], alignment=ft.MainAxisAlignment.END, spacing=10, tight=True)],
         actions_alignment=ft.MainAxisAlignment.END)
     app._show_dialog(dlg)
@@ -157,21 +153,20 @@ def show_restart_dialog(app, msg):
             ft.Container(ft.Icon(ft.Icons.CHECK_CIRCLE, size=18, color=T.GREEN),
                          width=34, height=34, bgcolor=T.GREEN_SOFT, border_radius=9,
                          alignment=ft.Alignment.CENTER),
-            ft.Text("Update complete", size=16, weight=ft.FontWeight.W_800, color=T.INK),
+            ft.Text(strings.t("upd_update_complete"), size=16, weight=ft.FontWeight.W_800, color=T.INK),
         ], spacing=10, tight=True),
         content=ft.Container(
             ft.Column([
-                ft.Text("QA Studio has been updated to the latest version.",
+                ft.Text(strings.t("upd_updated_body"),
                         size=13, color=T.INK, weight=ft.FontWeight.W_700),
                 ft.Container(height=6),
-                ft.Text("It will restart to finish updating — closing and reopening "
-                        "on the new version automatically.",
+                ft.Text(strings.t("upd_restart_body"),
                         size=13, color=T.INK_2, weight=ft.FontWeight.W_500),
             ], spacing=2, tight=True),
             width=430),
         actions=[
-            ghost_btn("Later", on_click=lambda e: app._close_dialog()),
-            green_btn("Restart now", icon=ft.Icons.RESTART_ALT,
+            ghost_btn(strings.t("upd_later"), on_click=lambda e: app._close_dialog()),
+            green_btn(strings.t("upd_restart_now"), icon=ft.Icons.RESTART_ALT,
                       on_click=lambda e: app._restart_app(), height=46),
         ],
         actions_alignment=ft.MainAxisAlignment.END,

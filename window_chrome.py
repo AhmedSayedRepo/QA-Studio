@@ -7,6 +7,7 @@ working. force_close is still reachable as app._force_close (used by updater_ui.
 import asyncio, os, sys, threading, time, subprocess
 import flet as ft
 import theme as T
+import strings
 from ui import ghost_btn, danger_btn
 
 
@@ -181,15 +182,14 @@ def confirm_close(app):
             ft.Container(ft.Icon(ft.Icons.WARNING_AMBER_ROUNDED, size=18, color=T.AMBER),
                          width=34, height=34, bgcolor=T.AMBER_SOFT, border_radius=9,
                          alignment=ft.Alignment.CENTER),
-            ft.Text("Close QA Studio?", size=16, weight=ft.FontWeight.W_800, color=T.INK),
+            ft.Text(strings.t("wc_close_title"), size=16, weight=ft.FontWeight.W_800, color=T.INK),
         ], spacing=10),
         content=ft.Container(width=380, content=ft.Text(
-            "If a run is in progress it will stop after the current test case. "
-            "Any unfinished test cases won't be processed. Close anyway?",
+            strings.t("wc_close_body"),
             size=13, color=T.INK_2, weight=ft.FontWeight.W_500)),
         actions=[
-            ghost_btn("Keep working", on_click=lambda e: app._close_dialog()),
-            danger_btn("Stop & close", icon=ft.Icons.STOP, on_click=do_close),
+            ghost_btn(strings.t("wc_keep_working"), on_click=lambda e: app._close_dialog()),
+            danger_btn(strings.t("wc_stop_close"), icon=ft.Icons.STOP, on_click=do_close),
         ],
         actions_alignment=ft.MainAxisAlignment.END)
     app._sh

@@ -69,6 +69,7 @@ import flet as ft
 
 import theme as T
 import store
+import strings
 import engine as E
 import regression
 import sprint_titles
@@ -275,6 +276,8 @@ class QAStudio:
             # dropdown popups render dark-on-dark.
             self.page.theme_mode = (ft.ThemeMode.DARK if T.MODE == "dark"
                                     else ft.ThemeMode.LIGHT)
+            # UI language drives page direction (RTL for Arabic interface).
+            self.page.rtl = strings.ui_is_rtl()
         except Exception:
             pass
         # Apply saved performance-logging preference (Settings screen).
@@ -308,6 +311,18 @@ class QAStudio:
         # Per-RUN override (Setup's picker): starts at the saved default each
         # launch, is never persisted, so Setup never changes the Settings default.
         self.run_lang = self.lang
+        # Interface (UI/chrome) language — a SEPARATE axis from output
+        # language above. Persisted via Settings; controls nav/labels + RTL.
+        self.ui_lang = "en"
+        try:
+            _uil = str(self.creds.get("ui_lang") or "").strip().lower()
+            self.ui_lang = _uil if _uil in E.LANGUAGES else "en"
+        except Exception:
+            self.ui_lang = "en"
+        try:
+            strings.set_ui_lang(self.ui_lang)
+        except Exception:
+            pass
         self.nav_state = {"setup": "active"}
 
         # task selections
@@ -659,7 +674,7 @@ class QAStudio:
                 border_radius=18, alignment=ft.Alignment.CENTER)
         except Exception:
             _logo = ft.Container(width=64, height=64)
-        _foot = (ft.Text("Signing you in…", size=12, color=T.RAIL_DIM,
+        _foot = (ft.Text(strings.t("main_signing_in"), size=12, color=T.RAIL_DIM,
                          weight=ft.FontWeight.W_600)
                  if signing_in else
                  ft.Text(f"v{E.local_version()}", size=11, color=T.RAIL_DIM,
@@ -725,6 +740,17 @@ class QAStudio:
             return auth.is_admin(getattr(self, "user", None))
         except Exception:
             return False
+
+    def _nav_label(self, n):
+        """Localized nav label for the current INTERFACE language.
+        Falls back to the built-in English label for any nav id that has
+        no translation key yet (links/users/ai_usage/performance)."""
+        try:
+            _k = "nav_" + n["id"]
+            _v = strings.t(_k)
+            return _v if _v != _k else n.get("label", n["id"])
+        except Exception:
+            return n.get("label", n["id"])
 
     def _screen_nav_cap(self, screen):
         """Capability needed to OPEN a screen (None = open to everyone)."""
@@ -816,8 +842,7 @@ class QAStudio:
         try:
             import secure_store_mobile as _ssm
             if _ssm.consume_bio_revert():
-                self._toast("Couldn't unlock with biometrics/PIN — "
-                             "“Require biometric/PIN unlock” was turned back off.")
+                self._toast(strings.t("main_bio_unlock_failed"))
         except Exception:
             pass
         # Biometric-gated login: __init__/_restore_session_async both
@@ -1040,6 +1065,13 @@ class QAStudio:
                 _saved = str(self.creds.get("lang")).strip().lower()
                 self.lang = _saved if _saved in E.LANGUAGES else "ar"
             self.run_lang = self.lang   # a fresh session resets the run override
+            _uil = str(self.creds.get("ui_lang") or "").strip().lower()
+            self.ui_lang = _uil if _uil in E.LANGUAGES else "en"
+            strings.set_ui_lang(self.ui_lang)
+            try:
+                self.page.rtl = strings.ui_is_rtl()
+            except Exception:
+                pass
             _t = self.creds.get("tool")
             if _t in ("titles", "steps"):
                 self.tool = _t
@@ -1113,13 +1145,12 @@ class QAStudio:
                              bgcolor=ft.Colors.with_opacity(0.12, T.RED),
                              border_radius=20, alignment=ft.Alignment.CENTER),
                 ft.Container(height=16),
-                ft.Text("Access revoked", size=20, weight=ft.FontWeight.BOLD, color=T.INK),
+                ft.Text(strings.t("main_access_revoked"), size=20, weight=ft.FontWeight.BOLD, color=T.INK),
                 ft.Container(height=8),
-                ft.Text("An administrator has removed your access to QA Studio. "
-                        "Contact an admin to restore it.", size=13, color=T.INK_3,
+                ft.Text(strings.t("main_access_removed"), size=13, color=T.INK_3,
                         text_align=ft.TextAlign.CENTER, no_wrap=False),
                 ft.Container(height=20),
-                ghost_btn("Sign out", icon=ft.Icons.LOGOUT, on_click=self._sign_out),
+                ghost_btn(strings.t("main_sign_out"), icon=ft.Icons.LOGOUT, on_click=self._sign_out),
             ], horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                alignment=ft.MainAxisAlignment.CENTER, spacing=0, tight=True),
             expand=True, alignment=ft.Alignment.CENTER, padding=ft.Padding.all(40))
@@ -1319,7 +1350,7 @@ class QAStudio:
                     ft.Row([
                         indicator,
                         ft.Icon(leading_icon, size=17, color=icon_color),
-                        ft.Text(n["label"], size=13.5, weight=ft.FontWeight.BOLD, color=color),
+                        ft.Text(self._nav_label(n), size=13.5, weight=ft.FontWeight.BOLD, color=color),
                         ft.Container(expand=True),
                         ft.Text(ix, size=10.5, weight=ft.FontWeight.BOLD, color=ixcolor,
                                 font_family=T.F_MONO),
@@ -1338,8 +1369,8 @@ class QAStudio:
                 ))
         conn_color  = T.GREEN if self.connected else T.INK_3
         _prov = self.current_provider()
-        conn_text   = (T.disp_name(_prov) + " · Claude") if (self.connected and _prov=="anthropic")                       else (T.disp_name(_prov) if self.connected else "Not connected")
-        conn_sub    = "Connected" if self.connected else "Enter credentials"
+        conn_text   = (T.disp_name(_prov) + " · Claude") if (self.connected and _prov=="anthropic")                       else (T.disp_name(_prov) if self.connected else strings.t("conn_not_connected"))
+        conn_sub    = strings.t("conn_connected") if self.connected else strings.t("conn_enter_creds")
         return ft.Container(
             width=244, bgcolor=T.RAIL, gradient=grad(T.GRAD_RAIL, diagonal=False),
             content=ft.Column([
@@ -1366,12 +1397,12 @@ class QAStudio:
                                 ft.Text(f"v{E.local_version()}", size=10, color=T.RAIL_DIM,
                                         weight=ft.FontWeight.BOLD),
                                 self._check_updates_chip(),
-                            ], spacing=7, tight=True,
+                            ], spacing=7, tight=False,
                                vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                        ], spacing=3),
+                        ], spacing=3, expand=True),
                     ], spacing=11, vertical_alignment=ft.CrossAxisAlignment.START),
                     padding=ft.Padding.symmetric(vertical=16, horizontal=6)),
-                ft.Container(ft.Text("PIPELINE", size=10, weight=ft.FontWeight.BOLD,
+                ft.Container(ft.Text(strings.t("pipeline"), size=10, weight=ft.FontWeight.BOLD,
                                      color="#615E6E"), padding=ft.Padding.only(left=18, top=14, bottom=6)),
                 # Only the nav list scrolls; the brand stays pinned above it.
                 ft.Container(self._rail_nav_column(nav_items),
@@ -1381,12 +1412,12 @@ class QAStudio:
                 ft.Container(
                     ft.Row([
                         ft.Icon(ft.Icons.HELP_OUTLINE, size=16, color=T.RAIL_INK),
-                        ft.Text("Help & guide", size=12, weight=ft.FontWeight.BOLD,
+                        ft.Text(strings.t("help_guide"), size=12, weight=ft.FontWeight.BOLD,
                                 color=T.RAIL_INK),
                         ft.Container(expand=True),
                     ], spacing=9),
                     on_click=lambda e: self._open_help_guide(),
-                    tooltip="Searchable guide to every feature",
+                    tooltip=strings.t("main_help_tip"),
                     ink=True, padding=ft.Padding.symmetric(vertical=10, horizontal=12),
                     margin=ft.Margin.only(left=10, right=10, bottom=4),
                     border_radius=10, bgcolor=ft.Colors.with_opacity(0.04, "#FFFFFF"),
@@ -1398,12 +1429,12 @@ class QAStudio:
                     ft.Row([
                         ft.Icon(ft.Icons.SETTINGS_OUTLINED, size=16,
                                 color=("#FFFFFF" if self.active == "settings" else T.RAIL_INK)),
-                        ft.Text("Settings", size=12, weight=ft.FontWeight.BOLD,
+                        ft.Text(strings.t("settings"), size=12, weight=ft.FontWeight.BOLD,
                                 color=("#FFFFFF" if self.active == "settings" else T.RAIL_INK)),
                         ft.Container(expand=True),
                     ], spacing=9),
                     on_click=lambda e: self.goto("settings"),
-                    tooltip="App settings & preferences",
+                    tooltip=strings.t("main_settings_tip"),
                     ink=True, padding=ft.Padding.symmetric(vertical=10, horizontal=12),
                     margin=ft.Margin.only(left=10, right=10, bottom=4),
                     border_radius=10,
@@ -1422,12 +1453,12 @@ class QAStudio:
                     ft.Row([
                         ft.Icon(ft.Icons.CLOUD_QUEUE_OUTLINED, size=16,
                                 color=("#FFFFFF" if self.active == "remote_runs" else T.RAIL_INK)),
-                        ft.Text("Remote Runs", size=12, weight=ft.FontWeight.BOLD,
+                        ft.Text(strings.t("remote_runs"), size=12, weight=ft.FontWeight.BOLD,
                                 color=("#FFFFFF" if self.active == "remote_runs" else T.RAIL_INK)),
                         ft.Container(expand=True),
                     ], spacing=9),
                     on_click=lambda e: self.goto("remote_runs"),
-                    tooltip="Status & activity for runs executing on GitHub Actions",
+                    tooltip=strings.t("main_remote_tip"),
                     ink=True, padding=ft.Padding.symmetric(vertical=10, horizontal=12),
                     margin=ft.Margin.only(left=10, right=10, bottom=4),
                     border_radius=10,
@@ -1444,14 +1475,14 @@ class QAStudio:
                         ft.Icon(ft.Icons.DARK_MODE_OUTLINED if T.MODE == "light"
                                 else ft.Icons.LIGHT_MODE_OUTLINED,
                                 size=16, color=T.RAIL_INK),
-                        ft.Text("Dark mode" if T.MODE == "light" else "Light mode",
+                        ft.Text(strings.t("dark_mode") if T.MODE == "light" else strings.t("light_mode"),
                                 size=12, weight=ft.FontWeight.BOLD, color=T.RAIL_INK),
                         ft.Container(expand=True),
                         ft.Text(T.MODE.upper(), size=9.5, weight=ft.FontWeight.BOLD,
                                 color=T.RAIL_DIM, font_family=T.F_MONO),
                     ], spacing=9),
                     on_click=lambda e: self._toggle_theme(),
-                    tooltip="Switch between light and dark",
+                    tooltip=strings.t("main_theme_tip"),
                     ink=True, padding=ft.Padding.symmetric(vertical=10, horizontal=12),
                     margin=ft.Margin.only(left=10, right=10, bottom=4),
                     border_radius=10, bgcolor=ft.Colors.with_opacity(0.04, "#FFFFFF"),
@@ -1525,7 +1556,7 @@ class QAStudio:
         ], width=34, height=34)
 
         role_pill = ft.Container(
-            ft.Text(role.upper(), size=8.5, weight=ft.FontWeight.W_800, color=role_col,
+            ft.Text(strings.t("role_" + str(role).lower()).upper(), size=8.5, weight=ft.FontWeight.W_800, color=role_col,
                     style=ft.TextStyle(letter_spacing=0.7)),
             bgcolor=_op(role_col, 0.14), border_radius=6,
             padding=ft.Padding.symmetric(vertical=2, horizontal=6))
@@ -1533,7 +1564,7 @@ class QAStudio:
         logout = ft.Container(
             ft.Icon(ft.Icons.LOGOUT, size=16, color=T.INK_2),
             on_click=self._sign_out, ink=True, border_radius=10, padding=9,
-            tooltip="Sign out", animate=120)
+            tooltip=strings.t("main_sign_out"), animate=120)
 
         def _lo_hover(e, _c=logout):
             try:
@@ -1975,7 +2006,7 @@ class QAStudio:
                     ft.Container(width=4, height=22, border_radius=4,
                                  bgcolor=("#FFFFFF" if active else ft.Colors.TRANSPARENT)),
                     ft.Icon(leading, size=18, color=icon_color),
-                    ft.Text(n.get("label", n["id"]), size=14, weight=ft.FontWeight.BOLD, color=color),
+                    ft.Text(self._nav_label(n), size=14, weight=ft.FontWeight.BOLD, color=color),
                     ft.Container(expand=True),
                     ft.Text(n.get("ix", ""), size=10.5, weight=ft.FontWeight.BOLD,
                             color=ixcolor, font_family=T.F_MONO),
@@ -2003,25 +2034,25 @@ class QAStudio:
                          else ft.Colors.with_opacity(0.04, "#FFFFFF")),
                 border=ft.Border.all(1, T.RAIL_LINE))
 
-        footer_btns = [_rail_btn(ft.Icons.HELP_OUTLINE, "Help & guide", False,
+        footer_btns = [_rail_btn(ft.Icons.HELP_OUTLINE, strings.t("help_guide"), False,
                                  self._open_help_guide)]
         if self.can("nav.settings"):
-            footer_btns.append(_rail_btn(ft.Icons.SETTINGS_OUTLINED, "Settings",
+            footer_btns.append(_rail_btn(ft.Icons.SETTINGS_OUTLINED, strings.t("settings"),
                                          self.active == "settings",
                                          lambda: self.goto("settings")))
         if auth.configured() and self.can(auth.CAP_RUN):
-            footer_btns.append(_rail_btn(ft.Icons.CLOUD_QUEUE_OUTLINED, "Remote Runs",
+            footer_btns.append(_rail_btn(ft.Icons.CLOUD_QUEUE_OUTLINED, strings.t("remote_runs"),
                                          self.active == "remote_runs",
                                          lambda: self.goto("remote_runs")))
         footer_btns.append(_rail_btn(
             ft.Icons.DARK_MODE_OUTLINED if T.MODE == "light" else ft.Icons.LIGHT_MODE_OUTLINED,
-            "Dark mode" if T.MODE == "light" else "Light mode", False, self._toggle_theme))
+            strings.t("dark_mode") if T.MODE == "light" else strings.t("light_mode"), False, self._toggle_theme))
 
         conn_color = T.GREEN if self.connected else T.INK_3
         _prov = self.current_provider()
         conn_text = ((T.disp_name(_prov) + " · Claude") if (self.connected and _prov == "anthropic")
-                     else (T.disp_name(_prov) if self.connected else "Not connected"))
-        conn_sub = "Connected" if self.connected else "Enter credentials"
+                     else (T.disp_name(_prov) if self.connected else strings.t("conn_not_connected")))
+        conn_sub = strings.t("conn_connected") if self.connected else strings.t("conn_enter_creds")
         conn_card = ft.Container(
             ft.Row([
                 ft.Container(self._provider_logo(_prov, 28) if self.connected
@@ -2042,7 +2073,7 @@ class QAStudio:
         return ft.Container(
             ft.Column([
                 brand,
-                ft.Container(ft.Text("PIPELINE", size=10, weight=ft.FontWeight.BOLD, color="#615E6E"),
+                ft.Container(ft.Text(strings.t("pipeline"), size=10, weight=ft.FontWeight.BOLD, color="#615E6E"),
                              padding=ft.Padding.only(left=18, top=8, bottom=6)),
                 ft.Column(nav_tiles, spacing=0, scroll=ft.ScrollMode.AUTO, expand=True),
                 *footer_btns,
@@ -2296,22 +2327,28 @@ class QAStudio:
 
     def _clear_caches(self):
         if getattr(self, "readonly", False):
-            return self._toast("Read-only — you can’t change settings.")
+            return self._toast(strings.t("main_readonly"))
         try:
             regression.clear_caches(self)
         except Exception:
             pass
-        self._toast("Caches cleared — the next plan will rebuild from Azure.")
+        self._toast(strings.t("main_caches_cleared"))
 
     def _reset_prefs(self):
         if getattr(self, "readonly", False):
-            return self._toast("Read-only — you can’t change settings.")
+            return self._toast(strings.t("main_readonly"))
         try:
             T.apply_theme("light")
         except Exception:
             pass
         self.lang = "en"
         self.run_lang = "en"
+        self.ui_lang = "en"
+        try:
+            strings.set_ui_lang("en")
+            self.page.rtl = strings.ui_is_rtl()
+        except Exception:
+            pass
         try:
             regression.set_perf(True)
         except Exception:
@@ -2319,6 +2356,7 @@ class QAStudio:
         try:
             self.creds["theme"] = "light"
             self.creds["lang"] = "en"
+            self.creds["ui_lang"] = "en"
             self.creds["perf"] = True
             store.save(self.creds)
         except Exception:
@@ -2328,7 +2366,7 @@ class QAStudio:
             self.page.theme_mode = ft.ThemeMode.LIGHT
         except Exception:
             pass
-        self._toast("Preferences reset to defaults.")
+        self._toast(strings.t("main_prefs_reset"))
         self.render()
 
     # ---- command palette (Ctrl/⌘-K) ----
@@ -2410,7 +2448,7 @@ class QAStudio:
             rows = [make_row(lbl, ico, act) for (lbl, ico, kw, act) in cmds
                     if (not q) or q in lbl.lower() or q in kw]
             results.controls = rows or [ft.Container(
-                ft.Text("No matching commands.", size=12.5, color=T.INK_3,
+                ft.Text(strings.t("main_no_commands"), size=12.5, color=T.INK_3,
                         weight=ft.FontWeight.W_500),
                 padding=14, alignment=ft.Alignment.CENTER)]
             try:
@@ -2419,7 +2457,7 @@ class QAStudio:
                 pass
 
         search = ft.TextField(
-            hint_text="Type a command…   (Esc to close)", autofocus=True,
+            hint_text=strings.t("main_cmd_hint"), autofocus=True,
             border_color=T.BORDER,
             focused_border_color=T.VIOLET, border_radius=T.R, text_size=14,
             content_padding=ft.Padding.symmetric(vertical=12, horizontal=12),
@@ -2526,7 +2564,7 @@ class QAStudio:
         _nv = self._screen_nav_cap(screen)
         if _nv and not self.can(_nv):
             try:
-                self._toast("You don’t have access to that screen.")
+                self._toast(strings.t("main_no_screen_access"))
             except Exception:
                 pass
             return
@@ -2793,10 +2831,10 @@ class QAStudio:
                     self.page.controls.clear()
                     self.page.add(ft.Container(
                         ft.Column([
-                            ft.Text("QA Studio hit an error while drawing this screen.",
+                            ft.Text(strings.t("main_draw_error"),
                                     size=15, weight=ft.FontWeight.BOLD, color="#E0474D"),
                             ft.Text(str(_err_obj), size=12, color="#1B1A22"),
-                            ft.Text("Full details were saved to the local diagnostics log.",
+                            ft.Text(strings.t("main_draw_error_sub"),
                                     size=11, color=T.INK_2),
                             *details_row,
                         ], spacing=10, scroll=ft.ScrollMode.AUTO),
@@ -3079,9 +3117,7 @@ class QAStudio:
             if getattr(self, "_mobile_bg_during_run", False):
                 self._mobile_bg_during_run = False
                 try:
-                    self._toast("Welcome back — the app was backgrounded during a run; "
-                               "check the activity log for anything that may have been "
-                               "interrupted.")
+                    self._toast(strings.t("main_welcome_back"))
                 except Exception:
                     pass
 
@@ -3126,7 +3162,7 @@ class QAStudio:
             return
         self._back_exit_ts = now
         try:
-            self._toast("Press back again to exit")
+            self._toast(strings.t("main_back_exit"))
         except Exception:
             pass
         self.ui_safe(self.render)   # re-assert the view stack so we don't exit
@@ -3174,7 +3210,7 @@ class QAStudio:
             return
         # A run is in progress — ask before quitting
         _is_auto = bool(getattr(self, "_auto_running", False))
-        _what = "automation task" if _is_auto else "run"
+        _what = strings.t("main_quit_what_auto") if _is_auto else strings.t("main_quit_what_run")
         def do_quit(_=None):
             self._close_dialog()
             self._force_close()
@@ -3186,14 +3222,14 @@ class QAStudio:
                 ft.Container(ft.Icon(ft.Icons.WARNING_AMBER_ROUNDED, size=18, color=T.AMBER),
                              width=34, height=34, bgcolor=T.AMBER_SOFT, border_radius=9,
                              alignment=ft.Alignment.CENTER),
-                ft.Text(f"A {_what} is in progress", weight=ft.FontWeight.W_800,
+                ft.Text(strings.t("main_quit_title", what=_what), weight=ft.FontWeight.W_800,
                         size=16, color=T.INK),
             ], spacing=10, tight=True),
             content=ft.Container(
-                ft.Text(f"Closing now will stop the current {_what}. Quit anyway?",
+                ft.Text(strings.t("main_quit_body", what=_what),
                         size=13, color=T.INK_2, weight=ft.FontWeight.W_500), width=380),
-            actions=[ghost_btn("Keep running", on_click=keep),
-                     danger_btn("Quit", icon=ft.Icons.CLOSE, on_click=do_quit)],
+            actions=[ghost_btn(strings.t("main_keep_running"), on_click=keep),
+                     danger_btn(strings.t("main_quit_btn"), icon=ft.Icons.CLOSE, on_click=do_quit)],
             actions_alignment=ft.MainAxisAlignment.END)
         self._show_dialog(dlg)
 
@@ -3253,7 +3289,7 @@ class QAStudio:
     def _manual_update_check(self):
         """User-triggered check. Always reports the outcome (up-to-date / newer /
         why it couldn't check), unlike the silent background check."""
-        self._toast("Checking for updates…")
+        self._toast(strings.t("checking_updates"))
         def work():
             info = E.check_for_update()
             self._update_info = info
@@ -3263,11 +3299,11 @@ class QAStudio:
                 self._update_dismissed = False
                 self.ui_safe(self.render)   # the banner will appear
             elif info.get("error"):
-                self.ui_safe(lambda: self._toast(f"Couldn't check: {info['error']}"))
+                self.ui_safe(lambda: self._toast(strings.t("update_check_failed", err=info["error"])))
             elif remote:
-                self.ui_safe(lambda: self._toast(f"Up to date (v{local}, latest v{remote})."))
+                self.ui_safe(lambda: self._toast(strings.t("up_to_date_latest", local=local, remote=remote)))
             else:
-                self.ui_safe(lambda: self._toast(f"Up to date (v{local})."))
+                self.ui_safe(lambda: self._toast(strings.t("up_to_date", v=local)))
         try:
             self._bg(work)
         except Exception:
@@ -3473,20 +3509,20 @@ class QAStudio:
             how, url, label = self.PROVIDER_KEY_HELP.get(
                 name, self.PROVIDER_KEY_HELP["anthropic"])
             if key == "provider":
-                h = {"title": f"Activating {T.disp_name(name)}",
+                h = {"title": strings.t("helpm_prov_title", prov=T.disp_name(name)),
                      "steps": [
-                         f"A provider becomes 'active' once you save a valid {T.disp_name(name)} API key.",
-                         f"Get the key: {how}",
-                         "Paste it in the API Key field below, then click Save.",
-                         "The dropdown shows '(active)'. Then click Connect.",
-                         "Each provider stores its own key — switching keeps them all.",
+                         strings.t("helpm_prov_s0", prov=T.disp_name(name)),
+                         strings.t("helpm_prov_s1", how=how),
+                         strings.t("helpm_prov_s2"),
+                         strings.t("helpm_prov_s3"),
+                         strings.t("helpm_prov_s4"),
                      ],
                      "url": url, "url_label": label}
             else:
-                h = {"title": f"{T.disp_name(name)} API Key",
-                     "steps": [f"{T.disp_name(name)}: {how}",
-                               "Copy the key and paste it here, then click Save.",
-                               "It is stored only on this device, per provider."],
+                h = {"title": strings.t("helpm_apikey_title", prov=T.disp_name(name)),
+                     "steps": [strings.t("helpm_apikey_s0", prov=T.disp_name(name), how=how),
+                               strings.t("helpm_apikey_s1"),
+                               strings.t("helpm_apikey_s2")],
                      "url": url, "url_label": label}
         else:
             # backend_setup owns the Jira/Zephyr/Xray topics and builds their
@@ -3511,6 +3547,14 @@ class QAStudio:
             h = dict(h)
             h["url"] = (f"https://dev.azure.com/{_org}/_usersSettings/tokens"
                         if _org else "https://dev.azure.com/")
+        _htk = "helpm_" + str(key) + "_title"
+        if strings.t(_htk) != _htk:
+            h = dict(h)
+            h["title"] = strings.t(_htk)
+            h["steps"] = [strings.t("helpm_%s_s%d" % (key, _i)) for _i in range(len(h["steps"]))]
+            _ulk = "helpm_%s_url" % key
+            if h.get("url_label") and strings.t(_ulk) != _ulk:
+                h["url_label"] = strings.t(_ulk)
         step_rows = []
         for i, s in enumerate(h["steps"], 1):
             step_rows.append(ft.Row([
@@ -3533,7 +3577,7 @@ class QAStudio:
                     ft.Container(height=6),
                     ft.Container(
                         ft.Row([ft.Icon(ft.Icons.OPEN_IN_NEW, size=14, color=T.VIOLET_INK),
-                                ft.Text(h.get("url_label", "Open link"), size=12.5,
+                                ft.Text(h.get("url_label", strings.t("helpm_open_link")), size=12.5,
                                         color=T.VIOLET_INK, weight=ft.FontWeight.BOLD)],
                                spacing=6, tight=True),
                         on_click=lambda e, u=url: self._open_url(u),
@@ -3542,7 +3586,7 @@ class QAStudio:
                         border=ft.Border.all(1, "#E0DAFF")),
                 ] if url else []),
                 spacing=11, tight=True)),
-            actions=[primary_btn("Got it", on_click=lambda e: self._close_dialog())],
+            actions=[primary_btn(strings.t("main_got_it"), on_click=lambda e: self._close_dialog())],
             actions_alignment=ft.MainAxisAlignment.END)
         self._show_dialog(dlg)
 
@@ -3557,14 +3601,14 @@ class QAStudio:
         org_has = bool(self.creds.get("org"))
         org_editable = (not org_has) or self._org_unlocked
         self.org_field = ft.TextField(
-            value=self.creds.get("org", ""), hint_text="Azure DevOps organization name",
+            value=self.creds.get("org", ""), hint_text=strings.t("main_azure_org_name"),
             read_only=not org_editable,
             bgcolor=(T.CARD if org_editable else T.CARD_2),
             border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
             content_padding=ft.Padding.symmetric(vertical=12, horizontal=12),
             text_size=13, expand=True)
-        self.org_btn = (green_btn("Save", on_click=self._save_org) if org_editable
-                        else ghost_btn("Update", on_click=self._unlock_org))
+        self.org_btn = (green_btn(strings.t("main_org_save"), on_click=self._save_org) if org_editable
+                        else ghost_btn(strings.t("main_update_btn"), on_click=self._unlock_org))
         return ft.Row([hover_field(self.org_field), self.org_btn], spacing=8)
 
     def _sync_org_cell(self):
@@ -3590,8 +3634,8 @@ class QAStudio:
             border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
             content_padding=ft.Padding.symmetric(vertical=12, horizontal=12),
             text_size=13, expand=True)
-        self.api_btn = (green_btn("Save", on_click=self._save_key) if key_editable
-                        else ghost_btn("Update", on_click=self._unlock_key))
+        self.api_btn = (green_btn(strings.t("main_org_save"), on_click=self._save_key) if key_editable
+                        else ghost_btn(strings.t("main_update_btn"), on_click=self._unlock_key))
         return ft.Row([hover_field(self.api_key_field), self.api_btn], spacing=8)
 
     def _sync_ai_key_cell(self):
@@ -3636,7 +3680,7 @@ class QAStudio:
         _dd_kwargs = dict(
             value=cur_model or None, options=self._model_options(name),
             on_select=self._on_model_change,
-            hint_text="Select a model",
+            hint_text=strings.t("main_select_model"),
             disabled=_model_locked,
             border_color=T.BORDER, focused_border_color=T.VIOLET,
             border_radius=T.R, content_padding=ft.Padding.symmetric(vertical=12, horizontal=12),
@@ -3697,14 +3741,14 @@ class QAStudio:
         _fields = backend_setup.picker_rows(self, field_label, hover_field)
         if backend_setup.is_azure(self.creds):
             _fields += [
-                field_label("Azure Organization", req=True,
-                            info="How to find your Azure organization name",
+                field_label(strings.t("au_azure_org"), req=True,
+                            info=strings.t("au_azure_org_info"),
                             on_info=lambda e: self._show_help("org")),
                 self._org_cell,
                 ft.Row([
                     ft.Column([
-                        field_label("Azure DevOps PAT", req=True,
-                                    info="How to create an Azure DevOps PAT",
+                        field_label(strings.t("au_azure_pat"), req=True,
+                                    info=strings.t("au_azure_pat_info"),
                                     on_info=lambda e: self._show_help("pat")),
                         self._pat_cell,
                     ], expand=True, spacing=0),
@@ -3722,14 +3766,14 @@ class QAStudio:
         # AI provider section follows the test-management section.
         _fields += [
             ft.Container(height=6),
-            field_label("AI Provider", req=True, info="How to make a provider active",
+            field_label(strings.t("au_ai_provider"), req=True, info=strings.t("au_ai_provider_info"),
                         on_info=lambda e: self._show_help("provider")),
             ft.Container(hover_field(self.prov_dd), padding=ft.Padding.only(top=4, bottom=12)),
-            field_label("Model", req=False, hint=self._model_src_hint(),
-                        info="Which model this provider should use",
+            field_label(strings.t("au_model"), req=False, hint=self._model_src_hint(),
+                        info=strings.t("au_model_info"),
                         on_info=lambda e: self._show_help("model")),
             ft.Container(hover_field(self.model_dd), padding=ft.Padding.only(top=4, bottom=12)),
-            field_label("API Key", req=True, info="How to get your AI provider API key",
+            field_label(strings.t("au_api_key"), req=True, info=strings.t("au_api_key_info"),
                         on_info=lambda e: self._show_help("api_key")),
             self._ai_key_cell,
         ]
@@ -3739,14 +3783,14 @@ class QAStudio:
         if self._is_admin():
             _fields += [
                 ft.Container(height=12),
-                field_label("Email Sender", hint="optional"),
+                field_label(strings.t("au_email_sender"), hint="optional"),
                 self._sender_cell,
-                field_label("Sender name", hint="shown to recipients instead of the address"),
+                field_label(strings.t("au_sender_name"), hint=strings.t("au_sender_name_hint")),
                 self._sender_name_cell,
                 ft.Row([
                     ft.Column([
-                        field_label("Gmail App Password", hint="optional", req=False,
-                                    info="How to create a Gmail App Password",
+                        field_label(strings.t("au_gmail_pw"), hint="optional", req=False,
+                                    info=strings.t("au_gmail_pw_info"),
                                     on_info=lambda e: self._show_help("gmail")),
                         self._gmail_cell,
                     ], expand=True, spacing=0),
@@ -3761,14 +3805,14 @@ class QAStudio:
     # AI key / provider / org are deliberately NOT here: saving them changes the
     # run summary and the model dropdown, so they still full-render.
     _INPLACE_CRED_FIELDS = {
-        "pat":         dict(value_key="pat", hint="Paste PAT", password=True),
-        "sender":      dict(value_key="gmail_sender", hint="Sender Gmail address",
+        "pat":         dict(value_key="pat", hint=strings.t("au_ph_paste_pat"), password=True),
+        "sender":      dict(value_key="gmail_sender", hint=strings.t("au_ph_sender_gmail"),
                             password=False, env="GMAIL_SENDER"),
         "sender_name": dict(value_key="gmail_sender_name", password=False,
-                            hint="Display name recipients see (e.g. QA Studio)",
+                            hint=strings.t("au_ph_display_name"),
                             env="GMAIL_SENDER_NAME"),
         "gmail":       dict(value_key="gmail", password=True,
-                            hint="Gmail app password (optional)"),
+                            hint=strings.t("au_ph_gmail_pw")),
     }
 
     def _make_cred_field(self, kind):
@@ -3788,8 +3832,8 @@ class QAStudio:
             content_padding=ft.Padding.symmetric(vertical=12, horizontal=12),
             text_size=13, expand=True)
         setattr(self, f"{kind}_field", field)
-        btn = (green_btn("Save", on_click=getattr(self, f"_save_{kind}")) if editable
-               else ghost_btn("Update", on_click=getattr(self, f"_unlock_{kind}")))
+        btn = (green_btn(strings.t("main_org_save"), on_click=getattr(self, f"_save_{kind}")) if editable
+               else ghost_btn(strings.t("main_update_btn"), on_click=getattr(self, f"_unlock_{kind}")))
         setattr(self, f"{kind}_btn", btn)
         return ft.Row([hover_field(field), btn], spacing=8)
 
@@ -3818,7 +3862,7 @@ class QAStudio:
                 ft.Text(v, size=12.5, color=T.INK, weight=ft.FontWeight.BOLD),
             ], spacing=1, expand=True),
             badge_ctrl,
-            ghost_btn("Update", icon=ft.Icons.EDIT_OUTLINED,
+            ghost_btn(strings.t("main_update_btn"), icon=ft.Icons.EDIT_OUTLINED,
                       on_click=lambda e: self._edit_connection()),
         ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
@@ -3841,7 +3885,7 @@ class QAStudio:
             # active backend (e.g. "Jira → TestRail") is always in view.
             backend_setup._section_header(
                 ft, T, backend_setup.label_for(backend_setup.active(self.creds))),
-            self._cred_saved_row(ft.Icons.AUTO_AWESOME, "AI Provider", prov_val,
+            self._cred_saved_row(ft.Icons.AUTO_AWESOME, strings.t("au_ai_provider"), prov_val,
                                  badge("Active", "green", ft.Icons.CHECK)),
         ]
         # Backend-aware credential rows — was a single hardcoded "Azure DevOps PAT"
@@ -3861,13 +3905,13 @@ class QAStudio:
                 # showed these, so once connected you couldn't see or reach the
                 # sender name without editing blindly. Each row's "Update" opens
                 # the full edit view (same as every other saved row).
-                self._cred_saved_row(ft.Icons.ALTERNATE_EMAIL, "Email Sender", _sender,
+                self._cred_saved_row(ft.Icons.ALTERNATE_EMAIL, strings.t("au_email_sender"), _sender,
                                      badge("optional", "grey")),
                 div,
-                self._cred_saved_row(ft.Icons.BADGE_OUTLINED, "Sender name", _sender_name,
+                self._cred_saved_row(ft.Icons.BADGE_OUTLINED, strings.t("au_sender_name"), _sender_name,
                                      badge("optional", "grey")),
                 div,
-                self._cred_saved_row(ft.Icons.MAIL_OUTLINED, "Gmail App Password", masked_gm,
+                self._cred_saved_row(ft.Icons.MAIL_OUTLINED, strings.t("au_gmail_pw"), masked_gm,
                                      badge("optional", "grey")),
             ]
         return ft.Column(_rows, spacing=0)
@@ -3920,8 +3964,8 @@ class QAStudio:
                         pass
                 c.on_hover = _h
             return c
-        _t = "Titles" if compact else "Test Case Titles"
-        _s = "Steps" if compact else "Test Case Steps"
+        _t = strings.t("main_gen_titles") if compact else strings.t("main_tool_titles")
+        _s = strings.t("main_gen_steps") if compact else strings.t("main_tool_steps")
         return ft.Container(
             ft.Row([seg(_t, ft.Icons.DESCRIPTION_OUTLINED, "titles"),
                     seg(_s, ft.Icons.LAYERS_OUTLINED, "steps")],
@@ -4050,6 +4094,51 @@ class QAStudio:
         if not updated:
             self.render()
 
+    # ---- interface-language segment (SEPARATE from output language) ----
+    def _ui_lang_segment(self):
+        # The INTERFACE language picker. A distinct controller from
+        # _lang_segment (which sets the OUTPUT/test-case language). This one
+        # drives the nav, screen chrome and RTL — nothing about generated
+        # content. Persisted default only (no per-run override for chrome).
+        _opts = [ft.DropdownOption(key=_code, text=_info["native"])
+                 for _code, _info in E.LANGUAGES.items()]
+        _val = self.ui_lang if self.ui_lang in E.LANGUAGES else "en"
+        _kwargs = dict(
+            value=_val, options=_opts,
+            on_select=lambda e: self._set_ui_lang(e.control.value or "en"),
+            border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
+            content_padding=ft.Padding.symmetric(vertical=10, horizontal=10),
+            text_size=13, filled=True, bgcolor=T.CARD, width=200)
+        try:
+            _dd = ft.Dropdown(menu_height=300, **_kwargs)
+        except TypeError:
+            _dd = ft.Dropdown(**_kwargs)
+        return ft.Container(
+            _dd, width=210,
+            padding=4, bgcolor=T.CARD_2, border_radius=T.R, border=ft.Border.all(1, T.BORDER))
+
+    def _set_ui_lang(self, code):
+        """Set the persisted INTERFACE language (nav/labels/RTL). Independent
+        of the output/test-case language (see _set_lang)."""
+        if getattr(self, "readonly", False):
+            return
+        code = code if code in E.LANGUAGES else "en"
+        self.ui_lang = code
+        try:
+            strings.set_ui_lang(code)
+        except Exception:
+            pass
+        try:
+            self.creds["ui_lang"] = code
+            store.save(self.creds)
+        except Exception:
+            pass
+        try:
+            self.page.rtl = strings.ui_is_rtl()
+        except Exception:
+            pass
+        self.render()
+
     # ---- credential handlers ----
     def _on_provider_change(self, e):
         prev = getattr(self, "_provider_choice", None)
@@ -4128,7 +4217,7 @@ class QAStudio:
         name = self._provider_choice
         val = (self.api_key_field.value or "").strip()
         if not val:
-            self._err("API Key is required."); return
+            self._err(strings.t("main_api_key_required")); return
         self.creds["keys"][self._cred_slot(name)] = val; store.save(self.creds)
         # apply to the engine immediately so a PAUSED automation can Resume on the
         # newly chosen provider/key without re-running Connect
@@ -4141,7 +4230,7 @@ class QAStudio:
         # a new key may unlock a different model catalogue → refetch
         self._models_for = None
         self._model_choices = None
-        self._toast(f"API key saved & {T.disp_name(name)} activated.")
+        self._toast(strings.t("main_apikey_saved_activated", name=T.disp_name(name)))
         # In-place: the row flips Save→Update and the model catalogue may change.
         # Patch just those instead of a full render (no scroll jump).
         try:
@@ -4278,10 +4367,10 @@ class QAStudio:
         # flips (summary → edit), so a full render is genuinely needed there.
         if getattr(self, "connected", False):
             self._disconnect(f"Model changed to {val} — reconnect to continue.")
-            self._toast(f"Model set to {val}.")
+            self._toast(strings.t("main_model_set", model=val))
             self.render()
             return
-        self._toast(f"Model set to {val}.")
+        self._toast(strings.t("main_model_set", model=val))
         # Not connected: the model dropdown already shows the pick. The only
         # visible change is the key row on per-model-key providers (the key swaps
         # with the model) — patch just that in place, no full render (no scroll
@@ -4297,10 +4386,10 @@ class QAStudio:
     def _save_pat(self, e=None):
         val = (self.pat_field.value or "").strip()
         if not val:
-            self._err("Azure DevOps PAT is required."); return
+            self._err(strings.t("main_pat_required")); return
         self.creds["pat"] = val; store.save(self.creds)
         self._pat_unlocked = False
-        self._toast("PAT saved."); self._refresh_cred_field("pat")
+        self._toast(strings.t("main_pat_saved")); self._refresh_cred_field("pat")
 
     def _unlock_pat(self, e=None):
         self._pat_unlocked = True; self._refresh_cred_field("pat")
@@ -4309,7 +4398,7 @@ class QAStudio:
         val = (self.gmail_field.value or "").strip()
         self.creds["gmail"] = val; store.save(self.creds)
         self._gmail_unlocked = False
-        self._toast("Gmail password saved."); self._refresh_cred_field("gmail")
+        self._toast(strings.t("main_gmail_saved")); self._refresh_cred_field("gmail")
         self._push_org_email()
 
     def _unlock_gmail(self, e=None):
@@ -4318,14 +4407,14 @@ class QAStudio:
     def _save_org(self, e=None):
         val = (self.org_field.value or "").strip()
         if not val:
-            self._err("Azure Organization is required."); return
+            self._err(strings.t("main_org_required")); return
         self.creds["org"] = val; store.save(self.creds)
         try:
             E.set_credentials(org=val)
         except Exception:
             pass
         self._org_unlocked = False
-        self._toast("Organization saved."); self._sync_org_cell()
+        self._toast(strings.t("main_org_saved")); self._sync_org_cell()
 
     def _unlock_org(self, e=None):
         # In-place: flip the org row to editable + "Save", no full render.
@@ -4339,7 +4428,7 @@ class QAStudio:
         except Exception:
             pass
         self._sender_unlocked = False
-        self._toast("Email sender saved."); self._refresh_cred_field("sender")
+        self._toast(strings.t("main_sender_saved")); self._refresh_cred_field("sender")
         self._push_org_email()
 
     def _save_sender_name(self, e=None):
@@ -4360,7 +4449,7 @@ class QAStudio:
         except Exception:
             pass
         self._sender_name_unlocked = False
-        self._toast("Sender name saved.")
+        self._toast(strings.t("main_sender_name_saved"))
         self._refresh_cred_field("sender_name")
         self._push_org_email()
 
@@ -4398,7 +4487,7 @@ class QAStudio:
                 ok, msg = False, str(ex)
             if not ok:
                 self.ui_safe(lambda: self._toast(
-                    f"Saved locally, but couldn't share with other users: {msg}"))
+                    strings.t("main_saved_not_shared", err=msg)))
         try:
             threading.Thread(target=work, daemon=True).start()
         except Exception:
@@ -4582,7 +4671,7 @@ class QAStudio:
 
         _inv0 = getattr(self, "_invalid", set())
         self.project_dd = ft.Dropdown(
-            value=self.project, hint_text="Select project",
+            value=self.project, hint_text=strings.t("main_select_project"),
             options=[ft.DropdownOption(p) for p in self._projects],
             on_select=self._on_project_change,
             tooltip=(self.project or None),
@@ -4603,7 +4692,7 @@ class QAStudio:
         _plan_tip = next((f"[{p['id']}] {p['name']}" for p in self._plans if p["id"] == self.plan_id), None)
         self.plan_dd = searchable_dropdown(
             value=(str(self.plan_id) if self.plan_id else None),
-            hint_text="Type to search a test plan…",
+            hint_text=strings.t("main_search_plan"),
             options=[ft.DropdownOption(key=str(p["id"]), text=f"[{p['id']}] {p['name']}") for p in self._plans],
             on_select=self._on_plan_change,
             tooltip=_plan_tip,
@@ -4614,7 +4703,7 @@ class QAStudio:
 
         self.plan_id_field = ft.TextField(
             value=(str(self.plan_id) if self.plan_id else ""), read_only=True,
-            hint_text="— none —", bgcolor=T.CARD_2, color=T.VIOLET_INK,
+            hint_text=strings.t("main_none"), bgcolor=T.CARD_2, color=T.VIOLET_INK,
             tooltip=(f"Test Plan ID: {self.plan_id}" if self.plan_id else None),
             text_size=13, border_color=T.BORDER, border_radius=T.R,
             content_padding=ft.Padding.symmetric(vertical=12, horizontal=10), expand=True)
@@ -4658,13 +4747,13 @@ class QAStudio:
             # update the THIS RUN stats + estimate labels without a full render
             try:
                 if hasattr(self, "_sum_stories"):
-                    self._sum_stories.value = f"{len(self.story_ids)} selected"
+                    self._sum_stories.value = strings.t("run_n_selected", n=len(self.story_ids))
                     self._sum_stories.update()
             except Exception:
                 pass
             try:
                 if hasattr(self, "_est_sub"):
-                    self._est_sub.value = f"test cases\nacross {len(self.story_ids)} stories"
+                    self._est_sub.value = strings.t("run_est_sub", n=len(self.story_ids))
                     self._est_sub.update()
             except Exception:
                 pass
@@ -4747,7 +4836,7 @@ class QAStudio:
         _inv = getattr(self, "_invalid", set())
         self.story_field = ft.TextField(
             value="",
-            hint_text="Paste an ID and press Enter (or comma). Repeat to add more.",
+            hint_text=strings.t("main_paste_id"),
             border_color=(T.RED if "stories" in _inv else T.BORDER),
             focused_border_color=T.VIOLET, border_radius=T.R,
             content_padding=ft.Padding.symmetric(vertical=12, horizontal=12),
@@ -4755,7 +4844,7 @@ class QAStudio:
             on_change=_on_story_change)
         self._story_err = ft.Container(
             ft.Row([ft.Icon(ft.Icons.ERROR_OUTLINE, size=13, color=T.RED),
-                    ft.Text("Add at least one User Story ID to start a run.",
+                    ft.Text(strings.t("main_need_story"),
                             size=11.5, color=T.RED, weight=ft.FontWeight.W_600)],
                    spacing=5, tight=True),
             visible=("stories" in _inv),
@@ -4850,7 +4939,7 @@ class QAStudio:
             _ph = ("Select stories" if _ss
                    else ("Loading stories…" if (self.plan_id and self._setup_stories_loading)
                          else ("No stories in this plan" if self.plan_id
-                               else "Select a test plan first")))
+                               else strings.t("main_select_plan_first"))))
             return regression._checkbox_multiselect(
                 [(str(s["id"]), f"[{s['id']}] {(s['title'] or '')[:60]}") for s in _ss],
                 [str(s) for s in self.story_ids],
@@ -4888,7 +4977,7 @@ class QAStudio:
         # grey/disabled when no plan is chosen yet.
         _sum_enabled = bool(self.plan_id) and self.can("act.sprint_summary")
         self._summary_btn = ft.FilledButton(
-            "Sprint Summary report",
+            strings.t("main_sprint_summary_btn"),
             icon=ft.Icons.SUMMARIZE_OUTLINED, height=42,
             disabled=not _sum_enabled,
             on_click=lambda e: self._open_sprint_summary(),
@@ -4913,7 +5002,7 @@ class QAStudio:
             ft.Icons.OPEN_IN_NEW, icon_size=17,
             icon_color=(T.VIOLET_INK if (self.plan_id and _can_open_plan) else T.INK_3),
             tooltip=((backend_setup.plan_link_label(self) if self.plan_id
-                      else "Select a test plan first") if _can_open_plan
+                      else strings.t("main_select_plan_first")) if _can_open_plan
                      else "You don’t have permission to open the plan"),
             disabled=not (bool(self.plan_id) and _can_open_plan),
             on_click=lambda e: self._open_azure(),
@@ -4923,20 +5012,20 @@ class QAStudio:
             width=46, height=46)
 
         rows = [
-            sec_head("3", "Task",
+            sec_head("3", strings.t("main_task_head"),
                      ft.Row([ft.Icon(ft.Icons.ARROW_FORWARD, size=13, color=T.INK_3),
-                             ft.Text("from your connection", size=11, color=T.INK_3, weight=ft.FontWeight.BOLD)],
+                             ft.Text(strings.t("main_from_connection"), size=11, color=T.INK_3, weight=ft.FontWeight.BOLD)],
                             spacing=4, tight=True)),
             ft.Container(height=12),
             # Row 1 — Project (full width)
-            field_label("Project", req=True),
+            field_label(strings.t("au_project"), req=True),
             ft.Container(hover_field(self.project_dd), padding=ft.Padding.only(top=4, bottom=12)),
             # Row 2 — Test Plan (50%) · Test Plan ID (50%)
             ft.Row([
-                ft.Column([field_label("Test Plan", req=True),
+                ft.Column([field_label(strings.t("au_test_plan"), req=True),
                            ft.Container(hover_field(self.plan_dd), padding=ft.Padding.only(top=4))],
                           expand=1, spacing=0),
-                ft.Column([field_label("Test Plan ID", hint="auto"),
+                ft.Column([field_label(strings.t("au_test_plan_id"), hint="auto"),
                            ft.Container(
                                ft.Row([self.plan_id_field, self._open_plan_btn],
                                       spacing=8,
@@ -4948,20 +5037,20 @@ class QAStudio:
             # Row 3 — Create Plan (50%) · Sprint Summary (50%)
             ft.Row([
                 ft.Container(
-                    green_btn("Create Plan", icon=ft.Icons.ADD, expand=True,
+                    green_btn(strings.t("main_create_plan_btn"), icon=ft.Icons.ADD, expand=True,
                               on_click=lambda e: self._open_create_plan(),
                               disabled=not self.can("act.create_plan"), ignore_ro=True),
                     expand=1),
                 ft.Container(_summary_row, expand=1),
             ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
             ft.Container(height=14),
-            field_label("User Story IDs", req=True, hint="comma-separated"),
+            field_label(strings.t("au_user_story_ids"), req=True, hint=strings.t("au_comma_separated")),
             ft.Container(story_box, padding=ft.Padding.only(top=4, bottom=2)),
             self._story_err,
         ]
 
         rows += [
-            field_label("Report Emails", hint="optional", req=False),
+            field_label(strings.t("au_report_emails"), hint="optional", req=False),
             ft.Container(self.email_picker, padding=ft.Padding.only(top=4)),
         ]
         return card(ft.Column(rows, spacing=0), expand=False)
@@ -4978,7 +5067,7 @@ class QAStudio:
                                 border=ft.Border.all(1, T.BORDER) if sel else None,
                                 on_click=lambda e, k=key: self._set_existing(k))
         return ft.Container(
-            ft.Row([seg("Skip", "skip"), seg("Evaluate", "evaluate", ft.Icons.AUTO_AWESOME)], spacing=4),
+            ft.Row([seg(strings.t("au_skip"), "skip"), seg(strings.t("au_evaluate"), "evaluate", ft.Icons.AUTO_AWESOME)], spacing=4),
             padding=4, bgcolor=T.CARD_2, border_radius=T.R, border=ft.Border.all(1, T.BORDER))
 
     def _set_existing(self, k):
@@ -5162,7 +5251,7 @@ class QAStudio:
             try:
                 if hasattr(self, "_est_num"):
                     self._est_num.value = "~0"
-                    self._est_sub.value = "test cases\nacross 0 stories"
+                    self._est_sub.value = strings.t("run_est_sub", n=0)
                     self._est_num.update(); self._est_sub.update()
             except Exception:
                 pass
@@ -5185,7 +5274,7 @@ class QAStudio:
             try:
                 if hasattr(self, "_est_num"):
                     self._est_num.value = f"~{self._estimated_tc}"
-                    self._est_sub.value = f"test cases\nacross {len(self.story_ids)} stories"
+                    self._est_sub.value = strings.t("run_est_sub", n=len(self.story_ids))
                     self._est_num.update(); self._est_sub.update()
             except Exception:
                 pass
@@ -5203,9 +5292,9 @@ class QAStudio:
     def _task_locked(self):
         return card(ft.Stack([
             ft.Column([
-                sec_head("3", "Task",
+                sec_head("3", strings.t("main_task_head"),
                          ft.Row([ft.Icon(ft.Icons.LOCK_OUTLINE, size=13, color=T.INK_3),
-                                 ft.Text("locked", size=11, color=T.INK_3, weight=ft.FontWeight.BOLD)],
+                                 ft.Text(strings.t("main_locked"), size=11, color=T.INK_3, weight=ft.FontWeight.BOLD)],
                                 spacing=4, tight=True)),
                 ft.Container(height=14),
                 ft.Row([ft.Container(ft.Container(height=40, bgcolor=T.CARD_2,
@@ -5219,7 +5308,7 @@ class QAStudio:
             ft.Container(
                 ft.Container(
                     ft.Row([ft.Icon(ft.Icons.LOCK_OUTLINE, size=14, color=T.INK_2),
-                            ft.Text("Connect to load projects, plans & stories", size=12,
+                            ft.Text(strings.t("main_connect_hint"), size=12,
                                     color=T.INK_2, weight=ft.FontWeight.BOLD)], spacing=6, tight=True),
                     padding=ft.Padding.symmetric(vertical=14, horizontal=9), bgcolor=T.CARD, border_radius=20,
                     border=ft.Border.all(1, T.BORDER)),
@@ -5250,19 +5339,26 @@ class QAStudio:
             # Show "…" while the real count is being fetched, instead of a fake guess.
             _est_disp = "…" if (est is None and self.story_ids) else f"{est or 0}"
             self._est_num = ft.Text(f"~{_est_disp}", size=32, weight=ft.FontWeight.BOLD, color=T.VIOLET_INK)
-            self._est_sub = ft.Text(f"test cases\nacross {len(self.story_ids)} stories", size=12,
+            self._est_sub = ft.Text(strings.t("run_est_sub", n=len(self.story_ids)), size=12,
                                     color=T.INK_2, weight=ft.FontWeight.BOLD)
-            rows = [("Generator", "Steps" if self.tool == "steps" else "Titles"),
+            rows = [("Generator", strings.t("main_gen_steps") if self.tool == "steps" else strings.t("main_gen_titles")),
                     ("Language", E.LANGUAGES.get(getattr(self, "run_lang", self.lang), E.LANGUAGES["en"])["native"]),
                     ("Project", (self.project or "—")[:16]),
                     ("Test plan", f"#{self.plan_id}" if self.plan_id else "—"),
-                    ("Stories", f"{len(self.story_ids)} selected"),
+                    ("Stories", strings.t("run_n_selected", n=len(self.story_ids))),
                     ("Email", self._email_summary_text())]
             if self.tool == "steps":
                 rows.insert(5, ("Existing", self.existing_mode.title()))
             full_vals = {"Project": (self.project or "—"),
                          "Test plan": (f"#{self.plan_id}" if self.plan_id else "—")}
             detail_rows = []
+            _sum_label = {"Generator": strings.t("main_sum_generator"),
+                          "Language": strings.t("main_sum_language"),
+                          "Project": strings.t("main_sum_project"),
+                          "Test plan": strings.t("main_sum_testplan"),
+                          "Stories": strings.t("main_sum_stories"),
+                          "Email": strings.t("main_sum_email"),
+                          "Existing": strings.t("main_sum_existing")}
             for i, (k, v) in enumerate(rows):
                 val_text = ft.Text(v, size=12, color=T.INK, weight=ft.FontWeight.BOLD,
                                    tooltip=full_vals.get(k))
@@ -5275,7 +5371,7 @@ class QAStudio:
                 if k == "Language":
                     self._sum_lang = val_text
                 detail_rows.append(ft.Container(
-                    ft.Row([ft.Text(k, size=12, color=T.INK_2, weight=ft.FontWeight.BOLD),
+                    ft.Row([ft.Text(_sum_label.get(k, k), size=12, color=T.INK_2, weight=ft.FontWeight.BOLD),
                             ft.Container(expand=True),
                             val_text]),
                     padding=ft.Padding.symmetric(vertical=0, horizontal=8),
@@ -5292,7 +5388,7 @@ class QAStudio:
                              or getattr(self, "_auto_running", False)
                              or getattr(self, "_remote_run_active", False))
             return card(ft.Column([
-                ft.Text("THIS RUN", size=11, weight=ft.FontWeight.BOLD, color=T.VIOLET_INK),
+                ft.Text(strings.t("main_this_run"), size=11, weight=ft.FontWeight.BOLD, color=T.VIOLET_INK),
                 ft.Container(height=13),
                 *detail_rows,
                 ft.Container(expand=True),
@@ -5318,12 +5414,12 @@ class QAStudio:
                                                 color=T.INK_2, weight=ft.FontWeight.BOLD,
                                                 expand=True)
             return card(ft.Column([
-                ft.Text("STEP 1 · CONNECT", size=11, weight=ft.FontWeight.BOLD, color=T.VIOLET_INK),
+                ft.Text(strings.t("main_step1"), size=11, weight=ft.FontWeight.BOLD, color=T.VIOLET_INK),
                 ft.Container(height=13),
                 ft.Row([ft.Container(width=8, height=8, bgcolor=T.RED, border_radius=10),
-                        ft.Text("Not connected yet", size=12, color=T.RED, weight=ft.FontWeight.BOLD)], spacing=6),
+                        ft.Text(strings.t("main_not_connected_yet"), size=12, color=T.RED, weight=ft.FontWeight.BOLD)], spacing=6),
                 ft.Container(height=14),
-                ft.Text("Save your credentials, then connect. We validate the PAT and load this org's projects and plans.",
+                ft.Text(strings.t("main_setup_desc"),
                         size=12.5, color=T.INK_2, weight=ft.FontWeight.W_500),
                 ft.Container(height=14),
                 *[ft.Container(ft.Row([
@@ -5332,9 +5428,9 @@ class QAStudio:
                                  border=ft.Border.all(1, T.BORDER), alignment=ft.Alignment.CENTER),
                     ft.Text(t, size=12, color=T.INK_2, weight=ft.FontWeight.W_500)], spacing=8),
                     padding=ft.Padding.only(bottom=8))
-                  for i, t in enumerate(["Validates the Azure DevOps PAT",
-                                         "Loads projects in this organization",
-                                         "Fetches existing test plans"])],
+                  for i, t in enumerate([strings.t("au_step_validates_pat"),
+                                         strings.t("au_step_loads_projects"),
+                                         strings.t("au_step_fetches_plans")])],
                 ft.Container(expand=True),
                 *([ ft.Container(
                         ft.Row([
@@ -5343,15 +5439,16 @@ class QAStudio:
                         ], spacing=10),
                         padding=ft.Padding.symmetric(vertical=10, horizontal=0),
                     )] if self._connecting else []),
-                primary_btn("Connect & load projects", icon=ft.Icons.POWER, expand=True,
+                primary_btn(strings.t("main_connect_btn"), icon=ft.Icons.POWER, expand=True, wrap=True,
                             disabled=self._connecting,
                             on_click=lambda e: self._connect()),
                 ft.Container(
                     ft.Row([
                         ft.Icon(ft.Icons.LOCK_OUTLINE, size=12, color=T.INK_3),
-                        ft.Text("Task setup unlocks once connected", size=11,
-                                color=T.INK_3, weight=ft.FontWeight.BOLD),
-                    ], spacing=5, tight=True,
+                        ft.Text(strings.t("main_unlock_hint"), size=11,
+                                color=T.INK_3, weight=ft.FontWeight.BOLD,
+                                text_align=ft.TextAlign.CENTER, max_lines=2, expand=True),
+                    ], spacing=5, tight=False,
                        alignment=ft.MainAxisAlignment.CENTER),
                     padding=ft.Padding.only(top=9), alignment=ft.Alignment.CENTER),
             ], spacing=0, expand=True), expand=True)
@@ -5373,11 +5470,11 @@ class QAStudio:
         name = self._provider_choice
         key = self._field_or_saved("api_key_field", self._saved_key(name))
         if not key:
-            self._err("API Key is required for the selected provider."); return
+            self._err(strings.t("main_api_key_required_provider")); return
         self.creds["keys"][self._cred_slot(name)] = key
         pat = self._field_or_saved("pat_field", self.creds.get("pat", ""))
         if not pat:
-            self._err("Azure DevOps PAT is required."); return
+            self._err(strings.t("main_pat_required")); return
         self.creds["pat"] = pat
         gmail = self._field_or_saved("gmail_field", self.creds.get("gmail", ""))
         self.creds["gmail"] = gmail
@@ -5396,7 +5493,7 @@ class QAStudio:
         if backend_setup.is_azure(self.creds):
             org = self._field_or_saved("org_field", self.creds.get("org", ""))
             if not org:
-                self._err("Azure Organization is required."); return
+                self._err(strings.t("main_org_required")); return
             self.creds["org"] = org
         else:
             org = self.creds.get("org", "")
@@ -5417,7 +5514,7 @@ class QAStudio:
         self._connect_gen = getattr(self, "_connect_gen", 0) + 1
         my_gen = self._connect_gen
         self._connecting = True
-        self._connect_status = "Validating PAT & loading projects…"
+        self._connect_status = strings.t("main_validating_pat")
         self.render()   # show the spinner immediately
 
         def _friendly(msg):
@@ -5442,14 +5539,14 @@ class QAStudio:
                 # 1) Validate the AI provider key first (cheap ping)
                 if not alive():
                     return
-                self._set_connect_status("Checking AI provider key…")
+                self._set_connect_status(strings.t("main_checking_key"))
                 kok, kmsg = E.validate_api_key()
                 if not alive():
                     return            # provider switched / re-connected mid-ping
                 if not kok:
                     prov = E.T_disp(E.AI_PROVIDER)
                     if kmsg == "auth":
-                        self._err(f"{prov}: API key rejected. Check the key is correct and active.")
+                        self._err(strings.t("main_apikey_rejected", prov=prov))
                     elif kmsg == "network":
                         # Ollama is LOCAL (localhost:11434), so "check your
                         # network/firewall" sends the user to the wrong place —
@@ -5457,26 +5554,23 @@ class QAStudio:
                         if name == "ollama":
                             _base = ((E.AI_CONFIG.get("ollama") or {}).get("base_url")
                                      or "localhost:11434")
-                            self._err(f"Ollama isn't reachable at {_base} — it runs "
-                                      f"locally, so start it with `ollama serve`, or "
-                                      f"pick a cloud provider in Setup.")
+                            self._err(strings.t("main_ollama_unreachable", base=_base))
                         else:
-                            self._err(f"{prov}: cannot reach the provider — check your network/firewall.")
+                            self._err(strings.t("main_provider_unreachable", prov=prov))
                     elif kmsg == "timeout":
-                        self._err(f"{prov}: the provider timed out. Try again in a moment.")
+                        self._err(strings.t("main_provider_timeout", prov=prov))
                     elif kmsg in ("server", "overloaded"):
-                        self._err(f"{prov}: the provider is temporarily unavailable. Try again shortly.")
+                        self._err(strings.t("main_provider_unavailable", prov=prov))
                     elif kmsg == "content_filter":
-                        self._err(f"{prov}: the test request was blocked by a safety filter. Try a different model.")
+                        self._err(strings.t("main_provider_blocked", prov=prov))
                     elif kmsg.startswith("missing-package:"):
                         pkg = kmsg.split(":", 1)[1]
-                        self._err(f"{prov}: the '{pkg}' package isn't installed. "
-                                  f"Re-run the installer or: pip install {pkg}")
+                        self._err(strings.t("main_pkg_not_installed", prov=prov, pkg=pkg))
                     elif kmsg.startswith("error:"):
                         # already a friendly classified message (e.g. bad model)
                         self._err(kmsg.split(":", 1)[1].strip())
                     else:
-                        self._err(f"{prov} key check failed: {kmsg}")
+                        self._err(strings.t("main_key_check_failed", prov=prov, err=kmsg))
                     return
                 # key is VALID but soft-limited — connect, yet warn so the green
                 # status isn't misleading (generation would otherwise fail later).
@@ -5498,7 +5592,7 @@ class QAStudio:
                 if not alive():
                     return
                 if backend_setup.is_azure(self.creds):
-                    self._set_connect_status("Validating PAT & loading projects…")
+                    self._set_connect_status(strings.t("main_validating_pat"))
                     ok, msg = E.validate_pat(pat)
                     if not alive():
                         return
@@ -5788,7 +5882,7 @@ class QAStudio:
             self._plans = backend_setup.fetch_plans(self, self.project)
         except Exception as ex:
             self._plans = []
-            self._err(f"Could not load test plans: {ex}")
+            self._err(strings.t("main_could_not_load_plans", err=ex))
 
     def _busy(self, msg):
         # Show a lightweight loading bar in the snackbar area (page.splash was
@@ -5883,7 +5977,7 @@ class QAStudio:
             import help_guide
             help_guide.show(self, initial)
         except Exception as e:
-            self._toast(f"Couldn't open the guide: {str(e)[:80]}")
+            self._toast(strings.t("main_could_not_open_guide", err=str(e)[:80]))
 
     def _check_updates_chip(self):
         """The 'Check updates' pill under the QA Studio logo — accent-tinted and
@@ -5895,10 +5989,12 @@ class QAStudio:
         chip = ft.Container(
             ft.Row([
                 ft.Icon(ft.Icons.SYSTEM_UPDATE_ALT, size=12, color=T.RAIL_INK),
-                ft.Text("Check updates", size=10, weight=ft.FontWeight.BOLD, color=T.RAIL_INK),
-            ], spacing=4, tight=True),
+                ft.Text(strings.t("check_updates"), size=10, weight=ft.FontWeight.BOLD, color=T.RAIL_INK,
+                        no_wrap=True, overflow=ft.TextOverflow.ELLIPSIS, expand=True),
+            ], spacing=4, tight=False),
+            expand=True,
             on_click=lambda e: self._manual_update_check(),
-            tooltip="Check for a newer version",
+            tooltip=strings.t("check_updates_tip"),
             padding=ft.Padding.symmetric(vertical=3, horizontal=8),
             border_radius=8,
             bgcolor=ft.Colors.with_opacity(0.10, T.VIOLET),
@@ -5941,7 +6037,7 @@ class QAStudio:
         a lower one open leaves it floating over the login screen."""
         return dialogs.close_all_dialogs(self)
 
-    def _confirm(self, title, message, on_yes, yes_label="Remove", danger=True,
+    def _confirm(self, title, message, on_yes, yes_label=strings.t("main_remove"), danger=True,
                  icon=ft.Icons.HELP_OUTLINE):
         return dialogs.confirm(self, title, message, on_yes, yes_label, danger, icon)
 
@@ -5958,7 +6054,7 @@ class QAStudio:
         the call site's comment for why this matters (two concurrent runs
         would fight over the same activity-log/stats state and Azure calls)."""
         btn = primary_btn(
-            "Run in progress…" if run_busy else "Start run",
+            strings.t("main_run_in_progress_cta") if run_busy else strings.t("main_start_run"),
             icon=ft.Icons.HOURGLASS_TOP if run_busy else ft.Icons.PLAY_ARROW,
             expand=True, disabled=run_busy,
             on_click=lambda e: self._start_run())
@@ -5977,10 +6073,9 @@ class QAStudio:
                        disabled=run_busy, on_change=_flip)
         remote_row = ft.Container(
             ft.Row([sw, ft.Column([
-                ft.Text("Run remotely", size=12.5, weight=ft.FontWeight.BOLD,
+                ft.Text(strings.t("main_run_remotely"), size=12.5, weight=ft.FontWeight.BOLD,
                         color=T.INK),
-                ft.Text("Executes on GitHub with your synced credentials — "
-                        "you can close the app.", size=11, color=T.INK_3),
+                ft.Text(strings.t("main_run_remotely_desc"), size=11, color=T.INK_3),
             ], spacing=1, expand=True)],
                    spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
             padding=ft.Padding.only(bottom=10))
@@ -5994,7 +6089,7 @@ class QAStudio:
         # UI alone to prevent a second run from starting.
         if bool(getattr(self, "_run_active", False) or getattr(self, "_auto_running", False)
                or getattr(self, "_remote_run_active", False)):
-            self._err("A run is already in progress. Wait for it to finish or stop it first.")
+            self._err(strings.t("main_run_in_progress"))
             return
         # DOUBLE-START GUARD. The checks above only cover a run that has already
         # LAUNCHED — they say nothing about the window between clicking Start and
@@ -6013,7 +6108,7 @@ class QAStudio:
             return
         # RBAC: Viewers (or any role without RUN) can't start a run.
         if not self.can(auth.CAP_RUN):
-            self._err("Your role doesn’t allow starting a run. Ask an admin for access.")
+            self._err(strings.t("main_no_run_perm"))
             return
         # Commit any ID still sitting in the input box
         inp = getattr(self, "_story_input", None)
@@ -6032,9 +6127,9 @@ class QAStudio:
         if not self.story_ids:
             self._invalid.add("stories")
         if self._invalid:
-            self._err("Select a project first." if "project" in self._invalid
-                      else "Select or create a test plan first." if "plan" in self._invalid
-                      else "Add at least one User Story ID.")
+            self._err(strings.t("main_select_project_first") if "project" in self._invalid
+                      else strings.t("main_select_or_create_plan") if "plan" in self._invalid
+                      else strings.t("main_add_story_id"))
             self.render()   # repaint so the invalid fields turn red with a helper
             return
         self._invalid = set()
@@ -6053,14 +6148,13 @@ class QAStudio:
         # empty (reported live). Stop here with an actionable message instead.
         if platform_caps.is_mobile():
             self._err_msg = ""
-            self._toast("Turn on “Run remotely” to start a run on mobile — "
-                        "local runs are desktop-only.")
+            self._toast(strings.t("main_mobile_remote_only"))
             self.render()
             return
         # Steps tool: check existing steps first
         if self.tool == "steps":
             self._start_pending = True      # see the double-start guard above
-            self._busy("Checking existing steps…")
+            self._busy(strings.t("main_checking_steps"))
             def precheck():
                 # First: confirm every story actually belongs to the selected plan
                 # (Azure only — routed through the seam; non-Azure backends don't
@@ -6070,17 +6164,15 @@ class QAStudio:
                         self, self.plan_id, self.story_ids)
                 except Exception as ex:
                     self._unbusy()
-                    self._err(f"Could not verify stories: {str(ex)[:90]}")
+                    self._err(strings.t("main_could_not_verify_stories", err=str(ex)[:90]))
                     return
                 if missing:
                     self._unbusy()
                     ids = ", ".join(str(m) for m in missing)
                     if not found:
-                        self._err(f"Story {ids} is not in test plan #{self.plan_id}. "
-                                  f"Add the story to the plan in Azure, or pick the correct plan.")
+                        self._err(strings.t("main_story_not_in_plan", ids=ids, plan=self.plan_id))
                     else:
-                        self._err(f"These stories aren't in plan #{self.plan_id}: {ids}. "
-                                  f"Remove them or switch to the plan that contains them.")
+                        self._err(strings.t("main_stories_not_in_plan", plan=self.plan_id, ids=ids))
                     return
                 # BUG FIX: this used to swallow ANY count_existing_steps failure into
                 # a bare `have, total = 0, 0`, which then hit the `total == 0` branch
@@ -6111,9 +6203,7 @@ class QAStudio:
                         pass
                     self._unbusy()
                     self._snack(
-                        f"Couldn't check for existing test case steps ({str(ex)[:100]}) — "
-                        f"continuing without the Skip/Evaluate prompt. Existing steps "
-                        f"will be left untouched.", T.AMBER, ft.Icons.WARNING_AMBER_ROUNDED)
+                        strings.t("main_check_steps_failed", err=str(ex)[:100]), T.AMBER, ft.Icons.WARNING_AMBER_ROUNDED)
                     self.existing_mode = "skip"
                     self._launch_run("skip")
                     return
@@ -6149,18 +6239,17 @@ class QAStudio:
         else:
             # Titles tool: still verify stories belong to the plan first
             self._start_pending = True
-            self._busy("Verifying stories…")
+            self._busy(strings.t("main_verifying_stories"))
             def precheck_titles():
                 try:
                     found, missing = backend_setup.validate_stories_in_plan(
                         self, self.plan_id, self.story_ids)
                 except Exception as ex:
-                    self._unbusy(); self._err(f"Could not verify stories: {str(ex)[:90]}"); return
+                    self._unbusy(); self._err(strings.t("main_could_not_verify_stories", err=str(ex)[:90])); return
                 self._unbusy()
                 if missing:
                     ids = ", ".join(str(m) for m in missing)
-                    self._err(f"Story {ids} is not in test plan #{self.plan_id}. "
-                              f"Add it to the plan in Azure, or pick the correct plan.")
+                    self._err(strings.t("main_story_not_in_plan", ids=ids, plan=self.plan_id))
                     return
                 self._launch_run(None)
             def _precheck_titles_guarded():
@@ -6424,7 +6513,7 @@ class QAStudio:
                 self._stop_btn_text.update()
         except Exception:
             pass
-        self._toast("Will stop after the current test case…")
+        self._toast(strings.t("main_will_stop"))
         self._log_lines.append({"tone": "warn", "msg": "Stop requested — finishing current test case…"})
         self._refresh_run()
 
@@ -6629,12 +6718,20 @@ class QAStudio:
         # (_copy_log_text, unaffected either way — it joins app._log_lines
         # with "\n" directly, not via SelectionArea's copy behavior) until a
         # copy-friendly fix is found that doesn't touch visible layout.
-        txt = ft.Text(ln.get("msg", ""), size=12,
+        _msg = ln.get("msg", "")
+        _s = _msg.lstrip()
+        # Direction per line: Arabic content (flag or first strong char) → RTL,
+        # right-aligned; everything else → LTR. Prefixing a Left-to-Right Mark
+        # (U+200E) forces the paragraph base direction to LTR so trailing
+        # punctuation / IDs on an English line don't get bidi-flipped to the
+        # front when the whole app is in RTL (Arabic UI).
+        _ar_line = bool(ln.get("ar")) or (bool(_s) and "\u0600" <= _s[0] <= "\u06ff")
+        txt = ft.Text(_msg if _ar_line else ("\u200e" + _msg), size=12,
                       color=color,
                       weight=ft.FontWeight.BOLD if tone in ("story", "ok") else ft.FontWeight.W_500,
-                      font_family=(T.F_AR if ln.get("ar") else T.F_UI),
+                      font_family=(T.F_AR if _ar_line else T.F_UI),
                       expand=True,
-                      text_align=ft.TextAlign.LEFT)
+                      text_align=ft.TextAlign.RIGHT if _ar_line else ft.TextAlign.LEFT)
         # Left cluster = icon + id + seq (always on the left margin for consistency)
         left = [c for c in (icon, idtxt, seqtxt) if c is not None]
         row_children = left + [txt]
@@ -6658,19 +6755,19 @@ class QAStudio:
                     s = self._stats
                     if self.tool == "steps":
                         self._stats_row.controls = [
-                            stat_tile("Test Cases", s["total"]),
-                            stat_tile("Created", s.get("created", 0), tone="violet"),
-                            stat_tile("Updated", s["done"], tone="green"),
-                            stat_tile("Skipped", s["skipped"], tone="amber"),
-                            stat_tile("Errors", s["errors"], tone="red"),
+                            stat_tile(strings.t("au_stat_test_cases"), s["total"]),
+                            stat_tile(strings.t("au_stat_created"), s.get("created", 0), tone="violet"),
+                            stat_tile(strings.t("au_stat_updated"), s["done"], tone="green"),
+                            stat_tile(strings.t("au_stat_skipped"), s["skipped"], tone="amber"),
+                            stat_tile(strings.t("au_stat_errors"), s["errors"], tone="red"),
                         ]
                     else:
                         self._stats_row.controls = [
-                            stat_tile("Test Cases", s["total"]),
-                            stat_tile("Stories", f"{s['stories_done']}", tone="violet", sub=f"/{s['total_stories']}"),
-                            stat_tile("Created", s["done"], tone="green"),
-                            stat_tile("Skipped", s["skipped"], tone="amber"),
-                            stat_tile("Errors", s["errors"], tone="red"),
+                            stat_tile(strings.t("au_stat_test_cases"), s["total"]),
+                            stat_tile(strings.t("au_stat_stories"), f"{s['stories_done']}", tone="violet", sub=f"/{s['total_stories']}"),
+                            stat_tile(strings.t("au_stat_created"), s["done"], tone="green"),
+                            stat_tile(strings.t("au_stat_skipped"), s["skipped"], tone="amber"),
+                            stat_tile(strings.t("au_stat_errors"), s["errors"], tone="red"),
                         ]
                 if hasattr(self, "_bar"):
                     self._bar.value = (self._progress["pct"]/100) if self._progress["pct"] > 0 else None
@@ -6843,12 +6940,12 @@ class QAStudio:
 
     def _open_azure(self):
         if not self.can("act.open_plan"):
-            return self._toast("You don’t have permission to open the plan.")
+            return self._toast(strings.t("main_no_plan_perm"))
         if self.project and self.plan_id:
             url = backend_setup.plan_url(self, self.plan_id)
             self._open_url(url)
         else:
-            self._toast("No test plan selected.")
+            self._toast(strings.t("main_no_plan"))
 
     # ═══════════════════════════════════════════════════════════════════════════
     #  AUTOMATION SCREEN — Selenium DOM scrape → TestNG/POM project → Git push
@@ -6944,8 +7041,8 @@ class QAStudio:
                 bgcolor=T.CARD, border=ft.Border.all(1, T.BORDER),
                 border_radius=T.R, expand=True)
         return ft.Row([
-            tile("todo", "Locators self-healed at runtime", T.VIOLET_INK),
-            tile("skipped", "Duplicate cases skipped", T.AMBER),
+            tile("todo", strings.t("main_stat_selfhealed"), T.VIOLET_INK),
+            tile("skipped", strings.t("main_stat_dupskipped"), T.AMBER),
         ], spacing=7, vertical_alignment=ft.CrossAxisAlignment.STRETCH)
 
     def _auto_log_line(self, msg, tone):
@@ -7411,7 +7508,7 @@ class QAStudio:
         toast — with a readable, classified reason, not a raw exception dump —
         if BOTH paths fail."""
         if not (text or "").strip():
-            self._toast("Nothing to copy yet.")
+            self._toast(strings.t("main_nothing_copy"))
             return
         try:
             self.page.set_clipboard(text)
@@ -7442,7 +7539,7 @@ class QAStudio:
                 # and via _err (red), not _toast (always green): a failure toast
                 # rendering as a green success checkmark was its own bug.
                 reason = self._clip_fail_reason(ex1, ex2)
-                self._err(f"Couldn't copy — {reason}.")
+                self._err(strings.t("main_copy_failed", reason=reason))
 
     def _copy_log_text(self, lines):
         """Shared clipboard-copy logic for the Run and Automation activity logs
@@ -7455,7 +7552,7 @@ class QAStudio:
         # space in the copied text. Run-log lines never contain it — no-op.
         lines = [(l or "").replace("\x1f", " ") for l in lines if (l or "").strip()]
         if not lines:
-            self._toast("Nothing to copy yet.")
+            self._toast(strings.t("main_nothing_copy"))
             return
         n = len(lines)
         self._copy_text_to_clipboard(
@@ -7478,7 +7575,7 @@ class QAStudio:
             try:
                 col.controls = [ft.Row([
                     ft.Icon(ft.Icons.TERMINAL, size=14, color=T.INK_3),
-                    ft.Text("No activity yet.", size=12.5, color=T.INK_3,
+                    ft.Text(strings.t("main_no_activity"), size=12.5, color=T.INK_3,
                            weight=ft.FontWeight.BOLD),
                 ], spacing=10)]
                 col.update()
@@ -7570,7 +7667,7 @@ class QAStudio:
         with self._auto_cond:
             self._auto_paused = False
             self._auto_cond.notify_all()
-        self._auto_logmsg("Resuming…", "info")
+        self._auto_logmsg(strings.t("main_resuming"), "info")
         try:
             self.render()
         except Exception:
@@ -7708,8 +7805,7 @@ class QAStudio:
             self._run_logmsg(f"Resumed on {self._ai_label()}.", tone="ok", ico="▶")
             self._run_pause_reason = ""
             self._run_resume_override = False
-        self._toast("Run paused — switch the AI provider in Setup if needed, "
-                    "then Resume." if paused else "Resuming…")
+        self._toast(strings.t("main_run_paused_resume") if paused else strings.t("main_resuming"))
         try:
             self.render()
         except Exception:
@@ -7762,8 +7858,7 @@ class QAStudio:
                 st = auth.remote_credentials_status()
                 if not (st and st.get("has_pat") and st.get("has_key")):
                     self._unbusy()
-                    self._err("Sync your credentials first: Settings → "
-                              "Remote runs → Sync now.")
+                    self._err(strings.t("main_sync_creds_first"))
                     return
                 ok, res = auth.enqueue_remote_run(
                     self.tool, self.project, self.plan_id, self.story_ids,
@@ -7774,9 +7869,7 @@ class QAStudio:
                                       if e.strip()])
                 self._unbusy()
                 if ok:
-                    self._toast(f"Remote run queued ({str(res)[:8]}…) — executing "
-                                "on GitHub as you. Watch it in the repo's Actions tab; "
-                                "you can close the app.")
+                    self._toast(strings.t("main_remote_queued", id=str(res)[:8]))
                     # BUG FIX: enqueue is just a fast INSERT (the DB trigger
                     # dispatches the workflow async) — _busy()/_unbusy() only
                     # covered that brief round-trip, so the Start Run button
@@ -7795,11 +7888,11 @@ class QAStudio:
                     self.ui_safe(self.render)
                     self._poll_remote_run_done(res)
                 else:
-                    self._err(f"Couldn't queue the remote run: {res}")
+                    self._err(strings.t("main_remote_queue_failed", err=res))
             except Exception as ex:
                 self._unbusy()
-                self._err(f"Couldn't queue the remote run: {str(ex)[:120]}")
-        self._busy("Queuing remote run…")
+                self._err(strings.t("main_remote_queue_failed", err=str(ex)[:120]))
+        self._busy(strings.t("main_queuing"))
         self._bg(work)
 
     def _poll_remote_run_done(self, run_id):
@@ -7921,10 +8014,10 @@ class QAStudio:
                         # text's unwrapped width and the Column never gets a
                         # bound to wrap against.
                         ft.Column([
-                            ft.Text("Update available", size=16,
+                            ft.Text(strings.t("main_update_available"), size=16,
                                     weight=ft.FontWeight.BOLD, color=T.INK,
                                     no_wrap=False),
-                            ft.Text("A newer version of QA Studio is ready",
+                            ft.Text(strings.t("main_update_ready"),
                                     size=11.5, color=T.INK_2, no_wrap=False),
                         ], spacing=1, tight=True, expand=True),
                     ], spacing=13,
@@ -7941,10 +8034,7 @@ class QAStudio:
                         content=ft.Column([
                             version_row,
                             ft.Text(
-                                "Downloads inside the app, then opens Android's "
-                                "installer to update in place. Your saved "
-                                "credentials, biometric unlock and sign-in all "
-                                "carry over — nothing is cleared by the update.",
+                                strings.t("au_msg_update_downloaded_desc"),
                                 size=12.5, color=T.INK_2),
                             dl_bar, dl_status,
                         ], spacing=14, tight=True),
@@ -7973,9 +8063,9 @@ class QAStudio:
                     dlg = ft.AlertDialog(
                         modal=False, title=header, content=body,
                         actions=[
-                            ghost_btn("Later",
+                            ghost_btn(strings.t("main_later"),
                                       on_click=lambda e: self._close_dialog()),
-                            green_btn("Download", icon=ft.Icons.DOWNLOAD_ROUNDED,
+                            green_btn(strings.t("main_download_btn"), icon=ft.Icons.DOWNLOAD_ROUNDED,
                                       on_click=_start_download),
                         ])
                     self._show_dialog(dlg)
@@ -8124,10 +8214,10 @@ class QAStudio:
                     _share_fallback()
                 self.ui_safe(lambda: (
                     self._close_dialog(),
-                    self._toast("Update downloaded — tap Install to finish.")))
+                    self._toast(strings.t("main_update_downloaded"))))
             except Exception as ex:
                 self.ui_safe(lambda m=str(ex)[:120]:
-                             self._err(f"Update download failed: {m}"))
+                             self._err(strings.t("main_update_dl_failed", err=m)))
         self._bg(work)
 
     def _mobile_download_popup(self, path, label=None):
@@ -8158,7 +8248,7 @@ class QAStudio:
             except Exception:
                 pass
             self._close_dialog()
-            self._toast("Opening save sheet — pick where to keep the file.")
+            self._toast(strings.t("main_opening_save"))
 
         header = ft.Row([
             ft.Container(
@@ -8169,7 +8259,7 @@ class QAStudio:
             # Same wrap fix as the update dialog's header: expand + no_wrap so a
             # long label can't run off the dialog's right edge on a phone.
             ft.Column([
-                ft.Text("Export ready", size=16, weight=ft.FontWeight.BOLD,
+                ft.Text(strings.t("main_export_ready"), size=16, weight=ft.FontWeight.BOLD,
                         color=T.INK, no_wrap=False),
                 ft.Text(label or "Save or send your file", size=11.5,
                         color=T.INK_2, no_wrap=False),
@@ -8199,8 +8289,8 @@ class QAStudio:
         dlg = ft.AlertDialog(
             modal=False, title=header, content=body,
             actions=[
-                ghost_btn("Close", on_click=lambda e: self._close_dialog()),
-                green_btn("Download", icon=ft.Icons.DOWNLOAD_ROUNDED,
+                ghost_btn(strings.t("main_close"), on_click=lambda e: self._close_dialog()),
+                green_btn(strings.t("main_download_btn"), icon=ft.Icons.DOWNLOAD_ROUNDED,
                           on_click=_start),
             ])
         self._show_dialog(dlg)
@@ -8227,8 +8317,7 @@ class QAStudio:
                 org = (E.AZURE_ORG or "").strip()
                 if not pat or not key:
                     self.ui_safe(lambda: self._err(
-                        "Connect Azure DevOps and the AI provider in Setup first — "
-                        "Sync sends the credentials the app is currently using."))
+                        strings.t("au_msg_connect_first_sync")))
                     return
                 ok, msg = auth.sync_remote_credentials(
                     org, pat, prov, key, model,
@@ -8252,7 +8341,7 @@ class QAStudio:
                             pass
                 self.ui_safe(_apply)
             except Exception as ex:
-                self.ui_safe(lambda m=str(ex)[:120]: self._err(f"Sync failed: {m}"))
+                self.ui_safe(lambda m=str(ex)[:120]: self._err(strings.t("main_sync_failed", err=m)))
         self._bg(work)
 
     def _auto_project_dir(self):
@@ -8283,14 +8372,14 @@ class QAStudio:
                 ft.Container(ft.Icon(ft.Icons.HISTORY, size=18, color=T.VIOLET),
                              width=34, height=34, bgcolor=T.VIOLET_SOFT, border_radius=9,
                              alignment=ft.Alignment.CENTER),
-                ft.Text("Existing tests found", size=16,
+                ft.Text(strings.t("main_existing_found"), size=16,
                         weight=ft.FontWeight.W_800, color=T.INK)], spacing=10),
             content=ft.Container(width=430, content=ft.Text(
                 msg, size=13, color=T.INK_2, weight=ft.FontWeight.W_500)),
             actions=[
-                ghost_btn("Cancel", on_click=lambda e: (on_choice("cancel"), self._close_dialog())),
-                green_btn("Keep & add new", on_click=lambda e: (on_choice("keep"), self._close_dialog())),
-                danger_btn("Re-evaluate with AI", on_click=lambda e: (on_choice("reeval"), self._close_dialog())),
+                ghost_btn(strings.t("main_cancel"), on_click=lambda e: (on_choice("cancel"), self._close_dialog())),
+                green_btn(strings.t("main_keep_add_new"), on_click=lambda e: (on_choice("keep"), self._close_dialog())),
+                danger_btn(strings.t("main_reeval_ai"), on_click=lambda e: (on_choice("reeval"), self._close_dialog())),
             ],
             actions_alignment=ft.MainAxisAlignment.END)
         self._show_dialog(dlg)
@@ -8299,15 +8388,14 @@ class QAStudio:
         # Guard like the Regression/Sprint plans: don't run two heavy generators at
         # once (GIL contention freezes everything), and don't double-start.
         if self._auto_running:
-            self._toast("Automation is already running.")
+            self._toast(strings.t("main_auto_running"))
             return
         if (getattr(self, "_reg_busy", False) or getattr(self, "_cp_busy", False)
                 or getattr(self, "_cp_stories_loading", False)):
-            self._toast("A plan is generating — let it finish before starting automation.")
+            self._toast(strings.t("main_plan_generating"))
             return
         if not (self._auto_selected and self.project):
-            self._toast("Pick a test plan and at least one story in Source & "
-                        "stories first.")
+            self._toast(strings.t("au_msg_pick_plan_stories"))
             return
         # Field-level validation: red borders + inline helpers on the required
         # fields, while keeping the toast (per the rest of the app's pattern).
@@ -8778,8 +8866,7 @@ class QAStudio:
                 # one case that still needs a message, since there's no other
                 # way to know a picker was attempted at all.
                 self.ui_safe(lambda: self._toast(
-                    "No folder picker available here — paste the path into "
-                    "“Save project to folder” above."))
+                    strings.t("au_msg_no_folder_picker")))
             # p is None => user cancelled: do nothing, same as the exporters.
         threading.Thread(target=work, daemon=True).start()
 
@@ -8787,10 +8874,10 @@ class QAStudio:
         import os as _os
         proj = self._auto_project_dir()
         if not proj or not _os.path.isdir(proj):
-            self._toast("Generate scripts to the local folder first.")
+            self._toast(strings.t("main_gen_scripts_first"))
             return
         if not self.auto_git_url.strip() or not self.auto_git_token.strip():
-            self._toast("Enter the Git repo URL and access token.")
+            self._toast(strings.t("main_enter_git"))
             return
         _ok_url, _url_msg = E._validate_remote_url(self.auto_git_url.strip())
         if not _ok_url:
@@ -8834,12 +8921,10 @@ class QAStudio:
                         self.ui_safe(_sync_ui)
                         self._bg(lambda: work(force=True))
                     self.ui_safe(lambda: self._confirm(
-                        "Push rejected",
-                        "The remote has commits this folder doesn't have. Force-push "
-                        "to overwrite the remote with what's in this folder? This "
-                        "can discard remote-only commits.",
+                        strings.t("au_push_rejected"),
+                        strings.t("au_push_rejected_body"),
                         on_yes=_retry_forced,
-                        yes_label="Force push", danger=True,
+                        yes_label=strings.t("main_force_push"), danger=True,
                         icon=ft.Icons.WARNING_AMBER_ROUNDED))
                 else:
                     cb(f"Push failed - {msg}", "err")

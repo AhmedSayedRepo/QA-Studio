@@ -10,6 +10,7 @@ render routing). Shared UI helpers and the theme are reused from main.py via a
 deferred import so there is no circular import at load time.
 """
 import os, re, json, threading
+import strings
 import time as _time
 import contextlib as _ctxlib
 
@@ -1190,7 +1191,7 @@ def _plan_html(d):
     # — same "label over value, sub under value" idiom as the in-app KPI tiles
     # (_kpi_tile's sub= param), instead of cramming "12.3h · 1.5d" onto one line.
     effort_on = d.get("effort_mode", True)
-    metrics_data = [("Stories", d["total_stories"], INK, None)]
+    metrics_data = [(strings.t("reg_stories"), d["total_stories"], INK, None)]
     if show_cases:
         metrics_data.append(("Test cases", d["total_cases"], INK, None))
     if effort_on:
@@ -1467,7 +1468,7 @@ def _ask_save_path(fmt, default_name):
         except Exception:
             pass
         path = filedialog.asksaveasfilename(
-            parent=root, title="Save regression plan",
+            parent=root, title=strings.t("reg_save_dialog_title"),
             initialfile=default_name, defaultextension="." + fmt,
             filetypes=[(f"{fmt.upper()} file", f"*.{fmt}"), ("All files", "*.*")])
         try:
@@ -1507,7 +1508,7 @@ def export_xlsx(app):
                  ("Plan ID", d["plan_id"]),
                  ("Generated", d["generated"]),
                  ("Avg min / case", d["avg_minutes_per_case"]),
-                 ("Resources", d["resources_count"]),
+                 (strings.t("reg_resources"), d["resources_count"]),
                  ("Resource names", ", ".join(d["resource_names"]) or "—")):
         ws.cell(r, 1, k).font = Font(bold=True)
         ws.cell(r, 2, v)
@@ -1566,7 +1567,7 @@ def export_xlsx(app):
     if d["workload"]:
         ws.cell(r, 1, "Resource workload").font = Font(bold=True, size=12)
         r += 1
-        wl_cols = (["Resource", "Stories"] + (["Test cases"] if show_cases else [])
+        wl_cols = (["Resource", strings.t("reg_stories")] + (["Test cases"] if show_cases else [])
                    + ["Hours"])
         for c, name in enumerate(wl_cols, 1):
             cell = ws.cell(r, c, name)
@@ -1639,7 +1640,7 @@ def export_docx(app):
     for k, v in (("Project", d["project"]), ("Test plan", d["plan_name"]),
                  ("Plan ID", str(d["plan_id"])),
                  ("Generated", d["generated"]),
-                 ("Resources", str(d["resources_count"])),
+                 (strings.t("reg_resources"), str(d["resources_count"])),
                  ("Resource names", ", ".join(d["resource_names"]) or "—"),
                  ("Effort model", f"{d['avg_minutes_per_case']} min/case "
                                    f"+ priority weighting")):
@@ -1651,7 +1652,7 @@ def export_docx(app):
                 x.font.bold = True
     # Sprint Plan has no test-case counts → drop the cases column/totals.
     show_cases = (d.get("total_cases") or 0) > 0
-    doc.add_heading("Stories", level=1)
+    doc.add_heading(strings.t("reg_stories"), level=1)
     from collections import OrderedDict as _ODd
     feat_grps_d = _ODd()
     for s in d["stories"]:
@@ -1706,7 +1707,7 @@ def export_docx(app):
                 x.font.bold = True
     if d["workload"]:
         doc.add_heading("Resource workload", level=1)
-        _wh = (["Resource", "Stories"] + (["Test cases"] if show_cases else [])
+        _wh = (["Resource", strings.t("reg_stories")] + (["Test cases"] if show_cases else [])
                + ["Hours"])
         wt = doc.add_table(rows=1, cols=len(_wh))
         _sty(wt, "Medium Shading 1 Accent 1")
@@ -1841,7 +1842,7 @@ def export_pdf(app):
     ] + ([("ALIGN", (_cases_col, 1), (_cases_col, -1), "RIGHT")] if _cases_col else [])))
     elems += [tbl, Spacer(1, 6 * mm)]
     if d["workload"]:
-        wd = [["Resource", "Stories"] + (["Test cases"] if show_cases else []) + ["Hours"]] + \
+        wd = [["Resource", strings.t("reg_stories")] + (["Test cases"] if show_cases else []) + ["Hours"]] + \
              [[_ar(w["name"]), str(w["stories"])] + ([str(w.get("cases", 0))] if show_cases else [])
               + [str(w["hours"])] for w in d["workload"]]
         _wcw = [55*mm, 25*mm] + ([30*mm] if show_cases else []) + [25*mm]
@@ -2054,7 +2055,7 @@ def _clear_chip(on_click, label="Clear all"):
                spacing=4, tight=True),
         padding=ft.Padding.symmetric(vertical=4, horizontal=10),
         border_radius=999, border=ft.Border.all(1, T.BORDER_2),
-        on_click=on_click, tooltip="Remove all",
+        on_click=on_click, tooltip=strings.t("reg_remove_all"),
         on_hover=_chip_hover, animate_scale=120)
 
 
@@ -2089,7 +2090,7 @@ def _feature_header(app, label, count, collapsed, on_toggle):
             ft.Icon(chev, size=22, color=T.VIOLET_INK),
         ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER),
         on_click=on_toggle, ink=True,
-        tooltip="Collapse / expand this feature",
+        tooltip=strings.t("reg_collapse_expand"),
         padding=ft.Padding.only(left=10, right=12, top=9, bottom=9),
         margin=ft.Margin.only(top=10, bottom=4, left=2, right=2),
         gradient=ft.LinearGradient(
@@ -2253,7 +2254,7 @@ def locked_state(app, title, sub, msg, icon=None, steps=None):
             ft.ProgressBar(value=None, color=T.VIOLET, bgcolor=T.BORDER_2,
                            bar_height=6, border_radius=99, width=224),
             ft.Container(height=10),
-            ft.Text("Scanning for a connection…", size=11, color=T.INK_3,
+            ft.Text(strings.t("reg_scanning_conn"), size=11, color=T.INK_3,
                     weight=ft.FontWeight.W_500, font_family=T.F_MONO),
         ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=0),
         width=296, padding=ft.Padding.symmetric(vertical=20, horizontal=26),
@@ -2261,7 +2262,7 @@ def locked_state(app, title, sub, msg, icon=None, steps=None):
 
     pill = ft.Container(
         ft.Row([ft.Container(width=7, height=7, border_radius=7, bgcolor=T.STORY),
-                ft.Text("Awaiting connection", size=11, weight=ft.FontWeight.BOLD,
+                ft.Text(strings.t("reg_awaiting_conn"), size=11, weight=ft.FontWeight.BOLD,
                         color=T.STORY)], spacing=7, tight=True),
         padding=ft.Padding.symmetric(vertical=6, horizontal=12),
         bgcolor=T.VIOLET_SOFT, border_radius=999,
@@ -2284,14 +2285,14 @@ def locked_state(app, title, sub, msg, icon=None, steps=None):
             scan_card,
             ft.Container(height=12), pill,
             ft.Container(height=10),
-            ft.Text("A few things first", size=20, weight=ft.FontWeight.BOLD,
+            ft.Text(strings.t("reg_few_things_first"), size=20, weight=ft.FontWeight.BOLD,
                     color=T.INK),
             ft.Container(height=8),
             ft.Container(ft.Text(msg, size=13.5, color=T.INK_2,
                                  text_align=ft.TextAlign.CENTER), width=470),
             ft.Container(height=16), path,
             ft.Container(height=18),
-            primary_btn("Go to Setup", icon=ft.Icons.ARROW_FORWARD,
+            primary_btn(strings.t("reg_go_to_setup"), icon=ft.Icons.ARROW_FORWARD,
                         on_click=lambda e: app.goto("setup")),
         ], horizontal_alignment=ft.CrossAxisAlignment.CENTER,
            alignment=ft.MainAxisAlignment.CENTER, tight=True),
@@ -2653,14 +2654,14 @@ def automation_source_card(app):
             app._flush_deferred_render()
 
     plan_picker = (
-        _loading_field("Loading test plans…")
+        _loading_field(strings.t("reg_loading_test_plans"))
         if app._reg_plans_loading else
         _checkbox_multiselect(
             [(str(p["id"]), f"[{p['id']}] {p['name']}") for p in (app._plans or [])],
             [str(p["id"]) for p in app._auto_plans_selected],
             _toggle_plan, _all_plans, is_open=app._auto_plan_open, on_open=_open_plans,
-            placeholder="Select test plan(s)", height=200,
-            empty="No test plans found for this project.",
+            placeholder=strings.t("reg_select_test_plans"), height=200,
+            empty=strings.t("reg_no_test_plans"),
             page=app.page, app=app, sync_key="auto_plans",
             invalid=getattr(app, "_auto_plan_invalid", False)))
 
@@ -2715,9 +2716,9 @@ def automation_source_card(app):
             bgcolor=T.CARD, border=ft.Border.all(1, T.BORDER), border_radius=T.R)
 
     if app._auto_stories_loading:
-        story_picker = _loading_field("Loading stories…")
+        story_picker = _loading_field(strings.t("reg_loading_stories"))
     elif not _have_plans:
-        story_picker = _disabled_field("Select a test plan first")
+        story_picker = _disabled_field(strings.t("reg_select_plan_first"))
     else:
         story_picker = _checkbox_multiselect(
             [(str(s["id"]),
@@ -2726,8 +2727,8 @@ def automation_source_card(app):
              for s in app._auto_plan_stories],
             [str(s["id"]) for s in app._auto_selected],
             _toggle_story, _all_stories, is_open=app._auto_story_open, on_open=_open_stories,
-            placeholder="Select stories", height=260,
-            empty="No stories in the selected plan(s).",
+            placeholder=strings.t("reg_select_stories"), height=260,
+            empty=strings.t("reg_no_stories_plans"),
             page=app.page, app=app, sync_key="auto_stories",
             invalid=getattr(app, "_auto_story_invalid", False))
 
@@ -2792,7 +2793,7 @@ def automation_source_card(app):
                  for s in sel[:_STORY_CHIP_CAP]]
         if len(sel) > _STORY_CHIP_CAP:
             ctrls.append(ft.Container(
-                ft.Text(f"+{len(sel) - _STORY_CHIP_CAP} more", size=12,
+                ft.Text(strings.t("reg_more_count", n=len(sel) - _STORY_CHIP_CAP), size=12,
                         weight=ft.FontWeight.BOLD, color=T.INK_3),
                 padding=ft.Padding.only(left=10, right=10, top=5, bottom=5),
                 bgcolor=T.CARD_2, border_radius=T.R_SM))
@@ -2803,14 +2804,14 @@ def automation_source_card(app):
     story_chips = ft.Row(_story_chip_controls(), wrap=True, spacing=6, run_spacing=6)
     story_chips_wrap = ft.Container(story_chips, padding=ft.Padding.only(top=10),
                                     visible=bool(app._auto_selected))
-    story_count_text = ft.Text(f"{len(app._auto_selected)} stories selected", size=11,
+    story_count_text = ft.Text(strings.t("reg_stories_selected", n=len(app._auto_selected)), size=11,
                                color=T.INK_3, weight=ft.FontWeight.BOLD)
 
     def _refresh_story_externals():
         try:
             story_chips.controls = _story_chip_controls()
             story_chips_wrap.visible = bool(app._auto_selected)
-            story_count_text.value = f"{len(app._auto_selected)} stories selected"
+            story_count_text.value = strings.t("reg_stories_selected", n=len(app._auto_selected))
             story_chips.update(); story_chips_wrap.update(); story_count_text.update()
         except Exception:
             try:
@@ -2823,16 +2824,16 @@ def automation_source_card(app):
     app._auto_refresh_story_ext = _refresh_story_externals
 
     return card(ft.Column([
-        sec_head("A", "Source & stories"),
+        sec_head("A", strings.t("reg_source_stories")),
         ft.Container(height=10),
-        ft.Column([field_label("Test plans", req=True), plan_picker], spacing=6),
+        ft.Column([field_label(strings.t("reg_test_plans"), req=True), plan_picker], spacing=6),
         ft.Container(plan_chips, padding=ft.Padding.only(top=10),
                      visible=bool(app._auto_plans_selected)),
-        ft.Text(f"{len(app._auto_plans_selected)} plan(s) selected", size=11,
+        ft.Text(strings.t("reg_plans_selected", n=len(app._auto_plans_selected)), size=11,
                 color=T.INK_3, weight=ft.FontWeight.BOLD,
                 visible=bool(app._auto_plans_selected)),
         ft.Container(height=14),
-        ft.Column([field_label("Stories", req=True), story_picker], spacing=6),
+        ft.Column([field_label(strings.t("reg_stories"), req=True), story_picker], spacing=6),
         story_chips_wrap,
         story_count_text,
     ], spacing=0))
@@ -3040,17 +3041,17 @@ def _checkbox_multiselect(options, selected, on_toggle, on_all, *, is_open, on_o
             pass
 
     search_tf = ft.TextField(
-        hint_text="Search…", text_size=12.5, dense=True,
+        hint_text=strings.t("reg_search"), text_size=12.5, dense=True,
         prefix_icon=ft.Icons.SEARCH,
         border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R_SM,
         content_padding=ft.Padding.symmetric(vertical=6, horizontal=8),
         on_change=_apply_filter)
-    no_match = ft.Container(ft.Text("No matches.", size=12, color=T.INK_3),
+    no_match = ft.Container(ft.Text(strings.t("reg_no_matches"), size=12, color=T.INK_3),
                             padding=10, visible=False)
 
     head = ft.Container(
         ft.Row([select_all_cb,
-                ft.Text("Select all", size=12.5, weight=ft.FontWeight.BOLD, color=T.INK),
+                ft.Text(strings.t("reg_select_all"), size=12.5, weight=ft.FontWeight.BOLD, color=T.INK),
                 ft.Container(expand=True),
                 count_text],
                spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER),
@@ -3183,7 +3184,7 @@ def email_recipient_picker(app, state_key, *, is_open_key, sync_key, height=260,
     is_open_key — attr name on `app` holding this picker's open/closed bool.
     sync_key    — unique key for app._dd_syncers / app._dd_closers (must not
                   collide with any other picker's sync_key on the same screen).
-    trailing    — optional control (typically the "Send"/"Email" button) placed
+    trailing    — optional control (typically the strings.t("reg_send")/"Email" button) placed
                   BESIDE the picker's trigger field instead of the caller
                   stacking it on its own line below. The trigger collapses to a
                   single field-height row when closed, so this pairs cleanly
@@ -3325,7 +3326,7 @@ def email_recipient_picker(app, state_key, *, is_open_key, sync_key, height=260,
             return
         if not _EMAIL_RE.match(raw):
             try:
-                app._err(f"\"{raw[:40]}\" doesn't look like a valid email.")
+                app._err(strings.t("reg_email_invalid", raw=raw[:40]))
             except Exception:
                 pass
             return
@@ -3344,13 +3345,13 @@ def email_recipient_picker(app, state_key, *, is_open_key, sync_key, height=260,
     picker = _checkbox_multiselect(
         options, sel_member_keys, _toggle_member, _all_members,
         is_open=getattr(app, is_open_key, False), on_open=_open_picker,
-        placeholder=("Loading project members…" if loading
-                     else "Select recipients…"),
-        height=height, empty="No members found in this project.",
+        placeholder=(strings.t("reg_loading_members") if loading
+                     else strings.t("reg_select_recipients")),
+        height=height, empty=strings.t("reg_no_members"),
         page=app.page, app=app, sync_key=sync_key, disabled=loading)
 
     custom_tf = ft.TextField(
-        hint_text="Or type any email and press Enter (e.g. a distro list)",
+        hint_text=strings.t("reg_email_hint"),
         text_size=12.5, dense=True, border_color=T.BORDER,
         focused_border_color=T.VIOLET, border_radius=T.R_SM,
         content_padding=ft.Padding.symmetric(vertical=8, horizontal=10),
@@ -3439,7 +3440,7 @@ def resource_name_picker(app, list_key, *, is_open_key, sync_key, height=220,
     chip_row = ft.Row([], wrap=True, spacing=8, run_spacing=8)
     chip_wrap = ft.Container(chip_row, padding=ft.Padding.only(top=10),
                              visible=bool(sel_list))
-    count_text = ft.Text(f"{len(sel_list)} resource(s)", size=11, color=T.INK_3,
+    count_text = ft.Text(strings.t("reg_resource_count", n=len(sel_list)), size=11, color=T.INK_3,
                          weight=ft.FontWeight.BOLD, visible=bool(sel_list))
 
     def _rebuild_chips():
@@ -3462,8 +3463,7 @@ def resource_name_picker(app, list_key, *, is_open_key, sync_key, height=220,
                        spacing=7, tight=True),
                 padding=ft.Padding.only(left=5, right=9, top=4, bottom=4),
                 bgcolor=T.CARD_2, border_radius=999, border=ft.Border.all(1, T.BORDER_2),
-                tooltip=(email or f"not in the {backend_setup.story_store_label(app)} "
-                                  f"member list — typed manually"),
+                tooltip=(email or strings.t("reg_not_in_member_list", store=backend_setup.story_store_label(app))),
                 on_hover=_chip_hover, animate_scale=120))
         if len(cur) > 1:
             chips.append(_clear_chip(_clear_all))
@@ -3539,14 +3539,14 @@ def resource_name_picker(app, list_key, *, is_open_key, sync_key, height=220,
     picker = _checkbox_multiselect(
         options, sel_member_keys, _toggle_member, _all_members,
         is_open=getattr(app, is_open_key, False), on_open=_open_picker,
-        placeholder=("Loading project members…" if loading
-                     else "Select tester(s)…"),
-        height=height, empty="No members found in this project.",
+        placeholder=(strings.t("reg_loading_members") if loading
+                     else strings.t("reg_select_testers")),
+        height=height, empty=strings.t("reg_no_members"),
         page=app.page, app=app, sync_key=sync_key, disabled=loading,
         invalid=invalid)
 
     custom_tf = ft.TextField(
-        hint_text="Or type a tester's name, press Enter (or paste comma-separated)",
+        hint_text=strings.t("reg_tester_hint"),
         text_size=12.5, dense=True, border_color=T.BORDER,
         focused_border_color=T.VIOLET, border_radius=T.R_SM,
         content_padding=ft.Padding.symmetric(vertical=8, horizontal=10),
@@ -4000,8 +4000,8 @@ def _mode_toggle(app):
             on_click=_go, padding=ft.Padding.symmetric(vertical=8, horizontal=16),
             bgcolor=(T.VIOLET if on else T.CARD), border_radius=T.R,
             border=ft.Border.all(1, T.VIOLET if on else T.BORDER_2))
-    return ft.Row([_seg("From test plans", "existing"),
-                   _seg("From a sprint", "create")], spacing=8)
+    return ft.Row([_seg(strings.t("reg_from_test_plans"), "existing"),
+                   _seg(strings.t("reg_from_a_sprint"), "create")], spacing=8)
 
 
 def test_plan_screen(app):
@@ -4010,10 +4010,9 @@ def test_plan_screen(app):
     from main import card, sec_head, field_label, green_btn, ghost_btn  # noqa: F401
     if not app.readonly and not (app.connected and app.project):
         return locked_state(
-            app, "Sprint Plan",
-            "Plan & estimate test effort across a sprint’s stories",
-            f"Connect your {backend_setup.story_store_label(app)} account on the Setup screen, then pick a "
-            "sprint here.")
+            app, strings.t("nav_testplan"),
+            strings.t("testplan_subtitle"),
+            strings.t("reg_locked_sprint_msg", store=backend_setup.story_store_label(app)))
     app._reg_mode = "create"
     return _create_screen(app)
 
@@ -4066,15 +4065,15 @@ def _create_screen(app):
             app._flush_deferred_render()
 
     sprint_picker = (
-        ft.Container(_txt("Loading sprints…", color=T.INK_3, size=12), padding=10)
+        ft.Container(_txt(strings.t("reg_loading_sprints"), color=T.INK_3, size=12), padding=10)
         if app._cp_iter_loading else
         _checkbox_multiselect(
             [(it["path"], (_sprint_num(it["name"]) or it["name"]) + f"   ·   {it['path']}")
              for it in app._cp_iterations],
             app._cp_sprint_paths, _toggle_sprint, _all_sprints,
             is_open=app._cp_sprint_open, on_open=_open_sprints,
-            placeholder="Select sprint(s)",
-            empty="No sprints found for this project.",
+            placeholder=strings.t("reg_select_sprints"),
+            empty=strings.t("reg_no_sprints"),
             page=app.page, app=app, sync_key="cp_sprints",
             invalid=getattr(app, "_cp_sprint_invalid", False)))
 
@@ -4169,7 +4168,7 @@ def _create_screen(app):
     stories_block = ft.Container()
     if app._cp_sprint_paths:
         if app._cp_stories_loading:
-            story_field = _loading_field("Loading stories…")
+            story_field = _loading_field(strings.t("reg_loading_stories"))
         else:
             story_field = _checkbox_multiselect(
                 [(str(r["id"]), f"[{r['id']}] {(r.get('title') or '')[:60]}")
@@ -4177,8 +4176,8 @@ def _create_screen(app):
                 [str(x) for x in (app._cp_story_ids or [])],
                 _toggle_cp_story, _all_cp_stories,
                 is_open=app._cp_story_open, on_open=_open_cp_stories,
-                placeholder="Select stories", height=260,
-                empty="No stories in the selected sprint(s).",
+                placeholder=strings.t("reg_select_stories"), height=260,
+                empty=strings.t("reg_no_stories_sprints"),
                 page=app.page, app=app, sync_key="cp_stories")
 
         _cp_sel = {str(x) for x in (app._cp_story_ids or [])}
@@ -4203,7 +4202,7 @@ def _create_screen(app):
         _cp_story_chip_ctrls = [_cp_story_chip(r) for r in _cp_sel_rows[:_CP_STORY_CHIP_CAP]]
         if len(_cp_sel_rows) > _CP_STORY_CHIP_CAP:
             _cp_story_chip_ctrls.append(ft.Container(
-                ft.Text(f"+{len(_cp_sel_rows) - _CP_STORY_CHIP_CAP} more", size=12,
+                ft.Text(strings.t("reg_more_count", n=len(_cp_sel_rows) - _CP_STORY_CHIP_CAP), size=12,
                         weight=ft.FontWeight.BOLD, color=T.INK_3),
                 padding=ft.Padding.only(left=10, right=10, top=5, bottom=5),
                 bgcolor=T.CARD_2, border_radius=T.R_SM))
@@ -4212,18 +4211,18 @@ def _create_screen(app):
 
         stories_block = ft.Column([
             ft.Container(height=14),
-            ft.Column([field_label("Stories", req=True), story_field], spacing=6),
+            ft.Column([field_label(strings.t("reg_stories"), req=True), story_field], spacing=6),
             ft.Container(ft.Row(_cp_story_chip_ctrls, wrap=True, spacing=6, run_spacing=6),
                          padding=ft.Padding.only(top=10), visible=bool(_cp_sel_rows)),
-            ft.Text(f"{len(_cp_sel_rows)} of {len(app._cp_all_rows or [])} stories selected",
+            ft.Text(strings.t("reg_stories_of_selected", n=len(_cp_sel_rows), total=len(app._cp_all_rows or [])),
                     size=11, color=T.INK_3, weight=ft.FontWeight.BOLD,
                     visible=bool(app._cp_all_rows)),
         ], spacing=0)
 
     card1 = card(ft.Column([
-        sec_head("1", "Sprint & stories"),
+        sec_head("1", strings.t("reg_sprint_stories")),
         ft.Container(height=10),
-        ft.Column([field_label("Sprints", req=True), sprint_picker], spacing=6),
+        ft.Column([field_label(strings.t("reg_sprints"), req=True), sprint_picker], spacing=6),
         picked,
         stories_block,
     ], spacing=0))
@@ -4278,7 +4277,7 @@ def _create_screen(app):
             pass
 
     count_field = ft.TextField(
-        value=("" if count is None else str(count)), hint_text="e.g. 3",
+        value=("" if count is None else str(count)), hint_text=strings.t("reg_eg_3"),
         keyboard_type=ft.KeyboardType.NUMBER, on_blur=_on_count, on_submit=_on_count,
         input_filter=_digits_only(),
         width=92, text_size=13,
@@ -4292,12 +4291,11 @@ def _create_screen(app):
 
     warn = ft.Container()
     if mismatch:
-        more = "more names than the number" if len(names) > count else \
-               "fewer names than the number"
+        more = strings.t("reg_more_names") if len(names) > count else \
+               strings.t("reg_fewer_names")
         warn = ft.Container(
             ft.Row([ft.Icon(ft.Icons.WARNING_AMBER, size=15, color=T.AMBER),
-                    ft.Text(f"You set {count} resource(s) but added {len(names)} "
-                            f"name(s) — {more}.", size=12, color=T.AMBER,
+                    ft.Text(strings.t("reg_mismatch", count=count, names=len(names), more=more), size=12, color=T.AMBER,
                             weight=ft.FontWeight.W_500, expand=True)], spacing=8),
             padding=10, bgcolor=T.AMBER_SOFT, border_radius=T.R,
             border=ft.Border.all(1, "#EAD9A8"), margin=ft.Margin.only(top=10))
@@ -4312,13 +4310,9 @@ def _create_screen(app):
         ft.Row([
             ft.Icon(ft.Icons.AUTO_GRAPH, size=16, color=T.VIOLET_INK),
             ft.Column([
-                ft.Text("Estimates are complexity-based",
+                ft.Text(strings.t("reg_estimates_complexity"),
                         size=11.5, weight=ft.FontWeight.BOLD, color=T.VIOLET_INK),
-                _txt("Each story's hours come from its content size "
-                     "(acceptance criteria + description) weighted by priority, "
-                     "scaled into this Min–Max range — bigger / higher-priority "
-                     "stories get more. Workload is then balanced by hours across "
-                     "resources. Hours & assignees stay editable below.",
+                _txt(strings.t("reg_estimate_note"),
                      color=T.INK_2, size=11.5, no_wrap=False),
             ], spacing=2, tight=True, expand=True),
         ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.START),
@@ -4326,9 +4320,9 @@ def _create_screen(app):
         bgcolor=getattr(T, "VIOLET_SOFT", T.CARD_2), border_radius=T.R,
         border=ft.Border.all(1, "#D9D2FF"))
     _min_max_row = ft.Row([
-        ft.Column([field_label("Min h / story"), _num(app._cp_est_min, _on_min)],
+        ft.Column([field_label(strings.t("reg_min_h")), _num(app._cp_est_min, _on_min)],
                   spacing=6),
-        ft.Column([field_label("Max h / story"), _num(app._cp_est_max, _on_max)],
+        ft.Column([field_label(strings.t("reg_max_h")), _num(app._cp_est_max, _on_max)],
                   spacing=6),
     ], spacing=14, vertical_alignment=ft.CrossAxisAlignment.START)
     import platform_caps as _pc_est
@@ -4345,11 +4339,11 @@ def _create_screen(app):
                               vertical_alignment=ft.CrossAxisAlignment.START)
 
     card2 = card(ft.Column([
-        sec_head("2", "Resources & estimate"),
+        sec_head("2", strings.t("reg_resources_estimate")),
         ft.Container(height=10),
         ft.Row([
-            ft.Column([field_label("Count", req=True), hover_field(count_field)], spacing=6, tight=True),
-            ft.Column([field_label("Resources", req=True), resource_picker], spacing=6, expand=True),
+            ft.Column([field_label(strings.t("reg_count"), req=True), hover_field(count_field)], spacing=6, tight=True),
+            ft.Column([field_label(strings.t("reg_resources"), req=True), resource_picker], spacing=6, expand=True),
         ], spacing=14, vertical_alignment=ft.CrossAxisAlignment.START),
         warn,
         ft.Container(height=14),
@@ -4371,15 +4365,14 @@ def _create_screen(app):
 
     def _calculate(e):
         if getattr(app, "readonly", False):
-            return app._toast("Read-only — your role can’t generate plans.")
+            return app._toast(strings.t("reg_ro_generate"))
         # Don't let two plans generate at once — running both starves Python's GIL
         # and makes every render freeze for tens of seconds (see qa_perf.log).
         if app._reg_busy:
-            app._err("The Regression plan is still generating — let it finish, then "
-                     "generate the Sprint plan.")
+            app._err(strings.t("reg_regression_generating"))
             return
         if getattr(app, "_auto_running", False):
-            app._err("Automation is running — let it finish before generating a plan.")
+            app._err(strings.t("reg_automation_running"))
             return
         # Commit the count field's CURRENT text before validating. On mobile a
         # button tap doesn't reliably blur the field first, so _on_count
@@ -4443,13 +4436,13 @@ def _create_screen(app):
             calc_btn.opacity = 0.45
             calc_btn.shadow = None
             calc_btn.on_click = None
-            calc_btn.content.controls[-1].value = "Generating…"
+            calc_btn.content.controls[-1].value = strings.t("reg_generating")
             calc_btn.update()
         except Exception:
             pass
         try:
             cp_spinner.visible = True
-            cp_spinner.content.controls[-1].value = "Generating sprint plan…"
+            cp_spinner.content.controls[-1].value = strings.t("reg_generating_sprint")
             cp_spinner.update()
         except Exception:
             pass
@@ -4476,8 +4469,8 @@ def _create_screen(app):
     _cp_regen = bool(app._cp_calculated) and not app._cp_busy \
         and bool(app._cp_rows and app._cp_res_names)
     _cp_gen_click = (lambda e: _cp_replan(app)) if _cp_regen else _calculate
-    calc_btn = primary_btn("Generating…" if app._cp_busy
-                           else ("Regenerate Sprint Plan" if _cp_regen else "Generate Sprint Plan"),
+    calc_btn = primary_btn(strings.t("reg_generating") if app._cp_busy
+                           else (strings.t("reg_regenerate_sprint") if _cp_regen else strings.t("reg_generate_sprint")),
                            icon=(ft.Icons.REFRESH if _cp_regen else ft.Icons.CALCULATE),
                            on_click=(None if app._cp_busy else _cp_gen_click),
                            disabled=app._cp_busy or not (app._cp_rows and app._cp_res_names))
@@ -4493,9 +4486,9 @@ def _create_screen(app):
         def _kpis():
             d2 = plan_payload(app)
             return kpi_tiles_mobile([
-                _kpi_tile("STORIES", str(d2["total_stories"])),
-                _kpi_tile("TOTAL EFFORT", f"{d2['total_hours']} h"),
-                _kpi_tile("PER PERSON", f"{d2['hours_per_person']} h", T.GREEN),
+                _kpi_tile(strings.t("reg_kpi_stories"), str(d2["total_stories"])),
+                _kpi_tile(strings.t("reg_kpi_total_effort"), f"{d2['total_hours']} h"),
+                _kpi_tile(strings.t("reg_kpi_per_person"), f"{d2['hours_per_person']} h", T.GREEN),
             ])
 
         def _workload():
@@ -4517,7 +4510,7 @@ def _create_screen(app):
                 for w in d2["workload"]]
             return ft.Column([
                 ft.Container(height=16),
-                ft.Text("RESOURCE WORKLOAD", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
+                ft.Text(strings.t("reg_resource_workload"), size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
                 ft.Container(height=10),
                 ft.Row(cards_wl, spacing=14, wrap=True, run_spacing=14,
                        vertical_alignment=ft.CrossAxisAlignment.START)], spacing=0)
@@ -4560,14 +4553,14 @@ def _create_screen(app):
                                      if str(x) != str(sid)]
                 _refresh_all()             # rebuild table + recalc, no scroll jump
                 try:
-                    app._toast(f"Removed story {sid} from the sprint plan.")
+                    app._toast(strings.t("reg_removed_sprint", sid=sid))
                 except Exception:
                     pass
             def _d(e):
                 if getattr(app, "readonly", False):
-                    return app._toast("Read-only — your role can’t modify the plan.")
+                    return app._toast(strings.t("reg_ro_modify"))
                 app._confirm(
-                    "Remove story?",
+                    strings.t("au_remove_story_q"),
                     f"Remove story {sid} from the sprint plan and recalculate the "
                     f"workload? This doesn't change anything in {backend_setup.story_store_label(app)}.",
                     _do, yes_label="Remove")
@@ -4580,12 +4573,12 @@ def _create_screen(app):
         _title_w = 200 if _m_plan else None
         hdr = ft.Container(
             ft.Row([ft.Container(width=34),
-                    _txt("STORY", color=T.INK_2, size=10.5, weight=ft.FontWeight.BOLD, width=84),
-                    _txt("TITLE", color=T.INK_2, size=10.5, weight=ft.FontWeight.BOLD,
+                    _txt(strings.t("reg_col_story"), color=T.INK_2, size=10.5, weight=ft.FontWeight.BOLD, width=84),
+                    _txt(strings.t("reg_col_title"), color=T.INK_2, size=10.5, weight=ft.FontWeight.BOLD,
                          expand=(None if _m_plan else True), width=_title_w),
                     _txt("P", color=T.INK_2, size=10.5, weight=ft.FontWeight.BOLD, width=44),
-                    _txt("HOURS", color=T.INK_2, size=10.5, weight=ft.FontWeight.BOLD, width=110),
-                    _txt("ASSIGNEE", color=T.INK_2, size=10.5, weight=ft.FontWeight.BOLD, width=180)],
+                    _txt(strings.t("reg_col_hours"), color=T.INK_2, size=10.5, weight=ft.FontWeight.BOLD, width=110),
+                    _txt(strings.t("reg_col_assignee"), color=T.INK_2, size=10.5, weight=ft.FontWeight.BOLD, width=180)],
                    spacing=10),
             padding=ft.Padding.symmetric(vertical=11, horizontal=12),
             bgcolor=T.CARD_2,
@@ -4613,7 +4606,7 @@ def _create_screen(app):
                 spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER)
             del_btn = ft.IconButton(
                 icon=ft.Icons.DELETE_OUTLINE, icon_size=18, icon_color=T.RED,
-                tooltip="Remove story & recalculate",
+                tooltip=strings.t("reg_remove_recalc"),
                 on_click=_delete_story(r["id"]),
                 width=34, height=34,
                 style=ft.ButtonStyle(padding=ft.Padding.all(0),
@@ -4709,11 +4702,11 @@ def _create_screen(app):
                             app.render()
                     return _h
                 pager = ft.Row([
-                    ghost_btn("← Prev", on_click=(None if pg == 0 else _cp_go(-1))),
+                    ghost_btn(strings.t("reg_prev"), on_click=(None if pg == 0 else _cp_go(-1))),
                     _txt(f"Page {pg + 1} of {total}  ·  "
                          f"rows {pg * _CP_PAGE + 1}–{min((pg + 1) * _CP_PAGE, len(allrows))} "
                          f"of {len(allrows)}", size=12, color=T.INK_3),
-                    ghost_btn("Next →", on_click=(None if pg >= total - 1 else _cp_go(1))),
+                    ghost_btn(strings.t("reg_next"), on_click=(None if pg >= total - 1 else _cp_go(1))),
                 ], alignment=ft.MainAxisAlignment.CENTER, spacing=16)
                 out = out + [ft.Container(pager,
                                           padding=ft.Padding.symmetric(vertical=10))]
@@ -4762,22 +4755,21 @@ def _create_screen(app):
 
         def _email(e):
             if getattr(app, "_cp_emailing", False):
-                app._toast("Already sending — please wait…")
+                app._toast(strings.t("reg_already_sending"))
                 return
             to = [a.strip() for a in re.split(r"[,\s;]+", (app._cp_email_to or ""))
                   if a.strip()]
             if not to:
-                app._err("Enter at least one recipient email.")
+                app._err(strings.t("reg_enter_recipient"))
                 return
             if not (E.ensure_sender_creds() if hasattr(E, "ensure_sender_creds")
                     else getattr(E, "GMAIL_APP_PASS", "")):
-                app._err("No Gmail App Password is configured — an admin can set "
-                         "it in Setup → Connection.")
+                app._err(strings.t("reg_no_gmail_pw"))
                 return
             app._cp_email_to = ", ".join(to)
             app._cp_emailing = True
             app._cp_msg = None
-            app._toast("Sending the sprint plan…")
+            app._toast(strings.t("reg_sending_sprint"))
             _b = getattr(app, "_cp_send_btn", None)   # grey the button IN PLACE (no full render)
             if _b is not None:
                 try: _b.disabled = True; _b.opacity = 0.55; _b.update()
@@ -4796,9 +4788,9 @@ def _create_screen(app):
                     subj = f"Sprint Plan — {d['plan_name'] or d['project']}"
                     ok, err = E.send_report(to, subj, _plan_html(d), attachments=attach)
                     kind = "ok" if ok else "err"
-                    text = f"Emailed to {', '.join(to)}" if ok else (err or "Email failed.")
+                    text = strings.t("reg_emailed_to", to=', '.join(to)) if ok else (err or strings.t("reg_email_failed"))
                 except Exception as ex:
-                    kind, text = "err", f"Email failed: {str(ex)[:160]}"
+                    kind, text = "err", strings.t("reg_email_failed_ex", err=str(ex)[:160])
                 app._cp_emailing = False
                 def _fin(k=kind, t=text):
                     _b2 = getattr(app, "_cp_send_btn", None)   # re-enable IN PLACE
@@ -4809,12 +4801,12 @@ def _create_screen(app):
                 app.ui_safe(_fin)
             threading.Thread(target=work, daemon=True).start()
 
-        app._cp_send_btn = green_btn("Email plan", icon=ft.Icons.SEND, on_click=_email)
+        app._cp_send_btn = green_btn(strings.t("reg_email_plan"), icon=ft.Icons.SEND, on_click=_email)
         email_picker = email_recipient_picker(
             app, "_cp_email_to", is_open_key="_cp_email_open", sync_key="cp_emails",
             trailing=app._cp_send_btn)
         email_row = ft.Column([
-            ft.Text("EMAIL", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
+            ft.Text(strings.t("reg_email_hdr"), size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
             ft.Container(height=8),
             email_picker,
         ], spacing=0)
@@ -4850,9 +4842,7 @@ def _create_screen(app):
 
         assign_note = ft.Container(
             ft.Row([ft.Icon(ft.Icons.INFO_OUTLINE, size=15, color=T.INK_3),
-                    _txt("Writes each story's assignee into the Azure “Assigned To "
-                         "Tester” field. Names are matched to that field's list — "
-                         "you'll get a readable error for any that don't match.",
+                    _txt(strings.t("reg_assign_note"),
                          color=T.INK_3, size=11.5, expand=True)], spacing=8),
             padding=10, bgcolor=T.CARD, border_radius=T.R,
             border=ft.Border.all(1, T.BORDER_2), margin=ft.Margin.only(top=12))
@@ -4867,8 +4857,7 @@ def _create_screen(app):
         _cp_prov = bool(getattr(app, "_cp_enriching", False))
         prov_badge = ft.Container(
             ft.Row([ft.ProgressRing(width=14, height=14, stroke_width=2, color=T.AMBER),
-                    _txt("Provisional estimate — refining with AI. Export, email and "
-                         "Azure assign unlock automatically once it settles.",
+                    _txt(strings.t("reg_provisional"),
                          color=T.AMBER, size=12, weight=ft.FontWeight.W_500, expand=True)],
                    spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
             padding=10, bgcolor=T.AMBER_SOFT, border_radius=T.R,
@@ -4881,8 +4870,7 @@ def _create_screen(app):
         _cp_timed_out = bool(getattr(app, "_cp_ai_timeout", False)) and not _cp_prov
         timeout_note = ft.Container(
             ft.Row([ft.Icon(ft.Icons.WARNING_AMBER_ROUNDED, size=16, color=T.RED),
-                    _txt("AI provider timed out after 30s — this estimate uses story "
-                         "size only. Switch the AI provider in Setup, then Regenerate.",
+                    _txt(strings.t("reg_ai_timeout"),
                          color=T.RED, size=12, weight=ft.FontWeight.W_500, expand=True)],
                    spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
             padding=10, bgcolor=T.RED_SOFT, border_radius=T.R,
@@ -4896,14 +4884,12 @@ def _create_screen(app):
             n = getattr(app, "_cp_ai_scored", None)
             m = getattr(app, "_cp_ai_total", 0) or 0
             if n and n > 0:
-                return ("AI complexity applied",
-                        f"Scored {n} of {m} stories — hours reflect AI-assessed "
-                        f"complexity, not just story size.",
+                return (strings.t("reg_ai_applied"),
+                        strings.t("reg_ai_scored", n=n, total=m),
                         T.GREEN, ft.Icons.AUTO_AWESOME, T.GREEN_SOFT,
                         ft.Colors.with_opacity(0.35, T.GREEN))
-            return ("AI signal unavailable",
-                    "Estimate uses story size only — check the AI provider in "
-                    "Setup, then Regenerate.",
+            return (strings.t("reg_ai_unavailable"),
+                    strings.t("reg_ai_size_only"),
                     T.INK_2, ft.Icons.INFO_OUTLINE, T.CARD_2, T.BORDER_2)
 
         def _ai_banner_row():
@@ -4932,8 +4918,8 @@ def _create_screen(app):
                                    opacity=0.5 if _cp_prov else 1.0)
         _email_ui = ft.Container(email_row, disabled=_cp_prov,
                                  opacity=0.5 if _cp_prov else 1.0)
-        _assign_btn = green_btn("Assigning…" if app._cp_assigning
-                                else "Assign to tester in Azure",
+        _assign_btn = green_btn(strings.t("reg_assigning") if app._cp_assigning
+                                else strings.t("reg_assign_azure"),
                                 icon=ft.Icons.PERSON_ADD,
                                 on_click=(None if (app._cp_assigning or _cp_prov)
                                           else _assign_testers))
@@ -4986,11 +4972,11 @@ def _create_screen(app):
         app._cp_apply_state = _apply_cp_state
 
         results = card(ft.Column([
-            sec_head("3", "Plan"), prov_badge, timeout_note,
+            sec_head("3", strings.t("reg_plan")), prov_badge, timeout_note,
             ft.Container(height=12), kpi_strip, ai_line,
             ft.Container(height=14), table, workload_ui,
             ft.Divider(height=22, color=T.BORDER),
-            ft.Text("EXPORT", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
+            ft.Text(strings.t("reg_export_hdr"), size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
             ft.Container(height=8), _exports_ui,
             ft.Divider(height=22, color=T.BORDER),
             _email_ui,
@@ -5000,7 +4986,7 @@ def _create_screen(app):
         ], spacing=0))
 
     # Generating / loading indicator (same style as the Regression Plan spinner).
-    _cp_spin_label = ("Generating sprint plan…" if app._cp_busy
+    _cp_spin_label = (strings.t("reg_generating_sprint") if app._cp_busy
                       else f"Loading sprint stories from {backend_setup.story_store_label(app)}…")
     cp_spinner = ft.Container(
         ft.Row([ft.ProgressRing(width=18, height=18, stroke_width=2.5, color=T.VIOLET),
@@ -5023,8 +5009,8 @@ def _create_screen(app):
         from main import card as _card, skeleton_rows as _skel
         body_children += [ft.Container(height=16), _card(_skel(6))]
     body = ft.Column(body_children, spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
-    return app.shell("Sprint Plan",
-                     "Plan & estimate test effort across a sprint’s stories", body)
+    return app.shell(strings.t("nav_testplan"),
+                     strings.t("testplan_subtitle"), body)
 
 
 def _flush_toasts(app):
@@ -5076,10 +5062,10 @@ def _reg_busy_overlay(app):
         ft.Column([
             ft.ProgressRing(width=42, height=42, stroke_width=3.5, color=T.VIOLET),
             ft.Container(height=18),
-            ft.Text("Updating your regression plan…", size=14.5,
+            ft.Text(strings.t("reg_updating_plan"), size=14.5,
                     weight=ft.FontWeight.BOLD, color=T.INK),
             ft.Container(height=4),
-            ft.Text("Just a moment — this won't take long.",
+            ft.Text(strings.t("reg_just_a_moment"),
                     size=12, color=T.INK_3),
         ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.CENTER,
            alignment=ft.MainAxisAlignment.CENTER, tight=True),
@@ -5090,9 +5076,9 @@ def _reg_busy_overlay(app):
     # recognize an ft.Column at this position, so anything else silently
     # skips the header-gap spacer it inserts on every other screen.
     body = ft.Column([spinner_card], spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
-    return app.shell("Regression Plan",
-                      "Build a regression plan from your test plans & their stories",
-                      body, badge="STEP R")
+    return app.shell(strings.t("nav_regression"),
+                      strings.t("reg_subtitle"),
+                      body, badge=strings.t("reg_step_badge"))
 
 
 def _reg_render_with_overlay(app):
@@ -5148,10 +5134,9 @@ def screen(app):
     # ── gate: only needs a connection + a project ──
     if not app.readonly and not (app.connected and app.project):
         return locked_state(
-            app, "Regression Plan",
-            "Build a regression plan from your test plans & their stories",
-            f"Connect your {backend_setup.story_store_label(app)} account on the Setup screen. You can pick "
-            "the test plans right here once connected.")
+            app, strings.t("nav_regression"),
+            strings.t("reg_subtitle"),
+            strings.t("reg_locked_regression_msg", store=backend_setup.story_store_label(app)))
 
     app._reg_mode = "existing"
 
@@ -5264,14 +5249,14 @@ def screen(app):
             if not _ok:
                 app.render()        # last row removed, or in-place refresh failed
             try:
-                app._toast(f"Removed story {sid} from the regression plan.")
+                app._toast(strings.t("reg_removed_regression", sid=sid))
             except Exception:
                 pass
         def _d(e):
             if getattr(app, "readonly", False):
-                return app._toast("Read-only — your role can’t modify the plan.")
+                return app._toast(strings.t("reg_ro_modify"))
             app._confirm(
-                "Remove story?",
+                strings.t("au_remove_story_q"),
                 f"Remove story {sid} from the regression plan and recalculate the "
                 f"effort? This doesn't change anything in {backend_setup.story_store_label(app)}.",
                 _do, yes_label="Remove")
@@ -5363,15 +5348,14 @@ def screen(app):
 
     def _calculate(e):
         if getattr(app, "readonly", False):
-            return app._toast("Read-only — your role can’t generate plans.")
+            return app._toast(strings.t("reg_ro_generate"))
         # Don't let two plans generate at once — running both starves Python's GIL
         # and makes every render freeze for tens of seconds (see qa_perf.log).
         if app._cp_busy or app._cp_stories_loading:
-            app._err("The Sprint plan is still working — let it finish, then generate "
-                     "the Regression plan.")
+            app._err(strings.t("reg_sprint_working"))
             return
         if getattr(app, "_auto_running", False):
-            app._err("Automation is running — let it finish before generating a plan.")
+            app._err(strings.t("reg_automation_running"))
             return
         # Commit the count field's CURRENT text before validating — on mobile a
         # button tap doesn't reliably blur the field, so _on_count may not have
@@ -5461,7 +5445,7 @@ def screen(app):
             calc_btn.opacity = 0.45
             calc_btn.shadow = None
             calc_btn.on_click = None
-            calc_btn.content.controls[-1].value = "Generating…"
+            calc_btn.content.controls[-1].value = strings.t("reg_generating")
             calc_btn.update()
         except Exception:
             pass
@@ -5492,7 +5476,7 @@ def screen(app):
                         return
                     try:
                         sp.content.controls[1].value = (
-                            f"Counting test cases — {done} / {total} suites…")
+                            strings.t("reg_counting", done=done, total=total))
                         sp.visible = True
                         sp.update()
                     except Exception:
@@ -5523,7 +5507,7 @@ def screen(app):
 
     def _regenerate(e):
         if getattr(app, "readonly", False):
-            return app._toast("Read-only — your role can’t regenerate plans.")
+            return app._toast(strings.t("reg_ro_regenerate"))
         # Force-refresh: drop the cached suite maps, counts and metadata so the plan
         # is rebuilt from a fresh Azure pull — this is how new test cases in existing
         # suites (and changed priorities/states) get reflected. We KEEP the feature
@@ -5609,7 +5593,7 @@ def screen(app):
     def _export(fmt):
         def _do(e):
             if not app._reg_selected_rows:
-                app._err("Calculate the plan first.")
+                app._err(strings.t("reg_calc_first"))
                 return
 
             def work():
@@ -5629,25 +5613,24 @@ def screen(app):
 
     def _email(e):
         if getattr(app, "_reg_emailing", False):
-            app._toast("Already sending — please wait…")
+            app._toast(strings.t("reg_already_sending"))
             return
         if not app._reg_selected_rows:
-            app._err("Calculate the plan first.")
+            app._err(strings.t("reg_calc_first"))
             return
         to = [a.strip() for a in re.split(r"[,\s;]+", (app._reg_email_to or ""))
               if a.strip()]
         if not to:
-            app._err("Enter at least one recipient email.")
+            app._err(strings.t("reg_enter_recipient"))
             return
         if not (E.ensure_sender_creds() if hasattr(E, "ensure_sender_creds")
                 else E.GMAIL_APP_PASS):
-            app._err("No Gmail App Password is configured — an admin can set "
-                     "it in Setup → Connection.")
+            app._err(strings.t("reg_no_gmail_pw"))
             return
         app._reg_email_to = ", ".join(to)
         app._reg_emailing = True
         app._reg_export_msg = None
-        app._toast("Sending the regression plan…")
+        app._toast(strings.t("reg_sending_regression"))
         _b = getattr(app, "_reg_send_btn", None)   # grey the button IN PLACE (no full render)
         if _b is not None:
             try: _b.disabled = True; _b.opacity = 0.55; _b.update()
@@ -5681,7 +5664,7 @@ def screen(app):
                 subj = f"Regression Test Plan — {d['plan_name'] or d['project']}"
                 ok, err = E.send_report(to, subj, _plan_html(d), attachments=attach)
                 kind = "ok" if ok else "err"
-                text = f"Emailed to {', '.join(to)}" if ok else (err or "Email failed.")
+                text = strings.t("reg_emailed_to", to=', '.join(to)) if ok else (err or strings.t("reg_email_failed"))
             except Exception as ex:
                 kind, text = "err", f"Email failed: {ex}"
             app._reg_emailing = False
@@ -5744,14 +5727,14 @@ def screen(app):
             app._flush_deferred_render()
 
     plan_picker = (
-        _loading_field("Loading test plans…")
+        _loading_field(strings.t("reg_loading_test_plans"))
         if app._reg_plans_loading else
         _checkbox_multiselect(
             [(str(p["id"]), f"[{p['id']}] {p['name']}") for p in (app._plans or [])],
             [str(p["id"]) for p in app._reg_plans_selected],
             _toggle_plan, _all_plans, is_open=app._reg_plan_open, on_open=_open_plans,
-            placeholder="Select test plan(s)", height=200,
-            empty="No test plans found for this project.",
+            placeholder=strings.t("reg_select_test_plans"), height=200,
+            empty=strings.t("reg_no_test_plans"),
             page=app.page, app=app, sync_key="reg_plans",
             invalid=getattr(app, "_reg_plan_invalid", False)))
 
@@ -5822,9 +5805,9 @@ def screen(app):
     # every call — no stale closures.
     def _build_reg_story_picker():
         if app._reg_stories_loading:
-            return _loading_field("Loading stories…")
+            return _loading_field(strings.t("reg_loading_stories"))
         if not bool(app._reg_plans_selected):
-            return _disabled_field("Select a test plan first")
+            return _disabled_field(strings.t("reg_select_plan_first"))
         return _checkbox_multiselect(
             [(str(s["id"]),
               (f"[{s['sprint']}] " if s.get("sprint") else "")
@@ -5832,8 +5815,8 @@ def screen(app):
              for s in app._reg_plan_stories],
             [str(s["id"]) for s in app._reg_selected],
             _toggle_story, _all_stories, is_open=app._reg_story_open, on_open=_open_stories,
-            placeholder="Select stories", height=260,
-            empty="No stories in the selected plan(s).",
+            placeholder=strings.t("reg_select_stories"), height=260,
+            empty=strings.t("reg_no_stories_plans"),
             page=app.page, app=app, sync_key="reg_stories",
             invalid=getattr(app, "_reg_story_invalid", False))
 
@@ -5887,7 +5870,7 @@ def screen(app):
                  for s in sel[:_STORY_CHIP_CAP]]
         if len(sel) > _STORY_CHIP_CAP:
             ctrls.append(ft.Container(
-                ft.Text(f"+{len(sel) - _STORY_CHIP_CAP} more", size=12,
+                ft.Text(strings.t("reg_more_count", n=len(sel) - _STORY_CHIP_CAP), size=12,
                         weight=ft.FontWeight.BOLD, color=T.INK_3),
                 padding=ft.Padding.only(left=10, right=10, top=5, bottom=5),
                 bgcolor=T.CARD_2, border_radius=T.R_SM))
@@ -5898,7 +5881,7 @@ def screen(app):
     story_chips = ft.Row(_story_chip_controls(), wrap=True, spacing=6, run_spacing=6)
     story_chips_wrap = ft.Container(story_chips, padding=ft.Padding.only(top=10),
                                     visible=bool(app._reg_selected))
-    story_count_text = ft.Text(f"{len(app._reg_selected)} stories selected", size=11,
+    story_count_text = ft.Text(strings.t("reg_stories_selected", n=len(app._reg_selected)), size=11,
                                color=T.INK_3, weight=ft.FontWeight.BOLD)
 
     def _refresh_story_externals():
@@ -5909,7 +5892,7 @@ def screen(app):
         try:
             story_chips.controls = _story_chip_controls()
             story_chips_wrap.visible = bool(app._reg_selected)
-            story_count_text.value = f"{len(app._reg_selected)} stories selected"
+            story_count_text.value = strings.t("reg_stories_selected", n=len(app._reg_selected))
             story_chips.update(); story_chips_wrap.update(); story_count_text.update()
         except Exception:
             try:
@@ -5929,23 +5912,23 @@ def screen(app):
     app._reg_refresh_story_ext = _refresh_story_externals
 
     card1 = card(ft.Column([
-        sec_head("1", "Source & stories"),
+        sec_head("1", strings.t("reg_source_stories")),
         ft.Container(height=10),
-        ft.Column([field_label("Test plans", req=True), plan_picker], spacing=6),
+        ft.Column([field_label(strings.t("reg_test_plans"), req=True), plan_picker], spacing=6),
         ft.Container(plan_chips, padding=ft.Padding.only(top=10),
                      visible=bool(app._reg_plans_selected)),
         ft.Text(f"{len(app._reg_plans_selected)} plan(s) selected", size=11,
                 color=T.INK_3, weight=ft.FontWeight.BOLD,
                 visible=bool(app._reg_plans_selected)),
         ft.Container(height=14),
-        ft.Column([field_label("Stories", req=True), story_picker], spacing=6),
+        ft.Column([field_label(strings.t("reg_stories"), req=True), story_picker], spacing=6),
         story_chips_wrap,
         story_count_text,
     ], spacing=0))
 
     # ── Card 2: resources ──
     count_field = ft.TextField(
-        value=("" if count is None else str(count)), hint_text="e.g. 3",
+        value=("" if count is None else str(count)), hint_text=strings.t("reg_eg_3"),
         keyboard_type=ft.KeyboardType.NUMBER, on_blur=_on_count, on_submit=_on_count,
         input_filter=_digits_only(),
         width=92, text_size=13,
@@ -5954,7 +5937,7 @@ def screen(app):
         border_radius=T.R,
         content_padding=ft.Padding.symmetric(vertical=12, horizontal=10))
     name_field = ft.TextField(
-        hint_text="Type a name, press Enter", on_submit=_add_name, on_blur=_add_name,
+        hint_text=strings.t("reg_type_name"), on_submit=_add_name, on_blur=_add_name,
         expand=True, text_size=13,
         border_color=(T.RED if getattr(app, "_reg_res_invalid", False) else T.BORDER),
         focused_border_color=T.VIOLET,
@@ -5986,8 +5969,8 @@ def screen(app):
 
     warn = ft.Container()
     if mismatch:
-        more = "more names than the number" if len(names) > count else \
-               "fewer names than the number"
+        more = strings.t("reg_more_names") if len(names) > count else \
+               strings.t("reg_fewer_names")
         warn = ft.Container(
             ft.Row([ft.Icon(ft.Icons.WARNING_AMBER, size=15, color=T.AMBER),
                     ft.Text(f"You set {count} resource(s) but added {len(names)} "
@@ -5998,14 +5981,14 @@ def screen(app):
             border=ft.Border.all(1, "#EAD9A8"), margin=ft.Margin.only(top=10))
 
     card2 = card(ft.Column([
-        sec_head("2", "Resources"),
+        sec_head("2", strings.t("reg_resources")),
         ft.Container(height=10),
         ft.Row([
-            ft.Column([field_label("Count", req=True), hover_field(count_field)],
+            ft.Column([field_label(strings.t("reg_count"), req=True), hover_field(count_field)],
                       spacing=6, tight=True),
-            ft.Column([field_label("Add a name", req=True),
+            ft.Column([field_label(strings.t("reg_add_name"), req=True),
                        ft.Row([hover_field(name_field),
-                               green_btn("Add", icon=ft.Icons.ADD,
+                               green_btn(strings.t("reg_add"), icon=ft.Icons.ADD,
                                          on_click=_add_name)], spacing=8)],
                       spacing=6, expand=True),
         ], spacing=14, vertical_alignment=ft.CrossAxisAlignment.START),
@@ -6044,16 +6027,10 @@ def screen(app):
                          disabled=getattr(app, "readonly", False)),
                 ft.Icon(ft.Icons.AUTO_GRAPH, size=16, color=T.VIOLET_INK),
                 ft.Column([
-                    ft.Text("Calculate effort hours", size=11.5,
+                    ft.Text(strings.t("reg_calc_effort_hours"), size=11.5,
                             weight=ft.FontWeight.BOLD, color=T.VIOLET_INK),
                     _txt(
-                        "On: counts each story's existing test cases and "
-                        f"estimates hours and days (1 workday = "
-                        f"{WORK_DAY_HOURS}h), then balances resources by "
-                        f"effort. Off: skips counting test cases (faster — no "
-                        f"extra {backend_setup.case_store_label(app)} calls) "
-                        f"and just splits stories evenly by number across the "
-                        f"resources you add below.",
+                        strings.t("reg_effort_toggle_note", hours=WORK_DAY_HOURS, store=backend_setup.case_store_label(app)),
                         color=T.INK_2, size=11.5, no_wrap=False),
                 ], spacing=2, tight=True, expand=True),
             ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.START),
@@ -6067,16 +6044,15 @@ def screen(app):
                 ft.Container(height=14),
                 ft.Container(
                     ft.Row([
-                        _pill("test cases", T.INK_2, T.CARD_2),
+                        _pill(strings.t("reg_pill_test_cases"), T.INK_2, T.CARD_2),
                         ft.Text("×", size=14, color=T.INK_3, weight=ft.FontWeight.BOLD),
                         _pill(f"{AVG_MINUTES_PER_CASE} min", T.INK_2, T.CARD_2),
                         ft.Text("×", size=14, color=T.INK_3, weight=ft.FontWeight.BOLD),
-                        _pill("priority weight", T.VIOLET_INK, T.VIOLET_SOFT),
+                        _pill(strings.t("reg_pill_priority_weight"), T.VIOLET_INK, T.VIOLET_SOFT),
                         ft.Text("=", size=14, color=T.INK_3, weight=ft.FontWeight.BOLD),
-                        _pill("estimated hours", T.GREEN, T.GREEN_SOFT),
+                        _pill(strings.t("reg_pill_estimated_hours"), T.GREEN, T.GREEN_SOFT),
                     ], spacing=8, wrap=True), padding=ft.Padding.only(bottom=12)),
-                ft.Text(f"Priority weight (from each story's "
-                        f"{backend_setup.story_store_label(app)} priority):",
+                ft.Text(strings.t("reg_priority_weight", store=backend_setup.story_store_label(app)),
                         size=12, color=T.INK_2, weight=ft.FontWeight.W_500),
                 ft.Container(height=8),
                 ft.Row([_pill("P1 ×1.30", T.RED, T.RED_SOFT),
@@ -6095,10 +6071,7 @@ def screen(app):
             ft.Container(height=14),
             ft.Container(
                 ft.Row([ft.Icon(ft.Icons.INFO_OUTLINE, size=15, color=T.INK_3),
-                        ft.Text("Effort hours won't be calculated — test cases "
-                                "won't be counted, and stories will be split "
-                                "evenly by number across the resources you add "
-                                "below.", size=12, color=T.INK_2,
+                        ft.Text(strings.t("reg_effort_off_note"), size=12, color=T.INK_2,
                                 weight=ft.FontWeight.W_500, expand=True)],
                        spacing=8),
                 padding=10, bgcolor=T.CARD_2, border_radius=T.R),
@@ -6117,7 +6090,7 @@ def screen(app):
     # is never invoked until the user actually flips the switch.
     def _toggle_effort_mode(e):
         if getattr(app, "readonly", False):
-            return app._toast("Read-only — your role can’t change this.")
+            return app._toast(strings.t("reg_ro_change"))
         app._reg_effort_mode = bool(e.control.value)
         # An existing plan reflects the OLD mode's hours/distribution — clear
         # it so the user regenerates under the new mode instead of seeing
@@ -6145,7 +6118,7 @@ def screen(app):
             app.render()
 
     card3 = card(ft.Column(
-        [sec_head("3", "How effort is estimated"), ft.Container(height=10),
+        [sec_head("3", strings.t("reg_how_effort")), ft.Container(height=10),
          _reg_card3_cell], spacing=0))
 
     # ── results ──
@@ -6171,10 +6144,10 @@ def screen(app):
         _rev_title_w = 200 if _m_rev else 0
         header = ft.Container(
             ft.Row([ft.Container(width=34),
-                    _hd("STORY", 64), _hd("TITLE", _rev_title_w, expand=not _m_rev),
-                    _hd("STATE", 84),
-                    _hd("PRI", 44), _hd("CASES", 52), _hd("HOURS", 128),
-                    _hd("ASSIGNEE", 140)], spacing=4),
+                    _hd(strings.t("reg_col_story"), 64), _hd(strings.t("reg_col_title"), _rev_title_w, expand=not _m_rev),
+                    _hd(strings.t("reg_col_state"), 84),
+                    _hd(strings.t("reg_col_pri"), 44), _hd(strings.t("reg_col_cases"), 52), _hd(strings.t("reg_col_hours"), 128),
+                    _hd(strings.t("reg_col_assignee"), 140)], spacing=4),
             padding=ft.Padding.symmetric(vertical=9, horizontal=8), bgcolor=T.CARD_2,
             border=ft.Border.only(bottom=ft.BorderSide(1, T.BORDER)))
 
@@ -6206,7 +6179,7 @@ def screen(app):
                 ft.Row([
                     _cell(34, ft.IconButton(
                         icon=ft.Icons.DELETE_OUTLINE, icon_size=18, icon_color=T.RED,
-                        tooltip="Remove story & recalculate",
+                        tooltip=strings.t("reg_remove_recalc"),
                         on_click=_delete_row(s["id"]), width=34, height=34,
                         style=ft.ButtonStyle(padding=ft.Padding.all(0),
                                              shape=ft.RoundedRectangleBorder(radius=8)))),
@@ -6283,13 +6256,13 @@ def screen(app):
                         _refresh_table()
                     return _h2
                 _pager = ft.Row([
-                    ghost_btn("← Prev",
+                    ghost_btn(strings.t("reg_prev"),
                               on_click=(None if _pg == 0 else _go(-1))),
                     _txt(f"Page {_pg + 1} of {_total}  ·  "
                          f"rows {_pg*_PAGE+1}–{min((_pg+1)*_PAGE, len(_all))} "
                          f"of {len(_all)}",
                          size=12, color=T.INK_3),
-                    ghost_btn("Next →",
+                    ghost_btn(strings.t("reg_next"),
                               on_click=(None if _pg >= _total - 1 else _go(1))),
                 ], alignment=ft.MainAxisAlignment.CENTER, spacing=16)
 
@@ -6337,10 +6310,10 @@ def screen(app):
             person_val = f"{dd['hours_per_person']} h" if _e else "—"
             person_sub = f"≈ {dd['hours_per_person_days']} workdays" if _e else None
             return kpi_tiles_mobile([
-                _kpi_tile("STORIES", str(dd["total_stories"])),
-                _kpi_tile("TEST CASES", cases_val),
-                _kpi_tile("TOTAL EFFORT", effort_val, T.VIOLET, sub=effort_sub),
-                _kpi_tile("PER PERSON", person_val, T.GREEN, sub=person_sub),
+                _kpi_tile(strings.t("reg_kpi_stories"), str(dd["total_stories"])),
+                _kpi_tile(strings.t("reg_kpi_test_cases"), cases_val),
+                _kpi_tile(strings.t("reg_kpi_total_effort"), effort_val, T.VIOLET, sub=effort_sub),
+                _kpi_tile(strings.t("reg_kpi_per_person"), person_val, T.GREEN, sub=person_sub),
             ])
 
         import platform_caps as _pc_sp
@@ -6370,8 +6343,8 @@ def screen(app):
                 # that's what made the avatar/name and hours/days wrap unevenly
                 # against each other). Hours/days get their own labeled row
                 # below instead of being crammed onto one mono-spaced line.
-                stats = (ft.Row([_stat("EFFORT", f"{w['hours']} h", T.INK),
-                                 _stat("DAYS", f"{w.get('days', 0)} d", T.VIOLET_INK)],
+                stats = (ft.Row([_stat(strings.t("reg_stat_effort"), f"{w['hours']} h", T.INK),
+                                 _stat(strings.t("reg_stat_days"), f"{w.get('days', 0)} d", T.VIOLET_INK)],
                                 spacing=24)
                         if _e else
                         ft.Text("—", size=14, weight=ft.FontWeight.BOLD, color=T.INK_3))
@@ -6391,7 +6364,7 @@ def screen(app):
                     border=ft.Border.all(1, T.BORDER_2), border_radius=T.R))
             return ft.Column([
                 ft.Container(height=16),
-                ft.Text("RESOURCE WORKLOAD", size=10.5, weight=ft.FontWeight.BOLD,
+                ft.Text(strings.t("reg_resource_workload"), size=10.5, weight=ft.FontWeight.BOLD,
                         color=T.INK_3),
                 ft.Container(height=10),
                 ft.Row(cards_wl, spacing=12, wrap=True, run_spacing=12,
@@ -6421,7 +6394,7 @@ def screen(app):
         if mismatch:
             exports = ft.Container(
                 ft.Row([ft.Icon(ft.Icons.LOCK_OUTLINE, size=15, color=T.INK_3),
-                        ft.Text("Resolve the resource mismatch above to export.",
+                        ft.Text(strings.t("reg_resolve_mismatch"),
                                 size=12, color=T.INK_3, weight=ft.FontWeight.W_500)],
                        spacing=8),
                 padding=10, bgcolor=T.CARD_2, border_radius=T.R)
@@ -6464,17 +6437,16 @@ def screen(app):
             visible=bool(app._reg_export_msg))
         _status_cell[0] = status   # wire mutable ref for in-place updates
 
-        app._reg_send_btn = green_btn("Send", icon=ft.Icons.SEND, on_click=_email)
+        app._reg_send_btn = green_btn(strings.t("reg_send"), icon=ft.Icons.SEND, on_click=_email)
         email_picker = email_recipient_picker(
             app, "_reg_email_to", is_open_key="_reg_email_open", sync_key="reg_emails",
             trailing=app._reg_send_btn)
         email_row = ft.Column([
             ft.Divider(height=20, color=T.BORDER),
-            ft.Text("EMAIL THE PLAN", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
+            ft.Text(strings.t("reg_email_plan_hdr"), size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
             ft.Container(height=8),
             email_picker,
-            ft.Text("Attaches the Excel + Word plan and an inline summary. Uses the "
-                    "Gmail sender configured on Setup.", size=11, color=T.INK_3,
+            ft.Text(strings.t("reg_email_attaches"), size=11, color=T.INK_3,
                     weight=ft.FontWeight.W_500),
         ], spacing=6)
 
@@ -6482,21 +6454,21 @@ def screen(app):
         # back up to the Generate button. With the per-suite caches this is
         # near-instant on an unchanged selection.
         regen_btn = ghost_btn(
-            "Regenerating…" if app._reg_busy else "Regenerate",
+            strings.t("reg_regenerating") if app._reg_busy else strings.t("reg_regenerate"),
             icon=ft.Icons.REFRESH,
             on_click=(None if app._reg_busy else _regenerate))
 
         results = card(ft.Column([
-            ft.Row([sec_head("4", "Plan"), ft.Container(expand=True), regen_btn],
+            ft.Row([sec_head("4", strings.t("reg_plan")), ft.Container(expand=True), regen_btn],
                    vertical_alignment=ft.CrossAxisAlignment.CENTER),
             ft.Container(height=12), kpi_strip,
             ft.Container(height=14), table,
             workload_ui, ft.Divider(height=22, color=T.BORDER),
-            ft.Text("EXPORT", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
+            ft.Text(strings.t("reg_export_hdr"), size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
             ft.Container(height=8), exports, email_row, status,
         ], spacing=0))
 
-    calc_btn = primary_btn("Generating…" if app._reg_busy else "Generate Regression Plan",
+    calc_btn = primary_btn(strings.t("reg_generating") if app._reg_busy else strings.t("reg_generate_regression"),
                            icon=ft.Icons.CALCULATE, on_click=_calculate,
                            disabled=app._reg_busy or not app._reg_selected)
     _calc_btn_cell[0] = calc_btn   # store ref so _calculate can mutate it in place
@@ -6514,8 +6486,7 @@ def screen(app):
 
     gen_spinner = ft.Container(
         ft.Row([ft.ProgressRing(width=18, height=18, stroke_width=2.5, color=T.VIOLET),
-                ft.Text(f"Generating plan — reading test cases from "
-                        f"{backend_setup.case_store_label(app)}…",
+                ft.Text(strings.t("reg_generating_reading", store=backend_setup.case_store_label(app)),
                         size=12.5, color=T.INK_3, weight=ft.FontWeight.W_500)],
                spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
         padding=ft.Padding.symmetric(vertical=10, horizontal=12),
@@ -6553,9 +6524,9 @@ def screen(app):
         body_children += [ft.Container(height=16), _card(_skel(6))]
 
     body = ft.Column(body_children, spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
-    return app.shell("Regression Plan",
-                     "Build a regression plan from your test plans & their stories", body,
-                     right=ghost_btn("Use Setup selection", icon=ft.Icons.DOWNLOAD,
+    return app.shell(strings.t("nav_regression"),
+                     strings.t("reg_subtitle"), body,
+                     right=ghost_btn(strings.t("reg_use_setup_selection"), icon=ft.Icons.DOWNLOAD,
                                      on_click=_use_setup_selection),
-                     badge="STEP R")
+                     badge=strings.t("reg_step_badge"))
 # perf: lazy-build dropdown rows to keep full renders cheap

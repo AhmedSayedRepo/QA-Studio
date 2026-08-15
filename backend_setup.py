@@ -21,6 +21,7 @@ exactly the old code path. An existing user should not be able to tell this
 module was added.
 """
 from __future__ import annotations
+import strings  # i18n
 
 # NOTE: flet / theme / ui are imported LAZILY inside the UI functions, never at
 # module scope. store.load() calls defaults() on every credential read, so a
@@ -140,9 +141,9 @@ def validate_for_connect(app):
             org = (_field_or_saved(app, "hy_org_field", creds.get("org", "")) or "").strip()
             pat = (_field_or_saved(app, "hy_pat_field", creds.get("pat", "")) or "").strip()
             if not org:
-                return False, "Azure Organization is required (story source)."
+                return False, strings.t("bset_field_required_src", field=strings.t("bset_azure_org"))
             if not pat:
-                return False, "Azure DevOps PAT is required (story source)."
+                return False, strings.t("bset_field_required_src", field=strings.t("bset_azure_pat"))
             creds["org"] = org
             creds["pat"] = pat
         else:   # JIRA_TESTRAIL
@@ -150,11 +151,11 @@ def validate_for_connect(app):
             email = (_field_or_saved(app, "jira_email_field", creds.get("jira_email", "")) or "").strip()
             token = (_field_or_saved(app, "jira_token_field", creds.get("jira_token", "")) or "").strip()
             if not site:
-                return False, "Jira Site URL is required (story source)."
+                return False, strings.t("bset_field_required_src", field=strings.t("bset_jira_site"))
             if not email:
-                return False, "Jira account email is required (story source)."
+                return False, strings.t("bset_field_required_src", field=strings.t("bset_jira_email"))
             if not token:
-                return False, "Jira API token is required (story source)."
+                return False, strings.t("bset_field_required_src", field=strings.t("bset_jira_token"))
             try:
                 from tracker.jira_zephyr import validate_site_url
                 creds["jira_site"] = validate_site_url(site, bool(creds.get("jira_allow_any_host")))
@@ -167,11 +168,11 @@ def validate_for_connect(app):
         temail = (_field_or_saved(app, "testrail_email_field", creds.get("testrail_email", "")) or "").strip()
         key = (_field_or_saved(app, "testrail_key_field", creds.get("testrail_key", "")) or "").strip()
         if not url:
-            return False, "TestRail URL is required (test target)."
+            return False, strings.t("bset_field_required_tgt", field=strings.t("bset_tr_url"))
         if not temail:
-            return False, "TestRail account email is required (test target)."
+            return False, strings.t("bset_field_required_tgt", field=strings.t("bset_tr_email"))
         if not key:
-            return False, "TestRail API key is required (test target)."
+            return False, strings.t("bset_field_required_tgt", field=strings.t("bset_tr_key"))
         try:
             from tracker.testrail import validate_testrail_url
             creds["testrail_url"] = validate_testrail_url(url, bool(creds.get("testrail_allow_any_host")))
@@ -187,11 +188,11 @@ def validate_for_connect(app):
         email = (_field_or_saved(app, "testrail_email_field", creds.get("testrail_email", "")) or "").strip()
         key = (_field_or_saved(app, "testrail_key_field", creds.get("testrail_key", "")) or "").strip()
         if not url:
-            return False, "TestRail URL is required."
+            return False, strings.t("bset_field_required", field=strings.t("bset_tr_url"))
         if not email:
-            return False, "TestRail account email is required."
+            return False, strings.t("bset_field_required", field=strings.t("bset_tr_email"))
         if not key:
-            return False, "TestRail API key is required."
+            return False, strings.t("bset_field_required", field=strings.t("bset_tr_key"))
         try:
             from tracker.testrail import validate_testrail_url
             normalized = validate_testrail_url(url, bool(creds.get("testrail_allow_any_host")))
@@ -207,11 +208,11 @@ def validate_for_connect(app):
     email = (_field_or_saved(app, "jira_email_field", creds.get("jira_email", "")) or "").strip()
     token = (_field_or_saved(app, "jira_token_field", creds.get("jira_token", "")) or "").strip()
     if not site:
-        return False, "Jira Site URL is required."
+        return False, strings.t("bset_field_required", field=strings.t("bset_jira_site"))
     if not email:
-        return False, "Jira account email is required."
+        return False, strings.t("bset_field_required", field=strings.t("bset_jira_email"))
     if not token:
-        return False, "Jira API token is required."
+        return False, strings.t("bset_field_required", field=strings.t("bset_jira_token"))
 
     # Validate the site URL BEFORE any request is made with it. This is the
     # SSRF/token-exfiltration guard: the field is free text, so a wrong or
@@ -232,15 +233,15 @@ def validate_for_connect(app):
         cid = (_field_or_saved(app, "xray_client_id_field", creds.get("xray_client_id", "")) or "").strip()
         secret = (_field_or_saved(app, "xray_client_secret_field", creds.get("xray_client_secret", "")) or "").strip()
         if not cid:
-            return False, "Xray API Key client id is required."
+            return False, strings.t("bset_field_required", field=strings.t("bset_xray_cid_name"))
         if not secret:
-            return False, "Xray API Key secret is required."
+            return False, strings.t("bset_field_required", field=strings.t("bset_xray_secret_name"))
         creds["xray_client_id"] = cid
         creds["xray_client_secret"] = secret
     else:   # jira_zephyr
         zephyr = (_field_or_saved(app, "zephyr_token_field", creds.get("zephyr_token", "")) or "").strip()
         if not zephyr:
-            return False, "Zephyr Scale API token is required."
+            return False, strings.t("bset_field_required", field=strings.t("bset_zephyr_token"))
         creds["zephyr_token"] = zephyr
     return True, ""
 
@@ -1340,8 +1341,8 @@ def _save_or_update_btn(app):
     """Green 'Save' when editable; ghost 'Update' when locked (unlocks on click)."""
     from ui import green_btn, ghost_btn
     if _bk_locked(app):
-        return ghost_btn("Update", on_click=lambda e: _bk_unlock(app))
-    return green_btn("Save", on_click=lambda e: _save_creds(app))
+        return ghost_btn(strings.t("bset_update"), on_click=lambda e: _bk_unlock(app))
+    return green_btn(strings.t("bset_save"), on_click=lambda e: _save_creds(app))
 
 
 def _bk_unlock(app):
@@ -1365,9 +1366,9 @@ def _section_header(ft, T, current_label):
                 width=34, height=34, bgcolor=T.VIOLET_SOFT, border_radius=9,
                 alignment=ft.Alignment.CENTER),
             ft.Column([
-                ft.Text("Test Management", size=14, weight=ft.FontWeight.W_800,
+                ft.Text(strings.t("bset_test_mgmt"), size=14, weight=ft.FontWeight.W_800,
                         color=T.INK),
-                ft.Text("Where test cases are read from and written to",
+                ft.Text(strings.t("bset_test_mgmt_sub"),
                         size=11, color=T.INK_2, weight=ft.FontWeight.W_500),
             ], spacing=1, expand=True),
             ft.Container(
@@ -1414,11 +1415,11 @@ def picker_rows(app, field_label, hover_field):
         content_padding=ft.Padding.symmetric(vertical=12, horizontal=8),
         expand=True)
 
-    blurb = next((b for k, _, b in BACKENDS if k == current), "")
+    blurb = strings.t("bset_blurb_" + current)
     return [
         _section_header(ft, T, label_for(current)),
-        field_label("Test management backend", req=True,
-                    hint="switching changes the credentials below"),
+        field_label(strings.t("bset_backend"), req=True,
+                    hint=strings.t("bset_backend_hint")),
         ft.Container(hover_field(app.backend_dd), padding=ft.Padding.only(top=4)),
         ft.Container(ft.Text(blurb, size=11, color=T.INK_2),
                      padding=ft.Padding.only(left=2, top=2, bottom=12)),
@@ -1466,7 +1467,7 @@ def _on_pick(app, e):
     except Exception:
         pass
     try:
-        app._toast(f"Backend set to {label_for(chosen)}.")
+        app._toast(strings.t("bset_backend_set", label=label_for(chosen)))
     except Exception:
         pass
     try:
@@ -1489,18 +1490,18 @@ def _jira_core_rows(app, field_label, hover_field):
     app.jira_token_field = _text_field(creds.get("jira_token", ""),
                                        "Jira API token", password=True, read_only=lk)
     return [
-        field_label("Jira Site URL", req=True,
-                    info="Where to find your Jira site URL",
+        field_label(strings.t("bset_jira_site"), req=True,
+                    info=strings.t("bset_jira_site_info"),
                     on_info=lambda e: _help(app, "jira_site")),
         ft.Container(hover_field(app.jira_site_field),
                      padding=ft.Padding.only(top=4, bottom=12)),
-        field_label("Jira account email", req=True,
-                    info="The email your Jira API token belongs to",
+        field_label(strings.t("bset_jira_email"), req=True,
+                    info=strings.t("bset_jira_email_info"),
                     on_info=lambda e: _help(app, "jira_email")),
         ft.Container(hover_field(app.jira_email_field),
                      padding=ft.Padding.only(top=4, bottom=12)),
-        field_label("Jira API token", req=True,
-                    info="How to create a Jira API token",
+        field_label(strings.t("bset_jira_token"), req=True,
+                    info=strings.t("bset_jira_token_info"),
                     on_info=lambda e: _help(app, "jira_token")),
         ft.Container(hover_field(app.jira_token_field),
                      padding=ft.Padding.only(top=4, bottom=12)),
@@ -1513,12 +1514,12 @@ def jira_rows(app, field_label, hover_field):
     from ui import green_btn
     creds = getattr(app, "creds", {}) or {}
     app.zephyr_token_field = _text_field(creds.get("zephyr_token", ""),
-                                         "Zephyr Scale API token", password=True,
+                                         strings.t("bset_zephyr_token"), password=True,
                                          read_only=_bk_locked(app))
     save_btn = _save_or_update_btn(app)
     return _jira_core_rows(app, field_label, hover_field) + [
-        field_label("Zephyr Scale API token", req=True,
-                    info="How to create a Zephyr Scale API token",
+        field_label(strings.t("bset_zephyr_token"), req=True,
+                    info=strings.t("bset_zephyr_token_info"),
                     on_info=lambda e: _help(app, "zephyr_token")),
         ft.Container(ft.Row([hover_field(app.zephyr_token_field), save_btn], spacing=8),
                      padding=ft.Padding.only(top=4, bottom=12)),
@@ -1536,19 +1537,19 @@ def xray_rows(app, field_label, hover_field):
     creds = getattr(app, "creds", {}) or {}
     _lk = _bk_locked(app)
     app.xray_client_id_field = _text_field(creds.get("xray_client_id", ""),
-                                           "Xray API Key — Client ID", read_only=_lk)
+                                           strings.t("bset_xray_cid_hint"), read_only=_lk)
     app.xray_client_secret_field = _text_field(creds.get("xray_client_secret", ""),
-                                               "Xray API Key — Client Secret", password=True,
+                                               strings.t("bset_xray_secret_hint"), password=True,
                                                read_only=_lk)
     save_btn = _save_or_update_btn(app)
     return _jira_core_rows(app, field_label, hover_field) + [
-        field_label("Xray Client ID", req=True,
-                    info="How to create an Xray API Key",
+        field_label(strings.t("bset_xray_cid"), req=True,
+                    info=strings.t("bset_xray_apikey_info"),
                     on_info=lambda e: _help(app, "xray_client_id")),
         ft.Container(hover_field(app.xray_client_id_field),
                      padding=ft.Padding.only(top=4, bottom=12)),
-        field_label("Xray Client Secret", req=True,
-                    info="How to create an Xray API Key",
+        field_label(strings.t("bset_xray_secret"), req=True,
+                    info=strings.t("bset_xray_apikey_info"),
                     on_info=lambda e: _help(app, "xray_client_secret")),
         ft.Container(ft.Row([hover_field(app.xray_client_secret_field), save_btn], spacing=8),
                      padding=ft.Padding.only(top=4, bottom=12)),
@@ -1571,22 +1572,22 @@ def _testrail_field_rows(app, field_label, hover_field, with_save=True):
     app.testrail_email_field = _text_field(creds.get("testrail_email", ""),
                                            "you@company.com", read_only=lk)
     app.testrail_key_field = _text_field(creds.get("testrail_key", ""),
-                                         "TestRail API key", password=True, read_only=lk)
+                                         strings.t("bset_tr_key"), password=True, read_only=lk)
     key_row = [hover_field(app.testrail_key_field)]
     if with_save:
         key_row.append(_save_or_update_btn(app))
     return [
-        field_label("TestRail URL", req=True, info="Your TestRail address",
+        field_label(strings.t("bset_tr_url"), req=True, info=strings.t("bset_tr_url_info"),
                     on_info=lambda e: _help(app, "testrail_url")),
         ft.Container(hover_field(app.testrail_url_field),
                      padding=ft.Padding.only(top=4, bottom=12)),
-        field_label("TestRail account email", req=True,
-                    info="The email you log into TestRail with",
+        field_label(strings.t("bset_tr_email"), req=True,
+                    info=strings.t("bset_tr_email_info"),
                     on_info=lambda e: _help(app, "testrail_email")),
         ft.Container(hover_field(app.testrail_email_field),
                      padding=ft.Padding.only(top=4, bottom=12)),
-        field_label("TestRail API key", req=True,
-                    info="How to create a TestRail API key",
+        field_label(strings.t("bset_tr_key"), req=True,
+                    info=strings.t("bset_tr_key_info"),
                     on_info=lambda e: _help(app, "testrail_key")),
         ft.Container(ft.Row(key_row, spacing=8),
                      padding=ft.Padding.only(top=4, bottom=12)),
@@ -1607,27 +1608,27 @@ def hybrid_rows(app, field_label, hover_field):
         # Azure source: org + PAT. Saved into the SAME creds keys the standalone
         # Azure backend uses (org/pat) — same account, same values.
         _lk = _bk_locked(app)
-        app.hy_org_field = _text_field(creds.get("org", ""), "Azure DevOps organization",
+        app.hy_org_field = _text_field(creds.get("org", ""), strings.t("bset_azure_org_hint"),
                                        read_only=_lk)
-        app.hy_pat_field = _text_field(creds.get("pat", ""), "Azure DevOps PAT",
+        app.hy_pat_field = _text_field(creds.get("pat", ""), strings.t("bset_azure_pat"),
                                        password=True, read_only=_lk)
         rows += [
-            _story_source_note(ft, "Story source: Azure DevOps"),
-            field_label("Azure Organization", req=True,
-                        info="How to find your Azure organization name",
+            _story_source_note(ft, strings.t("bset_story_source", name="Azure DevOps")),
+            field_label(strings.t("bset_azure_org"), req=True,
+                        info=strings.t("bset_azure_org_info"),
                         on_info=lambda e: _help(app, "org")),
             ft.Container(hover_field(app.hy_org_field),
                          padding=ft.Padding.only(top=4, bottom=12)),
-            field_label("Azure DevOps PAT", req=True,
-                        info="How to create an Azure DevOps PAT",
+            field_label(strings.t("bset_azure_pat"), req=True,
+                        info=strings.t("bset_azure_pat_info"),
                         on_info=lambda e: _help(app, "pat")),
             ft.Container(hover_field(app.hy_pat_field),
                          padding=ft.Padding.only(top=4, bottom=12)),
         ]
     else:   # JIRA_TESTRAIL — Jira core (no Zephyr)
-        rows += [_story_source_note(ft, "Story source: Jira")]
+        rows += [_story_source_note(ft, strings.t("bset_story_source", name="Jira"))]
         rows += _jira_core_rows(app, field_label, hover_field)
-    rows += [_story_source_note(ft, "Test target: TestRail (cases written here)")]
+    rows += [_story_source_note(ft, strings.t("bset_test_target"))]
     rows += _testrail_field_rows(app, field_label, hover_field, with_save=True)
     return rows
 
@@ -1653,7 +1654,7 @@ def _save_creds(app):
         import store
         store.save(app.creds)
         app._err("")
-        app._toast(f"{label_for(active(app.creds))} credentials saved.")
+        app._toast(strings.t("bset_creds_saved", label=label_for(active(app.creds))))
         # Re-lock: saved creds now render read-only with an 'Update' button, in
         # place — the Save→Update switch the standalone fields already have.
         app._bk_unlocked = False
@@ -1663,7 +1664,7 @@ def _save_creds(app):
             pass
     except Exception as exc:
         try:
-            app._err(f"Couldn't save credentials: {str(exc)[:90]}")
+            app._err(strings.t("bset_save_err", err=str(exc)[:90]))
         except Exception:
             pass
 

@@ -5,6 +5,7 @@ state off the app; handlers stay on the QAStudio instance.
 """
 import flet as ft
 import theme as T
+import strings
 from ui import card, _btn_shadow, primary_btn, stat_tile
 
 
@@ -32,20 +33,19 @@ def screen(app):
                                  width=50, height=50, bgcolor=T.VIOLET_SOFT,
                                  border_radius=14, alignment=ft.Alignment.CENTER),
                     ft.Container(height=12),
-                    ft.Text("No run yet", size=15, weight=ft.FontWeight.BOLD, color=T.INK),
+                    ft.Text(strings.t("run_no_run_yet"), size=15, weight=ft.FontWeight.BOLD, color=T.INK),
                     ft.Container(height=4),
-                    ft.Text("Pick your tool, language and stories on Setup, then press "
-                            "Start run — live progress will show here.",
+                    ft.Text(strings.t("run_idle_hint"),
                             size=12.5, color=T.INK_3, weight=ft.FontWeight.W_500,
                             text_align=ft.TextAlign.CENTER),
                     ft.Container(height=16),
-                    primary_btn("Go to Setup", icon=ft.Icons.ARROW_FORWARD,
+                    primary_btn(strings.t("run_go_to_setup"), icon=ft.Icons.ARROW_FORWARD,
                                 on_click=lambda e: app.goto("setup")),
                 ], horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                    alignment=ft.MainAxisAlignment.CENTER, spacing=0, tight=True),
                 alignment=ft.Alignment.CENTER, expand=True,
                 padding=ft.Padding.symmetric(vertical=40, horizontal=20))
-            return app.shell("Run", "no run in progress", idle)
+            return app.shell(strings.t("run_title"), strings.t("run_no_run_in_progress"), idle)
 
         import platform_caps as _pc
         # Phone (mobile Phase 2): five fixed stat tiles overflow a ~390px
@@ -54,19 +54,19 @@ def screen(app):
         is_steps = (app.tool == "steps")
         if is_steps:
             app._stats_row = ft.Row(wrap=_wrap, controls=[
-                stat_tile("Test Cases", s["total"]),
-                stat_tile("Created", s.get("created", 0), tone="violet"),
-                stat_tile("Updated", s["done"], tone="green"),
-                stat_tile("Skipped", s["skipped"], tone="amber"),
-                stat_tile("Errors", s["errors"], tone="red"),
+                stat_tile(strings.t("run_stat_test_cases"), s["total"]),
+                stat_tile(strings.t("run_stat_created"), s.get("created", 0), tone="violet"),
+                stat_tile(strings.t("run_stat_updated"), s["done"], tone="green"),
+                stat_tile(strings.t("run_stat_skipped"), s["skipped"], tone="amber"),
+                stat_tile(strings.t("run_stat_errors"), s["errors"], tone="red"),
             ], spacing=11)
         else:
             app._stats_row = ft.Row(wrap=_wrap, controls=[
-                stat_tile("Test Cases", s["total"]),
-                stat_tile("Stories", f"{s['stories_done']}", tone="violet", sub=f"/{s['total_stories']}"),
-                stat_tile("Created", s["done"], tone="green"),
-                stat_tile("Skipped", s["skipped"], tone="amber"),
-                stat_tile("Errors", s["errors"], tone="red"),
+                stat_tile(strings.t("run_stat_test_cases"), s["total"]),
+                stat_tile(strings.t("run_stat_stories"), f"{s['stories_done']}", tone="violet", sub=f"/{s['total_stories']}"),
+                stat_tile(strings.t("run_stat_created"), s["done"], tone="green"),
+                stat_tile(strings.t("run_stat_skipped"), s["skipped"], tone="amber"),
+                stat_tile(strings.t("run_stat_errors"), s["errors"], tone="red"),
             ], spacing=11)
 
         _stopping = getattr(app, "_stopping", False)
@@ -84,16 +84,16 @@ def screen(app):
         _reason = (getattr(app, "last_report", None) or {}).get("reason")
         _was_stopped = _finished and (_reason == "credit"
                                       or getattr(app, "stop_flag", False))
-        _label = ("Stopped" if _was_stopped
-                  else "Completed" if _finished
-                  else ("Stopping after current test case…" if _stopping
-                        else ("Completed" if _done
-                              else (p["label"] if _started else "Discovering suites & test cases…"))))
+        _label = (strings.t("run_stopped") if _was_stopped
+                  else strings.t("run_completed") if _finished
+                  else (strings.t("run_stopping_after") if _stopping
+                        else (strings.t("run_completed") if _done
+                              else (p["label"] if _started else strings.t("run_discovering")))))
         # Right label: once the run has finished it must NOT fall back to "Starting…"
-        _pct_label = ("Stopped" if _was_stopped
-                      else "Done" if _finished
+        _pct_label = (strings.t("run_stopped") if _was_stopped
+                      else strings.t("run_done") if _finished
                       else f"{p['pct']}%" if (p["pct"] > 0 or _started)
-                      else "Starting…")
+                      else strings.t("run_starting"))
         app._prow = ft.Row([
             spinner,
             ft.Text(_label, size=12, color=T.INK_2, weight=ft.FontWeight.BOLD),
@@ -124,7 +124,7 @@ def screen(app):
         if not log_lines:
             log_lines = [ft.Row([
                 ft.ProgressRing(width=14, height=14, stroke_width=2, color=T.VIOLET),
-                ft.Text("Starting run — discovering suites & test cases…",
+                ft.Text(strings.t("run_log_starting"),
                         size=12.5, color=T.INK_3, weight=ft.FontWeight.BOLD),
             ], spacing=10)]
         # ft.ListView, NOT ft.Column(scroll=…, expand=True).
@@ -170,15 +170,15 @@ def screen(app):
                 border_radius=8)
 
         log_card = card(ft.Column([
-            ft.Row([ft.Text("RECENT ACTIVITY", size=11, weight=ft.FontWeight.BOLD, color=T.INK_3),
+            ft.Row([ft.Text(strings.t("run_recent_activity"), size=11, weight=ft.FontWeight.BOLD, color=T.INK_3),
                     ft.Container(expand=True),
-                    ft.Text("select to copy", size=10, color=T.INK_3,
+                    ft.Text(strings.t("run_select_to_copy"), size=10, color=T.INK_3,
                             weight=ft.FontWeight.W_500),
                     ft.Container(width=8),
-                    _log_tool_btn(ft.Icons.COPY_ALL_OUTLINED, "Copy entire log",
+                    _log_tool_btn(ft.Icons.COPY_ALL_OUTLINED, strings.t("run_copy_log_tip"),
                                  app._copy_run_log),
                     ft.Container(width=6),
-                    _log_tool_btn(ft.Icons.DELETE_OUTLINE, "Clear log",
+                    _log_tool_btn(ft.Icons.DELETE_OUTLINE, strings.t("run_clear_log_tip"),
                                  app._clear_run_log, danger=True)],
                    vertical_alignment=ft.CrossAxisAlignment.CENTER),
             ft.Container(height=8),
@@ -205,7 +205,7 @@ def screen(app):
         app._tr_meta = ft.Text(app._run_meta_line(), size=11.5, color=T.INK_3,
                                 weight=ft.FontWeight.BOLD, font_family=T.F_MONO)
         prog_card = card(ft.Column([
-            ft.Row([ft.Text("THIS RUN", size=11, weight=ft.FontWeight.BOLD, color=T.INK_3),
+            ft.Row([ft.Text(strings.t("run_this_run"), size=11, weight=ft.FontWeight.BOLD, color=T.INK_3),
                     ft.Container(expand=True),
                     app._tr_meta]),
             ft.Container(height=12),
@@ -222,7 +222,7 @@ def screen(app):
         ], spacing=16, scroll=ft.ScrollMode.AUTO, expand=True)
 
         app._stop_btn_text = ft.Text(
-            "Stopping…" if _stopping else "Stop after current test case",
+            strings.t("run_stopping") if _stopping else strings.t("run_stop_btn"),
             size=13, color="#FFFFFF", weight=ft.FontWeight.BOLD)
         stop_btn = ft.FilledButton(
             content=ft.Row([ft.Icon(ft.Icons.STOP, size=14, color="#FFFFFF"), app._stop_btn_text],
@@ -244,7 +244,7 @@ def screen(app):
         pause_btn = ft.FilledButton(
             content=ft.Row([ft.Icon(ft.Icons.PLAY_ARROW if _paused else ft.Icons.PAUSE,
                                     size=14, color="#FFFFFF"),
-                            ft.Text("Resume" if _paused else "Pause", size=13,
+                            ft.Text(strings.t("run_resume") if _paused else strings.t("run_pause"), size=13,
                                     color="#FFFFFF", weight=ft.FontWeight.BOLD)],
                            spacing=8, tight=True),
             height=40, on_click=lambda e: app._toggle_run_pause(),
@@ -257,8 +257,8 @@ def screen(app):
                  else ft.Container(pause_btn, border_radius=T.R,
                                    shadow=_btn_shadow(T.GREEN if _paused else T.AMBER, 0.45)))
         actions = ft.Row([pause, stop], spacing=10, tight=True)
-        sub = f"live — story {s['stories_done']} of {s['total_stories']}" if s['total_stories'] else "live"
+        sub = strings.t("run_sub_live_story", done=s['stories_done'], total=s['total_stories']) if s['total_stories'] else strings.t("run_sub_live")
         if _paused:
-            sub += " — paused"
-        return app.shell("Run", sub, body, actions)
+            sub += strings.t("run_paused_suffix")
+        return app.shell(strings.t("run_title"), sub, body, actions)
 

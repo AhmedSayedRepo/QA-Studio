@@ -20,6 +20,7 @@ import flet as ft
 import theme as T
 import engine as E
 import backend_setup
+import strings
 
 # Story states that count as "done" for the report.
 _DONE = {"done", "closed", "completed", "resolved", "accepted"}
@@ -410,12 +411,12 @@ def _translate(texts, lang):
 def _generate(app):
     # Permission gate: read-only users can't generate.
     if getattr(app, "readonly", False):
-        app._st_msg = ("err", "Your role doesn’t allow generating sprint reports.")
+        app._st_msg = ("err", strings.t("spr_err_readonly"))
         app.ui_safe(app.render)
         return
     paths = list(app._st_sprint_paths or [])
     if not paths:
-        app._st_msg = ("err", "Pick at least one sprint first.")
+        app._st_msg = ("err", strings.t("spr_err_pick_sprint"))
         app.ui_safe(app.render)
         return
     # The report body now routes through backend_setup.sprint_report_data, which
@@ -484,21 +485,15 @@ def _generate(app):
             }
             app._st_done = True
             if terr == "credit":
-                app._st_msg = ("err", "Report built, but the AI account is OUT OF CREDIT "
-                               "— titles kept in their original language. Top up or switch "
-                               "provider in Setup, then Generate again.")
+                app._st_msg = ("err", strings.t("spr_err_credit_generate"))
             elif terr and terr.startswith("error:"):
-                app._st_msg = ("err", f"Report built, but translation failed: "
-                               f"{terr.split(':', 1)[1].strip()} — titles kept as-is.")
+                app._st_msg = ("err", strings.t("spr_err_translation_failed", msg=terr.split(':', 1)[1].strip()))
             elif stories and n_changed == 0:
-                app._st_msg = ("err", "Stories & bugs loaded, but the AI returned no "
-                               "translation (0 titles changed) — check the AI provider "
-                               "in Setup. Showing the original titles.")
+                app._st_msg = ("err", strings.t("spr_err_no_translation_generate"))
             else:
-                app._st_msg = ("ok", f"Report ready — {len(stories)} stories "
-                               f"({n_changed} translated), {len(bugs)} bugs.")
+                app._st_msg = ("ok", strings.t("spr_ok_report_ready", stories=len(stories), changed=n_changed, bugs=len(bugs)))
         except Exception as ex:
-            app._st_msg = ("err", f"Couldn't build the report: {ex}")
+            app._st_msg = ("err", strings.t("spr_err_build_failed", err=ex))
         app._st_busy = False
         if getattr(app, "active", None) == "titles":
             app.ui_safe(app.render)
@@ -535,20 +530,15 @@ def _retranslate(app):
             n_changed = sum(1 for o, t in zip(originals, titles)
                             if (t or "").strip() != (o or "").strip())
             if terr == "credit":
-                app._st_msg = ("err", "AI account is OUT OF CREDIT — titles kept as-is. "
-                               "Top up or switch provider in Setup.")
+                app._st_msg = ("err", strings.t("spr_err_credit_retranslate"))
             elif terr and terr.startswith("error:"):
-                app._st_msg = ("err", f"Translation failed: "
-                               f"{terr.split(':', 1)[1].strip()} — titles kept as-is.")
+                app._st_msg = ("err", strings.t("spr_err_retranslate_translation", msg=terr.split(':', 1)[1].strip()))
             elif rows and n_changed == 0:
-                app._st_msg = ("err", "The AI returned no translation (0 titles "
-                               "changed) — check the AI provider in Setup.")
+                app._st_msg = ("err", strings.t("spr_err_no_translation_retranslate"))
             else:
-                app._st_msg = ("ok", f"Translated to "
-                               f"{'Arabic' if lang == 'ar' else 'English'} "
-                               f"({n_changed}/{len(rows)} titles).")
+                app._st_msg = ("ok", strings.t("spr_ok_translated_to", lang=('Arabic' if lang == 'ar' else 'English'), changed=n_changed, total=len(rows)))
         except Exception as ex:
-            app._st_msg = ("err", f"Re-translate failed: {ex}")
+            app._st_msg = ("err", strings.t("spr_err_retranslate_failed", err=ex))
         app._st_busy = False
         if getattr(app, "active", None) == "titles":
             app.ui_safe(app.render)
@@ -849,10 +839,9 @@ def screen(app):
 
     if not app.readonly and not (app.connected and app.project):
         return R.locked_state(
-            app, "Sprint Report",
-            "A sprint closure report — stories by status + bug summary, Arabic or English",
-            "Connect your Azure DevOps account on the Setup screen, then pick a "
-            "sprint here.")
+            app, strings.t("spr_title"),
+            strings.t("spr_locked_sub"),
+            strings.t("spr_locked_body"))
 
     _load_iterations(app)
     lang = app._st_lang
@@ -930,28 +919,28 @@ def screen(app):
     def _open():
         app._st_open = not app._st_open
 
-    picker = (ft.Container(R._txt("Loading sprints…", color=T.INK_3, size=12), padding=10)
+    picker = (ft.Container(R._txt(strings.t("spr_loading_sprints"), color=T.INK_3, size=12), padding=10)
               if app._st_iter_loading else
               R._checkbox_multiselect(
                   [(it["path"], (_sprint_num(it["name"]) or it["name"]) + f"   ·   {it['path']}")
                    for it in app._st_iterations],
                   app._st_sprint_paths, _toggle, _all, is_open=app._st_open, on_open=_open,
-                  placeholder="Select sprint(s)", empty="No sprints found for this project.",
+                  placeholder=strings.t("spr_select_sprints"), empty=strings.t("spr_no_sprints"),
                   page=app.page, app=app, sync_key="st_sprints"))
 
     card1 = card(ft.Column([
-        sec_head("1", "Sprint & language"),
+        sec_head("1", strings.t("spr_sec_sprint_lang")),
         ft.Container(height=10),
-        ft.Column([field_label("Sprint(s)", req=True), picker], spacing=6),
+        ft.Column([field_label(strings.t("spr_field_sprints"), req=True), picker], spacing=6),
         ft.Container(height=12),
-        ft.Row([field_label("Report language"), ft.Container(expand=True), _lang_seg()],
+        ft.Row([field_label(strings.t("spr_field_report_lang")), ft.Container(expand=True), _lang_seg()],
                vertical_alignment=ft.CrossAxisAlignment.CENTER),
     ], spacing=0))
 
     _ro = bool(getattr(app, "readonly", False))
     _can_gen = bool(app._st_sprint_paths) and not app._st_busy and not _ro
     gen_btn = primary_btn(
-        "Generating…" if app._st_busy else "Generate sprint report",
+        strings.t("spr_generating") if app._st_busy else strings.t("spr_generate_btn"),
         icon=ft.Icons.SUMMARIZE,
         on_click=((lambda e: _generate(app)) if _can_gen else None))
     try:
@@ -981,7 +970,7 @@ def screen(app):
     if app._st_busy:
         body_children += [ft.Container(
             ft.Row([ft.ProgressRing(width=18, height=18, stroke_width=2.5, color=T.VIOLET),
-                    R._txt("Fetching stories & bugs, translating titles…",
+                    R._txt(strings.t("spr_busy"),
                            color=T.INK_3, size=12.5)], spacing=10),
             padding=ft.Padding.symmetric(vertical=12, horizontal=14),
             margin=ft.Margin.only(top=14),
@@ -1132,7 +1121,7 @@ def screen(app):
             lines += [f"{L['bugs']}: {L['total_bugs']} {r['total_bugs']} · "
                       f"{L['regression_bugs']} {r['regression_bugs']} · "
                       f"{L['sprint_bugs']} {r['sprint_bugs']}"]
-            app._copy_text_to_clipboard("\n".join(lines), "Report copied to clipboard.")
+            app._copy_text_to_clipboard("\n".join(lines), strings.t("spr_copied"))
 
         def _download(e):
             def _w():
@@ -1160,14 +1149,14 @@ def screen(app):
                         p = dest
                     if _pc.is_mobile():
                         app.ui_safe(lambda pp=p: app._mobile_download_popup(
-                            pp, "Word document ready"))
+                            pp, strings.t("spr_word_ready")))
                     else:
                         _pc.open_folder(os.path.dirname(p))
-                        app.ui_safe(lambda pp=p: app._toast(f"Saved Word document: {pp}"))
+                        app.ui_safe(lambda pp=p: app._toast(strings.t("spr_saved_docx", path=pp)))
                 except ImportError:
-                    app.ui_safe(lambda: app._err("Word export needs python-docx."))
+                    app.ui_safe(lambda: app._err(strings.t("spr_needs_docx")))
                 except Exception as ex:
-                    app.ui_safe(lambda e=ex: app._err(f"Export failed: {ex}"))
+                    app.ui_safe(lambda e=ex: app._err(strings.t("spr_export_failed", err=ex)))
             app._bg(_w)
 
         # "Hero" treatment matching the plan email's masthead (cont'd #29) —
@@ -1217,19 +1206,19 @@ def screen(app):
         # Desktop keeps the original one-line layout.
         import platform_caps as _pc_hdr
         _mob_hdr = _pc_hdr.is_mobile()
-        _copy_btn = ghost_btn("Copy", icon=ft.Icons.CONTENT_COPY, on_click=_copy,
+        _copy_btn = ghost_btn(strings.t("spr_copy"), icon=ft.Icons.CONTENT_COPY, on_click=_copy,
                               expand=_mob_hdr)
-        _dl_btn = green_btn("Download Word", icon=ft.Icons.DESCRIPTION,
+        _dl_btn = green_btn(strings.t("spr_download_word"), icon=ft.Icons.DESCRIPTION,
                             on_click=_download, expand=_mob_hdr)
         if _mob_hdr:
             _report_header = ft.Column([
-                sec_head("2", "Report"),
+                sec_head("2", strings.t("spr_sec_report")),
                 ft.Container(height=10),
                 ft.Row([_copy_btn, _dl_btn], spacing=10),
             ], spacing=0)
         else:
             _report_header = ft.Row(
-                [sec_head("2", "Report"), ft.Container(expand=True),
+                [sec_head("2", strings.t("spr_sec_report")), ft.Container(expand=True),
                  _copy_btn, _dl_btn],
                 vertical_alignment=ft.CrossAxisAlignment.CENTER)
         results = card(ft.Column([
@@ -1246,6 +1235,6 @@ def screen(app):
         body_children += [ft.Container(height=16), results]
 
     body = ft.Column(body_children, spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
-    return app.shell("Sprint Report",
-                     "Stories by status + bug summary from a sprint, in Arabic or English",
+    return app.shell(strings.t("spr_title"),
+                     strings.t("spr_shell_sub"),
                      body, badge="SR")

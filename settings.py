@@ -8,6 +8,7 @@ import flet as ft
 import theme as T
 import regression
 import platform_caps
+import strings
 from ui import _ic, card, ghost_btn, danger_btn
 
 
@@ -26,21 +27,21 @@ def _share_diag_log(app):
         import diag_log
         path = diag_log.LOG_FILE
         if not os.path.exists(path) or os.path.getsize(path) == 0:
-            app._toast("No diagnostics recorded yet — nothing to share.")
+            app._toast(strings.t("set_diag_none"))
             return
         if platform_caps.is_mobile():
             # Reuse the proven export delivery popup so this behaves exactly
             # like every other "here's your file" flow on mobile.
             try:
-                app._mobile_download_popup(path, "Diagnostics log")
+                app._mobile_download_popup(path, strings.t("set_diag_log"))
             except Exception:
                 platform_caps.reveal_export(app.page, path)
         else:
             platform_caps.open_folder(os.path.dirname(path))
-            app._toast(f"Diagnostics log: {path}")
+            app._toast(strings.t("set_diag_path", path=path))
     except Exception as ex:
         try:
-            app._err(f"Couldn't open the diagnostics log: {str(ex)[:120]}")
+            app._err(strings.t("set_diag_open_err", err=str(ex)[:120]))
         except Exception:
             pass
 
@@ -96,23 +97,27 @@ def screen(app):
                     on_click=(None if ro else (lambda e, m=mode: (None if T.MODE == m
                                                                   else app._toggle_theme()))))
             return ft.Container(
-                ft.Row([seg("Light", ft.Icons.LIGHT_MODE_OUTLINED, "light"),
-                        seg("Dark", ft.Icons.DARK_MODE_OUTLINED, "dark")],
+                ft.Row([seg(strings.t("set_theme_light"), ft.Icons.LIGHT_MODE_OUTLINED, "light"),
+                        seg(strings.t("set_theme_dark"), ft.Icons.DARK_MODE_OUTLINED, "dark")],
                        spacing=4, tight=True),
                 padding=4, bgcolor=T.CARD_2, border_radius=T.R,
                 border=ft.Border.all(1, T.BORDER))
 
         appearance = card(ft.Column([
-            ft.Text("APPEARANCE", size=11, weight=ft.FontWeight.BOLD, color=T.INK_3),
+            ft.Text(strings.t("set_appearance"), size=11, weight=ft.FontWeight.BOLD, color=T.INK_3),
             ft.Container(height=4),
-            srow("Theme", "Light is the default; dark is easier on the eyes at night.",
+            srow(strings.t("set_theme"), strings.t("set_theme_desc"),
                  _theme_seg()),
             divider(),
-            srow("Output language", "Default language for newly generated test cases.",
+            srow(strings.t("au_output_language"), strings.t("au_output_language_desc"),
                  app._lang_segment()),
             divider(),
-            srow("What to generate",
-                 "Default generator for new runs — test-case titles or full steps.",
+            srow(strings.t("ui_language"),
+                 strings.t("au_interface_language_desc"),
+                 app._ui_lang_segment()),
+            divider(),
+            srow(strings.t("set_generate"),
+                 strings.t("set_generate_desc"),
                  app._tool_segment(compact=True)),
         ], spacing=0))
 
@@ -121,24 +126,20 @@ def screen(app):
                                 on_change=(None if ro else
                                            (lambda e: app._set_perf(e.control.value))))
         data = card(ft.Column([
-            ft.Text("DATA & DIAGNOSTICS", size=11, weight=ft.FontWeight.BOLD, color=T.INK_3),
+            ft.Text(strings.t("set_data_diag"), size=11, weight=ft.FontWeight.BOLD, color=T.INK_3),
             ft.Container(height=4),
-            srow("Regression & sprint caches",
-                 "Cached Azure data speeds up re-generating plans. Clear it if "
-                 "stories or test cases look out of date.",
-                 ghost_btn("Clear caches", icon=_ic("CLEANING_SERVICES_OUTLINED","DELETE_OUTLINE"),
+            srow(strings.t("set_caches"),
+                 strings.t("set_caches_desc"),
+                 ghost_btn(strings.t("set_clear_caches"), icon=_ic("CLEANING_SERVICES_OUTLINED","DELETE_OUTLINE"),
                            on_click=lambda e: app._clear_caches())),
             divider(),
-            srow("Performance logging",
-                 "Append timing diagnostics to qa_perf.log. Leave on if I'm helping "
-                 "you troubleshoot speed.",
+            srow(strings.t("set_perf_log"),
+                 strings.t("set_perf_log_desc"),
                  perf_switch),
             divider(),
-            srow("Diagnostics log",
-                 "Send the app's error log when reporting a problem. It records "
-                 "unhandled errors — including crashes on the Flutter side that "
-                 "leave no visible message.",
-                 ghost_btn("Share log", icon=_ic("BUG_REPORT_OUTLINED", "DESCRIPTION"),
+            srow(strings.t("set_diag_log"),
+                 strings.t("set_diag_log_desc"),
+                 ghost_btn(strings.t("set_share_log"), icon=_ic("BUG_REPORT_OUTLINED", "DESCRIPTION"),
                            on_click=lambda e: _share_diag_log(app))),
         ], spacing=0))
 
@@ -160,18 +161,17 @@ def screen(app):
                         on_click=(None if ro else
                                   (lambda e, m=mins: (None if cur == m
                                                       else app._set_idle_minutes(m)))))
-                labels = [("Off", 0), ("5m", 5), ("15m", 15), ("30m", 30), ("60m", 60)]
+                labels = [(strings.t("set_idle_off"), 0), ("5m", 5), ("15m", 15), ("30m", 30), ("60m", 60)]
                 return ft.Container(
                     ft.Row([opt(l, m) for l, m in labels], spacing=4, tight=True),
                     padding=4, bgcolor=T.CARD_2, border_radius=T.R,
                     border=ft.Border.all(1, T.BORDER))
 
             security = card(ft.Column([
-                ft.Text("SECURITY", size=11, weight=ft.FontWeight.BOLD, color=T.INK_3),
+                ft.Text(strings.t("set_security"), size=11, weight=ft.FontWeight.BOLD, color=T.INK_3),
                 ft.Container(height=4),
-                srow("Idle auto-logout",
-                     "Sign inactive users out automatically. A 60-second warning lets "
-                     "them stay signed in. Admins only.",
+                srow(strings.t("set_idle_logout"),
+                     strings.t("set_idle_logout_desc"),
                      _idle_seg()),
             ], spacing=0))
 
@@ -179,19 +179,14 @@ def screen(app):
         # Deliberately no fetch at build time (no load-on-render — see
         # PERF_ARCH_PLAN.md): the status line updates in place after a Sync.
         _remote_status = ft.Text(
-            "Not synced from this device yet — Sync sends the credentials "
-            "the app is currently connected with.",
+            strings.t("set_remote_not_synced"),
             size=12, color=T.INK_3, weight=ft.FontWeight.W_500)
         remote = card(ft.Column([
-            ft.Text("REMOTE RUNS", size=11, weight=ft.FontWeight.BOLD, color=T.INK_3),
+            ft.Text(strings.t("set_remote_runs"), size=11, weight=ft.FontWeight.BOLD, color=T.INK_3),
             ft.Container(height=4),
-            srow("Credentials for remote & mobile runs",
-                 "Stores your Azure PAT, AI key, and Gmail App Password in "
-                 "your private encrypted vault (Supabase) so runs can "
-                 "execute server-side as you and email you the report on "
-                 "completion, same as a local run. Re-sync after changing "
-                 "provider, rotating a key, or updating your App Password.",
-                 ghost_btn("Sync now", icon=_ic("CLOUD_SYNC_OUTLINED", "SYNC"),
+            srow(strings.t("set_remote_creds"),
+                 strings.t("set_remote_creds_desc"),
+                 ghost_btn(strings.t("set_sync_now"), icon=_ic("CLOUD_SYNC_OUTLINED", "SYNC"),
                            on_click=(None if ro else
                                      (lambda e: app._sync_remote_creds(_remote_status))))),
             ft.Container(_remote_status, padding=ft.Padding.only(bottom=10)),
@@ -210,7 +205,7 @@ def screen(app):
             import mobile_prefs
             _bio_on = bool(mobile_prefs.get("require_biometric", False))
             _bio_note = ft.Text(
-                "Applies next time you open the app.",
+                strings.t("set_bio_note"),
                 size=11, color=T.INK_3, weight=ft.FontWeight.W_500)
 
             def _bio_change(e):
@@ -225,57 +220,47 @@ def screen(app):
                 def _done(ok, err):
                     def _apply():
                         if ok:
-                            app._toast("Fingerprint/PIN unlock is on — you'll be "
-                                       "asked next time you open the app."
+                            app._toast(strings.t("set_bio_on")
                                        if want else
-                                       "Biometric unlock turned off.")
+                                       strings.t("set_bio_off"))
                         else:
-                            app._err("Couldn't enable biometric unlock: "
-                                     + (err or "check that a fingerprint or PIN "
-                                        "is set up on this device."))
+                            app._err(strings.t("set_bio_err_prefix")
+                                     + (err or strings.t("set_bio_err_fallback")))
                         app.render()   # reflect the real (possibly reverted) state
                     try:
                         app.ui_safe(_apply)
                     except Exception:
                         _apply()
 
-                app._toast("Applying…")
+                app._toast(strings.t("set_applying"))
                 _ss.apply_biometric_setting(want, on_done=_done)
 
             device_security = card(ft.Column([
-                ft.Text("DEVICE SECURITY", size=11, weight=ft.FontWeight.BOLD, color=T.INK_3),
+                ft.Text(strings.t("set_device_security"), size=11, weight=ft.FontWeight.BOLD, color=T.INK_3),
                 ft.Container(height=4),
-                srow("Require biometric/PIN unlock",
-                     "Adds a fingerprint/face/PIN prompt to open the app: "
-                     "with this on, a saved sign-in no longer skips straight "
-                     "past the login screen — you'll unlock with biometrics/"
-                     "PIN first, or fall back to your email and password. "
-                     "Also gates this device's stored credentials. Off by "
-                     "default so reopening the app never needs re-entering "
-                     "them; needs a biometric or PIN already set up on this "
-                     "device.",
+                srow(strings.t("set_bio_title"),
+                     strings.t("set_bio_desc"),
                      ft.Switch(value=_bio_on, active_color=T.VIOLET, disabled=ro,
                                on_change=(None if ro else _bio_change))),
                 ft.Container(_bio_note, padding=ft.Padding.only(bottom=6)),
             ], spacing=0))
 
         reset = card(ft.Column([
-            ft.Text("HELP & RESET", size=11, weight=ft.FontWeight.BOLD, color=T.INK_3),
+            ft.Text(strings.t("set_help_reset"), size=11, weight=ft.FontWeight.BOLD, color=T.INK_3),
             ft.Container(height=4),
-            srow("Welcome walkthrough",
-                 "Replay the first-run guided tour of the app.",
-                 ghost_btn("Replay", icon=_ic("SLIDESHOW_OUTLINED","PLAY_ARROW"),
+            srow(strings.t("set_walkthrough"),
+                 strings.t("set_walkthrough_desc"),
+                 ghost_btn(strings.t("set_replay"), icon=_ic("SLIDESHOW_OUTLINED","PLAY_ARROW"),
                            on_click=lambda e: app._open_onboarding())),
             divider(),
-            srow("Restore default preferences",
-                 "Resets theme, language, and logging to defaults. Your saved "
-                 "credentials and links are kept.",
-                 danger_btn("Reset", icon=ft.Icons.RESTART_ALT,
+            srow(strings.t("set_restore_prefs"),
+                 strings.t("set_restore_prefs_desc"),
+                 danger_btn(strings.t("set_reset"), icon=ft.Icons.RESTART_ALT,
                             on_click=lambda e: app._reset_prefs())),
         ], spacing=0))
 
         cards = ([appearance, data, remote] + ([security] if security else [])
                  + ([device_security] if device_security else []) + [reset])
         body = ft.Column(cards, spacing=16, scroll=ft.ScrollMode.AUTO, expand=True)
-        return app.shell("Settings", "Preferences for this device", body)
+        return app.shell(strings.t("settings"), strings.t("set_subtitle"), body)
 

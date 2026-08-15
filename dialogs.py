@@ -7,6 +7,7 @@ many self._show_dialog / self._close_dialog call-sites keep working.
 import flet as ft
 import theme as T
 from ui import danger_btn, green_btn, ghost_btn
+import strings
 
 
 def show_dialog(app, dlg):
@@ -129,13 +130,15 @@ def close_dialog(app):
         dlg.open = False
         app.page.update()
 
-def confirm(app, title, message, on_yes, yes_label="Remove", danger=True,
+def confirm(app, title, message, on_yes, yes_label=None, danger=True,
              icon=ft.Icons.HELP_OUTLINE):
     """Lightweight confirm via a floating snackbar with an action button. Shows
     INSTANTLY even over a heavy table — a modal AlertDialog has to render over
     (and re-lay-out) the whole page behind its barrier, which made it lag; the
     floating snackbar is the same fast path as the toasts. Calls on_yes() only
     when the user taps the action."""
+    if yes_label is None:
+        yes_label = strings.t("dlg_remove")
     try:
         sb = ft.SnackBar(
             content=ft.Row([
@@ -180,7 +183,7 @@ def confirm(app, title, message, on_yes, yes_label="Remove", danger=True,
             content=ft.Container(width=380, content=ft.Text(
                 message, size=13, color=T.INK_2, weight=ft.FontWeight.W_500)),
             actions=[
-                ghost_btn("Cancel", on_click=lambda e: app._close_dialog()),
+                ghost_btn(strings.t("dlg_cancel"), on_click=lambda e: app._close_dialog()),
                 _yes_btn(yes_label, on_click=lambda e: (app._close_dialog(),
                                                         on_yes())),
             ],

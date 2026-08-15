@@ -11,6 +11,7 @@ import theme as T
 import store
 import auth_supabase as auth
 import platform_caps
+import strings
 from ui import card, grad, logo_img
 
 
@@ -122,7 +123,7 @@ def login_gate(app):
         width=40, height=40, border_radius=11, alignment=ft.Alignment.CENTER,
         bgcolor=_op("#FFFFFF" if dark else "#0f1830", 0.12),
         border=ft.Border.all(1, _op(accent, 0.35)), ink=True,
-        on_click=_toggle_login_theme, tooltip="Toggle theme",
+        on_click=_toggle_login_theme, tooltip=strings.t("login_toggle_theme"),
         scale=1.0, animate_scale=140, animate=140, rotate=0)
 
     def _theme_hover(e, _c=theme_btn):
@@ -301,12 +302,12 @@ def login_gate(app):
         ], spacing=0)
         return tf, col
 
-    name_tf, name_col = (_field("FULL NAME", "Full name", ft.Icons.PERSON_OUTLINE,
+    name_tf, name_col = (_field(strings.t("login_full_name_label"), strings.t("login_full_name_hint"), ft.Icons.PERSON_OUTLINE,
                                 getattr(app, "_auth_name", "")) if signup
                          else (None, None))
-    email_tf, email_col = _field("ACCESS IDENTIFIER", "Email", ft.Icons.MAIL_OUTLINE,
+    email_tf, email_col = _field(strings.t("login_email_label"), strings.t("login_email_hint"), ft.Icons.MAIL_OUTLINE,
                                  getattr(app, "_auth_email", ""))
-    pwd_tf, pwd_col = _field("SECURE PROTOCOL", "Password", ft.Icons.LOCK_OUTLINE,
+    pwd_tf, pwd_col = _field(strings.t("login_password_label"), strings.t("login_password_hint"), ft.Icons.LOCK_OUTLINE,
                              password=True)
 
     def _stash():
@@ -325,7 +326,7 @@ def login_gate(app):
             return
         _stash()
         if not (email_tf.value or "").strip() or not (pwd_tf.value or ""):
-            app._auth_msg = ("err", "Enter your email and password.")
+            app._auth_msg = ("err", strings.t("login_err_enter_credentials"))
             app.ui_safe(app.render); return
         app._gate_busy = True; app._auth_msg = None
         app.ui_safe(app.render)
@@ -406,7 +407,7 @@ def login_gate(app):
                 app.ui_safe(app.render)
             except Exception as ex:
                 app._gate_busy = False
-                app._auth_msg = ("err", f"Something went wrong: {ex}")
+                app._auth_msg = ("err", strings.t("login_err_generic", error=ex))
                 app.ui_safe(app.render)
         try:
             app._bg(work)
@@ -423,8 +424,7 @@ def login_gate(app):
         _stash()
         em = (email_tf.value or "").strip()
         if not em:
-            app._auth_msg = ("err", "Enter your email above first, then tap "
-                                     "Forgot password.")
+            app._auth_msg = ("err", strings.t("login_err_enter_email_first"))
             app.ui_safe(app.render); return
         app._gate_busy = True; app._auth_msg = None
         app.ui_safe(app.render)
@@ -433,7 +433,7 @@ def login_gate(app):
             try:
                 ok, m = auth.request_password_reset(em)
             except Exception as ex:
-                ok, m = False, f"Something went wrong: {ex}"
+                ok, m = False, strings.t("login_err_generic", error=ex)
             app._gate_busy = False
             app._auth_msg = ("ok" if ok else "err", m)
             app.ui_safe(app.render)
@@ -442,8 +442,8 @@ def login_gate(app):
         except Exception:
             threading.Thread(target=work, daemon=True).start()
 
-    blabel = ("CREATING…" if (busy and signup) else "SIGNING IN…" if busy
-              else "CREATE ACCOUNT" if signup else "SIGN IN")
+    blabel = (strings.t("login_btn_creating") if (busy and signup) else strings.t("login_btn_signing_in") if busy
+              else strings.t("login_btn_create_account") if signup else strings.t("login_btn_sign_in"))
 
     def _btn_hover(e):
         try:
@@ -515,11 +515,11 @@ def login_gate(app):
                 theme_btn],
                spacing=11, vertical_alignment=ft.CrossAxisAlignment.CENTER),
         ft.Container(height=24),
-        ft.Text("Welcome back" if not signup else "Create your account",
+        ft.Text(strings.t("login_welcome_back") if not signup else strings.t("login_create_account_title"),
                 size=34, weight=ft.FontWeight.W_700, color=HEAD, font_family=DISP),
         ft.Container(height=6),
-        ft.Text("Sign in to continue to QA Studio" if not signup
-                else "It only takes a moment to get started",
+        ft.Text(strings.t("login_signin_subtitle") if not signup
+                else strings.t("login_signup_subtitle"),
                 size=13, color=INK2, font_family=MONO,
                 style=ft.TextStyle(letter_spacing=0.4)),
         ft.Container(height=26),
@@ -527,15 +527,15 @@ def login_gate(app):
     for col in [c for c in (name_col, email_col, pwd_col) if c is not None]:
         rows += [col, ft.Container(height=16)]
     if not signup:
-        rows.append(ft.Row([_link("Forgot password?", _forgot)],
+        rows.append(ft.Row([_link(strings.t("login_forgot_password"), _forgot)],
                            alignment=ft.MainAxisAlignment.END))
     if banner:
         rows += [ft.Container(height=8), banner]
     rows += [ft.Container(height=20), btn, ft.Container(height=18),
-             ft.Row([ft.Text("New to QA Studio?" if not signup
-                             else "Already have an account?",
+             ft.Row([ft.Text(strings.t("login_new_prompt") if not signup
+                             else strings.t("login_have_account_prompt"),
                              size=12.5, color=INK2, weight=ft.FontWeight.W_600),
-                     _link("Create one" if not signup else "Sign in", _switch)],
+                     _link(strings.t("login_create_one") if not signup else strings.t("login_sign_in_link"), _switch)],
                     spacing=6, alignment=ft.MainAxisAlignment.CENTER, tight=True)]
     form = ft.Column(rows, spacing=0, width=352, tight=True)
 
@@ -592,21 +592,20 @@ def login_gate(app):
                         color=LEFT_HEAD, font_family=DISP)],
                spacing=13, vertical_alignment=ft.CrossAxisAlignment.CENTER),
         ft.Container(height=44),
-        ft.Text("Ship better\ntests, faster.", size=52, weight=ft.FontWeight.W_700,
+        ft.Text(strings.t("login_hero_title"), size=52, weight=ft.FontWeight.W_700,
                 color=LEFT_HEAD, font_family=DISP, style=ft.TextStyle(height=1.05)),
         ft.Container(height=16),
-        ft.Text("AI-generated test cases for Azure DevOps, Jira + Xray & TestRail, "
-                "regression & sprint plans, and one-click sprint closure reports.",
+        ft.Text(strings.t("login_hero_desc"),
                 size=14, color=INK2, no_wrap=False),
         ft.Container(height=34),
-        _feature(ft.Icons.AUTO_AWESOME, "Generate test titles & steps with AI",
-                 "Leverage advanced LLMs to automate boilerplate test creation."),
+        _feature(ft.Icons.AUTO_AWESOME, strings.t("login_feature1_title"),
+                 strings.t("login_feature1_desc")),
         ft.Container(height=20),
-        _feature(ft.Icons.CHECKLIST, "Regression & sprint test plans",
-                 "Orchestrate complex release cycles with modular planning tools."),
+        _feature(ft.Icons.CHECKLIST, strings.t("login_feature2_title"),
+                 strings.t("login_feature2_desc")),
         ft.Container(height=20),
-        _feature(ft.Icons.DESCRIPTION_OUTLINED, "One-click sprint closure reports",
-                 "Instant stakeholder visibility with automated PDF exports."),
+        _feature(ft.Icons.DESCRIPTION_OUTLINED, strings.t("login_feature3_title"),
+                 strings.t("login_feature3_desc")),
     ], spacing=0)
 
     bg = _bg()
@@ -682,7 +681,7 @@ def login_gate(app):
         footer = ft.Container(
             ft.Column([
                 ft.Row([ft.Container(width=7, height=7, border_radius=4, bgcolor="#22c55e"),
-                        ft.Text("System Status", size=10, color=INK2, font_family=_fmono,
+                        ft.Text(strings.t("login_system_status"), size=10, color=INK2, font_family=_fmono,
                                 style=ft.TextStyle(letter_spacing=0.8))],
                        spacing=6, tight=True, alignment=ft.MainAxisAlignment.CENTER,
                        vertical_alignment=ft.CrossAxisAlignment.CENTER),
@@ -701,12 +700,12 @@ def login_gate(app):
                         color=_op(accent, 0.85), font_family=_fmono,
                         style=ft.TextStyle(letter_spacing=1.4)),
                 ft.Container(expand=True),
-                ft.Text("© 2026 QA Studio Terminal. All rights reserved.", size=11,
+                ft.Text(strings.t("login_copyright"), size=11,
                         color=INK2, font_family=_fmono,
                         style=ft.TextStyle(letter_spacing=0.4)),
                 ft.Container(expand=True),
                 ft.Row([ft.Container(width=8, height=8, border_radius=4, bgcolor="#22c55e"),
-                        ft.Text("System Status", size=11, color=INK2, font_family=_fmono,
+                        ft.Text(strings.t("login_system_status"), size=11, color=INK2, font_family=_fmono,
                                 style=ft.TextStyle(letter_spacing=1.0))],
                        spacing=7, vertical_alignment=ft.CrossAxisAlignment.CENTER),
             ], vertical_alignment=ft.CrossAxisAlignment.CENTER),

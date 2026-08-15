@@ -9,6 +9,7 @@ package (perf.service); this file is glue + widgets.
 Copyright (c) 2026 Ahmed Sayed. All rights reserved. Proprietary - see LICENSE.
 """
 import json
+import strings
 import os
 import re
 import tempfile
@@ -448,13 +449,13 @@ def _ask_open_path(title, patterns):
 
 
 def _ask_csv_path():
-    return _ask_open_path("Select a data CSV",
-                          [("CSV files", "*.csv"), ("All files", "*.*")])
+    return _ask_open_path(strings.t("perf_dlg_select_csv"),
+                          [(strings.t("perf_ft_csv"), "*.csv"), (strings.t("perf_ft_all"), "*.*")])
 
 
 def _ask_har_path():
-    return _ask_open_path("Select a HAR capture",
-                          [("HAR files", "*.har"), ("All files", "*.*")])
+    return _ask_open_path(strings.t("perf_dlg_select_har"),
+                          [(strings.t("perf_ft_har"), "*.har"), (strings.t("perf_ft_all"), "*.*")])
 
 
 def _ask_folder_path():
@@ -471,7 +472,7 @@ def _ask_folder_path():
             root.attributes("-topmost", True)
         except Exception:
             pass
-        path = filedialog.askdirectory(parent=root, title="Choose an output folder")
+        path = filedialog.askdirectory(parent=root, title=strings.t("perf_dlg_choose_out"))
         try:
             root.update()
             root.destroy()
@@ -498,8 +499,8 @@ def _ask_save_html(default="qastudio-performance-report.html"):
         except Exception:
             pass
         path = filedialog.asksaveasfilename(
-            parent=root, title="Save performance report", defaultextension=".html",
-            initialfile=default, filetypes=[("HTML report", "*.html"), ("All files", "*.*")])
+            parent=root, title=strings.t("perf_dlg_save_report"), defaultextension=".html",
+            initialfile=default, filetypes=[(strings.t("perf_ft_html"), "*.html"), (strings.t("perf_ft_all"), "*.*")])
         try:
             root.update()
             root.destroy()
@@ -524,12 +525,12 @@ def _report_meta(app):
     except Exception:
         logo = ""
     src = _get(app, "_perf_source", "plan")
-    src_label = {"plan": "test plan", "json": "pasted cases",
-                 "har": "HAR capture"}.get(src, src)
+    src_label = {"plan": strings.t("perf_src_plan"), "json": strings.t("perf_src_json"),
+                 "har": strings.t("perf_src_har")}.get(src, src)
     scope = (_get(app, "_perf_base_url", "") or "").strip()
     if not scope:
-        scope = f"Load test — {src_label}"
-    return {"title": "QA Studio — Performance Report", "scope": scope,
+        scope = strings.t("perf_scope_load_test", src=src_label)
+    return {"title": strings.t("perf_report_title"), "scope": scope,
             "source": src_label, "base_url": _get(app, "_perf_base_url", ""),
             "target": "JMeter", "logo_html": logo}
 
@@ -666,33 +667,33 @@ def _result_card(r):
         ft.Text(gate_txt, size=12, weight=ft.FontWeight.BOLD, color=gate_col),
         bgcolor=gate_bg, border=ft.Border.all(1, gate_col), border_radius=T.R_SM,
         padding=ft.Padding.symmetric(vertical=4, horizontal=12),
-        tooltip=("All latency/error budgets were met." if r.threshold_pass
-                 else "A latency or error budget was exceeded." if r.threshold_pass is False
-                 else "Run finished; no pass/fail budgets were set."))
+        tooltip=(strings.t("perf_badge_pass_tip") if r.threshold_pass
+                 else strings.t("perf_badge_fail_tip") if r.threshold_pass is False
+                 else strings.t("perf_badge_none_tip")))
     return card(ft.Column([
-        ft.Row([sec_head("4", "Last result"), ft.Container(expand=True), badge],
+        ft.Row([sec_head("4", strings.t("perf_sec_last_result")), ft.Container(expand=True), badge],
                vertical_alignment=ft.CrossAxisAlignment.CENTER),
         ft.Container(height=12),
         ft.Row([
-            _stat("p50 (median)", f"{r.p50_ms:.0f} ms",
-                  "Half of all requests were faster than this."),
+            _stat(strings.t("perf_stat_p50"), f"{r.p50_ms:.0f} ms",
+                  strings.t("perf_stat_p50_tip")),
             _stat("p90", f"{r.p90_ms:.0f} ms",
-                  "9 in 10 requests were faster than this."),
+                  strings.t("perf_stat_p90_tip")),
             _stat("p95", f"{r.p95_ms:.0f} ms",
-                  "19 in 20 requests were faster than this — the common SLA target.", T.VIOLET),
+                  strings.t("perf_stat_p95_tip"), T.VIOLET),
             _stat("p99", f"{r.p99_ms:.0f} ms",
-                  "99 in 100 requests were faster than this — your slowest users."),
+                  strings.t("perf_stat_p99_tip")),
         ], spacing=10),
         ft.Container(height=10),
         ft.Row([
-            _stat("Throughput", f"{r.throughput_rps:.1f}/s",
-                  "Requests completed per second — how much load was served."),
-            _stat("Error rate", f"{r.error_rate * 100:.1f}%",
-                  "Share of requests that failed (non-2xx / assertion failures).", err_col),
-            _stat("Samples", f"{r.samples}",
-                  "Total requests sent during the run."),
-            _stat("Errors", f"{r.errors}",
-                  "Number of failed requests.", err_col),
+            _stat(strings.t("perf_stat_throughput"), f"{r.throughput_rps:.1f}/s",
+                  strings.t("perf_stat_throughput_tip")),
+            _stat(strings.t("perf_stat_error_rate"), f"{r.error_rate * 100:.1f}%",
+                  strings.t("perf_stat_error_rate_tip"), err_col),
+            _stat(strings.t("perf_stat_samples"), f"{r.samples}",
+                  strings.t("perf_stat_samples_tip")),
+            _stat(strings.t("perf_stat_errors"), f"{r.errors}",
+                  strings.t("perf_stat_errors_tip"), err_col),
         ], spacing=10),
     ], spacing=0))
 
@@ -704,14 +705,14 @@ def screen(app):
     if not getattr(app, "readonly", False) and not (getattr(app, "connected", False)
                                                     and getattr(app, "project", None)):
         return regression.locked_state(
-            app, "Performance",
-            "Load-test scenarios from your test cases, run with JMeter",
+            app, strings.t("perf_title"),
+            strings.t("perf_subtitle"),
             "Connect your provider on the Setup screen and pick a project. Once "
             "connected you can load test cases from your plan, paste your own, or "
             "import a HAR — then run it with JMeter.",
             icon=ft.Icons.SPEED,
-            steps=[(ft.Icons.TUNE, "Connect"), (ft.Icons.CHECKLIST, "Build"),
-                   (ft.Icons.PLAY_ARROW, "Run")])
+            steps=[(ft.Icons.TUNE, strings.t("perf_step_connect")), (ft.Icons.CHECKLIST, strings.t("perf_step_build")),
+                   (ft.Icons.PLAY_ARROW, strings.t("perf_step_run"))])
 
     # Restore the persisted output folder on first entry (mirrors Automation
     # restoring auto_local_path from creds on load).
@@ -735,8 +736,7 @@ def screen(app):
     curl_box = ft.TextField(
         value=_get(app, "_perf_curl", ""),
         multiline=True, min_lines=6, max_lines=14,
-        hint_text="Paste one or more curl commands (DevTools → right-click a request "
-                  "→ Copy → Copy as cURL)…",
+        hint_text=strings.t("au_pf_paste_curl"),
         border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
         content_padding=ft.Padding.symmetric(vertical=11, horizontal=12), text_size=12)
     curl_box.on_change = lambda e: setattr(app, "_perf_curl", curl_box.value)
@@ -764,11 +764,9 @@ def screen(app):
     source = ft.Dropdown(
         value=_get(app, "_perf_source", "har"), filled=True, bgcolor=T.CARD,
         border_color=T.BORDER, focused_border_color=T.VIOLET, expand=True,
-        tooltip="Choose how requests come in: “Import HAR” replays a real browser "
-                "capture; “Paste cURL” turns Copy-as-cURL commands into requests. Both "
-                "give exact requests — no guessing.",
-        options=[ft.DropdownOption(key="har", text="Import HAR (real traffic)"),
-                 ft.DropdownOption(key="curl", text="Paste cURL")],
+        tooltip=strings.t("au_pf_source_info"),
+        options=[ft.DropdownOption(key="har", text=strings.t("perf_opt_har")),
+                 ft.DropdownOption(key="curl", text=strings.t("perf_opt_curl"))],
         on_select=lambda e: _src_changed())
 
     # A labeled dropdown that mirrors _auto_field's shape (label + ⓘ info, then field).
@@ -902,12 +900,12 @@ def screen(app):
             return
         to = [a for a in re.split(r"[,\s;]+", _get(app, "_perf_email_to", "") or "") if a]
         if not to:
-            app._toast("Enter at least one recipient email.")
+            app._toast(strings.t("perf_toast_need_recipient"))
             return
         try:
             import engine as E
             if not getattr(E, "GMAIL_APP_PASS", ""):
-                app._toast("Set the Gmail App Password on the Setup screen first.")
+                app._toast(strings.t("perf_toast_need_gmail_pass"))
                 return
         except Exception:
             pass
@@ -920,7 +918,7 @@ def screen(app):
                 _b.update()
             except Exception:
                 pass
-        app._toast("Sending the performance report…")
+        app._toast(strings.t("perf_toast_sending"))
 
         def work():
             try:
@@ -1071,7 +1069,7 @@ def screen(app):
     # Full-width Source field so the option label isn't truncated.
     source_row = [
         ft.Container(dd_field(
-            "Source",
+            strings.t("perf_lbl_source"),
             "“Import HAR” replays a real browser capture; “Paste cURL” turns Copy-as-cURL "
             "commands into requests. Both give exact requests — no guessing.",
             source), expand=1),
@@ -1083,44 +1081,29 @@ def screen(app):
         return [
             ft.Container(height=12),
             app._auto_field(
-                "Auth header (optional)", "_perf_auth",
-                "Bearer {{token}} (per-user) or a static Bearer …",
-                info="Sets Authorization on every request. Use 'Bearer {{token}}' together "
-                     "with a Data CSV that has a token column, so each virtual user uses "
-                     "its OWN token; or paste one static 'Bearer …'."),
+                strings.t("perf_lbl_auth"), "_perf_auth",
+                strings.t("perf_ph_auth"),
+                info=strings.t("au_pf_auth_info")),
             ft.Container(height=14),
-            field_label("Variables — parameterize (optional)",
-                        info="Turn captured literals into per-user {{variables}}. One rule "
-                             "per line:  literalFromCapture => variableName. Then add a "
-                             "matching column to your Data CSV. Example:  SKU-123 => product"),
+            field_label(strings.t("perf_lbl_variables"),
+                        info=strings.t("au_pf_param_info")),
             ft.Container(param_box, padding=ft.Padding.only(top=4)),
             ft.Container(height=14),
-            field_label("Correlation — extract from a response (optional)",
-                        info="Reuse a value a response returns (e.g. a cart id or CSRF). One "
-                             "rule per line:  var = $.json.path @ /url-part   (or   "
-                             "var ~ regex @ /url-part). The value is pulled from the request "
-                             "whose URL contains the @ part, and usable as {{var}} later. "
-                             "Example:  cartId = $.id @ /cart"),
+            field_label(strings.t("perf_lbl_correlation"),
+                        info=strings.t("au_pf_corr_info")),
             ft.Container(corr_box, padding=ft.Padding.only(top=4)),
             ft.Container(height=14),
-            field_label("In-test login (optional)",
-                        info="Each virtual user logs in at run time and uses its OWN fresh "
-                             "token — no pre-fetching. Paste the login as a cURL command; "
-                             "the token is extracted from its response and sent as "
-                             "Authorization on every following request. Use {{email}} / "
-                             "{{password}} in the body with a Data CSV to log in as different "
-                             "users. Overrides the Auth header above when set."),
+            field_label(strings.t("perf_lbl_intest_login"),
+                        info=strings.t("au_pf_login_info")),
             ft.Container(login_box, padding=ft.Padding.only(top=4)),
             ft.Container(height=10),
             ft.Row([
                 ft.Container(app._auto_field(
-                    "Token JSON path", "_perf_login_tokenpath", "access_token",
-                    info="Where the token sits in the login response — a dotted path, e.g. "
-                         "'access_token' or 'data.token'."), expand=1),
+                    strings.t("perf_lbl_token_jsonpath"), "_perf_login_tokenpath", "access_token",
+                    info=strings.t("au_pf_tokpath_info")), expand=1),
                 ft.Container(app._auto_field(
-                    "Token variable", "_perf_login_var", "token",
-                    info="Name to store the token under; referenced as {{token}} in the "
-                         "Authorization header."), expand=1),
+                    strings.t("perf_lbl_token_var"), "_perf_login_var", "token",
+                    info=strings.t("au_pf_tokvar_info")), expand=1),
             ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.START),
         ]
 
@@ -1136,93 +1119,85 @@ def screen(app):
         source_body = [
             ft.Container(height=12),
             app._auto_field(
-                "HAR file", "_perf_har_path", "path to a .har capture",
-                info="In Chrome DevTools → Network, run the flow once, then right-click a "
-                     "request → “Save all as HAR”. That file holds every real request."),
+                strings.t("perf_lbl_har_file"), "_perf_har_path", strings.t("perf_ph_har_file"),
+                info=strings.t("au_pf_har_info")),
             ft.Container(height=8),
-            ft.Row([ghost_btn("Browse HAR…", icon=ft.Icons.UPLOAD_FILE,
+            ft.Row([ghost_btn(strings.t("au_pf_browse_har"), icon=ft.Icons.UPLOAD_FILE,
                               on_click=do_browse_har, ignore_ro=True)], spacing=8),
             ft.Container(height=12),
             app._auto_field(
-                "Only these domains", "_perf_har_domains",
+                strings.t("perf_lbl_only_domains"), "_perf_har_domains",
                 "app.example.com, api.example.com",
-                info="Comma-separated. Keeps only requests to these hosts (and their "
-                     "subdomains); leave blank to keep all. Static assets "
-                     "(js/css/images/fonts) are always skipped."),
+                info=strings.t("au_pf_domains_info")),
         ] + _advanced_fields()
 
     cases_card = card(ft.Column([
-        sec_head("1", "Scenario source"),
+        sec_head("1", strings.t("perf_sec_scenario_source")),
         ft.Container(height=10),
         ft.Row(source_row, spacing=12, vertical_alignment=ft.CrossAxisAlignment.START),
         *source_body,
     ], spacing=0))
 
     load_card = card(ft.Column([
-        sec_head("2", "Load profile"),
+        sec_head("2", strings.t("perf_sec_load_profile")),
         ft.Container(height=10),
         ft.Row([
             ft.Container(app._auto_field(
-                "Users", "_perf_users", "20",
-                info="Concurrent virtual users driving the load."), expand=1),
+                strings.t("perf_lbl_users"), "_perf_users", "20",
+                info=strings.t("perf_info_users")), expand=1),
             ft.Container(app._auto_field(
-                "Ramp (s)", "_perf_ramp", "15",
-                info="Seconds to ramp from 0 up to all users."), expand=1),
+                strings.t("perf_lbl_ramp"), "_perf_ramp", "15",
+                info=strings.t("perf_info_ramp")), expand=1),
             ft.Container(app._auto_field(
-                "Duration (s)", "_perf_duration", "60",
-                info="Seconds to hold the full load once ramped up."), expand=1),
+                strings.t("perf_lbl_duration"), "_perf_duration", "60",
+                info=strings.t("perf_info_duration")), expand=1),
         ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.START),
         ft.Container(height=12),
         ft.Row([
             ft.Container(app._auto_field(
-                "p95 budget (ms)", "_perf_p95", "800",
-                info="Pass/fail budget: the 95th-percentile latency limit, in ms."), expand=1),
+                strings.t("perf_lbl_p95_budget"), "_perf_p95", "800",
+                info=strings.t("perf_info_p95_budget")), expand=1),
             ft.Container(app._auto_field(
-                "Max error %", "_perf_err", "1",
-                info="Pass/fail budget: the maximum allowed error rate, in percent."), expand=1),
+                strings.t("perf_lbl_max_error"), "_perf_err", "1",
+                info=strings.t("perf_info_max_error")), expand=1),
         ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.START),
         ft.Container(height=12),
         ft.Row([
             ft.Container(app._auto_field(
-                "p99 budget (ms, optional)", "_perf_p99", "0",
-                info="Optional pass/fail budget on the 99th-percentile latency. 0 = off."), expand=1),
+                strings.t("perf_lbl_p99_budget"), "_perf_p99", "0",
+                info=strings.t("perf_info_p99_budget")), expand=1),
             ft.Container(app._auto_field(
-                "Min throughput (req/s, optional)", "_perf_min_rps", "0",
-                info="Optional pass/fail budget: fail if throughput drops below this. 0 = off."), expand=1),
+                strings.t("perf_lbl_min_throughput"), "_perf_min_rps", "0",
+                info=strings.t("perf_info_min_throughput")), expand=1),
         ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.START),
         ft.Container(height=12),
         app._auto_field(
-            "Distributed engines (optional)", "_perf_remote_hosts",
+            strings.t("perf_lbl_distributed"), "_perf_remote_hosts",
             "10.0.0.5, 10.0.0.6  (running jmeter-server)",
-            info="Comma-separated hosts running Apache jmeter-server. The load is split "
-                 "across them (JMeter -R) so you can drive far more users than one machine. "
-                 "Leave blank to run locally."),
+            info=strings.t("au_pf_engines_info")),
         ft.Container(height=6),
         hint("The budgets decide the PASS / FAIL gate. For thousands of users, run "
              "distributed engines — a single machine caps out at a few hundred threads."),
     ], spacing=0))
 
     data_card = card(ft.Column([
-        sec_head("3", "Data (optional)"),
+        sec_head("3", strings.t("perf_sec_data")),
         ft.Container(height=10),
         app._auto_field(
-            "Data CSV", "_perf_data_path", "path to a .csv",
-            info="A CSV whose columns fill {{variables}} in your requests (e.g. email, "
-                 "password, token). The file — including any passwords/tokens it holds — "
-                 "is copied into the generated JMeter project on your machine."),
+            strings.t("perf_lbl_data_csv"), "_perf_data_path", strings.t("perf_ph_data_csv"),
+            info=strings.t("au_pf_datacsv_info")),
         ft.Container(height=8),
-        ft.Row([ghost_btn("Browse…", icon=ft.Icons.FOLDER_OPEN, on_click=do_browse,
+        ft.Row([ghost_btn(strings.t("perf_btn_browse"), icon=ft.Icons.FOLDER_OPEN, on_click=do_browse,
                           ignore_ro=True)], spacing=8),
         ft.Container(height=6),
         hint("Leave blank to run without data-driving. With a CSV, each virtual user "
              "pulls the next row per iteration."),
         ft.Container(height=16),
         app._auto_field(
-            "Output folder (optional)", "_perf_out_dir", "defaults to a temp folder",
-            info="Where the generated JMeter project, results.jtl and HTML dashboard are "
-                 "written. Leave blank to use a temp folder."),
+            "Output folder (optional)", "_perf_out_dir", strings.t("perf_ph_output_folder"),
+            info=strings.t("au_pf_output_info")),
         ft.Container(height=8),
-        ft.Row([ghost_btn("Choose folder…", icon=ft.Icons.FOLDER_OPEN,
+        ft.Row([ghost_btn(strings.t("perf_btn_choose_folder"), icon=ft.Icons.FOLDER_OPEN,
                           on_click=do_browse_out, ignore_ro=True)], spacing=8),
     ], spacing=0))
 
@@ -1241,8 +1216,8 @@ def screen(app):
         value=_get(app, "_perf_tok_format", "json"), filled=True,
         bgcolor=(T.CARD if tok_editable else T.CARD_2), disabled=not tok_editable,
         border_color=T.BORDER, focused_border_color=T.VIOLET, expand=True,
-        options=[ft.DropdownOption(key="json", text="JSON body"),
-                 ft.DropdownOption(key="form", text="Form-encoded")],
+        options=[ft.DropdownOption(key="json", text=strings.t("perf_opt_json_body")),
+                 ft.DropdownOption(key="form", text=strings.t("perf_opt_form_encoded"))],
         on_select=lambda e: setattr(app, "_perf_tok_format", tok_format.value))
 
     def _det_field(label, attr, hint_text, info):
@@ -1260,7 +1235,7 @@ def screen(app):
         return ft.Column([field_label(label, info=info),
                           ft.Container(tf, padding=ft.Padding.only(top=4))], spacing=0)
     token_card = card(ft.Column([
-        sec_head("3+", "Prepare auth tokens (optional)"),
+        sec_head("3+", strings.t("perf_sec_prepare_tokens")),
         ft.Container(height=8),
         hint("Have a CSV of users + passwords? QA Studio can log each one in, grab its "
              "bearer token, and build a tokens CSV — then each virtual user load-tests "
@@ -1269,77 +1244,71 @@ def screen(app):
 
         # Step 1 — auto-detect the login config from ONE recorded login, so the
         # user doesn't hand-enter URL / fields / token path.
-        field_label("Login recording (HAR)", info="Log in ONCE in your browser with "
-                    "DevTools → Network open, then Save all as HAR. QA Studio reads it to "
-                    "fill in the login URL, request format, field names, and where the "
-                    "token is — no manual setup."),
+        field_label(strings.t("perf_lbl_login_recording"), info=strings.t("au_pf_prep_info")),
         ft.Container(
             ft.Text((_get(app, "_perf_tok_login_har", "") or "—"), size=12, color=T.INK_2,
                     no_wrap=True, max_lines=1),
             padding=ft.Padding.symmetric(vertical=10, horizontal=12),
             bgcolor=T.CARD_2, border=ft.Border.all(1, T.BORDER), border_radius=T.R),
         ft.Container(height=8),
-        ft.Row([_tip(green_btn("Auto-detect from login HAR", icon=ft.Icons.AUTO_FIX_HIGH,
+        ft.Row([_tip(green_btn(strings.t("perf_btn_autodetect"), icon=ft.Icons.AUTO_FIX_HIGH,
                                on_click=do_detect_login, ignore_ro=True),
                      "Pick a HAR of one successful login; QA Studio fills the settings "
                      "below automatically.")], spacing=8),
 
         ft.Container(height=16),
-        app._auto_field("Users CSV", "_perf_tok_csv", "path to users.csv (email, password)",
-                        info="A CSV with a username/email column and a password column."),
+        app._auto_field(strings.t("perf_lbl_users_csv"), "_perf_tok_csv", strings.t("perf_ph_users_csv"),
+                        info=strings.t("perf_info_users_csv")),
         ft.Container(height=8),
-        ft.Row([ghost_btn("Browse…", icon=ft.Icons.FOLDER_OPEN, on_click=do_browse_users,
+        ft.Row([ghost_btn(strings.t("perf_btn_browse"), icon=ft.Icons.FOLDER_OPEN, on_click=do_browse_users,
                           ignore_ro=True)], spacing=8),
 
         ft.Container(height=16),
         ft.Row([
-            ft.Text(("DETECTED SETTINGS — editable" if tok_editable else
-                     "DETECTED SETTINGS — read-only (auto-filled)"),
+            ft.Text((strings.t("perf_detected_editable") if tok_editable else
+                     strings.t("perf_detected_readonly")),
                     size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3, expand=True),
             (ft.Container() if tok_editable else
-             _tip(ghost_btn("Edit manually", icon=ft.Icons.EDIT_OUTLINED,
+             _tip(ghost_btn(strings.t("perf_btn_edit_manually"), icon=ft.Icons.EDIT_OUTLINED,
                             on_click=do_edit_login_manually, ignore_ro=True),
-                  "Unlock these fields to set them by hand.")),
+                  strings.t("perf_tip_edit_manually"))),
         ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
         ft.Container(height=10),
-        _det_field("Login URL", "_perf_tok_url", "https://your-app/api/login",
-                   "The endpoint that accepts a username + password and returns a token. "
-                   "Auto-filled from your login HAR."),
+        _det_field(strings.t("perf_lbl_login_url"), "_perf_tok_url", "https://your-app/api/login",
+                   strings.t("perf_info_login_ep")),
         ft.Container(height=12),
         # Responsive: two fields per row so labels never truncate on a narrow panel.
         ft.Row([
-            ft.Container(dd_field("Request body",
-                "How credentials are sent: JSON body or form-encoded.", tok_format), expand=1),
-            ft.Container(_det_field("Token JSON path", "_perf_tok_jsonpath", "access_token",
-                "Where the token sits in the JSON response — a dotted path, e.g. "
-                "'access_token' or 'data.access_token'. Blank if it's in a header."), expand=1),
+            ft.Container(dd_field(strings.t("perf_lbl_request_body"),
+                strings.t("perf_info_request_body"), tok_format), expand=1),
+            ft.Container(_det_field(strings.t("perf_lbl_token_jsonpath"), "_perf_tok_jsonpath", "access_token",
+                strings.t("perf_info_token_jsonpath")), expand=1),
         ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.START),
         ft.Container(height=12),
         ft.Row([
-            ft.Container(_det_field("…or token header", "_perf_tok_header", "e.g. authorization",
-                "If the token is returned in a response header instead of the body, the "
-                "header name (e.g. 'authorization')."), expand=1),
+            ft.Container(_det_field(strings.t("perf_lbl_token_header"), "_perf_tok_header", strings.t("perf_ph_token_header"),
+                strings.t("perf_info_token_header")), expand=1),
             ft.Container(expand=1),
         ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.START),
         ft.Container(height=12),
         ft.Row([
-            ft.Container(_det_field("API user field", "_perf_tok_userfield", "email",
-                "The field name your login API expects for the username."), expand=1),
-            ft.Container(_det_field("API password field", "_perf_tok_passfield", "password",
-                "The field name your login API expects for the password."), expand=1),
+            ft.Container(_det_field(strings.t("perf_lbl_api_user_field"), "_perf_tok_userfield", strings.t("perf_ph_email"),
+                strings.t("perf_info_api_user_field")), expand=1),
+            ft.Container(_det_field(strings.t("perf_lbl_api_pass_field"), "_perf_tok_passfield", strings.t("perf_ph_password"),
+                strings.t("perf_info_api_pass_field")), expand=1),
         ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.START),
         ft.Container(height=12),
         ft.Row([
-            ft.Container(_det_field("CSV user column", "_perf_tok_usercol", "email",
-                "Which column in your CSV holds the username/email."), expand=1),
-            ft.Container(_det_field("CSV password column", "_perf_tok_passcol", "password",
-                "Which column in your CSV holds the password."), expand=1),
+            ft.Container(_det_field(strings.t("perf_lbl_csv_user_col"), "_perf_tok_usercol", strings.t("perf_ph_email"),
+                strings.t("perf_info_csv_user_col")), expand=1),
+            ft.Container(_det_field(strings.t("perf_lbl_csv_pass_col"), "_perf_tok_passcol", strings.t("perf_ph_password"),
+                strings.t("perf_info_csv_pass_col")), expand=1),
         ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.START),
         ft.Container(height=14),
-        ft.Row([_tip(green_btn("Fetching tokens…" if tok_running else "Fetch tokens",
+        ft.Row([_tip(green_btn(strings.t("perf_btn_fetching") if tok_running else strings.t("perf_btn_fetch"),
                                icon=ft.Icons.KEY, on_click=do_fetch_tokens,
                                disabled=tok_running or running, ignore_ro=True),
-                     "Log every user in, collect a per-user token, and prepare the CSV.")],
+                     strings.t("perf_tip_fetch"))],
                spacing=8),
         ft.Container(height=6),
         hint("Tip: tokens can expire — run this shortly before the load test. Test your "
@@ -1348,27 +1317,27 @@ def screen(app):
 
     basket = list(_get(app, "_perf_basket", []) or [])
     adding = bool(_get(app, "_perf_adding", False))
-    _emit_label = ("Generate & Emit" + (f" ({len(basket)})" if basket else ""))
+    _emit_label = (strings.t("perf_emit") + (f" ({len(basket)})" if basket else ""))
     btns = [
         _tip(primary_btn(_emit_label, on_click=do_emit, disabled=running or adding),
              "Build the JMeter plan from the basket (or, if empty, the current source). "
              "Does NOT run the test yet."),
-        _tip(ghost_btn("Adding…" if adding else "Add to plan", icon=ft.Icons.ADD,
+        _tip(ghost_btn(strings.t("perf_btn_adding") if adding else "Add to plan", icon=ft.Icons.ADD,
                        on_click=do_add, disabled=adding or running, ignore_ro=True),
              "Add the current source's scenarios to the plan, then switch source / import "
              "another and add again to combine them into one load test."),
-        _tip(ghost_btn("Preview", icon=ft.Icons.VISIBILITY_OUTLINED, on_click=do_preview,
+        _tip(ghost_btn(strings.t("perf_btn_preview"), icon=ft.Icons.VISIBILITY_OUTLINED, on_click=do_preview,
                        disabled=running or bool(_get(app, "_perf_previewing", False)),
                        ignore_ro=True),
              "List the parsed requests in the Activity log without emitting — a sanity "
              "check before Generate & Emit."),
     ]
     if _get(app, "_perf_paths", None):
-        btns.append(_tip(green_btn("Run JMeter", on_click=do_run,
+        btns.append(_tip(green_btn(strings.t("perf_btn_run_jmeter"), on_click=do_run,
                                    disabled=running or not can_run, ignore_ro=True),
-                         "Run the load test and stream live progress in the Activity log."))
-        btns.append(_tip(ghost_btn("Open folder", on_click=do_open, ignore_ro=True),
-                         "Open the folder with the generated plan.jmx, results and report."))
+                         strings.t("perf_tip_run_jmeter")))
+        btns.append(_tip(ghost_btn(strings.t("perf_btn_open_folder"), on_click=do_open, ignore_ro=True),
+                         strings.t("perf_tip_open_folder")))
     _res = _get(app, "_perf_result", None)
     buttons_row = ft.Container(ft.Row(btns, spacing=10, wrap=True),
                               padding=ft.Padding.only(top=2, bottom=2))
@@ -1382,12 +1351,12 @@ def screen(app):
             rows.append(ft.Container(
                 ft.Row([
                     ft.Icon(ft.Icons.LAYERS_OUTLINED, size=15, color=T.VIOLET),
-                    ft.Text((s.title or s.id or "scenario"), size=12.5,
+                    ft.Text((s.title or s.id or strings.t("perf_scenario_fallback")), size=12.5,
                             weight=ft.FontWeight.W_600, color=T.INK, expand=True,
                             no_wrap=True, max_lines=1),
-                    ft.Text(f"{s.request_count} req", size=11, color=T.INK_3),
+                    ft.Text(strings.t("perf_req_count", n=s.request_count), size=11, color=T.INK_3),
                     ft.IconButton(ft.Icons.CLOSE, icon_size=14, icon_color=T.INK_3,
-                                  tooltip="Remove from plan",
+                                  tooltip=strings.t("perf_tip_remove_plan"),
                                   on_click=lambda e, idx=i: do_remove_scenario(idx),
                                   style=ft.ButtonStyle(padding=ft.Padding.all(2))),
                 ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
@@ -1395,10 +1364,10 @@ def screen(app):
                 padding=ft.Padding.only(left=12, right=4, top=2, bottom=2)))
         total_req = sum(s.request_count for s in basket)
         basket_card = card(ft.Column([
-            ft.Row([sec_head("≡", "In this plan"), ft.Container(expand=True),
-                    _tip(ghost_btn("Clear all", icon=ft.Icons.DELETE_OUTLINE,
+            ft.Row([sec_head("≡", strings.t("perf_sec_in_plan")), ft.Container(expand=True),
+                    _tip(ghost_btn(strings.t("perf_btn_clear_all"), icon=ft.Icons.DELETE_OUTLINE,
                                    on_click=do_clear_basket, ignore_ro=True),
-                         "Empty the plan basket.")],
+                         strings.t("perf_tip_clear_all"))],
                    vertical_alignment=ft.CrossAxisAlignment.CENTER),
             ft.Container(height=10),
             ft.Column(rows, spacing=8),
@@ -1418,7 +1387,7 @@ def screen(app):
         # (team members + custom emails) with the Send button as its trailing
         # control, greyed in place while sending.
         app._perf_send_btn = _tip(
-            green_btn("Email report", icon=ft.Icons.SEND, on_click=do_email_report,
+            green_btn(strings.t("perf_email_report_btn"), icon=ft.Icons.SEND, on_click=do_email_report,
                       disabled=emailing, ignore_ro=True),
             "Email the report + JMeter dashboard .zip to the recipients.")
         email_picker = regression.email_recipient_picker(
@@ -1427,17 +1396,17 @@ def screen(app):
         # Open buttons: QA Studio's own summary + (if a run produced one) JMeter's
         # interactive dashboard.
         open_btns = [
-            _tip(ghost_btn("Open QA Studio report", icon=ft.Icons.DESCRIPTION_OUTLINED,
+            _tip(ghost_btn(strings.t("au_pf_open_qa_report"), icon=ft.Icons.DESCRIPTION_OUTLINED,
                            on_click=do_open_qa_report, ignore_ro=True),
                  "Open QA Studio's one-page summary (verdict, metrics, glossary)."),
         ]
         if getattr(_res, "raw_report_dir", ""):
             open_btns.append(_tip(
-                ghost_btn("Open JMeter report", icon=ft.Icons.INSERT_CHART_OUTLINED,
+                ghost_btn(strings.t("au_pf_open_jmeter_report"), icon=ft.Icons.INSERT_CHART_OUTLINED,
                           on_click=do_open_report, ignore_ro=True),
                 "Open JMeter's full interactive dashboard (charts over time)."))
         report_card = card(ft.Column([
-            sec_head("5", "Report"),
+            sec_head("5", strings.t("au_pf_report")),
             ft.Container(height=8),
             hint("Two reports: QA Studio's plain-language one-pager, and JMeter's "
                  "interactive dashboard. Open either, save the QA Studio one, or email "
@@ -1445,11 +1414,11 @@ def screen(app):
             ft.Container(height=12),
             ft.Row(open_btns, spacing=10, wrap=True),
             ft.Container(height=16),
-            ft.Text("EMAIL", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
+            ft.Text(strings.t("au_pf_email"), size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
             ft.Container(height=8),
             email_picker,
             ft.Container(height=14),
-            ft.Row([_tip(ghost_btn("Export QA Studio report", icon=ft.Icons.DOWNLOAD,
+            ft.Row([_tip(ghost_btn(strings.t("au_pf_export_qa_report"), icon=ft.Icons.DOWNLOAD,
                                    on_click=do_export_report, ignore_ro=True),
                          "Save QA Studio's one-page HTML report to your computer.")],
                    spacing=10),
@@ -1474,7 +1443,7 @@ def screen(app):
                         width=64, no_wrap=True),
             ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER))
         left_children.append(card(ft.Column([
-            sec_head("6", "Run history"),
+            sec_head("6", strings.t("au_pf_run_history")),
             ft.Container(height=10),
             ft.Column(h_rows, spacing=7),
             ft.Container(height=4),
@@ -1495,7 +1464,7 @@ def screen(app):
 
     log_toolbar = ft.Container(
         ft.Row([ft.Container(spinner),
-                ft.Text("ACTIVITY", size=11, weight=ft.FontWeight.BOLD, color=T.INK_3,
+                ft.Text(strings.t("au_pf_activity"), size=11, weight=ft.FontWeight.BOLD, color=T.INK_3,
                         expand=True),
                 _log_btn(ft.Icons.COPY_ALL_OUTLINED, "Copy entire log", do_copy_log),
                 _log_btn(ft.Icons.DELETE_OUTLINE, "Clear log", do_clear_log, danger=True)],
@@ -1510,4 +1479,4 @@ def screen(app):
     body = ft.Row([ft.Container(left, expand=True),
                    ft.Container(right, width=384)], spacing=22,
                   vertical_alignment=ft.CrossAxisAlignment.STRETCH, expand=True)
-    return app.shell("Performance", "Load-test scenarios from your test cases, run with JMeter", body)
+    return app.shell(strings.t("perf_title"), strings.t("perf_subtitle"), body)

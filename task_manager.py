@@ -26,6 +26,7 @@ import flet as ft
 import theme as T
 import engine as E
 import backend_setup
+import strings
 
 # A story can get up to this many child tasks in one "Create child tasks" run
 # (a batch/patch of tasks per story) — keeps a single run bounded and the UI
@@ -208,7 +209,7 @@ def _date_field(app, label, value_str, on_pick, on_after=None, disabled=False, m
         val = first
 
     ink = T.INK_3 if disabled else (T.INK if value_str else T.INK_3)
-    value_text = ft.Text(value_str or "Pick a date", size=12.5, weight=ft.FontWeight.W_600,
+    value_text = ft.Text(value_str or strings.t("tm_pick_date"), size=12.5, weight=ft.FontWeight.W_600,
                          color=ink, font_family=T.F_MONO)
     box = ft.Container(
         ft.Row([ft.Icon(ft.Icons.CALENDAR_MONTH_OUTLINED, size=15,
@@ -423,7 +424,7 @@ def _calc_report(app, on_update=None):
         app.ui_safe(_target)
 
     if getattr(app, "readonly", False):
-        app._tm_report_msg = ("err", "Your role doesn't allow using Task Manager.")
+        app._tm_report_msg = ("err", strings.t("tm_err_role"))
         _upd()
         return
     mode = getattr(app, "_tm_scope_mode", "sprint")
@@ -441,19 +442,19 @@ def _calc_report(app, on_update=None):
     else:
         start = end = ""
     if not it and not use_dates:
-        app._tm_report_msg = ("err", "Pick a sprint first.")
+        app._tm_report_msg = ("err", strings.t("tm_err_pick_sprint"))
         _upd()
         return
     if use_dates and not (start and end):
-        app._tm_report_msg = ("err", "Pick a start and end date first.")
+        app._tm_report_msg = ("err", strings.t("tm_err_pick_dates"))
         _upd()
         return
     if use_dates and end < start:
-        app._tm_report_msg = ("err", "End date must be on or after the start date.")
+        app._tm_report_msg = ("err", strings.t("tm_end_after_start"))
         _upd()
         return
     if not user:
-        app._tm_report_msg = ("err", "Pick a person first.")
+        app._tm_report_msg = ("err", strings.t("tm_err_pick_person"))
         _upd()
         return
     # A new generation for THIS click — captured by _work() below and checked
@@ -494,9 +495,7 @@ def _calc_report(app, on_update=None):
         app._tm_report_gen = my_gen + 1
         app._tm_report_busy = False
         app._tm_report_msg = ("err",
-            "Azure DevOps didn't respond in time. Try again — if it's scoped to "
-            "a date range, a narrower range or picking the sprint instead is "
-            "usually faster.")
+            strings.t("tm_err_timeout"))
         _upd()
 
     watchdog = threading.Timer(_TM_REPORT_TIMEOUT_S, _give_up)
@@ -522,16 +521,16 @@ def _calc_report(app, on_update=None):
         if res is not None:
             app._tm_report_result = res
             if res.get("count", 0) == 0:
-                app._tm_report_msg = ("err", "No tasks assigned to this person in that period.")
+                app._tm_report_msg = ("err", strings.t("tm_err_no_tasks"))
             elif res.get("partial"):
                 # Non-Azure backends return a per-assignee rollup with no
                 # per-task rows, so totals are real but the task table is empty.
                 # Say so, rather than letting it read as "no tasks found".
                 app._tm_report_msg = (
                     "warn", res.get("unsupported_detail")
-                    or "Per-task detail isn't available on this backend.")
+                    or strings.t("tm_warn_no_detail"))
         else:
-            app._tm_report_msg = ("err", f"Couldn't load task stats: {err}")
+            app._tm_report_msg = ("err", strings.t("tm_err_load_stats", err=err))
         app._tm_report_busy = False
         _upd()
     threading.Thread(target=_work, daemon=True).start()
@@ -547,13 +546,13 @@ def _create_tasks(app):
         app.ui_safe(fn if callable(fn) else app.render)
 
     if getattr(app, "readonly", False):
-        app._tm_ct_msg = ("err", "Your role doesn't allow using Task Manager.")
+        app._tm_ct_msg = ("err", strings.t("tm_err_role"))
         _refresh()
         return
     sel = list(app._tm_ct_selected or [])
     user = app._tm_ct_user
     if not sel:
-        app._tm_ct_msg = ("err", "Select at least one user story first.")
+        app._tm_ct_msg = ("err", strings.t("tm_err_pick_story"))
         _refresh()
         return
     stories_by_id = {s["id"]: s for s in app._tm_ct_stories}
@@ -578,7 +577,7 @@ def _create_tasks(app):
                 plan.append((sid, st.get("id") or sid, row.get("type_id") or "",
                              summ, dict(row.get("fields") or {})))
         if not plan:
-            app._tm_ct_msg = ("err", "Add a summary for at least one sub-task first.")
+            app._tm_ct_msg = ("err", strings.t("tm_err_add_summary"))
             _refresh()
             return
         app._tm_ct_busy = True
@@ -596,18 +595,18 @@ def _create_tasks(app):
                     errors.append({"story_id": sid, "title": summ, "error": str(ex)[:160]})
             app._tm_ct_result = {"ok": made, "errors": errors}
             if made and not errors:
-                app._tm_ct_msg = ("ok", f"Created {made} sub-task(s).")
+                app._tm_ct_msg = ("ok", strings.t("tm_created_subtasks", n=made))
             elif made and errors:
-                app._tm_ct_msg = ("warn", f"Created {made}; {len(errors)} failed — see below.")
+                app._tm_ct_msg = ("warn", strings.t("tm_created_some_failed", n=made, f=len(errors)))
             else:
-                app._tm_ct_msg = ("err", f"{len(errors)} failed — see details below.")
+                app._tm_ct_msg = ("err", strings.t("tm_failed_details", n=len(errors)))
             app._tm_ct_busy = False
             _refresh()
         threading.Thread(target=_work_sub, daemon=True).start()
         return
 
     if not user:
-        app._tm_ct_msg = ("err", "Pick who the tasks should be assigned to.")
+        app._tm_ct_msg = ("err", strings.t("tm_err_pick_assignee"))
         _refresh()
         return
     items = []
@@ -625,7 +624,7 @@ def _create_tasks(app):
                 "completed_work": row.get("completed"),
             })
     if not items:
-        app._tm_ct_msg = ("err", "Nothing to create — add at least one task with a title.")
+        app._tm_ct_msg = ("err", strings.t("tm_err_nothing_create"))
         _refresh()
         return
 
@@ -639,11 +638,11 @@ def _create_tasks(app):
             res = backend_setup.create_child_tasks(app, items, app.project)
             app._tm_ct_result = res
             if res.get("ok"):
-                app._tm_ct_msg = ("ok", f"Created {res['ok']} task(s).")
+                app._tm_ct_msg = ("ok", strings.t("tm_created_tasks", n=res['ok']))
             if res.get("errors"):
-                app._tm_ct_msg = ("err", f"{len(res['errors'])} failed — see details below.")
+                app._tm_ct_msg = ("err", strings.t("tm_failed_details", n=len(res['errors'])))
         except Exception as ex:
-            app._tm_ct_msg = ("err", f"Couldn't create tasks: {str(ex)[:160]}")
+            app._tm_ct_msg = ("err", strings.t("tm_err_create_tasks", err=str(ex)[:160]))
         app._tm_ct_busy = False
         _refresh()
     threading.Thread(target=_work, daemon=True).start()
@@ -965,17 +964,17 @@ def _tm_export_row(app, res):
                         import platform_caps as _pc
                         if _pc.is_mobile():
                             app.ui_safe(lambda p=path, f=fmt: app._mobile_download_popup(
-                                p, f"{f.upper()} export ready"))
-                            _notify("ok", f"{fmt.upper()} ready — tap Download to save it.")
+                                p, strings.t("tm_export_ready_title", fmt=f.upper())))
+                            _notify("ok", strings.t("tm_export_ready_dl", fmt=fmt.upper()))
                         else:
                             _pc.open_folder(os.path.dirname(path))
-                            _notify("ok", f"Saved: {path}")
+                            _notify("ok", strings.t("tm_saved", path=path))
                     except Exception:
-                        _notify("ok", f"Saved: {path}")
+                        _notify("ok", strings.t("tm_saved", path=path))
                 except ModuleNotFoundError as md:
-                    _notify("err", f"Missing dependency: {md.name}")
+                    _notify("err", strings.t("tm_missing_dep", name=md.name))
                 except Exception as ex:
-                    _notify("err", f"Export failed: {str(ex)[:160]}")
+                    _notify("err", strings.t("tm_export_failed", err=str(ex)[:160]))
             threading.Thread(target=work, daemon=True).start()
         return _do
 
@@ -1002,18 +1001,18 @@ def _tm_export_row(app, res):
 
 def _tm_email(app, res):
     if getattr(app, "_tm_report_emailing", False):
-        app._toast("Already sending — please wait…")
+        app._toast(strings.t("tm_already_sending"))
         return
     to = [a.strip() for a in re.split(r"[,\s;]+", (app._tm_report_email_to or "")) if a.strip()]
     if not to:
-        app._err("Enter at least one recipient email.")
+        app._err(strings.t("tm_enter_recipient"))
         return
     if not getattr(E, "GMAIL_APP_PASS", ""):
-        app._err("Set the Gmail App Password on the Setup screen first.")
+        app._err(strings.t("tm_set_gmail_pass"))
         return
     app._tm_report_email_to = ", ".join(to)
     app._tm_report_emailing = True
-    app._toast("Sending the task report…")
+    app._toast(strings.t("tm_sending_report"))
     _b = getattr(app, "_tm_report_send_btn", None)
     if _b is not None:
         try:
@@ -1033,9 +1032,9 @@ def _tm_email(app, res):
                    f"{_tm_scope_label(res)}")
             ok, err = E.send_report(to, subj, _tm_report_html(app, res), attachments=attach)
             kind = "ok" if ok else "err"
-            text = f"Emailed to {', '.join(to)}" if ok else (err or "Email failed.")
+            text = strings.t("tm_emailed_to", who=', '.join(to)) if ok else (err or strings.t("tm_email_failed"))
         except Exception as ex:
-            kind, text = "err", f"Email failed: {str(ex)[:160]}"
+            kind, text = "err", strings.t("tm_email_failed_detail", err=str(ex)[:160])
         app._tm_report_emailing = False
 
         def _fin(k=kind, t=text):
@@ -1058,9 +1057,9 @@ def screen(app):
 
     if not app.readonly and not (app.connected and app.project):
         return R.locked_state(
-            app, "Task Manager",
-            "Per-user task workload reports and bulk child-task creation",
-            "Connect your Azure DevOps account on the Setup screen first.",
+            app, strings.t("tm_title"),
+            strings.t("tm_subtitle"),
+            strings.t("tm_connect_first"),
             icon=ft.Icons.FACT_CHECK_OUTLINED)
 
     # Bumped on every FULL rebuild of this screen — captured below as
@@ -1240,15 +1239,15 @@ def screen(app):
         # two 150px-wide boxes.
         clear_btn = ft.IconButton(
             icon=ft.Icons.CLOSE_ROUNDED, icon_size=16, icon_color=T.INK_3,
-            tooltip="Clear both dates", on_click=_clear_dates,
+            tooltip=strings.t("tm_tip_clear_dates"), on_click=_clear_dates,
             width=40, height=40,
             style=ft.ButtonStyle(
                 shape=ft.RoundedRectangleBorder(radius=T.R),
                 bgcolor={"": T.CARD_2}, side=ft.BorderSide(1, T.BORDER)))
 
-        _sd_field = _date_field(app, "Start date", app._tm_start_date, _set_start_date,
+        _sd_field = _date_field(app, strings.t("tm_start_date"), app._tm_start_date, _set_start_date,
                                 on_after=_sync_dates, disabled=disabled)
-        _ed_field = _date_field(app, "End date", app._tm_end_date, _set_end_date,
+        _ed_field = _date_field(app, strings.t("tm_end_date"), app._tm_end_date, _set_end_date,
                                 on_after=_sync_dates, disabled=disabled, min_date=(start or None))
         import platform_caps as _pc_tm
         if _pc_tm.is_mobile():
@@ -1270,7 +1269,7 @@ def screen(app):
                 spacing=10, vertical_alignment=ft.CrossAxisAlignment.END)
 
         parts = [
-            ft.Text("Date range", size=12, weight=ft.FontWeight.BOLD,
+            ft.Text(strings.t("tm_date_range"), size=12, weight=ft.FontWeight.BOLD,
                    color=(T.INK_3 if disabled else T.INK_2)),
             ft.Container(height=8),
             fields_row,
@@ -1279,7 +1278,7 @@ def screen(app):
             parts.append(ft.Container(height=6))
             parts.append(ft.Row([
                 ft.Icon(ft.Icons.ERROR_OUTLINE, size=13, color=T.RED),
-                ft.Text("End date must be on or after the start date.",
+                ft.Text(strings.t("tm_end_after_start"),
                        size=11, color=T.RED),
             ], spacing=6))
         return ft.Column(parts, spacing=0)
@@ -1329,8 +1328,8 @@ def screen(app):
             return c
 
         scope_toggle = ft.Container(
-            ft.Row([_scope_seg("Sprint", ft.Icons.VIEW_WEEK_OUTLINED, "sprint"),
-                   _scope_seg("Date range", ft.Icons.DATE_RANGE_OUTLINED, "dates")],
+            ft.Row([_scope_seg(strings.t("tm_sprint"), ft.Icons.VIEW_WEEK_OUTLINED, "sprint"),
+                   _scope_seg(strings.t("tm_date_range"), ft.Icons.DATE_RANGE_OUTLINED, "dates")],
                   spacing=4),
             padding=4, bgcolor=T.CARD_2, border_radius=T.R,
             border=ft.Border.all(1, T.BORDER_2))
@@ -1342,14 +1341,14 @@ def screen(app):
         # a sprint is simply not possible while "Date range" is active.
         iter_dd = ft.Dropdown(
             value=app._tm_iteration or None, options=iter_options,
-            hint_text=("Loading sprints…" if app._tm_iter_loading else "Select sprint…"),
+            hint_text=(strings.t("tm_loading_sprints") if app._tm_iter_loading else strings.t("tm_select_sprint")),
             text_size=13, border_color=T.BORDER, focused_border_color=T.VIOLET,
             border_radius=T.R, content_padding=ft.Padding.symmetric(vertical=8, horizontal=10),
             on_select=_set_iteration,
             disabled=(app._tm_iter_loading or not sprint_active or _ro))
 
         scope_row = ft.Row([
-            ft.Column([field_label("Sprint", req=True), hover_field(iter_dd)],
+            ft.Column([field_label(strings.t("tm_sprint"), req=True), hover_field(iter_dd)],
                      spacing=6, expand=True,
                      opacity=(1.0 if (sprint_active and not _ro) else 0.45)),
             ft.Column([_build_dates_row(disabled=(sprint_active or _ro))],
@@ -1363,7 +1362,7 @@ def screen(app):
         # every time is the proven-safe pattern here.
         report_user_dd = searchable_dropdown(
             value=app._tm_report_user or None, options=_member_opts(),
-            hint_text="Type to search a person…", text_size=13, border_color=T.BORDER,
+            hint_text=strings.t("tm_search_person"), text_size=13, border_color=T.BORDER,
             focused_border_color=T.VIOLET, border_radius=T.R,
             content_padding=ft.Padding.symmetric(vertical=8, horizontal=10),
             on_select=_set_report_user, disabled=_ro)
@@ -1377,7 +1376,7 @@ def screen(app):
         _can_calc = (scope_ok and bool(app._tm_report_user)
                     and not app._tm_report_busy and not _ro)
         calc_btn = primary_btn(
-            "Calculating…" if app._tm_report_busy else "Calculate",
+            strings.t("tm_calculating") if app._tm_report_busy else strings.t("tm_calculate"),
             icon=ft.Icons.CALCULATE_OUTLINED,
             on_click=((lambda e: _calc_report(app, on_update=_sync_report_dynamic))
                      if _can_calc else None))
@@ -1387,14 +1386,14 @@ def screen(app):
             pass
 
         parts = [card(ft.Column([
-            sec_head("1", "Task workload report"),
+            sec_head("1", strings.t("tm_sec_report")),
             ft.Container(height=14),
             scope_toggle,
             ft.Container(height=16),
             scope_row,
             ft.Container(height=1, bgcolor=T.BORDER_2,
                         margin=ft.Margin.symmetric(vertical=18)),
-            ft.Column([field_label("Assigned to", req=True), hover_field(report_user_dd)],
+            ft.Column([field_label(strings.t("tm_assigned_to"), req=True), hover_field(report_user_dd)],
                       spacing=6),
             ft.Container(height=14),
             calc_btn,
@@ -1426,17 +1425,16 @@ def screen(app):
                     _recalc_totals()
                     app.render()
                     try:
-                        app._toast(f"Removed task {tid} from this report.")
+                        app._toast(strings.t("tm_removed_task", id=tid))
                     except Exception:
                         pass
                 def _d(e):
                     if _ro:
-                        return app._toast("Read-only — your role can't modify the report.")
+                        return app._toast(strings.t("tm_readonly_modify"))
                     app._confirm(
-                        "Remove task?",
-                        f"Remove task {tid} from this report and recalculate the "
-                        "totals? This doesn't change anything in Azure DevOps.",
-                        _do, yes_label="Remove")
+                        strings.t("tm_confirm_remove_title"),
+                        strings.t("tm_confirm_remove_body", id=tid),
+                        _do, yes_label=strings.t("tm_remove"))
                 return _d
 
             # TASK column: expand=True on desktop (fills the wide window), a
@@ -1447,7 +1445,7 @@ def screen(app):
             _task_w = 220 if _pc_tm.is_mobile() else None
             rows = [ft.Container(
                 ft.Row([
-                    R._id_link(app, t["id"], tooltip=f"Open task {t['id']} in Azure DevOps",
+                    R._id_link(app, t["id"], tooltip=strings.t("tm_tip_open_task", id=t['id']),
                               color=T.VIOLET_INK, weight=ft.FontWeight.BOLD,
                               width=70, font_family=T.F_MONO, size=12.5),
                     ft.Text(t["title"] or "—", size=12.5, color=T.INK,
@@ -1462,7 +1460,7 @@ def screen(app):
                            text_align=ft.TextAlign.RIGHT),
                     ft.IconButton(
                         icon=ft.Icons.DELETE_OUTLINE, icon_size=18, icon_color=T.RED,
-                        tooltip="Remove from this report", disabled=_ro,
+                        tooltip=strings.t("tm_tip_remove_report"), disabled=_ro,
                         on_click=_delete_task(t["id"]),
                         width=34, height=34,
                         style=ft.ButtonStyle(padding=ft.Padding.all(0),
@@ -1474,14 +1472,14 @@ def screen(app):
                 for i, t in enumerate(res["tasks"])]
             hdr = ft.Container(
                 ft.Row([
-                    ft.Text("ID", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_2, width=70),
-                    ft.Text("TASK", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_2,
+                    ft.Text(strings.t("tm_col_id"), size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_2, width=70),
+                    ft.Text(strings.t("tm_col_task"), size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_2,
                            expand=(None if _task_w else True), width=_task_w),
-                    ft.Text("STORY", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_2, width=180),
-                    ft.Text("STATE", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_2, width=90),
-                    ft.Text("ORIG. EST.", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_2,
+                    ft.Text(strings.t("tm_col_story"), size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_2, width=180),
+                    ft.Text(strings.t("tm_col_state"), size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_2, width=90),
+                    ft.Text(strings.t("tm_col_orig_est"), size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_2,
                            width=90, text_align=ft.TextAlign.RIGHT),
-                    ft.Text("COMPLETED", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_2,
+                    ft.Text(strings.t("tm_col_completed"), size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_2,
                            width=90, text_align=ft.TextAlign.RIGHT),
                     ft.Container(width=34),
                 ], spacing=10),
@@ -1542,13 +1540,13 @@ def screen(app):
             # earlier this session ("WrapParentData is not a subtype of
             # FlexParentData"); keep this Row wrap-free.
             _kpi_tiles = [
-                R._kpi_tile("TASKS", str(res["count"])),
-                R._kpi_tile("ORIGINAL ESTIMATE", f"{est_total:g} h"),
-                R._kpi_tile("COMPLETED WORK", f"{comp_total:g} h", T.GREEN),
-                R._kpi_tile("REMAINING", f"{remaining:g} h"),
+                R._kpi_tile(strings.t("tm_kpi_tasks"), str(res["count"])),
+                R._kpi_tile(strings.t("tm_kpi_orig_est"), f"{est_total:g} h"),
+                R._kpi_tile(strings.t("tm_kpi_completed"), f"{comp_total:g} h", T.GREEN),
+                R._kpi_tile(strings.t("tm_kpi_remaining"), f"{remaining:g} h"),
             ]
             if bench_remaining is not None:
-                _kpi_tiles.append(R._kpi_tile("REMAINING (170H/MO)", f"{bench_remaining:g} h"))
+                _kpi_tiles.append(R._kpi_tile(strings.t("tm_kpi_remaining_bench"), f"{bench_remaining:g} h"))
             # Responsive: equal-share on desktop; fixed-width wrapping tiles on
             # a phone (the plain expand Row char-wrapped every label). See
             # R.kpi_row.
@@ -1562,7 +1560,7 @@ def screen(app):
                 ft.Container(
                     ft.Row([
                         ft.Icon(ft.Icons.CALENDAR_MONTH_OUTLINED, size=12.5, color=T.INK_3),
-                        ft.Text(f"170h/month benchmark calculated for {bench_period_label}",
+                        ft.Text(strings.t("tm_bench_caption", period=bench_period_label),
                                size=11, color=T.INK_3, weight=ft.FontWeight.W_600),
                     ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                     margin=ft.Margin.only(top=10))
@@ -1570,10 +1568,10 @@ def screen(app):
             progress = ft.Container(
                 ft.Column([
                     ft.Row([
-                        ft.Text("PROGRESS", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3,
+                        ft.Text(strings.t("tm_progress"), size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3,
                                expand=True),
                         ft.Text(
-                            f"{pct_disp}% complete" + (f"  ·  {over_by:g}h over estimate"
+                            strings.t("tm_pct_complete", pct=pct_disp) + (strings.t("tm_over_estimate", h=f"{over_by:g}")
                                                        if over_by > 0 else ""),
                             size=12, weight=ft.FontWeight.BOLD,
                             color=(T.GREEN if pct >= 1 else T.VIOLET_INK)),
@@ -1598,7 +1596,7 @@ def screen(app):
             # Export (Excel / PDF / JSON) + email — same pattern as Sprint Plan.
             parts.append(ft.Container(
                 ft.Column([
-                    ft.Text("EXPORT", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
+                    ft.Text(strings.t("tm_export"), size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
                     ft.Container(height=8),
                     _tm_export_row(app, res),
                 ], spacing=0), margin=ft.Margin.only(top=16)))
@@ -1606,14 +1604,14 @@ def screen(app):
             def _email(e, _res=res):
                 _tm_email(app, _res)
 
-            app._tm_report_send_btn = green_btn("Email report", icon=ft.Icons.SEND,
+            app._tm_report_send_btn = green_btn(strings.t("tm_email_report"), icon=ft.Icons.SEND,
                                                 on_click=_email)
             email_picker = R.email_recipient_picker(
                 app, "_tm_report_email_to", is_open_key="_tm_report_email_open",
                 sync_key="tm_report_emails", trailing=app._tm_report_send_btn)
             parts.append(ft.Container(
                 ft.Column([
-                    ft.Text("EMAIL", size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
+                    ft.Text(strings.t("tm_email_hdr"), size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
                     ft.Container(height=8),
                     email_picker,
                 ], spacing=0), margin=ft.Margin.only(top=16)))
@@ -1784,13 +1782,13 @@ def screen(app):
         if t == "user":
             opts = [ft.DropdownOption(key=m["id"], text=m["name"])
                     for m in (getattr(app, "_tm_members_full", None) or [])]
-            return _mk_dd(opts, cur, "Select a person")
+            return _mk_dd(opts, cur, strings.t("tm_select_person"))
         if t in ("option", "priority") or (t == "array" and items in ("option", "version", "component")):
             first = (cur.split(",")[0] if isinstance(cur, str) and cur else cur) or None
             return _mk_dd([ft.DropdownOption(key=a["id"], text=a["label"]) for a in allowed],
                           first, f"Select {name.lower()}")
         if t == "number":
-            return _mk_tf("e.g. 5", numeric=True)
+            return _mk_tf(strings.t("tm_hint_number"), numeric=True)
         if t == "date":
             # Native calendar picker — respects the date type. on_after rebuilds
             # the section in place (shows the picked date) without a full render.
@@ -1798,13 +1796,13 @@ def screen(app):
         if t == "datetime":
             # Datetime — clear ISO-ish placeholder; backend fills the time to
             # midnight if only a date is given, and appends the offset.
-            return _mk_tf("YYYY-MM-DD HH:MM  (time optional)")
+            return _mk_tf(strings.t("tm_hint_datetime"))
         if t == "array" and items == "string":
-            return _mk_tf("comma, separated  (e.g. regression, smoke)")
+            return _mk_tf(strings.t("tm_hint_csv"))
         if fid == "description":
-            return _mk_tf("Describe the sub-task…", multiline=True)
+            return _mk_tf(strings.t("tm_hint_describe"), multiline=True)
         if fid == "environment":
-            return _mk_tf("e.g. Staging / Chrome 126", multiline=True)
+            return _mk_tf(strings.t("tm_hint_environment"), multiline=True)
         return _mk_tf(f"Enter {name.lower()}")
 
     def _ct_field_block(sid, idx, spec):
@@ -1821,7 +1819,7 @@ def screen(app):
                         _ct_field_control(sid, idx, spec),
                     ], spacing=4, tight=True), expand=True),
                 ft.IconButton(ft.Icons.CLOSE_ROUNDED, icon_size=14, icon_color=T.INK_3,
-                              tooltip="Remove field", disabled=_ro, width=28, height=28,
+                              tooltip=strings.t("tm_tip_remove_field"), disabled=_ro, width=28, height=28,
                               on_click=(None if _ro else _remove_ct_field(sid, idx, fid))),
             ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.START),
             padding=ft.Padding.symmetric(vertical=6, horizontal=10),
@@ -1836,8 +1834,8 @@ def screen(app):
         specs = [s for s in schema
                  if _ct_renderable(s) and s["id"] not in shown and s["id"] not in _CT_SKIP_FIELDS]
         if not specs or _ro:
-            return [ft.Text(("Pick a work type to add fields" if not schema
-                             else "All available fields added"),
+            return [ft.Text((strings.t("tm_pick_worktype") if not schema
+                             else strings.t("tm_all_fields_added")),
                             size=11, color=T.INK_3)]
         return [ft.TextButton(
                     content=ft.Row([ft.Icon(ft.Icons.ADD, size=13, color=T.VIOLET_INK),
@@ -1854,7 +1852,7 @@ def screen(app):
                 ft.Text(f"#{idx + 1}", size=11.5, color=T.INK_3, width=70,
                         font_family=T.F_MONO, text_align=ft.TextAlign.CENTER))
         remove_btn = (ft.IconButton(icon=ft.Icons.CLOSE_ROUNDED, icon_size=15,
-                                    icon_color=T.INK_3, tooltip="Remove this sub-task",
+                                    icon_color=T.INK_3, tooltip=strings.t("tm_tip_remove_subtask"),
                                     on_click=(None if _ro else _remove_row(sid, idx)),
                                     disabled=_ro, width=30, height=30)
                       if len(rows) > 1 else ft.Container(width=30))
@@ -1864,13 +1862,13 @@ def screen(app):
         wt_dd = ft.Dropdown(
             options=[ft.DropdownOption(key=w["id"], text=w["name"]) for w in wts],
             value=(row.get("type_id") or None),
-            hint_text=("Loading work types…" if not wts else "Work type"),
+            hint_text=(strings.t("tm_loading_worktypes") if not wts else strings.t("tm_worktype")),
             text_size=12.5, dense=True, border_color=T.BORDER, focused_border_color=T.VIOLET,
             border_radius=T.R, width=220, disabled=(_ro or not wts), content_padding=pad)
         wt_dd.on_change = _set_ct_worktype(sid, idx)
         summ_tf = ft.TextField(
             value=row.get("summary", ""), on_change=_set_ct_summary(sid, idx),
-            hint_text="Sub-task summary", text_size=12.5, dense=True, border_color=T.BORDER,
+            hint_text=strings.t("tm_subtask_summary"), text_size=12.5, dense=True, border_color=T.BORDER,
             focused_border_color=T.VIOLET, border_radius=T.R, disabled=_ro, content_padding=pad)
         top_row = ft.Row([lead, ft.Container(hover_field(summ_tf), expand=True), remove_btn],
                          spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER)
@@ -1886,12 +1884,12 @@ def screen(app):
         return ft.Container(ft.Column([
             top_row,
             ft.Container(height=8),
-            ft.Row([ft.Text("Work type", size=10.5, weight=ft.FontWeight.BOLD,
+            ft.Row([ft.Text(strings.t("tm_worktype"), size=10.5, weight=ft.FontWeight.BOLD,
                             color=T.INK_3, width=70), wt_dd],
                    spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
             ft.Container(height=8),
             ft.Container(fields_col, padding=ft.Padding.only(left=80)),
-            ft.Row([ft.Text("Add a field", size=10.5, weight=ft.FontWeight.BOLD,
+            ft.Row([ft.Text(strings.t("tm_add_field"), size=10.5, weight=ft.FontWeight.BOLD,
                             color=T.INK_3, width=70), chips_row],
                    spacing=10, vertical_alignment=ft.CrossAxisAlignment.START),
         ], spacing=0),
@@ -1932,7 +1930,7 @@ def screen(app):
                            font_family=T.F_MONO, text_align=ft.TextAlign.CENTER))
                 remove_btn = (
                     ft.IconButton(icon=ft.Icons.CLOSE_ROUNDED, icon_size=15,
-                                 icon_color=T.INK_3, tooltip="Remove this task",
+                                 icon_color=T.INK_3, tooltip=strings.t("tm_tip_remove_task"),
                                  on_click=(None if _ro else _remove_row(sid, idx)),
                                  disabled=_ro, width=30, height=30)
                     if len(rows) > 1 else ft.Container(width=30))
@@ -1942,25 +1940,25 @@ def screen(app):
                     remove_btn,
                 ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
-                due_field = _date_field(app, "Due date", row.get("due", ""),
+                due_field = _date_field(app, strings.t("tm_due_date"), row.get("due", ""),
                                         _set_row_field(sid, idx, "due"),
                                         on_after=_sync_ct_dynamic, disabled=_ro)
                 est_tf = ft.TextField(
                     value=row.get("estimate", ""), on_change=_set_row_field(sid, idx, "estimate"),
                     text_size=12.5, dense=True, border_color=T.BORDER,
                     focused_border_color=T.VIOLET, border_radius=T.R, width=110, disabled=_ro,
-                    hint_text="hours", keyboard_type=ft.KeyboardType.NUMBER,
+                    hint_text=strings.t("tm_hint_hours"), keyboard_type=ft.KeyboardType.NUMBER,
                     content_padding=ft.Padding.symmetric(vertical=8, horizontal=10))
                 comp_tf = ft.TextField(
                     value=row.get("completed", ""), on_change=_set_row_field(sid, idx, "completed"),
                     text_size=12.5, dense=True, border_color=T.BORDER,
                     focused_border_color=T.VIOLET, border_radius=T.R, width=110, disabled=_ro,
-                    hint_text="hours", keyboard_type=ft.KeyboardType.NUMBER,
+                    hint_text=strings.t("tm_hint_hours"), keyboard_type=ft.KeyboardType.NUMBER,
                     content_padding=ft.Padding.symmetric(vertical=8, horizontal=10))
-                est_block = ft.Column([ft.Text("Original estimate", size=10.5,
+                est_block = ft.Column([ft.Text(strings.t("tm_original_estimate"), size=10.5,
                                               weight=ft.FontWeight.BOLD, color=T.INK_3),
                                        hover_field(est_tf)], spacing=6, tight=True)
-                comp_block = ft.Column([ft.Text("Completed work", size=10.5,
+                comp_block = ft.Column([ft.Text(strings.t("tm_completed_work"), size=10.5,
                                                 weight=ft.FontWeight.BOLD, color=T.INK_3),
                                         hover_field(comp_tf)], spacing=6, tight=True)
                 import platform_caps as _pc_tm
@@ -2003,8 +2001,8 @@ def screen(app):
                 content=ft.Row([
                     ft.Icon(ft.Icons.ADD_CIRCLE_OUTLINE, size=16,
                            color=(T.INK_3 if (at_max or _ro) else T.VIOLET_INK)),
-                    ft.Text(("Add another task" if not at_max
-                            else f"Max {_TM_CT_MAX_ROWS} tasks per story"),
+                    ft.Text((strings.t("tm_add_another_task") if not at_max
+                            else strings.t("tm_max_tasks", n=_TM_CT_MAX_ROWS)),
                            size=12, weight=ft.FontWeight.W_600,
                            color=(T.INK_3 if (at_max or _ro) else T.VIOLET_INK)),
                 ], spacing=6, tight=True),
@@ -2016,7 +2014,7 @@ def screen(app):
                         ft.Text(f"#{sid} — {st.get('title', '') or '—'}", size=12.5,
                                weight=ft.FontWeight.BOLD, color=T.INK, expand=True,
                                max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
-                        ft.Text(f"{len(rows)}/{_TM_CT_MAX_ROWS} tasks", size=11,
+                        ft.Text(strings.t("tm_tasks_count", n=len(rows), max=_TM_CT_MAX_ROWS), size=11,
                                color=T.INK_3),
                     ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
                     ft.Container(height=10),
@@ -2033,8 +2031,8 @@ def screen(app):
                       and (bool(app._tm_ct_user) or _can_edit_subtasks)
                       and not app._tm_ct_busy and not _ro)
         btn = green_btn(
-            ("Creating…" if app._tm_ct_busy
-             else ("Create sub-tasks" if _can_edit_subtasks else "Create child tasks")),
+            (strings.t("tm_creating") if app._tm_ct_busy
+             else (strings.t("tm_create_subtasks") if _can_edit_subtasks else strings.t("tm_create_child_tasks"))),
             icon=ft.Icons.ADD_TASK,
             on_click=((lambda e: _create_tasks(app)) if _can_create else None))
         try:
@@ -2045,7 +2043,7 @@ def screen(app):
         parts = []
         if story_blocks:
             parts += [ft.Container(height=14),
-                     field_label("Per-story details"),
+                     field_label(strings.t("tm_per_story_details")),
                      ft.Container(height=6),
                      ft.Column(story_blocks, spacing=0)]
         parts += [ft.Container(height=14), btn]
@@ -2148,9 +2146,9 @@ def screen(app):
         if locked:
             return [card(ft.Stack([
                 ft.Column([
-                    sec_head("2", "Create child tasks",
+                    sec_head("2", strings.t("tm_create_child_tasks"),
                              ft.Row([ft.Icon(ft.Icons.LOCK_OUTLINE, size=13, color=T.INK_3),
-                                    ft.Text("locked", size=11, color=T.INK_3,
+                                    ft.Text(strings.t("tm_locked"), size=11, color=T.INK_3,
                                            weight=ft.FontWeight.BOLD)], spacing=4, tight=True)),
                     ft.Container(height=14),
                     ft.Container(height=44, bgcolor=T.CARD_2,
@@ -2162,7 +2160,7 @@ def screen(app):
                 ft.Container(
                     ft.Container(
                         ft.Row([ft.Icon(ft.Icons.LOCK_OUTLINE, size=14, color=T.INK_2),
-                               ft.Text("Pick a sprint to load stories", size=12,
+                               ft.Text(strings.t("tm_pick_sprint_load"), size=12,
                                       color=T.INK_2, weight=ft.FontWeight.BOLD)],
                               spacing=6, tight=True),
                         padding=ft.Padding.symmetric(vertical=14, horizontal=9),
@@ -2171,14 +2169,14 @@ def screen(app):
             ]), expand=True)]
 
         story_picker = (
-            ft.Container(ft.Text("Loading stories…", color=T.INK_3, size=12), padding=10)
+            ft.Container(ft.Text(strings.t("tm_loading_stories"), color=T.INK_3, size=12), padding=10)
             if app._tm_ct_stories_loading else
             R._checkbox_multiselect(
                 [(s["id"], f"#{s['id']} — {s['title']}") for s in app._tm_ct_stories],
                 app._tm_ct_selected, _toggle_story, _all_stories,
                 is_open=app._tm_ct_open, on_open=_open_stories,
-                placeholder="Select user stories…",
-                empty="No user stories found for this sprint.",
+                placeholder=strings.t("tm_select_stories"),
+                empty=strings.t("tm_no_stories"),
                 page=app.page, app=app, sync_key="tm_stories", disabled=_ro))
 
         # Confirmed via the live diagnostics log (page.on_error -> diag_log) that
@@ -2189,7 +2187,7 @@ def screen(app):
         # there). Safe to restore this as searchable now.
         ct_user_dd = searchable_dropdown(
             value=app._tm_ct_user or None, options=_member_opts(), disabled=_ro,
-            hint_text="Type to search a person…", text_size=13, border_color=T.BORDER,
+            hint_text=strings.t("tm_search_person"), text_size=13, border_color=T.BORDER,
             focused_border_color=T.VIOLET, border_radius=T.R,
             content_padding=ft.Padding.symmetric(vertical=8, horizontal=10),
             on_select=_set_ct_user)
@@ -2198,16 +2196,16 @@ def screen(app):
         _ct_dynamic_cell[0] = ct_dynamic
 
         section = [card(ft.Column([
-            sec_head("2", "Create child tasks"),
+            sec_head("2", strings.t("tm_create_child_tasks")),
             ft.Container(height=10),
-            ft.Column([field_label("User stories", req=True), story_picker], spacing=6),
+            ft.Column([field_label(strings.t("tm_user_stories"), req=True), story_picker], spacing=6),
             ft.Container(height=14),
             # "Assign all to" is an Azure-only bulk field — on Jira/Xray the
             # assignee is chosen per sub-task via the inline "＋ Add a field"
             # picker, so hide this to avoid a required-looking control the
             # sub-task create path never reads.
             (ft.Container(height=0) if _can_edit_subtasks else
-             ft.Column([field_label("Assign all to", req=True), hover_field(ct_user_dd)],
+             ft.Column([field_label(strings.t("tm_assign_all"), req=True), hover_field(ct_user_dd)],
                        spacing=6)),
             ct_dynamic,
         ], spacing=0))]
@@ -2251,6 +2249,6 @@ def screen(app):
         report_body + [ft.Container(height=24)] + ct_body,
         spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
 
-    return app.shell("Task Manager",
-                     "Per-user task workload reports and bulk child-task creation",
+    return app.shell(strings.t("tm_title"),
+                     strings.t("tm_subtitle"),
                      body)

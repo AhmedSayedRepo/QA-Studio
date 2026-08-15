@@ -32,22 +32,24 @@ import flet as ft
 import theme as T
 import platform_caps
 import auth_supabase as auth
+import strings
 from ui import card, empty_state, ghost_btn, green_btn, danger_btn, badge, field_label
 
 
 _STATUS_TONE = {
-    "queued":  ("grey",   "Queued"),
-    "running": ("violet", "Running"),
-    "paused":  ("amber",  "Paused"),
-    "done":    ("green",  "Done"),
-    "stopped": ("amber",  "Stopped"),
-    "error":   ("red",    "Error"),
+    "queued":  ("grey",   "rr_status_queued"),
+    "running": ("violet", "rr_status_running"),
+    "paused":  ("amber",  "rr_status_paused"),
+    "done":    ("green",  "rr_status_done"),
+    "stopped": ("amber",  "rr_status_stopped"),
+    "error":   ("red",    "rr_status_error"),
 }
 _TERMINAL = ("done", "stopped", "error")
 
 
 def _status_badge(status):
-    kind, label = _STATUS_TONE.get(status, ("grey", status or "—"))
+    kind, key = _STATUS_TONE.get(status, ("grey", None))
+    label = strings.t(key) if key else (status or "—")
     return badge(label, kind=kind)
 
 
@@ -61,25 +63,24 @@ def _relative(ts_str):
     except Exception:
         return str(ts_str)
     if secs < 45:
-        return "just now"
+        return strings.t("rr_just_now")
     if secs < 90:
-        return "1 min ago"
+        return strings.t("rr_min_ago_1")
     mins = int(secs // 60)
     if mins < 60:
-        return f"{mins} mins ago"
+        return strings.t("rr_mins_ago", n=mins)
     hrs = mins // 60
     if hrs < 24:
-        return f"{hrs} hr ago" if hrs == 1 else f"{hrs} hrs ago"
+        return strings.t("rr_hr_ago_1") if hrs == 1 else strings.t("rr_hrs_ago", n=hrs)
     days = hrs // 24
-    return "1 day ago" if days == 1 else f"{days} days ago"
+    return strings.t("rr_day_ago_1") if days == 1 else strings.t("rr_days_ago", n=days)
 
 
 def screen(app):
     if not auth.configured():
-        return app.shell("Remote Runs", "GitHub-executed runs",
-                         empty_state(ft.Icons.CLOUD_OFF_OUTLINED, "Sign-in required",
-                                     "Remote runs need Supabase sign-in — "
-                                     "connect an account in Setup first."))
+        return app.shell(strings.t("remote_runs"), strings.t("rr_github_runs"),
+                         empty_state(ft.Icons.CLOUD_OFF_OUTLINED, strings.t("rr_signin_required"),
+                                     strings.t("rr_signin_body")))
     if getattr(app, "_rr_view_id", None):
         return _detail_screen(app)
     return _list_screen(app)
@@ -104,14 +105,15 @@ def _refresh_list(app):
 
 
 def _kind_label(kind):
-    return "Steps" if kind == "steps" else "Titles"
+    return strings.t("rr_kind_steps") if kind == "steps" else strings.t("rr_kind_titles")
 
 
 def _run_row(app, run):
     status = run.get("status") or "queued"
     story_ids = run.get("story_ids") or []
-    subtitle = (f"{run.get('project') or '—'} · plan #{run.get('plan_id')} · "
-               f"{len(story_ids)} stor{'y' if len(story_ids) == 1 else 'ies'}")
+    _n = len(story_ids)
+    subtitle = strings.t("rr_row_subtitle_one" if _n == 1 else "rr_row_subtitle_many",
+                         project=run.get('project') or '—', plan=run.get('plan_id'), n=_n)
     row = ft.Row([
         ft.Column([
             ft.Row([
@@ -147,21 +149,20 @@ def _list_screen(app):
     loading = getattr(app, "_rr_list_loading", True)
     runs = getattr(app, "_rr_list", None) or []
 
-    refresh_btn = ghost_btn("Refresh", icon=ft.Icons.REFRESH,
+    refresh_btn = ghost_btn(strings.t("rr_refresh"), icon=ft.Icons.REFRESH,
                             on_click=lambda e: _refresh_list(app))
 
     if loading and getattr(app, "_rr_list", None) is None:
         body_content = card(ft.Column([
             ft.Row([ft.ProgressRing(width=16, height=16, stroke_width=2, color=T.VIOLET),
-                   ft.Text("Loading remote runs…", size=12.5, color=T.INK_3,
+                   ft.Text(strings.t("rr_loading"), size=12.5, color=T.INK_3,
                           weight=ft.FontWeight.W_500)],
                   spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
         ], spacing=0))
     elif not runs:
         body_content = empty_state(
-            ft.Icons.CLOUD_QUEUE_OUTLINED, "No remote runs yet",
-            "Turn on “Run remotely” on the Setup screen to execute a run "
-            "on GitHub Actions instead of locally — it'll show up here.")
+            ft.Icons.CLOUD_QUEUE_OUTLINED, strings.t("rr_none_title"),
+            strings.t("rr_none_body"))
     else:
         body_content = ft.Column([_run_row(app, r) for r in runs], spacing=0)
 
@@ -170,7 +171,7 @@ def _list_screen(app):
         ft.Container(height=10),
         body_content,
     ], spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
-    return app.shell("Remote Runs", "GitHub-executed runs — live status & activity",
+    return app.shell(strings.t("remote_runs"), strings.t("rr_list_subtitle"),
                      body)
 
 
@@ -310,19 +311,18 @@ def _control(app, run_id, action, label):
     def go():
         ok, msg = auth.set_remote_run_control(run_id, action)
         if ok:
-            app.ui_safe(lambda: app._toast(f"{label} sent."))
+            app.ui_safe(lambda: app._toast(strings.t("rr_control_sent", label=label)))
         else:
-            app.ui_safe(lambda: app._err(f"Couldn't {label.lower()}: {msg}"))
+            app.ui_safe(lambda: app._err(strings.t("rr_control_failed", label=label.lower(), msg=msg)))
     app._bg(go)
 
 
 def _stop_confirm(app, run_id):
     app._confirm(
-        "Stop this run?",
-        "The worker finishes whatever test case is in flight, then ends the "
-        "run as “stopped”. This can't be undone.",
-        on_yes=lambda: _control(app, run_id, "stop", "Stop"),
-        yes_label="Stop run", danger=True, icon=ft.Icons.STOP_CIRCLE_OUTLINED)
+        strings.t("rr_stop_title"),
+        strings.t("rr_stop_body"),
+        on_yes=lambda: _control(app, run_id, "stop", strings.t("rr_stop")),
+        yes_label=strings.t("rr_stop_yes"), danger=True, icon=ft.Icons.STOP_CIRCLE_OUTLINED)
 
 
 def _meta_row(label, value, _cell=None):
@@ -351,9 +351,9 @@ def _summary_cards(summary):
         return None
     import re
     specs = [
-        ("Updated", r"(\d+)\s*(?:updated|created|written|generated)", T.GREEN),
-        ("Skipped", r"(\d+)\s*skipp?ed", T.AMBER),
-        ("Failed",  r"(\d+)\s*(?:failed|error)", T.RED),
+        (strings.t("rr_updated"), r"(\d+)\s*(?:updated|created|written|generated)", T.GREEN),
+        (strings.t("rr_skipped"), r"(\d+)\s*skipp?ed", T.AMBER),
+        (strings.t("rr_failed"),  r"(\d+)\s*(?:failed|error)", T.RED),
     ]
     found = []
     for label, pat, tone in specs:
@@ -362,7 +362,7 @@ def _summary_cards(summary):
             found.append((label, m.group(1), tone))
     if not found:
         # Not the counts shape — keep the raw summary as a normal row.
-        return _meta_row("Summary", summary)
+        return _meta_row(strings.t("rr_summary"), summary)
 
     # Mobile: fixed-width cards in a HORIZONTALLY SCROLLABLE row (swipe if they
     # don't fit) — same rule as the plan KPI / sprint-summary cards, never
@@ -389,7 +389,7 @@ def _summary_cards(summary):
                         tight=bool(_m),
                         vertical_alignment=ft.CrossAxisAlignment.START)
     return ft.Column([
-        ft.Text("SUMMARY", size=10, weight=ft.FontWeight.BOLD, color=T.INK_3),
+        ft.Text(strings.t("rr_summary_head"), size=10, weight=ft.FontWeight.BOLD, color=T.INK_3),
         ft.Container(height=6),
         _cards_row,
     ], spacing=0)
@@ -425,7 +425,7 @@ def _ln_from_event(ev):
     payload = ev.get("payload") or {}
     if kind == "story":
         return {"tone": "story", "ico": "▸",
-               "msg": f"Story {payload.get('id')} · {payload.get('title')}", "ar": True}
+               "msg": strings.t("rr_story_line", id=payload.get('id'), title=payload.get('title')), "ar": True}
     if kind == "log":
         return dict(payload)
     return None   # stat/progress/story_progress/done are UI-state events,
@@ -439,7 +439,7 @@ def _detail_screen(app):
     status = run.get("status") or "queued"
     can_control = app.can(auth.CAP_RUN) if hasattr(app, "can") else True
 
-    back = ghost_btn("All runs", icon=ft.Icons.ARROW_BACK,
+    back = ghost_btn(strings.t("rr_all_runs"), icon=ft.Icons.ARROW_BACK,
                      on_click=lambda e: _close_run(app))
 
     story_ids = run.get("story_ids") or []
@@ -450,9 +450,9 @@ def _detail_screen(app):
             _status_badge(status),
         ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
         ft.Container(height=10),
-        _meta_row("Project", run.get("project") or "—"),
-        _meta_row("Plan", f"#{run.get('plan_id')}" if run.get("plan_id") else "—"),
-        _meta_row("Stories", ", ".join(str(s) for s in story_ids) or "—"),
+        _meta_row(strings.t("rr_project"), run.get("project") or "—"),
+        _meta_row(strings.t("rr_plan"), f"#{run.get('plan_id')}" if run.get("plan_id") else "—"),
+        _meta_row(strings.t("rr_stories"), ", ".join(str(s) for s in story_ids) or "—"),
         # Keep handles on the three relative-time values. The poll loop only
         # does a FULL render when `status` CHANGES; every other tick updates the
         # log list in place (to avoid resetting scroll every 2.5s). These texts
@@ -460,12 +460,12 @@ def _detail_screen(app):
         # happens seconds after creation, so they rendered "just now" and then
         # never moved. At 3-4 minutes in they still read "just now" (reported
         # live). _refresh_meta() now re-computes them on every tick.
-        _meta_row("Created", _relative(run.get("created_at")),
+        _meta_row(strings.t("rr_created"), _relative(run.get("created_at")),
                   _cell=(app.__dict__.setdefault("_rr_meta_cells", {}), "created")),
-        _meta_row("Started", _relative(run.get("started_at"))
+        _meta_row(strings.t("rr_started"), _relative(run.get("started_at"))
                   if run.get("started_at") else "—",
                   _cell=(app._rr_meta_cells, "started")),
-        _meta_row("Finished", _relative(run.get("finished_at"))
+        _meta_row(strings.t("rr_finished"), _relative(run.get("finished_at"))
                   if run.get("finished_at") else "—",
                   _cell=(app._rr_meta_cells, "finished")),
         (ft.Container(ft.Column([ft.Container(height=8),
@@ -483,14 +483,14 @@ def _detail_screen(app):
     controls = []
     if can_control and status not in _TERMINAL:
         if status in ("queued", "running"):
-            controls.append(ghost_btn("Pause", icon=ft.Icons.PAUSE_CIRCLE_OUTLINE,
+            controls.append(ghost_btn(strings.t("rr_pause"), icon=ft.Icons.PAUSE_CIRCLE_OUTLINE,
                                       expand=_m_ctl,
-                                      on_click=lambda e: _control(app, run_id, "pause", "Pause")))
+                                      on_click=lambda e: _control(app, run_id, "pause", strings.t("rr_pause"))))
         if status == "paused":
-            controls.append(green_btn("Resume", icon=ft.Icons.PLAY_CIRCLE_OUTLINE,
+            controls.append(green_btn(strings.t("rr_resume"), icon=ft.Icons.PLAY_CIRCLE_OUTLINE,
                                       expand=_m_ctl,
-                                      on_click=lambda e: _control(app, run_id, "resume", "Resume")))
-        controls.append(danger_btn("Stop", icon=ft.Icons.STOP_CIRCLE_OUTLINED,
+                                      on_click=lambda e: _control(app, run_id, "resume", strings.t("rr_resume"))))
+        controls.append(danger_btn(strings.t("rr_stop"), icon=ft.Icons.STOP_CIRCLE_OUTLINED,
                                    expand=_m_ctl,
                                    on_click=lambda e: _stop_confirm(app, run_id)))
     controls_row = (ft.Row(controls, spacing=10, wrap=not _m_ctl)
@@ -500,7 +500,7 @@ def _detail_screen(app):
     # state — a finished run's log is just history, no more polling happens.
     live_chip = (ft.Row([
         ft.Container(width=7, height=7, bgcolor=T.VIOLET, border_radius=4),
-        ft.Text("Live — updates every few seconds", size=11, color=T.INK_3,
+        ft.Text(strings.t("rr_live"), size=11, color=T.INK_3,
                weight=ft.FontWeight.W_600),
     ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER)
                  if status not in _TERMINAL else ft.Container(height=0))
@@ -516,13 +516,12 @@ def _detail_screen(app):
     app._rr_log_col.controls = log_ctls
     log_card = card(ft.Column([
         ft.Row([
-            ft.Text("ACTIVITY", size=11, weight=ft.FontWeight.BOLD, color=T.VIOLET_INK),
+            ft.Text(strings.t("rr_activity"), size=11, weight=ft.FontWeight.BOLD, color=T.VIOLET_INK),
             ft.Container(expand=True), live_chip,
         ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
         ft.Container(height=8),
         (app._rr_log_col if log_ctls else
-         ft.Text("No activity yet — the worker hasn't started, or the "
-                "GitHub Actions dispatch is still queuing.", size=12,
+         ft.Text(strings.t("rr_no_activity"), size=12,
                 color=T.INK_3, weight=ft.FontWeight.W_500)),
     ], spacing=0))
 
@@ -532,4 +531,4 @@ def _detail_screen(app):
          if controls else ft.Container(height=0)),
         ft.Container(height=14), log_card,
     ], spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
-    return app.shell("Remote Runs", _kind_label(run.get("kind")) + " run", body)
+    return app.shell(strings.t("remote_runs"), strings.t("rr_detail_subtitle", kind=_kind_label(run.get("kind"))), body)

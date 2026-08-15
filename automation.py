@@ -7,6 +7,7 @@ import os
 import flet as ft
 import theme as T
 import regression
+import strings
 from ui import card, empty_state, sec_head, _btn_shadow, primary_btn, green_btn, ghost_btn
 
 
@@ -26,7 +27,7 @@ def _build_action_buttons(app, ready):
         _stop_btn = ft.FilledButton(
             content=ft.Row(
                 [ft.Icon(ft.Icons.STOP_CIRCLE, size=18, color="#FFFFFF"),
-                 ft.Text("Stop", size=14, weight=ft.FontWeight.BOLD,
+                 ft.Text(strings.t("auto_stop"), size=14, weight=ft.FontWeight.BOLD,
                          color="#FFFFFF")],
                 spacing=8, tight=True,
                 alignment=ft.MainAxisAlignment.CENTER),
@@ -37,10 +38,10 @@ def _build_action_buttons(app, ready):
                 padding=ft.Padding.symmetric(horizontal=14, vertical=0)))
         _paused = bool(getattr(app, "_auto_paused", False))
         if _paused:
-            _pr_label, _pr_icon, _pr_col = "Resume", ft.Icons.PLAY_ARROW, T.GREEN
+            _pr_label, _pr_icon, _pr_col = strings.t("auto_resume"), ft.Icons.PLAY_ARROW, T.GREEN
             _pr_click = lambda e: app._resume_automation()
         else:
-            _pr_label, _pr_icon, _pr_col = "Pause", ft.Icons.PAUSE_CIRCLE, T.AMBER
+            _pr_label, _pr_icon, _pr_col = strings.t("auto_pause"), ft.Icons.PAUSE_CIRCLE, T.AMBER
             _pr_click = lambda e: app._pause_automation()
         _pr_btn = ft.FilledButton(
             content=ft.Row(
@@ -61,7 +62,7 @@ def _build_action_buttons(app, ready):
         gen_btn = ft.Row([_stop_w, _pr_w], spacing=10)
     else:
         gen_btn = primary_btn(
-            "Generate automation scripts",
+            strings.t("auto_generate"),
             icon=ft.Icons.AUTO_AWESOME, expand=True, disabled=gen_disabled,
             on_click=lambda e: app._start_automation())
 
@@ -72,12 +73,12 @@ def _build_action_buttons(app, ready):
     _can_push = bool(_proj and os.path.isdir(_proj)
                      and app.auto_git_url.strip() and app.auto_git_token.strip())
     push_disabled = app._auto_running or not (_can_push or app._auto_built)
-    push_btn = green_btn("Push to Git", icon=ft.Icons.CLOUD_UPLOAD_OUTLINED,
+    push_btn = green_btn(strings.t("auto_push"), icon=ft.Icons.CLOUD_UPLOAD_OUTLINED,
                          expand=True, on_click=lambda e: app._push_automation())
     # grey it out visually when disabled
     if push_disabled:
         push_btn = ft.Row([ft.OutlinedButton(
-            "Push to Git", icon=ft.Icons.CLOUD_UPLOAD_OUTLINED, height=42,
+            strings.t("auto_push"), icon=ft.Icons.CLOUD_UPLOAD_OUTLINED, height=42,
             disabled=True, expand=True,
             style=ft.ButtonStyle(color=T.INK_3, side=ft.BorderSide(1, T.BORDER),
                 shape=ft.RoundedRectangleBorder(radius=T.R)))], spacing=0)
@@ -115,10 +116,9 @@ def _refresh_auto_state(app):
 def screen(app):
         if not app.readonly and not (app.connected and app.project):
             return regression.locked_state(
-                app, "Automation",
-                "Generate self-healing Selenium tests from your stories",
-                "Connect your Azure DevOps account on the Setup screen. You can "
-                "pick the test plan and stories right here once connected.")
+                app, strings.t("auto_title"),
+                strings.t("auto_locked_sub"),
+                strings.t("auto_locked_msg"))
         regression._auto_init(app)
         # ── left: config form ──
         ready = bool(app._auto_plans_selected and app._auto_selected)
@@ -132,8 +132,7 @@ def screen(app):
         if not ready:
             setup_hint = ft.Container(
                 ft.Row([ft.Icon(ft.Icons.INFO_OUTLINE, size=16, color=T.AMBER),
-                        ft.Text("Pick a test plan and at least one story below to "
-                                "enable automation.",
+                        ft.Text(strings.t("auto_setup_hint"),
                                 size=12, color=T.AMBER, weight=ft.FontWeight.W_500, expand=True)],
                        spacing=8),
                 padding=12, bgcolor=T.AMBER_SOFT, border_radius=T.R,
@@ -154,7 +153,7 @@ def screen(app):
                 border=ft.Border.all(2 if active else 1, T.VIOLET if active else T.BORDER),
                 border_radius=T.R, expand=1, bgcolor=T.CARD_2,
                 opacity=(1 if enabled else 0.5),
-                tooltip=(None if enabled else "Coming soon"),
+                tooltip=(None if enabled else strings.t("auto_coming_soon")),
                 animate_scale=ft.Animation(110, ft.AnimationCurve.EASE_OUT),
                 on_click=(_pick if enabled else None))
             if enabled and not active:
@@ -171,7 +170,7 @@ def screen(app):
         source_card = regression.automation_source_card(app)
 
         framework_card = card(ft.Column([
-            sec_head("B", "Test framework"),
+            sec_head("B", strings.t("auto_sec_framework")),
             ft.Container(height=10),
             ft.Row([
                 _target_opt("selenium", "Selenium", "Java · TestNG"),
@@ -179,69 +178,62 @@ def screen(app):
                 _target_opt("cypress", "Cypress", "JavaScript"),
             ], spacing=10),
             ft.Container(height=6),
-            ft.Text("All targets share the same AI-generated steps and self-healing "
-                    "locators — only the emitted project differs.",
+            ft.Text(strings.t("auto_framework_note"),
                     size=11, color=T.INK_3, weight=ft.FontWeight.W_500),
         ], spacing=0))
 
         site_card = card(ft.Column([
-            sec_head("C", "Target site"),
+            sec_head("C", strings.t("auto_sec_site")),
             ft.Container(height=10),
-            app._auto_field("Site URL", "auto_site_url",
+            app._auto_field(strings.t("auto_lbl_site_url"), "auto_site_url",
                              "https://your-app.example.com/page", req=True),
             ft.Container(height=12),
-            app._auto_field("Login page URL", "auto_login_url",
+            app._auto_field(strings.t("auto_lbl_login_url"), "auto_login_url",
                              "https://your-app.example.com/login (defaults to site URL)"),
             ft.Container(height=6),
-            ft.Text("Both URLs seed the generated project's config. Login credentials "
-                    "are NOT entered here — the tests read APP_USER / APP_PASS from "
-                    "their .env / config.properties at run time (see the project README).",
+            ft.Text(strings.t("auto_site_note"),
                     size=11, color=T.INK_3, weight=ft.FontWeight.W_500),
         ], spacing=0))
 
         git_card = card(ft.Column([
-            sec_head("D", "Git destination (your IDE syncs this)"),
+            sec_head("D", strings.t("auto_sec_git")),
             ft.Container(height=10),
-            app._auto_field("Repository URL", "auto_git_url",
+            app._auto_field(strings.t("auto_lbl_repo_url"), "auto_git_url",
                              "https://github.com/you/automation-tests.git", req=True),
             ft.Container(height=10),
             ft.Row([
-                ft.Container(app._auto_field("Branch", "auto_git_branch", "main"), expand=1),
-                ft.Container(app._auto_field("Access token (PAT)", "auto_git_token",
+                ft.Container(app._auto_field(strings.t("auto_lbl_branch"), "auto_git_branch", "main"), expand=1),
+                ft.Container(app._auto_field(strings.t("auto_lbl_pat"), "auto_git_token",
                                  "ghp_… or Azure PAT", password=True, req=True,
-                                 info="How to create a Git access token (PAT)",
+                                 info=strings.t("auto_pat_info"),
                                  on_info=lambda e: app._show_help("git_pat")), expand=1),
             ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.START),
             ft.Container(height=4),
-            ft.Text("The token is used only to push and is stored locally like your other "
-                    "credentials. It is scrubbed from logs.",
+            ft.Text(strings.t("auto_git_note"),
                     size=11, color=T.INK_3, weight=ft.FontWeight.W_500),
         ], spacing=0))
 
         local_card = card(ft.Column([
-            sec_head("E", "Project folder (needed to Push to Git)"),
+            sec_head("E", strings.t("auto_sec_folder")),
             ft.Container(height=10),
-            app._auto_field("Save project to folder", "auto_local_path",
+            app._auto_field(strings.t("auto_lbl_save_folder"), "auto_local_path",
                              r"e.g. C:\Users\you\IdeaProjects\automation-tests"),
             ft.Container(height=8),
-            ft.Row([ghost_btn("Browse…", icon=ft.Icons.FOLDER_OPEN,
+            ft.Row([ghost_btn(strings.t("auto_browse"), icon=ft.Icons.FOLDER_OPEN,
                               on_click=app._browse_auto_folder)], spacing=8),
             ft.Container(height=6),
-            ft.Text("The generated project is written here so you can open it in your "
-                    "IDE. Pick an EXISTING project folder to Push a forgotten run to Git "
-                    "without regenerating. Leave blank to use a temp folder.",
+            ft.Text(strings.t("auto_folder_note"),
                     size=11, color=T.INK_3, weight=ft.FontWeight.W_500),
         ], spacing=0))
 
         email_picker = regression.email_recipient_picker(
             app, "_auto_email_to", is_open_key="_auto_email_open", sync_key="auto_emails")
         email_card = card(ft.Column([
-            sec_head("F", "Report email (optional)"),
+            sec_head("F", strings.t("auto_sec_email")),
             ft.Container(height=10),
             email_picker,
             ft.Container(height=6),
-            ft.Text("A run summary is emailed to these recipients when a generation "
-                    "finishes, if a Gmail App Password is set on Setup → Connection.",
+            ft.Text(strings.t("auto_email_note"),
                     size=11, color=T.INK_3, weight=ft.FontWeight.W_500),
         ], spacing=0))
 
@@ -318,9 +310,8 @@ def screen(app):
                 # the ancestor-chain bug above — so the empty-state
                 # placeholder keeps its fixed-height wrapper regardless.
                 log_lines = [ft.Container(empty_state(
-                    ft.Icons.TERMINAL, "No activity yet",
-                    "Fill in the site and Git details, then Generate — "
-                    "each step shows up here live."), height=320)]
+                    ft.Icons.TERMINAL, strings.t("auto_no_activity"),
+                    strings.t("auto_no_activity_hint")), height=320)]
             # BACK to ft.ListView — the third and FINAL follow-the-tail
             # mechanism, after every Column-based approach failed on a real,
             # confirmed bug on this exact widget combo (scroll + expand, no
@@ -377,12 +368,12 @@ def screen(app):
         # never scrolls away with the log — only the log content beneath scrolls.
         log_toolbar = ft.Container(
             ft.Row([app._auto_spinner_ctr,
-                    ft.Text("ACTIVITY", size=11, weight=ft.FontWeight.BOLD,
+                    ft.Text(strings.t("auto_activity"), size=11, weight=ft.FontWeight.BOLD,
                            color=T.INK_3, expand=True),
-                    _log_tool_btn(ft.Icons.COPY_ALL_OUTLINED, "Copy entire log",
+                    _log_tool_btn(ft.Icons.COPY_ALL_OUTLINED, strings.t("auto_copy_log"),
                                  app._copy_auto_log),
                     ft.Container(width=6),
-                    _log_tool_btn(ft.Icons.DELETE_OUTLINE, "Clear log",
+                    _log_tool_btn(ft.Icons.DELETE_OUTLINE, strings.t("auto_clear_log"),
                                  app._clear_auto_log, danger=True)],
                    spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER),
             padding=ft.Padding.only(bottom=10),
@@ -444,8 +435,8 @@ def screen(app):
         body = ft.Row([ft.Container(left, expand=True),
                        ft.Container(right, width=384)], spacing=22,
                       vertical_alignment=ft.CrossAxisAlignment.STRETCH, expand=True)
-        sub = (f"{len(app._auto_selected)} stories selected" if app._auto_selected
-               else "no stories selected")
-        return app.shell("Automation", sub, body)
+        sub = (strings.t("auto_stories_selected", n=len(app._auto_selected)) if app._auto_selected
+               else strings.t("auto_no_stories"))
+        return app.shell(strings.t("auto_title"), sub, body)
 
     # ---- activity panel: live counters + clean, RTL-aware log lines ----

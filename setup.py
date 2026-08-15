@@ -5,6 +5,7 @@ connection/config cards; the heavy sub-builders (dropdowns, story picker,
 fetch/estimate handlers) stay as methods on the QAStudio instance.
 """
 import flet as ft
+import strings
 import theme as T
 import engine as E
 from ui import card, sec_head
@@ -31,8 +32,8 @@ def screen(app):
             conn_body = app._connection_edit()
 
         connection_card = card(ft.Column([
-            sec_head("1", "Connection",
-                     ft.Text("set once · reused every run", size=11, color=T.INK_3, weight=ft.FontWeight.BOLD)),
+            sec_head("1", strings.t("s_sec_connection"),
+                     ft.Text(strings.t("s_set_once"), size=11, color=T.INK_3, weight=ft.FontWeight.BOLD)),
             ft.Container(height=12),
             conn_body,
         ], spacing=0))
@@ -42,15 +43,15 @@ def screen(app):
         # can refresh it in place (like the provider/model pickers) — no render.
         def _lang_desc_ctrl():
             _lw = E.LANGUAGES.get(getattr(app, "run_lang", app.lang), E.LANGUAGES["en"])["name"]
-            _txt = (f"Adds detailed {_lw} steps — precondition · action · expected — to existing test cases."
+            _txt = (strings.t("s_desc_steps", lw=_lw)
                     if app.tool == "steps" else
-                    f"Reads each user story and writes {_lw} test-case titles into the plan, skipping duplicates.")
+                    strings.t("s_desc_titles", lw=_lw))
             return ft.Text(_txt, size=12.5, color=T.INK_2, weight=ft.FontWeight.W_500)
         app._setup_desc_build = _lang_desc_ctrl
         app._setup_desc_cell = ft.Container(_lang_desc_ctrl())
         tool_card = card(ft.Column([
-            sec_head("2", "What to generate",
-                     ft.Text("one app · two generators", size=11, color=T.INK_3, weight=ft.FontWeight.BOLD)),
+            sec_head("2", strings.t("set_generate"),
+                     ft.Text(strings.t("s_two_gen"), size=11, color=T.INK_3, weight=ft.FontWeight.BOLD)),
             ft.Container(height=12),
             # persist=False: Setup is a per-run override of Settings' saved
             # default, not another way to redefine it — see main.py's
@@ -62,7 +63,7 @@ def screen(app):
             ft.Container(height=14),
             # Output language toggle
             ft.Row([
-                ft.Text("Output language", size=12, weight=ft.FontWeight.BOLD, color=T.INK_2),
+                ft.Text(strings.t("s_output_language"), size=12, weight=ft.FontWeight.BOLD, color=T.INK_2),
                 ft.Container(expand=True),
                 app._lang_segment(persist=False),
             ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
@@ -109,11 +110,11 @@ def screen(app):
                 ft.Container(right, width=290),
             ], spacing=22, vertical_alignment=ft.CrossAxisAlignment.STRETCH, expand=True)
 
-        sub = "1 of 2 — configure & run" if app.connected else "1 of 2 — connect first"
+        sub = strings.t("s_sub_configure") if app.connected else strings.t("s_sub_connect")
         right_tag = ft.Container(
             ft.Row([ft.Icon(ft.Icons.SHIELD_OUTLINED, size=13, color=T.INK_2),
-                    ft.Text("Credentials saved on this device", size=11, color=T.INK_2, weight=ft.FontWeight.BOLD)],
+                    ft.Text(strings.t("s_creds_saved"), size=11, color=T.INK_2, weight=ft.FontWeight.BOLD)],
                    spacing=5, tight=True),
             padding=ft.Padding.symmetric(vertical=10, horizontal=5), bgcolor=T.CARD_2, border_radius=20,
             border=ft.Border.all(1, T.BORDER))
-        return app.shell("Setup", sub, body, right_tag)
+        return app.shell(strings.t("nav_setup"), sub, body, right_tag)

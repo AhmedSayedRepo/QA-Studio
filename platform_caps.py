@@ -11,6 +11,7 @@ Whether we're on a MOBILE Flet client is only knowable at runtime from the
 page, so main() records it once via set_flet_platform(page.platform).
 """
 import os
+import strings
 
 _FLET_PLATFORM = ""   # "windows" | "macos" | "linux" | "android" | "ios"
 
@@ -146,7 +147,7 @@ def reveal_export(page, path):
             page.update()
             await svc.share_files(
                 [ft.ShareFile.from_path(path, name=os.path.basename(path))],
-                title="Save or send file")
+                title=strings.t("pcap_save_or_send"))
         except Exception:
             pass
 

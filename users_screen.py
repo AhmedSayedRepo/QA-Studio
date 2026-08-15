@@ -14,6 +14,7 @@ import flet as ft
 import theme as T
 import auth_supabase as auth
 import platform_caps
+import strings
 from ui import hover_field
 
 _ROLES = ["Viewer", "Member", "Admin"]
@@ -23,7 +24,7 @@ _PAGE = 25   # users per page
 def _fmt_last(ts):
     """Format a Supabase ISO timestamp as local 'YYYY-MM-DD HH:MM' (date + time)."""
     if not ts:
-        return "never"
+        return strings.t("users_never")
     try:
         from datetime import datetime
         dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
@@ -104,13 +105,13 @@ def screen(app):
     if not auth.is_admin(me):
         body = card(ft.Column([
             ft.Row([ft.Icon(ft.Icons.LOCK_OUTLINE, color=T.INK_3, size=20),
-                    ft.Text("Admins only", size=16, weight=ft.FontWeight.W_800, color=T.INK)],
+                    ft.Text(strings.t("users_admins_only"), size=16, weight=ft.FontWeight.W_800, color=T.INK)],
                    spacing=10),
             ft.Container(height=6),
-            ft.Text("This screen is available to administrators.", size=12.5,
+            ft.Text(strings.t("users_admins_only_body"), size=12.5,
                     color=T.INK_3, no_wrap=False),
         ], spacing=2))
-        return app.shell("Users", "Manage who can access QA Studio", body)
+        return app.shell(strings.t("users_title"), strings.t("users_subtitle_short"), body)
 
     _load(app)
 
@@ -123,7 +124,7 @@ def screen(app):
         def chip(role):
             sel = (current == role)
             return ft.Container(
-                ft.Text(role, size=12, weight=ft.FontWeight.W_700,
+                ft.Text(strings.t("role_" + role.lower()), size=12, weight=ft.FontWeight.W_700,
                         color=(T.VIOLET_INK if sel else T.INK_2)),
                 height=30, alignment=ft.Alignment.CENTER,
                 padding=ft.Padding.symmetric(horizontal=14),
@@ -139,24 +140,21 @@ def screen(app):
     def _set_role(uid, role):
         is_self = bool(me and me.get("id") == uid)
         if is_self and role != "Admin":
-            app._confirm("Change your own role?",
-                         "You’re changing your OWN role and will lose admin access "
-                         "until another admin restores it. Continue?",
+            app._confirm(strings.t("users_confirm_role_title"),
+                         strings.t("users_confirm_role_body"),
                          lambda: _save(app, uid, lambda: auth.admin_set_role(uid, role)),
-                         yes_label="Yes, change it")
+                         yes_label=strings.t("users_confirm_role_yes"))
         else:
             _save(app, uid, lambda: auth.admin_set_role(uid, role))
 
     def _revoke(uid, email):
         is_self = bool(me and me.get("id") == uid)
-        msg = (f"{email} keeps their account and can still sign in, but will have "
-               "access to nothing until you set a role for them again.")
+        msg = strings.t("users_revoke_msg", email=email)
         if is_self:
-            msg = ("You’re revoking your OWN access — you’ll be locked out until "
-                   "another admin restores you. ") + msg
-        app._confirm("Revoke this user’s access?", msg,
+            msg = strings.t("users_revoke_self_prefix") + msg
+        app._confirm(strings.t("users_revoke_title"), msg,
                      lambda: _save(app, uid, lambda: auth.admin_revoke_access(uid)),
-                     yes_label="Revoke access", danger=True)
+                     yes_label=strings.t("users_revoke_yes"), danger=True)
 
     def _perm_chip(uid, key, label, granted, busy):
         def _do(e):
@@ -166,7 +164,7 @@ def screen(app):
         return ft.Container(
             ft.Row([ft.Icon(ft.Icons.CHECK if granted else ft.Icons.ADD, size=13,
                             color=("#FFFFFF" if granted else T.INK_3)),
-                    ft.Text(label, size=11.5, weight=ft.FontWeight.W_600,
+                    ft.Text(strings.t("cap_" + key.replace(".", "_")), size=11.5, weight=ft.FontWeight.W_600,
                             color=("#FFFFFF" if granted else T.INK_2), no_wrap=False)],
                    spacing=6, tight=True, vertical_alignment=ft.CrossAxisAlignment.CENTER),
             padding=ft.Padding.symmetric(vertical=6, horizontal=10),
@@ -197,10 +195,10 @@ def screen(app):
         return ft.Container(
             ft.Column([
                 ft.Row([
-                    ft.Text("Fine-grained permissions", size=12,
+                    ft.Text(strings.t("users_perms_title"), size=12,
                             weight=ft.FontWeight.W_800, color=T.INK),
                     ft.Container(expand=True),
-                    (ft.Container(ft.Text("custom", size=10, weight=ft.FontWeight.BOLD,
+                    (ft.Container(ft.Text(strings.t("users_custom"), size=10, weight=ft.FontWeight.BOLD,
                                           color=T.AMBER),
                                   padding=ft.Padding.symmetric(vertical=1, horizontal=7),
                                   bgcolor=ft.Colors.with_opacity(0.14, T.AMBER),
@@ -208,16 +206,16 @@ def screen(app):
                      if custom else ft.Container(width=0)),
                 ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
                 ft.Container(height=10),
-                group("Can open (navigation)", nav),
+                group(strings.t("users_group_nav"), nav),
                 ft.Container(height=12),
-                group("Can do (actions)", act),
+                group(strings.t("users_group_act"), act),
             ], spacing=0),
             padding=14, margin=ft.Margin.only(top=10), bgcolor=T.CARD_2,
             border_radius=T.R, border=ft.Border.all(1, T.BORDER))
 
     def _row(u):
         uid = u.get("id")
-        email = u.get("email") or "(no email)"
+        email = u.get("email") or strings.t("users_no_email")
         role = u.get("role") or "Viewer"
         caps = u.get("caps")
         revoked = isinstance(caps, list) and len(caps) == 0   # custom caps, none granted
@@ -245,18 +243,18 @@ def screen(app):
                 # room and nothing changes visually.
                 ft.Text(email, size=13.5, weight=ft.FontWeight.W_700, color=T.INK,
                         no_wrap=False, expand=True),
-                (ft.Container(ft.Text("you", size=10, weight=ft.FontWeight.BOLD,
+                (ft.Container(ft.Text(strings.t("users_you"), size=10, weight=ft.FontWeight.BOLD,
                                       color=T.VIOLET_INK),
                               padding=ft.Padding.symmetric(vertical=1, horizontal=7),
                               bgcolor=T.VIOLET_SOFT, border_radius=999)
                  if is_self else ft.Container(width=0)),
             ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
             ft.Row([
-                ft.Text(("✓ confirmed" if confirmed else "✗ not confirmed")
-                        + f"  ·  last sign-in {last}",
+                ft.Text((strings.t("users_confirmed") if confirmed else strings.t("users_not_confirmed"))
+                        + strings.t("users_last_signin", ts=last),
                         size=11, color=(T.GREEN if confirmed else T.AMBER),
                         weight=ft.FontWeight.BOLD, no_wrap=False, expand=True),
-                (ft.Container(ft.Text("ACCESS REVOKED", size=9.5,
+                (ft.Container(ft.Text(strings.t("users_access_revoked"), size=9.5,
                                       weight=ft.FontWeight.BOLD, color=T.RED),
                               padding=ft.Padding.symmetric(vertical=1, horizontal=7),
                               bgcolor=ft.Colors.with_opacity(0.12, T.RED),
@@ -271,15 +269,15 @@ def screen(app):
             ft.Icon(ft.Icons.EXPAND_LESS if expanded else ft.Icons.TUNE,
                     size=18, color=T.INK_3),
             on_click=lambda e, x=uid: _toggle_expand(x), ink=True, border_radius=8,
-            padding=8, tooltip="Per-permission access")
+            padding=8, tooltip=strings.t("users_tip_perms"))
         revoke_btn = ft.Container(
             ft.Icon(ft.Icons.REMOVE_CIRCLE_OUTLINE, size=18,
                     color=(T.INK_3 if (busy or revoked) else T.RED)),
             on_click=(None if (busy or revoked)
                       else (lambda e, x=uid, em=email: _revoke(x, em))),
             ink=True, border_radius=8, padding=8,
-            tooltip=("Access already revoked — set a role to restore"
-                     if revoked else "Revoke access"))
+            tooltip=(strings.t("users_tip_revoked")
+                     if revoked else strings.t("users_revoke_yes")))
 
         if platform_caps.is_mobile():
             # Desktop's single Row packs avatar + email/status(expand) + the
@@ -341,7 +339,7 @@ def screen(app):
         if app._users_loading and app._users_list is None:
             return [ft.Container(ft.Row([
                 ft.ProgressRing(width=18, height=18, stroke_width=2.5, color=T.VIOLET),
-                ft.Text("Loading users…", size=12.5, color=T.INK_3)], spacing=10),
+                ft.Text(strings.t("users_loading"), size=12.5, color=T.INK_3)], spacing=10),
                 padding=14)]
         if app._users_msg and app._users_msg[0] == "err":
             return [ft.Container(ft.Row([
@@ -352,13 +350,13 @@ def screen(app):
                 bgcolor=ft.Colors.with_opacity(0.10, T.RED), border_radius=T.R,
                 border=ft.Border.all(1, ft.Colors.with_opacity(0.4, T.RED)))]
         if not (app._users_list or []):
-            return [ft.Container(ft.Text("No users found.", size=12.5, color=T.INK_3),
+            return [ft.Container(ft.Text(strings.t("users_none"), size=12.5, color=T.INK_3),
                                  padding=14)]
         filt, tot, p, page_u = _compute()
         if not filt:
             return [ft.Container(ft.Row([
                 ft.Icon(ft.Icons.SEARCH_OFF, size=18, color=T.INK_3),
-                ft.Text("No users match your search.", size=12.5, color=T.INK_3)],
+                ft.Text(strings.t("users_none_match"), size=12.5, color=T.INK_3)],
                 spacing=10), padding=14)]
         out = []
         for u in page_u:
@@ -373,10 +371,10 @@ def screen(app):
         if tot <= 1:
             return ft.Container()
         return ft.Row([
-            ghost_btn("← Prev", on_click=(None if p == 0 else (lambda e: _goto(p - 1)))),
-            ft.Text(f"Page {p + 1} of {tot}  ·  {len(filt)} users", size=12,
+            ghost_btn(strings.t("users_prev"), on_click=(None if p == 0 else (lambda e: _goto(p - 1)))),
+            ft.Text(strings.t("users_pager", page=p + 1, total=tot, count=len(filt)), size=12,
                     color=T.INK_3, weight=ft.FontWeight.W_600),
-            ghost_btn("Next →", on_click=(None if p >= tot - 1
+            ghost_btn(strings.t("users_next"), on_click=(None if p >= tot - 1
                                           else (lambda e: _goto(p + 1)))),
         ], alignment=ft.MainAxisAlignment.CENTER, spacing=16)
 
@@ -407,19 +405,18 @@ def screen(app):
         _refresh_list()       # in-place so the search box keeps focus while typing
 
     search = ft.TextField(
-        value=app._users_search or "", hint_text="Search users by email or role…",
+        value=app._users_search or "", hint_text=strings.t("users_search_hint"),
         prefix_icon=ft.Icons.SEARCH, on_change=_on_search, text_size=13, dense=True,
         border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
         content_padding=ft.Padding.symmetric(vertical=11, horizontal=12))
 
     body = card(ft.Column([
-        ft.Row([sec_head("U", "Users & permissions"), ft.Container(expand=True),
-                ghost_btn("Refresh", icon=ft.Icons.REFRESH,
+        ft.Row([sec_head("U", strings.t("users_sec_head")), ft.Container(expand=True),
+                ghost_btn(strings.t("users_refresh"), icon=ft.Icons.REFRESH,
                           on_click=lambda e: _load(app, force=True))],
                vertical_alignment=ft.CrossAxisAlignment.CENTER),
         ft.Container(height=6),
-        ft.Text("Pick a role preset, or tap the ⚙ icon on a user to grant/revoke "
-                "individual tabs and actions.", size=12, color=T.INK_3,
+        ft.Text(strings.t("users_help_line"), size=12, color=T.INK_3,
                 weight=ft.FontWeight.BOLD, no_wrap=False),
         ft.Container(height=14),
         hover_field(search),
@@ -428,6 +425,6 @@ def screen(app):
         pager_holder,
     ], spacing=0))
 
-    return app.shell("Users",
-                     "Manage who can access QA Studio and what they can do",
+    return app.shell(strings.t("users_title"),
+                     strings.t("users_subtitle"),
                      body, badge="U")
