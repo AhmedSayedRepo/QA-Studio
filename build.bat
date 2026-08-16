@@ -31,9 +31,14 @@ rem    --icon points at your .ico (edit the path if different)
 flet pack main.py ^
   --name "QA Studio" ^
   --product-name "QA Studio" ^
-  --icon "assets\icon.ico" ^
+  --icon "app.ico" ^
   --add-data "VERSION;." ^
-  --add-data "assets;assets"
+  --add-data "app.ico;." ^
+  --add-data "app.png;." ^
+  --add-data "qa-logo.png;." ^
+  --add-data "qa-logo-email.png;." ^
+  --add-data "login_bg_dark.png;." ^
+  --add-data "login_bg_light.png;."
 
 echo.
 if exist "dist\QA Studio.exe" (
