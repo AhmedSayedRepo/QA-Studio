@@ -137,10 +137,9 @@ def show_update_error(app, msg):
                         size=11.5, color=T.INK_3, weight=ft.FontWeight.W_500),
             ], spacing=2, tight=True), width=460),
         actions=[ft.Row([
-            ghost_btn(strings.t("upd_download_manually"), on_click=lambda e: (
-                app._open_url(
-                    "https://github.com/AhmedSayedRepo/QA-Studio/releases/latest"),
-                app._close_dialog())),
+            ghost_btn(strings.t("upd_retry"), icon=ft.Icons.REFRESH, on_click=lambda e: (
+                app._close_dialog(),
+                app._do_update())),
             green_btn(strings.t("upd_ok"), on_click=lambda e: app._close_dialog()),
         ], alignment=ft.MainAxisAlignment.END, spacing=10, tight=True)],
         actions_alignment=ft.MainAxisAlignment.END)
