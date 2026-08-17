@@ -119,6 +119,8 @@ CATALOG = [
     ("act.settings",      "Change settings",          "act"),
     ("nav.users",         "Users (admin)",            "nav"),
     ("act.manage_users",  "Manage users & roles",     "act"),
+    ("nav.orgs",          "Organizations (admin)",    "nav"),
+    ("act.manage_orgs",   "Manage organizations",     "act"),
     ("nav.ai_usage",      "AI Usage",                 "nav"),
     ("act.view_usage",    "View ALL users' AI usage (admin)", "act"),
 ]
@@ -134,16 +136,23 @@ ACT_KEYS = [k for k, _, kind in CATALOG if kind == "act"]
 # is. The real security boundary for "everyone's usage" is server-side — the
 # Edge Function's own hard Admin-role check (see supabase/functions/ai-usage)
 # — this preset just keeps the nav/UI consistent with that.
-_NAV_NO_USERS = [k for k in NAV_KEYS if k not in ("nav.users",)]
-_ACT_NO_MANAGE = [k for k in ACT_KEYS if k not in ("act.manage_users", "act.view_usage")]
+_NAV_NO_USERS = [k for k in NAV_KEYS if k not in ("nav.users", "nav.orgs")]
+_ACT_NO_MANAGE = [k for k in ACT_KEYS if k not in ("act.manage_users", "act.view_usage", "act.manage_orgs")]
 
 # Role presets (the starting point; admins can customise per user afterwards).
+#   SuperAdmin  — global admin: manages users across ALL orgs, assigns org_id.
+#   OrgManager  — org-scoped admin: manages only their own org's users.
+#   Admin       — legacy alias of SuperAdmin (existing installs keep working).
 ROLE_PRESETS = {
-    "Admin":  set(ALL_KEYS),                                   # everything
-    "Member": set(_NAV_NO_USERS) | set(_ACT_NO_MANAGE),        # all but user mgmt
-    "Viewer": set(_NAV_NO_USERS),                              # see all, do nothing
+    "SuperAdmin": set(ALL_KEYS),                               # everything, all orgs
+    "Admin":      set(ALL_KEYS),                               # legacy alias of SuperAdmin
+    "OrgManager": set(ALL_KEYS) - {"act.view_usage", "nav.orgs", "act.manage_orgs"},  # own-org user mgmt only
+    "Member":     set(_NAV_NO_USERS) | set(_ACT_NO_MANAGE),    # all but user mgmt
+    "Viewer":     set(_NAV_NO_USERS),                          # see all, do nothing
 }
 DEFAULT_ROLE = "Viewer"
+# Roles that carry GLOBAL admin power (all orgs). "Admin" is the legacy alias.
+SUPER_ROLES = ("SuperAdmin", "Admin")
 
 # Back-compat aliases (older code referenced these).
 CAP_VIEW = "nav.report"
@@ -328,17 +337,30 @@ def _caps_raw(user):
     return list(c) if isinstance(c, list) else None
 
 
+def _org_of(user):
+    """Organization id from the SIGNED app_metadata.org_id ('' if unset). Like
+    role, this is admin-set and NOT user-editable, so it is safe for scoping."""
+    am = user.get("app_metadata") or {}
+    o = am.get("org_id")
+    return o if isinstance(o, str) and o else ""
+
+
 def _user_dict(user):
     if not user:
         return None
     meta = user.get("user_metadata") or {}
+    am = user.get("app_metadata") or {}
     return {
         "id": user.get("id") or "",
         "email": user.get("email") or "",
         "name": meta.get("name") or meta.get("full_name") or (user.get("email") or ""),
         "role": _role_of(user),
+        "org_id": _org_of(user),
         "caps": _caps_raw(user),     # None → use the role preset
         "confirmed": bool(user.get("email_confirmed_at") or user.get("confirmed_at")),
+        # Admin-set (app_metadata, not user-editable): the invitee must change
+        # their temporary password on first sign-in before using the app.
+        "must_reset": bool(am.get("must_reset")),
     }
 
 
@@ -515,6 +537,31 @@ def access_token():
         return data.get("access_token", "")
 
 
+def change_own_password(new_password):
+    """Set the SIGNED-IN user's own password and clear the forced-reset flag,
+    server-side (the set-password Edge Function keys off the caller's JWT, so a
+    user can only ever change their OWN password). Returns (ok, msg)."""
+    if not configured():
+        return False, "Auth is not configured."
+    pw = new_password or ""
+    if len(pw) < 8:
+        return False, "Password must be at least 8 characters."
+    tok = access_token()
+    if not tok:
+        return False, "You’re not signed in."
+    try:
+        r = _client().post(_functions_url("set-password"),
+                           headers={"Authorization": f"Bearer {tok}"},
+                           json={"password": pw}, timeout=_TIMEOUT)
+    except Exception as ex:
+        return False, f"Network error: {ex}"
+    if r.status_code == 404:
+        return False, "The ‘set-password’ Edge Function isn’t deployed yet."
+    if r.status_code != 200:
+        return False, _friendly(r)
+    return True, "Password updated."
+
+
 def request_password_reset(email):
     """Send a password-reset email. Returns (ok, message)."""
     if not configured():
@@ -626,8 +673,32 @@ def permissions_for(user):
 
 
 def is_admin(user):
-    """True if the user's signed role is Admin."""
-    return bool(user) and (user.get("role") == "Admin")
+    """True if the user is a SuperAdmin (global admin). "Admin" is the legacy
+    alias. Gates the GLOBAL admin surfaces (all-users AI usage, org-wide email
+    settings, shared links) — NOT org-scoped user management (see
+    can_manage_users), which org managers also have."""
+    return bool(user) and (user.get("role") in SUPER_ROLES)
+
+
+def is_super_admin(user):
+    """Global admin: manages users across ALL orgs and assigns org_id."""
+    return bool(user) and (user.get("role") in SUPER_ROLES)
+
+
+def is_org_manager(user):
+    """Org-scoped admin: manages only users in their own org_id."""
+    return bool(user) and (user.get("role") == "OrgManager")
+
+
+def can_manage_users(user):
+    """May reach the Users screen (super admin OR org manager). The Edge
+    Function still enforces WHICH users they can actually see/change."""
+    return is_super_admin(user) or is_org_manager(user)
+
+
+def org_id_of(user):
+    """The user's organization id ('' if none / signed out)."""
+    return ((user or {}).get("org_id") or "")
 
 
 # ── Admin user management (via the 'admin-users' Edge Function) ───────────────
@@ -657,6 +728,31 @@ def admin_list_users():
     if r.status_code != 200:
         return False, _friendly(r)
     return True, (r.json() or {}).get("users", [])
+
+
+def _admin_post_json(payload):
+    """Like _admin_post but returns the response BODY on success — some endpoints
+    (invite) return data such as the generated temporary password."""
+    if not configured():
+        return False, "Auth is not configured."
+    tok = access_token()
+    if not tok:
+        return False, "You’re not signed in."
+    try:
+        r = _client().post(_functions_url("admin-users"),
+                           headers={"Authorization": f"Bearer {tok}"},
+                           json=payload, timeout=_TIMEOUT)
+    except Exception as ex:
+        return False, f"Network error: {ex}"
+    if r.status_code == 404:
+        return False, ("The ‘admin-users’ Edge Function isn’t deployed yet — see "
+                       "ADMIN_USERS_SETUP.md.")
+    if r.status_code != 200:
+        return False, _friendly(r)
+    try:
+        return True, (r.json() or {})
+    except Exception:
+        return True, {}
 
 
 def _admin_post(payload):
@@ -704,6 +800,117 @@ def admin_revoke_access(user_id):
     Function — no backend change. Returns (ok, msg)."""
     ok, err = _admin_post({"user_id": user_id, "caps": []})
     return (True, "Access revoked.") if ok else (False, err)
+
+
+def admin_invite_user(email, role="Viewer", org_id=None, name=None):
+    """Invite a new user by email INTO an org. Org managers may only invite into
+    their OWN org as OrgManager/Member/Viewer; super admins may name the org.
+    All of that is enforced server-side. Returns (ok, msg)."""
+    email = (email or "").strip().lower()
+    dom = email.split("@")[-1] if "@" in email else ""
+    if "@" not in email or "." not in dom:
+        return False, "Enter a valid email address."
+    if role not in ROLE_PRESETS:
+        return False, "Invalid role."
+    payload = {"invite_email": email, "role": role}
+    if org_id is not None:
+        payload["org_id"] = org_id
+    if (name or "").strip():
+        payload["name"] = name.strip()
+    ok, res = _admin_post_json(payload)
+    if not ok:
+        return False, res
+    return True, {
+        "email": res.get("invited") or email,
+        "temp_password": res.get("temp_password") or "",
+        "role": res.get("role") or role,
+        "org_id": res.get("org_id") or (org_id or ""),
+        "id": res.get("id") or "",
+    }
+
+
+def admin_add_existing_user(email, role="Member", org_id=None):
+    """Add an ALREADY signed-up user (by email) to an org WITHOUT an email
+    invite. An org manager may only add an ORG-LESS user into their OWN org;
+    a super admin may name the org. All enforced server-side. Returns (ok, msg)."""
+    email = (email or "").strip().lower()
+    dom = email.split("@")[-1] if "@" in email else ""
+    if "@" not in email or "." not in dom:
+        return False, "Enter a valid email address."
+    payload = {"add_existing_email": email, "role": role}
+    if org_id is not None:
+        payload["org_id"] = org_id
+    ok, err = _admin_post(payload)
+    return (True, f"Added {email}.") if ok else (False, err)
+
+
+def admin_set_org(user_id, org_id):
+    """Super-admin only: assign / move a user to an organization (server-
+    enforced). Returns (ok, msg)."""
+    ok, err = _admin_post({"user_id": user_id, "org_id": (org_id or "").strip()})
+    return (True, "Organization updated.") if ok else (False, err)
+
+
+# -- Organizations (via the 'orgs' Edge Function) -----------------------------
+def list_orgs():
+    """List organizations. Super admin gets the full directory (with contact
+    details); an org manager gets only their own org (id + name). Returns
+    (ok, [ {id, name, ...} ])."""
+    if not configured():
+        return False, "Auth is not configured."
+    tok = access_token()
+    if not tok:
+        return False, "You’re not signed in."
+    try:
+        r = _client().get(_functions_url("orgs"),
+                          headers={"Authorization": f"Bearer {tok}"}, timeout=_TIMEOUT)
+    except Exception as ex:
+        return False, f"Network error: {ex}"
+    if r.status_code == 404:
+        return False, "The ‘orgs’ Edge Function isn’t deployed yet."
+    if r.status_code != 200:
+        return False, _friendly(r)
+    return True, (r.json() or {}).get("orgs", [])
+
+
+def _orgs_post(payload):
+    if not configured():
+        return False, "Auth is not configured."
+    tok = access_token()
+    if not tok:
+        return False, "You’re not signed in."
+    try:
+        r = _client().post(_functions_url("orgs"),
+                           headers={"Authorization": f"Bearer {tok}"},
+                           json=payload, timeout=_TIMEOUT)
+    except Exception as ex:
+        return False, f"Network error: {ex}"
+    if r.status_code == 404:
+        return False, "The ‘orgs’ Edge Function isn’t deployed yet."
+    if r.status_code != 200:
+        return False, _friendly(r)
+    return True, (r.json() or {})
+
+
+def admin_upsert_org(org_id, name, contact_name="", contact_email="", contact_phone=""):
+    """Super-admin only: create or edit an organization. Returns (ok, msg)."""
+    org_id = (org_id or "").strip()
+    name = (name or "").strip()
+    if not org_id:
+        return False, "Organization id is required."
+    if not name:
+        return False, "Organization name is required."
+    ok, res = _orgs_post({"op": "upsert", "id": org_id, "name": name,
+                          "contact_name": contact_name, "contact_email": contact_email,
+                          "contact_phone": contact_phone})
+    return (True, "Organization saved.") if ok else (False, res)
+
+
+def admin_delete_org(org_id):
+    """Super-admin only: delete an org (server blocks it if any user is still
+    assigned to it). Returns (ok, msg)."""
+    ok, res = _orgs_post({"op": "delete", "id": (org_id or "").strip()})
+    return (True, "Organization deleted.") if ok else (False, res)
 
 
 # ── Shared org-wide settings (via the 'org-settings' Edge Function) ───────────

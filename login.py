@@ -56,12 +56,20 @@ def login_gate(app):
     # The login keeps its OWN theme (defaults to dark, like the old WebView2
     # login) with a working toggle; the choice is applied to the whole app on
     # successful sign-in.
+    # Forced-password-reset mode: a signed-in invitee whose TEMPORARY password
+    # must be replaced before the app unlocks. Reuses this entire login card UI
+    # (same neon card / fields / button) with a "Set your password" form. Mirror
+    # the CURRENT app theme so showing/leaving this gate never flips the theme.
+    reset_mode = bool(getattr(app, "user", None) and isinstance(app.user, dict)
+                      and app.user.get("must_reset"))
+    if reset_mode:
+        app._login_theme = "dark" if getattr(T, "MODE", "dark") == "dark" else "light"
     if getattr(app, "_login_theme", None) not in ("dark", "light"):
         # Default the login to DARK (the neon look). Safe now that the window is
         # frameless — there's no OS title bar to mismatch the theme.
         app._login_theme = "dark"
     dark = (app._login_theme == "dark")
-    signup = (getattr(app, "_auth_mode", "signin") == "signup")
+    signup = (not reset_mode) and (getattr(app, "_auth_mode", "signin") == "signup")
     busy = bool(getattr(app, "_gate_busy", False))
     msg = getattr(app, "_auth_msg", None)
     DISP = "Space Grotesk"     # display font (headings) — matches the old login
@@ -310,6 +318,13 @@ def login_gate(app):
     pwd_tf, pwd_col = _field(strings.t("login_password_label"), strings.t("login_password_hint"), ft.Icons.LOCK_OUTLINE,
                              password=True)
 
+    newpw_tf = newpw_col = confpw_tf = confpw_col = None
+    if reset_mode:
+        newpw_tf, newpw_col = _field(strings.t("reset_new"), strings.t("reset_new"),
+                                     ft.Icons.LOCK_OUTLINE, password=True)
+        confpw_tf, confpw_col = _field(strings.t("reset_confirm"), strings.t("reset_confirm"),
+                                       ft.Icons.LOCK_RESET, password=True)
+
     def _stash():
         app._auth_email = email_tf.value or ""
         if name_tf is not None:
@@ -414,11 +429,46 @@ def login_gate(app):
         except Exception:
             threading.Thread(target=work, daemon=True).start()
 
-    # Enter in any credential field submits (sign in / sign up).
+    def _reset_submit(_e=None):
+        if getattr(app, "_gate_busy", False):
+            return
+        p1 = (newpw_tf.value or "") if newpw_tf is not None else ""
+        p2 = (confpw_tf.value or "") if confpw_tf is not None else ""
+        if len(p1) < 8:
+            app._auth_msg = ("err", strings.t("reset_too_short")); app.ui_safe(app.render); return
+        if p1 != p2:
+            app._auth_msg = ("err", strings.t("reset_mismatch")); app.ui_safe(app.render); return
+        app._gate_busy = True; app._auth_msg = None
+        app.ui_safe(app.render)
+
+        def work():
+            try:
+                ok, m = auth.change_own_password(p1)
+            except Exception as ex:
+                ok, m = False, strings.t("login_err_generic", error=ex)
+            app._gate_busy = False
+            if not ok:
+                app._auth_msg = ("err", m); app.ui_safe(app.render); return
+            fresh = auth.revalidate()      # must_reset now cleared server-side
+            if fresh:
+                app.user = fresh
+            elif isinstance(getattr(app, "user", None), dict):
+                app.user["must_reset"] = False
+            app._auth_msg = ("ok", strings.t("reset_done"))
+            app.ui_safe(app.render)
+        try:
+            app._bg(work)
+        except Exception:
+            threading.Thread(target=work, daemon=True).start()
+
+    # Enter in any credential field submits (sign in / sign up / set password).
     email_tf.on_submit = _submit
     pwd_tf.on_submit = _submit
     if name_tf is not None:
         name_tf.on_submit = _submit
+    if reset_mode and newpw_tf is not None:
+        newpw_tf.on_submit = _reset_submit
+        confpw_tf.on_submit = _reset_submit
 
     def _forgot(_e=None):
         _stash()
@@ -442,8 +492,13 @@ def login_gate(app):
         except Exception:
             threading.Thread(target=work, daemon=True).start()
 
-    blabel = (strings.t("login_btn_creating") if (busy and signup) else strings.t("login_btn_signing_in") if busy
-              else strings.t("login_btn_create_account") if signup else strings.t("login_btn_sign_in"))
+    if reset_mode:
+        blabel = (strings.t("login_btn_signing_in") if busy else strings.t("reset_submit"))
+        _primary = _reset_submit
+    else:
+        blabel = (strings.t("login_btn_creating") if (busy and signup) else strings.t("login_btn_signing_in") if busy
+                  else strings.t("login_btn_create_account") if signup else strings.t("login_btn_sign_in"))
+        _primary = _submit
 
     def _btn_hover(e):
         try:
@@ -469,7 +524,7 @@ def login_gate(app):
                                    end=ft.Alignment.CENTER_RIGHT, colors=BTN),
         shadow=ft.BoxShadow(blur_radius=30, spread_radius=-4, offset=ft.Offset(0, 10),
                             color=_op(accent, 0.5)),
-        ink=True, on_click=(None if busy else _submit),
+        ink=True, on_click=(None if busy else _primary),
         on_hover=(None if busy else _btn_hover),
         scale=1.0, animate_scale=140, animate=140,
         opacity=(0.7 if busy else 1.0))
@@ -506,37 +561,62 @@ def login_gate(app):
         c.on_hover = _h
         return c
 
-    rows = [
-        ft.Row([ft.Container(logo_img(48), width=48, height=48, border_radius=12,
+    _header_row = ft.Row([ft.Container(logo_img(48), width=48, height=48, border_radius=12,
                              bgcolor=None, alignment=ft.Alignment.CENTER),
                 ft.Text("QA Studio", size=17, weight=ft.FontWeight.W_700,
                         color=HEAD, font_family=DISP),
                 ft.Container(expand=True),
                 theme_btn],
-               spacing=11, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-        ft.Container(height=24),
-        ft.Text(strings.t("login_welcome_back") if not signup else strings.t("login_create_account_title"),
-                size=34, weight=ft.FontWeight.W_700, color=HEAD, font_family=DISP),
-        ft.Container(height=6),
-        ft.Text(strings.t("login_signin_subtitle") if not signup
-                else strings.t("login_signup_subtitle"),
-                size=13, color=INK2, font_family=MONO,
-                style=ft.TextStyle(letter_spacing=0.4)),
-        ft.Container(height=26),
-    ]
-    for col in [c for c in (name_col, email_col, pwd_col) if c is not None]:
-        rows += [col, ft.Container(height=16)]
-    if not signup:
-        rows.append(ft.Row([_link(strings.t("login_forgot_password"), _forgot)],
-                           alignment=ft.MainAxisAlignment.END))
-    if banner:
-        rows += [ft.Container(height=8), banner]
-    rows += [ft.Container(height=20), btn, ft.Container(height=18),
-             ft.Row([ft.Text(strings.t("login_new_prompt") if not signup
-                             else strings.t("login_have_account_prompt"),
-                             size=12.5, color=INK2, weight=ft.FontWeight.W_600),
-                     _link(strings.t("login_create_one") if not signup else strings.t("login_sign_in_link"), _switch)],
-                    spacing=6, alignment=ft.MainAxisAlignment.CENTER, tight=True)]
+               spacing=11, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+
+    if reset_mode:
+        # Same card chrome, "Set your password" body.
+        rows = [
+            _header_row,
+            ft.Container(height=24),
+            ft.Text(strings.t("reset_title"), size=34, weight=ft.FontWeight.W_700,
+                    color=HEAD, font_family=DISP),
+            ft.Container(height=6),
+            ft.Text(strings.t("reset_sub"), size=13, color=INK2, font_family=MONO,
+                    style=ft.TextStyle(letter_spacing=0.4)),
+            ft.Container(height=26),
+            newpw_col, ft.Container(height=16),
+            confpw_col, ft.Container(height=10),
+            ft.Text(strings.t("reset_hint"), size=11.5, color=CAP, font_family=MONO,
+                    style=ft.TextStyle(letter_spacing=0.3)),
+        ]
+        if banner:
+            rows += [ft.Container(height=12), banner]
+        rows += [ft.Container(height=20), btn, ft.Container(height=18),
+                 ft.Row([_link(strings.t("reset_signout"),
+                               lambda _e=None: app._sign_out())],
+                        alignment=ft.MainAxisAlignment.CENTER, tight=True)]
+    else:
+        rows = [
+            _header_row,
+            ft.Container(height=24),
+            ft.Text(strings.t("login_welcome_back") if not signup else strings.t("login_create_account_title"),
+                    size=34, weight=ft.FontWeight.W_700, color=HEAD, font_family=DISP),
+            ft.Container(height=6),
+            ft.Text(strings.t("login_signin_subtitle") if not signup
+                    else strings.t("login_signup_subtitle"),
+                    size=13, color=INK2, font_family=MONO,
+                    style=ft.TextStyle(letter_spacing=0.4)),
+            ft.Container(height=26),
+        ]
+        for col in [c for c in (name_col, email_col, pwd_col) if c is not None]:
+            rows += [col, ft.Container(height=16)]
+        if not signup:
+            rows.append(ft.Row([_link(strings.t("login_forgot_password"), _forgot)],
+                               alignment=ft.MainAxisAlignment.END))
+        if banner:
+            rows += [ft.Container(height=8), banner]
+        rows += [ft.Container(height=20), btn, ft.Container(height=18),
+                 ft.Row([ft.Text(strings.t("login_new_prompt") if not signup
+                                 else strings.t("login_have_account_prompt"),
+                                 size=12.5, color=INK2, weight=ft.FontWeight.W_600),
+                         _link(strings.t("login_create_one") if not signup else strings.t("login_sign_in_link"), _switch)],
+                        spacing=6, alignment=ft.MainAxisAlignment.CENTER, tight=True)]
     form = ft.Column(rows, spacing=0, width=352, tight=True)
 
     card = ft.Container(

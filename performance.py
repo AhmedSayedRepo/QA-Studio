@@ -216,6 +216,19 @@ def _apply_advanced(app, scenarios):
     return scenarios
 
 
+_MAX_HAR_BYTES = 64 * 1024 * 1024    # keep in sync with perf/har.py
+_MAX_CSV_BYTES = 25 * 1024 * 1024    # users CSV for load testing is normally tiny
+
+
+def _oversize(path, cap):
+    """True if `path` exceeds `cap` bytes (used to reject pathologically large
+    inputs before parsing them into memory)."""
+    try:
+        return os.path.getsize(path) > cap
+    except OSError:
+        return False
+
+
 def _build_current_scenarios(app):
     """Build PerfScenarios from the current source (HAR or cURL — both give exact
     requests), then apply the auth / parameterize / correlation transforms. Returns
@@ -237,6 +250,10 @@ def _build_current_scenarios(app):
     har_path = (_get(app, "_perf_har_path", "") or "").strip()
     if not har_path or not os.path.exists(har_path):
         _logline(app, "Pick a .har file first (Browse HAR…).", "warn")
+        return None
+    if _oversize(har_path, _MAX_HAR_BYTES):
+        _logline(app, "That HAR is too large (max %d MB) — capture a shorter "
+                      "session or filter it down." % (_MAX_HAR_BYTES // (1024 * 1024)), "err")
         return None
     domains = [d for d in re.split(r"[,\s]+",
                _get(app, "_perf_har_domains", "") or "") if d]
@@ -556,6 +573,10 @@ def _tokens_worker(app):
         if not url.lower().startswith("https://"):
             _logline(app, "⚠ Login URL is not HTTPS — passwords would be sent in "
                           "plaintext. Use an https:// endpoint.", "warn")
+        if _oversize(src, _MAX_CSV_BYTES):
+            _logline(app, "That CSV is too large (max %d MB)."
+                          % (_MAX_CSV_BYTES // (1024 * 1024)), "err")
+            return
         with open(src, newline="", encoding="utf-8-sig") as f:
             rows = list(csv.DictReader(f))
         if not rows:

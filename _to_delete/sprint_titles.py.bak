@@ -545,207 +545,18 @@ def _retranslate(app):
     threading.Thread(target=_work, daemon=True).start()
 
 
-# ── Customisable Sprint-Report logo ──────────────────────────────────────
-# The report brand logo (header + faint page watermark) defaults to the embedded
-# mark (report_assets.LOGO_PNG_B64) but can be replaced PER USER: a validated PNG
-# saved under app_data_dir()/sprint_report_logos/<uid>.png overrides the default
-# for BOTH the header logo and the watermark, for that signed-in user only.
-# Stored in the persistent data dir (survives updates).
-_CUSTOM_LOGO_DIR = "sprint_report_logos"
-_LOGO_MAX_BYTES = 3 * 1024 * 1024        # 3 MB
-_LOGO_MIN_W, _LOGO_MIN_H = 80, 20        # too small to render usefully
-_LOGO_MAX_W, _LOGO_MAX_H = 4000, 4000    # guard against absurd inputs
-_LOGO_MAX_PIXELS = _LOGO_MAX_W * _LOGO_MAX_H   # hard pixel cap (anti decompression-bomb)
-_LOGO_ALLOWED_FMT = ("PNG", "JPEG", "JPG")     # allow-list; SVG/others rejected (no active content)
-
-
-def _current_uid():
-    """The signed-in user's auth uid ('' when signed out / unavailable)."""
-    try:
-        import auth_supabase as _auth
-        return _auth.user_id() or ""
-    except Exception:
-        return ""
-
-
-def _custom_logo_path():
-    """Absolute path where THIS USER's report logo lives (may not exist).
-    Namespaced by the signed-in uid so each user has their own logo; returns
-    '' when signed out (falls back to the embedded default)."""
-    uid = _current_uid()
-    if not uid:
-        return ""
-    # Sanitise the uid into a bare filename token: only [A-Za-z0-9_-], so it can
-    # never contain a path separator, "." or ".." → no traversal out of the
-    # per-user logos dir even if the uid were ever attacker-influenced.
-    slug = re.sub(r"[^A-Za-z0-9_-]+", "_", uid).strip("-.")[:80] or "user"
-    try:
-        import platform_caps as _pc
-        base = os.path.normpath(os.path.join(_pc.app_data_dir(), _CUSTOM_LOGO_DIR))
-        path = os.path.normpath(os.path.join(base, slug + ".png"))
-        # Containment (defence in depth on top of the slug allow-list): the
-        # LOGICAL path must sit directly inside the logos dir. Deliberately NOT
-        # realpath'd, so a symlink planted at this path is caught on read/write
-        # (below) rather than silently resolved to wherever it points.
-        if os.path.dirname(path) != base:
-            return ""
-        return path
-    except Exception:
-        return ""
-
-
-def _has_custom_logo():
-    # Require a REAL regular file — a symlink at this path is not trusted
-    # (someone could plant one pointing elsewhere), so ignore it.
-    p = _custom_logo_path()
-    return bool(p) and os.path.isfile(p) and not os.path.islink(p)
-
-
-def _validate_logo(src):
-    """Validate an image file for use as the report logo. Returns
-    (ok, error_message) where error_message is a resolved UI string.
-
-    Security: bounds the input by BYTES first, then reads ONLY the header for
-    dimensions/format — an oversized image is rejected before any pixel decode,
-    so a decompression bomb is never expanded in memory. Accepts a PNG/JPEG
-    allow-list only (never SVG or other active-content formats), keyed on the
-    REAL format PIL detects, not the file extension."""
-    try:
-        if not os.path.isfile(src):
-            return False, strings.t("spr_logo_err_read")
-        size = os.path.getsize(src)
-    except Exception:
-        return False, strings.t("spr_logo_err_read")
-    if size > _LOGO_MAX_BYTES:
-        return False, strings.t("spr_logo_err_size",
-                                mb=round(_LOGO_MAX_BYTES / 1024 / 1024))
-    try:
-        from PIL import Image
-        with Image.open(src) as im:
-            im.verify()                     # catches truncated/corrupt files
-        with Image.open(src) as im:
-            w, h = im.size                  # header only — no pixel decode yet
-            fmt = (im.format or "").upper()
-    except Exception:
-        return False, strings.t("spr_logo_err_format")
-    if fmt not in _LOGO_ALLOWED_FMT:
-        return False, strings.t("spr_logo_err_format")
-    if w < _LOGO_MIN_W or h < _LOGO_MIN_H:
-        return False, strings.t("spr_logo_err_small", w=_LOGO_MIN_W, h=_LOGO_MIN_H)
-    if w > _LOGO_MAX_W or h > _LOGO_MAX_H or (w * h) > _LOGO_MAX_PIXELS:
-        return False, strings.t("spr_logo_err_big", w=_LOGO_MAX_W, h=_LOGO_MAX_H)
-    return True, ""
-
-
-def _save_custom_logo(src):
-    """Validate `src`, strip it to clean pixel data, and save it as THIS USER's
-    report logo. Returns (ok, error_message).
-
-    Security: re-checks dimensions after re-opening (guards a swap between
-    validate and save), then RE-ENCODES the pixels onto a fresh RGBA canvas —
-    dropping every ancillary chunk (EXIF/ICC/text/private PNG chunks), so no
-    embedded metadata payload survives into the saved file. Writes to a temp
-    file then atomically replaces, and never writes THROUGH a symlink someone
-    may have planted at the destination."""
-    ok, msg = _validate_logo(src)
-    if not ok:
-        return False, msg
-    dst = _custom_logo_path()
-    if not dst:
-        return False, strings.t("spr_logo_err_save")
-    tmp = ""
-    try:
-        from PIL import Image
-        os.makedirs(os.path.dirname(dst), exist_ok=True)
-        with Image.open(src) as im:
-            w, h = im.size
-            if (w < _LOGO_MIN_W or h < _LOGO_MIN_H or w > _LOGO_MAX_W
-                    or h > _LOGO_MAX_H or (w * h) > _LOGO_MAX_PIXELS):
-                return False, strings.t("spr_logo_err_save")   # changed since validate
-            rgba = im.convert("RGBA")            # full decode, already bounded
-            clean = Image.new("RGBA", rgba.size)  # fresh canvas: no .info carried
-            clean.paste(rgba)                     # copy PIXELS only, not metadata
-        try:
-            if os.path.islink(dst):
-                os.remove(dst)                    # don't follow a planted symlink
-        except Exception:
-            pass
-        import tempfile as _tf
-        fd, tmp = _tf.mkstemp(suffix=".tmp", dir=os.path.dirname(dst))  # O_EXCL, no symlink follow
-        os.close(fd)
-        clean.save(tmp, format="PNG")
-        os.replace(tmp, dst)                      # atomic swap into place
-        return True, ""
-    except Exception:
-        try:
-            if tmp and os.path.exists(tmp):
-                os.remove(tmp)
-        except Exception:
-            pass
-        return False, strings.t("spr_logo_err_save")
-
-
-def _reset_custom_logo():
-    """Delete the custom logo so the report falls back to the embedded default."""
-    p = _custom_logo_path()
-    try:
-        if p and os.path.exists(p):
-            os.remove(p)
-    except Exception:
-        pass
-
-
-def _ask_logo_path():
-    """Native 'open file' image dialog (tkinter). MUST run OFF the UI thread
-    (mirrors performance._ask_open_path). Returns path / None (cancelled) /
-    False (no native dialog, e.g. mobile)."""
-    try:
-        import tkinter as tk
-        from tkinter import filedialog
-    except Exception:
-        return False
-    try:
-        root = tk.Tk(); root.withdraw()
-        try:
-            root.attributes("-topmost", True)
-        except Exception:
-            pass
-        path = filedialog.askopenfilename(
-            parent=root, title=strings.t("spr_logo_choose"),
-            filetypes=[("Images", "*.png *.jpg *.jpeg"), ("All files", "*.*")])
-        try:
-            root.update(); root.destroy()
-        except Exception:
-            pass
-        return path or None
-    except Exception:
-        return False
-
-
 def _decode_assets():
-    """Write the report brand images (logo + colour band) to temp PNGs and return
-    (logo_path, band_path); ('' , '') if unavailable. The LOGO honours THIS USER's
-    custom logo when set (copied to a temp file so the caller's cleanup deletes the
-    COPY, never the saved original). Caller cleans up."""
-    import base64, tempfile, shutil
+    """Write the embedded brand images (logo + colour band) to temp PNGs and return
+    (logo_path, band_path); ('' , '') if unavailable. Caller cleans up."""
+    import base64, tempfile
     out = {}
     try:
         import report_assets as RA
-        custom = _custom_logo_path()
-        if custom and os.path.isfile(custom) and not os.path.islink(custom):
+        for key, b64 in (("logo", RA.LOGO_PNG_B64), ("band", RA.BAND_PNG_B64)):
             tf = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+            tf.write(base64.b64decode(b64))
             tf.close()
-            shutil.copyfile(custom, tf.name)   # COPY — never hand out the saved original
-            out["logo"] = tf.name
-        else:
-            tf = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-            tf.write(base64.b64decode(RA.LOGO_PNG_B64))
-            tf.close()
-            out["logo"] = tf.name
-        tb = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-        tb.write(base64.b64decode(RA.BAND_PNG_B64))
-        tb.close()
-        out["band"] = tb.name
+            out[key] = tf.name
     except Exception:
         return "", ""
     return out.get("logo", ""), out.get("band", "")
@@ -915,16 +726,7 @@ def _export_docx(app):
             header.is_linked_to_previous = False
             rId, _image = header.part.get_or_add_image(logo_path)
             cx = int(Inches(5.2))
-            _ar = 52 / 246                   # default logo aspect (246×52)
-            try:
-                from PIL import Image
-                with Image.open(logo_path) as _im:
-                    _lw, _lh = _im.size
-                if _lw > 0:
-                    _ar = _lh / _lw          # real aspect for a custom logo
-            except Exception:
-                pass
-            cy = int(cx * _ar)
+            cy = int(cx * 52 / 246)          # logo aspect 246×52
             xml = (
                 f'<w:r {nsdecls("w", "wp", "a", "pic", "r")}><w:drawing>'
                 '<wp:anchor behindDoc="1" distT="0" distB="0" distL="0" distR="0" '
@@ -1357,31 +1159,6 @@ def screen(app):
                     app.ui_safe(lambda e=ex: app._err(strings.t("spr_export_failed", err=ex)))
             app._bg(_w)
 
-        def _pick_logo(e=None):
-            import platform_caps as _pc
-            if _pc.is_mobile():
-                app._toast(strings.t("spr_logo_mobile"))
-                return
-            def _w():
-                src = _ask_logo_path()
-                if src is False:                      # no native dialog
-                    app.ui_safe(lambda: app._toast(strings.t("spr_logo_mobile")))
-                    return
-                if not src:                           # cancelled
-                    return
-                ok, msg = _save_custom_logo(src)
-                if ok:
-                    app.ui_safe(lambda: (app._toast(strings.t("spr_logo_saved")),
-                                         app.render()))
-                else:
-                    app.ui_safe(lambda m=msg: app._err(m))
-            app._bg(_w)
-
-        def _reset_logo(e=None):
-            _reset_custom_logo()
-            app._toast(strings.t("spr_logo_reset_done"))
-            app.render()
-
         # "Hero" treatment matching the plan email's masthead (cont'd #29) —
         # a small violet-soft eyebrow pill above the title instead of the
         # title sitting flatly next to the icon with nothing to anchor it,
@@ -1444,31 +1221,8 @@ def screen(app):
                 [sec_head("2", strings.t("spr_sec_report")), ft.Container(expand=True),
                  _copy_btn, _dl_btn],
                 vertical_alignment=ft.CrossAxisAlignment.CENTER)
-        _logo_status = (strings.t("spr_logo_custom") if _has_custom_logo()
-                        else strings.t("spr_logo_default"))
-        _logo_actions = [ghost_btn(strings.t("spr_logo_change"),
-                                   icon=ft.Icons.IMAGE_OUTLINED,
-                                   on_click=_pick_logo)]
-        if _has_custom_logo():
-            _logo_actions.append(ghost_btn(strings.t("spr_logo_reset"),
-                                           icon=ft.Icons.RESTART_ALT,
-                                           on_click=_reset_logo))
-        # NOTE: a plain Row (NOT wrap=True). An expand=True spacer creates a
-        # Flutter Expanded, which is only valid inside a Flex (Row/Column); with
-        # wrap=True the Row becomes a Wrap and Flutter throws
-        # "WrapParentData is not a subtype of FlexParentData", crashing the whole
-        # report-body subtree into a blank gray box. Standard header-row layout
-        # (icon + label + expand spacer + action buttons) instead.
-        logo_bar = _panel(ft.Row(
-            [ft.Icon(ft.Icons.IMAGE_OUTLINED, size=15, color=T.INK_3),
-             R._txt(strings.t("spr_logo_label") + ": " + _logo_status,
-                    size=12, color=T.INK_2, weight=ft.FontWeight.BOLD),
-             ft.Container(expand=True), *_logo_actions],
-            vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=8))
         results = card(ft.Column([
             _report_header,
-            ft.Container(height=12),
-            logo_bar,
             ft.Container(height=12),
             title_band,
             ft.Container(height=14),

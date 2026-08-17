@@ -76,6 +76,7 @@ import sprint_titles
 import task_manager
 import auth_supabase as auth
 import users_screen
+import orgs_screen
 import ai_usage_screen
 import remote_runs_screen
 import useful_links
@@ -430,6 +431,11 @@ class QAStudio:
             T.NAV.append({"id": "users", "label": "Users",
                           "icon": "GROUP", "ix": "U"})
 
+        # Organizations tab (super-admin only; rail() hides it via nav.orgs cap).
+        if not any(n.get("id") == "orgs" for n in T.NAV):
+            T.NAV.append({"id": "orgs", "label": "Organizations",
+                          "icon": "BUSINESS", "ix": "Or"})
+
         # AI Usage tab — visible to every signed-in user (nav.ai_usage is in
         # every role preset): a Member/Viewer sees their OWN usage, an Admin
         # sees everyone's. Only the "see everyone" scope is admin-gated
@@ -759,7 +765,8 @@ class QAStudio:
                 "titles": "nav.sprint_report", "automation": "nav.automation",
                 "task_manager": "nav.task_manager",
                 "links": "nav.links", "settings": "nav.settings",
-                "users": "nav.users", "ai_usage": "nav.ai_usage",
+                "users": "nav.users", "orgs": "nav.orgs",
+                "ai_usage": "nav.ai_usage",
                 "remote_runs": "nav.run"}.get(screen)
 
     def _screen_action_cap(self, screen):
@@ -776,7 +783,8 @@ class QAStudio:
                 "regression": "act.regression", "testplan": "act.sprint",
                 "titles": "act.sprint_report", "automation": "act.automation",
                 "task_manager": "act.task_manager",
-                "settings": "act.settings", "users": "act.manage_users"}.get(screen)
+                "settings": "act.settings", "users": "act.manage_users",
+                "orgs": "act.manage_orgs"}.get(screen)
 
     def _first_allowed_screen(self):
         for n in T.NAV:
@@ -1235,6 +1243,13 @@ class QAStudio:
         # back in (see the guard there). Cleared by a successful sign-in.
         self._user_signed_out = True
         self.user = None
+        # Drop signed-in-user-scoped admin caches so the NEXT account never
+        # sees the previous user's data (esp. the Users list — see
+        # users_screen._load, which also re-fetches when the uid changes).
+        self._users_list = None
+        self._users_list_uid = None
+        self._auth_msg = None           # clear login-card state (also the reset gate)
+        self._gate_busy = False
         self._switch_user_creds()       # revert to the shared default cred file
         # The login screen keeps its OWN theme flag (login.py's app._login_theme —
         # only ever set by its own toggle or on a successful sign-in), which never
@@ -1327,6 +1342,7 @@ class QAStudio:
                          or (n["id"] == "task_manager")
                          or (n["id"] == "links")
                          or (n["id"] == "users")
+                         or (n["id"] == "orgs")
                          or (n["id"] == "ai_usage")
                          or (n["id"] == "run" and (getattr(self, "_run_active", False)
                                                    or st == "active"
@@ -2695,6 +2711,13 @@ class QAStudio:
             # show the sign-in / sign-up screen instead of the app.
             if auth.configured() and not getattr(self, "user", None):
                 view = self._login_gate()
+            elif (auth.configured() and getattr(self, "user", None)
+                  and self.user.get("must_reset")):
+                # Invited with a temporary password → must set their own before
+                # the app is usable. Rendered by the LOGIN screen in reset_mode
+                # (same neon card UI); app_metadata.must_reset is cleared server-
+                # side by auth.change_own_password.
+                view = self._login_gate()
             elif self.active == "_locked":
                 view = self._no_access_screen()
             elif self.active == "setup":
@@ -2715,6 +2738,8 @@ class QAStudio:
                 view = task_manager.screen(self)
             elif self.active == "users":
                 view = users_screen.screen(self)
+            elif self.active == "orgs":
+                view = orgs_screen.screen(self)
             elif self.active == "ai_usage":
                 view = ai_usage_screen.screen(self)
             elif self.active == "remote_runs":

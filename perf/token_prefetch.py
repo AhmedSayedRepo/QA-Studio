@@ -15,11 +15,14 @@ from __future__ import annotations
 import base64
 import concurrent.futures as cf
 import json
+import os
 import re
 import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+
+_MAX_HAR_BYTES = 64 * 1024 * 1024   # 64 MB cap — bound json.load against a huge HAR
 from typing import Callable, Dict, List, Optional, Tuple
 from urllib.parse import parse_qsl
 
@@ -157,6 +160,14 @@ def detect_login_config_from_har(har_path: str) -> dict:
     """Best-effort: read a HAR of ONE login and infer the LoginConfig fields, so the
     user doesn't type them. Returns {ok, note, url, method, body_format, user_field,
     pass_field, token_json_path, token_header, fields}."""
+    _sz = 0
+    try:
+        _sz = os.path.getsize(har_path)
+    except OSError:
+        pass
+    if _sz > _MAX_HAR_BYTES:
+        raise ValueError("HAR file is too large (%d MB; max %d MB)."
+                         % (_sz // (1024 * 1024), _MAX_HAR_BYTES // (1024 * 1024)))
     with open(har_path, encoding="utf-8") as f:
         har = json.load(f)
     entries = ((har or {}).get("log") or {}).get("entries") or []

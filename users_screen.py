@@ -9,6 +9,7 @@ All privileged work happens server-side in the 'admin-users' Supabase Edge
 Function (it holds the service_role key). See ADMIN_USERS_SETUP.md to deploy it.
 """
 import threading
+import re
 
 import flet as ft
 import theme as T
@@ -19,6 +20,11 @@ from ui import hover_field
 
 _ROLES = ["Viewer", "Member", "Admin"]
 _PAGE = 25   # users per page
+
+# Client-side email shape check so an obviously-bad address is flagged inline
+# (under the field) instead of round-tripping and returning as a full-width
+# banner over the whole list.
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 def _fmt_last(ts):
@@ -40,8 +46,10 @@ def _fmt_last(ts):
 def _init(app):
     for k, v in (("_users_list", None), ("_users_loading", False),
                  ("_users_msg", None), ("_users_busy", None),
-                 ("_users_expanded", set()),
-                 ("_users_search", ""), ("_users_page", 0)):
+                 ("_users_expanded", set()), ("_users_invite_err", None),
+                 ("_users_invite_vals", {}),
+                 ("_users_search", ""), ("_users_page", 0),
+                 ("_users_invite_open", False), ("_users_list_uid", None)):
         if not hasattr(app, k):
             setattr(app, k, v)
 
@@ -49,14 +57,29 @@ def _init(app):
 def _load(app, force=False):
     if app._users_loading:
         return
-    if app._users_list is not None and not force:
+    # Key the cached list to the signed-in user. If a DIFFERENT user is now
+    # signed in (e.g. a super admin fetched the full cross-org list, then
+    # signed out and a scoped org manager signed in), the previous user's
+    # cached rows must NOT be shown — drop them and refetch under the new
+    # identity so the server re-scopes the result. Fixes a stale cross-user
+    # (and cross-org) list surviving a logout/login within the same process.
+    cur_uid = (getattr(app, "user", None) or {}).get("id")
+    stale_user = getattr(app, "_users_list_uid", None) != cur_uid
+    if app._users_list is not None and not force and not stale_user:
         return
+    if stale_user:
+        app._users_list = None
+        app._users_expanded = set()
+        app._users_page = 0
+        app._users_search = ""
+        app._users_invite_open = False
     app._users_loading = True
     app._users_msg = None
 
     def _work():
         ok, res = auth.admin_list_users()
         app._users_loading = False
+        app._users_list_uid = cur_uid
         if ok:
             app._users_list = res
             app._users_msg = None
@@ -68,59 +91,96 @@ def _load(app, force=False):
     threading.Thread(target=_work, daemon=True).start()
 
 
-def _save(app, user_id, fn):
-    """Run an admin mutation (fn → (ok,msg)) in the background with a busy state."""
-    app._users_busy = user_id
-    app.ui_safe(app.render)
-
-    def _work():
-        ok, msg = fn()
-        app._users_busy = None
-        if not ok:
-            app._users_msg = ("err", msg)
-        else:
-            try:
-                app._toast(msg)
-            except Exception:
-                pass
-        # refresh the row's data from the server
-        ok2, res = auth.admin_list_users()
-        if ok2:
-            app._users_list = res
-            if app.user:
-                for u in res:
-                    if u.get("id") == app.user.get("id"):
-                        app.user["role"] = u.get("role")
-                        app.user["caps"] = u.get("caps")
-        if getattr(app, "active", None) == "users":
-            app.ui_safe(app.render)
-    threading.Thread(target=_work, daemon=True).start()
-
-
 def screen(app):
     _init(app)
-    from main import card, sec_head, ghost_btn
+    from main import card, sec_head, ghost_btn, green_btn
 
     me = getattr(app, "user", None)
-    if not auth.is_admin(me):
-        body = card(ft.Column([
+    if not auth.can_manage_users(me):
+        body = ft.Column([card(ft.Column([
             ft.Row([ft.Icon(ft.Icons.LOCK_OUTLINE, color=T.INK_3, size=20),
                     ft.Text(strings.t("users_admins_only"), size=16, weight=ft.FontWeight.W_800, color=T.INK)],
                    spacing=10),
             ft.Container(height=6),
             ft.Text(strings.t("users_admins_only_body"), size=12.5,
                     color=T.INK_3, no_wrap=False),
-        ], spacing=2))
+        ], spacing=2))], spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
         return app.shell(strings.t("users_title"), strings.t("users_subtitle_short"), body)
 
     _load(app)
 
+    # Which roles this caller may assign. A super admin can set anyone to any
+    # role; an org manager may only set OrgManager/Member/Viewer (never Super
+    # Admin) — the Edge Function enforces this too, this just scopes the UI.
+    _is_super = auth.is_super_admin(me)
+    caller_roles = (["Viewer", "Member", "OrgManager", "SuperAdmin"] if _is_super
+                    else ["Viewer", "Member", "OrgManager"])
+
+    # Organization directory (id -> name) for the dropdowns + display, from the
+    # shared cache the Organizations screen also fills.
+    try:
+        import orgs_screen as _orgs
+        # force a (re)fetch while the directory is still empty so a transient
+        # empty/None self-heals; _load self-inits, guards against concurrent
+        # fetches, and re-renders this screen on completion.
+        _orgs._load(app, force=(not getattr(app, "_orgs_list", None)))
+    except Exception:
+        pass
+    _orgs_dir = app._orgs_list if isinstance(getattr(app, "_orgs_list", None), list) else []
+    _org_name = {str(o.get("id")): (o.get("name") or str(o.get("id"))) for o in _orgs_dir}
+    _org_options = [ft.DropdownOption(key=str(o.get("id")), text=(o.get("name") or str(o.get("id"))))
+                    for o in _orgs_dir if o.get("id") is not None]
+
     def _toggle_expand(uid):
         s = app._users_expanded
         s.discard(uid) if uid in s else s.add(uid)
-        app.ui_safe(app.render)
+        # Repaint only the list so opening/closing a permission drawer doesn't
+        # full-render the page (header, nav, scroll all stay put).
+        try:
+            _refresh_list()
+        except Exception:
+            app.ui_safe(app.render)
+
+    def _save_inline(uid, fn):
+        """Run an admin mutation but repaint ONLY the user list (see
+        _refresh_list) instead of the whole page — so a role / permission / org
+        change doesn't flash the header, nav or scroll position and any open
+        permission panel stays put. Errors surface as a toast, never as a banner
+        that wipes out the list."""
+        app._users_busy = uid
+        try:
+            _refresh_list()
+        except Exception:
+            app.ui_safe(app.render)
+
+        def _work():
+            ok, msg = fn()
+            app._users_busy = None
+            if not ok:
+                try:
+                    app._err(msg)
+                except Exception:
+                    pass
+            else:
+                try:
+                    app._toast(msg)
+                except Exception:
+                    pass
+            ok2, res = auth.admin_list_users()
+            if ok2:
+                app._users_list = res
+                if app.user:
+                    for u in res:
+                        if u.get("id") == app.user.get("id"):
+                            app.user["role"] = u.get("role")
+                            app.user["caps"] = u.get("caps")
+            if getattr(app, "active", None) == "users":
+                app.ui_safe(_refresh_list)
+        threading.Thread(target=_work, daemon=True).start()
 
     def _role_chip(uid, current, busy):
+        if current in auth.SUPER_ROLES:
+            current = "SuperAdmin"          # show legacy "Admin" as Super Admin
         def chip(role):
             sel = (current == role)
             return ft.Container(
@@ -133,19 +193,19 @@ def screen(app):
                 on_click=(None if (sel or busy)
                           else (lambda e, r=role: _set_role(uid, r))))
         return ft.Container(
-            ft.Row([chip(r) for r in _ROLES], spacing=4, tight=True),
+            ft.Row([chip(r) for r in caller_roles], spacing=4, tight=True),
             padding=4, bgcolor=T.CARD_2, border_radius=T.R,
             border=ft.Border.all(1, T.BORDER))
 
     def _set_role(uid, role):
         is_self = bool(me and me.get("id") == uid)
-        if is_self and role != "Admin":
+        if is_self and role not in auth.SUPER_ROLES:
             app._confirm(strings.t("users_confirm_role_title"),
                          strings.t("users_confirm_role_body"),
-                         lambda: _save(app, uid, lambda: auth.admin_set_role(uid, role)),
+                         lambda: _save_inline(uid, lambda: auth.admin_set_role(uid, role)),
                          yes_label=strings.t("users_confirm_role_yes"))
         else:
-            _save(app, uid, lambda: auth.admin_set_role(uid, role))
+            _save_inline(uid, lambda: auth.admin_set_role(uid, role))
 
     def _revoke(uid, email):
         is_self = bool(me and me.get("id") == uid)
@@ -153,14 +213,14 @@ def screen(app):
         if is_self:
             msg = strings.t("users_revoke_self_prefix") + msg
         app._confirm(strings.t("users_revoke_title"), msg,
-                     lambda: _save(app, uid, lambda: auth.admin_revoke_access(uid)),
+                     lambda: _save_inline(uid, lambda: auth.admin_revoke_access(uid)),
                      yes_label=strings.t("users_revoke_yes"), danger=True)
 
     def _perm_chip(uid, key, label, granted, busy):
         def _do(e):
             eff = set(auth.caps_for({"role": _cur_role[0], "caps": _cur_caps[0]}))
             eff.discard(key) if granted else eff.add(key)
-            _save(app, uid, lambda: auth.admin_set_caps(uid, sorted(eff)))
+            _save_inline(uid, lambda: auth.admin_set_caps(uid, sorted(eff)))
         return ft.Container(
             ft.Row([ft.Icon(ft.Icons.CHECK if granted else ft.Icons.ADD, size=13,
                             color=("#FFFFFF" if granted else T.INK_3)),
@@ -176,7 +236,7 @@ def screen(app):
     _cur_role = [None]
     _cur_caps = [None]
 
-    def _perm_panel(uid, role, caps, busy):
+    def _perm_panel(uid, role, caps, busy, org=""):
         _cur_role[0] = role
         _cur_caps[0] = caps
         eff = auth.caps_for({"role": role, "caps": caps})
@@ -192,8 +252,25 @@ def screen(app):
             ], spacing=0)
 
         custom = isinstance(caps, list)
+        _org_editor = []
+        if _is_super:
+            _of = ft.Dropdown(value=(org or None), options=_org_options,
+                              hint_text=strings.t("users_org_pick"),
+                              dense=True, text_size=12.5, border_color=T.BORDER,
+                              focused_border_color=T.VIOLET, border_radius=T.R_SM,
+                              expand=True)
+            _org_editor = [
+                ft.Text(strings.t("users_org_section"), size=11,
+                        weight=ft.FontWeight.BOLD, color=T.INK_3),
+                ft.Container(height=6),
+                ft.Row([_of, ghost_btn(strings.t("users_org_set"),
+                        on_click=(None if busy else (lambda e, w=_of:
+                            _save_inline(uid, lambda: auth.admin_set_org(uid, (w.value or "").strip())))))],
+                       spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                ft.Container(height=12),
+            ]
         return ft.Container(
-            ft.Column([
+            ft.Column(_org_editor + [
                 ft.Row([
                     ft.Text(strings.t("users_perms_title"), size=12,
                             weight=ft.FontWeight.W_800, color=T.INK),
@@ -261,6 +338,13 @@ def screen(app):
                               border_radius=999)
                  if revoked else ft.Container(width=0)),
             ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            ft.Row([ft.Icon(ft.Icons.BUSINESS_OUTLINED, size=12, color=T.INK_3),
+                    ft.Text(strings.t("users_org_label") + ": "
+                            + (_org_name.get(str(u.get("org_id") or "")) or u.get("org_id")
+                               or strings.t("users_org_none")),
+                            size=10.5, color=T.INK_3, weight=ft.FontWeight.BOLD,
+                            no_wrap=False, expand=True)],
+                   spacing=5, vertical_alignment=ft.CrossAxisAlignment.CENTER),
         ], spacing=2, expand=True)
         role_or_spinner = (ft.Row([ft.ProgressRing(width=18, height=18, stroke_width=2.4,
                                                     color=T.VIOLET)], tight=True)
@@ -314,7 +398,7 @@ def screen(app):
 
         children = [head]
         if expanded:
-            children.append(_perm_panel(uid, role, caps, busy))
+            children.append(_perm_panel(uid, role, caps, busy, org=u.get("org_id") or ""))
         return ft.Container(
             ft.Column(children, spacing=0),
             padding=ft.Padding.symmetric(vertical=12, horizontal=14),
@@ -378,11 +462,12 @@ def screen(app):
                                           else (lambda e: _goto(p + 1)))),
         ], alignment=ft.MainAxisAlignment.CENTER, spacing=16)
 
-    # scrollable list with its own scrollbar (bounded height). Taller container —
-    # fills more of the screen (was leaving a large empty gap below the list).
-    _h = max(440, int((getattr(app.page, "height", None) or 800) - 270))
-    list_view = ft.ListView(controls=_list_controls(), spacing=0, padding=0, expand=True)
-    list_holder = ft.Container(list_view, height=_h)
+    # The list sizes to its content and scrolls with the page's own scroller
+    # (the card body is wrapped in Column(scroll=AUTO) — see body). A fixed-
+    # height inner ListView fought that outer scroll and clipped the last rows
+    # and the pager off the bottom of the screen.
+    list_view = ft.Column(controls=_list_controls(), spacing=0)
+    list_holder = list_view
     pager_holder = ft.Container(_pager_controls(), margin=ft.Margin.only(top=12),
                                 alignment=ft.Alignment.CENTER)
 
@@ -410,20 +495,231 @@ def screen(app):
         border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
         content_padding=ft.Padding.symmetric(vertical=11, horizontal=12))
 
-    body = card(ft.Column([
+    # ── Invite a new user into an org ──────────────────────────────────────
+    def _toggle_invite(e=None):
+        app._users_invite_open = not getattr(app, "_users_invite_open", False)
+        app._users_invite_err = None
+        app._users_invite_vals = {}
+        app.ui_safe(app.render)
+
+    # Invite values + validation error live in app state so a validation
+    # re-render never wipes what was typed and the message is guaranteed to
+    # show. This Flet build's TextField has NO error_text kwarg (it raises
+    # TypeError), so the field just goes red-bordered and the message renders as
+    # a separate red line below the fields (app-standard border+note pattern).
+    _iv = app._users_invite_vals if isinstance(getattr(app, "_users_invite_vals", None), dict) else {}
+    _ierr = getattr(app, "_users_invite_err", None)
+    _inv_name = ft.TextField(
+        value=_iv.get("name", "") or "",
+        hint_text=strings.t("login_full_name_hint"), dense=True, text_size=13,
+        border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
+        content_padding=ft.Padding.symmetric(vertical=11, horizontal=12), expand=True)
+    _inv_email = ft.TextField(
+        value=_iv.get("email", "") or "",
+        hint_text=strings.t("users_invite_email_hint"), dense=True, text_size=13,
+        border_color=(T.RED if _ierr else T.BORDER),
+        focused_border_color=(T.RED if _ierr else T.VIOLET), border_radius=T.R,
+        content_padding=ft.Padding.symmetric(vertical=11, horizontal=12), expand=True)
+    _inv_role = ft.Dropdown(
+        value=_iv.get("role", "Viewer") or "Viewer", width=180, dense=True, text_size=13,
+        border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
+        options=[ft.DropdownOption(key=r, text=strings.t("role_" + r.lower()))
+                 for r in caller_roles])
+    _inv_org = (ft.Dropdown(
+        value=(_iv.get("org") or None),
+        hint_text=strings.t("users_invite_org_pick"), options=_org_options,
+        dense=True, text_size=13, border_color=T.BORDER, focused_border_color=T.VIOLET,
+        border_radius=T.R, expand=True)
+        if _is_super else None)
+
+    def _capture_invite():
+        app._users_invite_vals = {
+            "name": (_inv_name.value or "").strip(),
+            "email": (_inv_email.value or "").strip(),
+            "role": _inv_role.value or "Viewer",
+            "org": (((_inv_org.value or "").strip() or None) if _inv_org is not None else None),
+        }
+
+    def _email_temp_password(to_email, temp):
+        """Email the invitee their temp password via the org-shared Gmail sender
+        (same pipeline as report emails). Returns (ok, error)."""
+        try:
+            import engine
+            engine.ensure_sender_creds()
+            subj = strings.t("users_invite_email_subject")
+            html = (
+                "<div style=\"font-family:Segoe UI,Arial,sans-serif;color:#1b1f3a\">"
+                "<h2 style=\"margin:0 0 12px\">" + strings.t("users_invite_email_heading") + "</h2>"
+                "<p style=\"margin:0 0 10px\">" + strings.t("users_invite_email_line1") + "</p>"
+                "<p style=\"margin:0 0 14px\">" + strings.t("users_invite_email_line2") + "</p>"
+                "<table style=\"border-collapse:collapse;margin:0 0 14px\">"
+                "<tr><td style=\"padding:4px 12px 4px 0;color:#6b7280\">"
+                + strings.t("users_invite_email_email_label") + "</td>"
+                "<td style=\"padding:4px 0;font-weight:bold\">" + to_email + "</td></tr>"
+                "<tr><td style=\"padding:4px 12px 4px 0;color:#6b7280\">"
+                + strings.t("users_invite_email_pw_label") + "</td>"
+                "<td style=\"padding:4px 0;font-weight:bold;font-family:Consolas,monospace\">"
+                + temp + "</td></tr>"
+                "</table>"
+                "<p style=\"margin:0;color:#6b7280;font-size:13px\">"
+                + strings.t("users_invite_email_line3") + "</p></div>"
+            )
+            ok, err = engine.send_report(to_email, subj, html)
+            return bool(ok), (err or "")
+        except Exception as ex:
+            return False, str(ex)
+
+    def _show_temp_pw_dialog(to_email, temp, err):
+        """Fallback when the email couldn't be sent: show the temp password to
+        the admin (with a Copy button) so they can relay it securely."""
+        body = (strings.t("users_invite_pw_intro", email=to_email, err=(err or "no email sender"))
+                + "\n\n" + strings.t("users_invite_pw_email_label") + ":  " + to_email
+                + "\n" + strings.t("users_invite_pw_label") + ":  " + temp)
+        try:
+            app._confirm(strings.t("users_invite_pw_title"), body,
+                         lambda: app._copy_text_to_clipboard(temp, strings.t("users_invite_pw_copied")),
+                         yes_label=strings.t("users_invite_pw_copy"), danger=False,
+                         icon=ft.Icons.VPN_KEY)
+        except Exception:
+            app.ui_safe(app.render)
+
+    def _run_invite(fn, email):
+        # Persist typed values first, then validate — a re-render keeps them.
+        _capture_invite()
+        if not _EMAIL_RE.match(email):
+            app._users_invite_err = strings.t("users_invite_bad_email")
+            app.ui_safe(app.render)
+            return
+        app._users_invite_err = None
+        app.ui_safe(app.render)
+
+        def _work():
+            ok, msg = fn()
+            if not ok:
+                # Server rejection (already a member, other org, …) shows under
+                # the email field too; panel stays open to fix and retry.
+                app._users_invite_err = msg
+                if getattr(app, "active", None) == "users":
+                    app.ui_safe(app.render)
+                return
+            app._users_invite_open = False
+            app._users_invite_err = None
+            app._users_invite_vals = {}
+            try:
+                app._toast(msg)
+            except Exception:
+                pass
+            ok2, res = auth.admin_list_users()
+            if ok2:
+                app._users_list = res
+            if getattr(app, "active", None) == "users":
+                app.ui_safe(app.render)
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _do_invite(e=None):
+        email = (_inv_email.value or "").strip()
+        role = _inv_role.value or "Viewer"
+        org = ((_inv_org.value or "").strip() or None) if _inv_org is not None else None
+        _capture_invite()
+        if not _EMAIL_RE.match(email):
+            app._users_invite_err = strings.t("users_invite_bad_email")
+            app.ui_safe(app.render)
+            return
+        app._users_invite_err = None
+        app.ui_safe(app.render)
+
+        def _work():
+            name = (_inv_name.value or "").strip()
+            ok, res = auth.admin_invite_user(email, role=role, org_id=org, name=name)
+            if not ok:
+                # Server rejection (already registered, other org, …) inline.
+                app._users_invite_err = res if isinstance(res, str) else str(res)
+                if getattr(app, "active", None) == "users":
+                    app.ui_safe(app.render)
+                return
+            temp = (res or {}).get("temp_password") or ""
+            sent, send_err = _email_temp_password(email, temp)
+            app._users_invite_open = False
+            app._users_invite_err = None
+            app._users_invite_vals = {}
+            if sent:
+                app.ui_safe(lambda: app._toast(strings.t("users_invite_sent", email=email)))
+            else:
+                # Couldn't email → show the credentials to the admin to relay.
+                app.ui_safe(lambda: _show_temp_pw_dialog(email, temp, send_err))
+            ok2, res2 = auth.admin_list_users()
+            if ok2:
+                app._users_list = res2
+            if getattr(app, "active", None) == "users":
+                app.ui_safe(app.render)
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _do_add_existing(e=None):
+        email = (_inv_email.value or "").strip()
+        role = _inv_role.value or "Member"
+        org = ((_inv_org.value or "").strip() or None) if _inv_org is not None else None
+        _run_invite(lambda: auth.admin_add_existing_user(email, role=role, org_id=org), email)
+
+    _inv_fields = [hover_field(_inv_name), hover_field(_inv_email), _inv_role]
+    if _inv_org is not None:
+        _inv_fields.append(hover_field(_inv_org))
+    invite_panel = (ft.Container(
+        ft.Column([
+            ft.Text(strings.t("users_invite_title"), size=12,
+                    weight=ft.FontWeight.W_800, color=T.INK),
+            ft.Container(height=4),
+            ft.Text(strings.t("users_addexisting_hint"), size=11, color=T.INK_3,
+                    weight=ft.FontWeight.W_500, no_wrap=False),
+            ft.Container(height=8),
+            ft.Column(_inv_fields, spacing=8),
+            (ft.Container(
+                ft.Row([ft.Icon(ft.Icons.ERROR_OUTLINE, size=15, color=T.RED),
+                        ft.Text(_ierr, size=11, color=T.RED, weight=ft.FontWeight.W_600,
+                                no_wrap=False, expand=True)], spacing=6,
+                       vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                margin=ft.Margin.only(top=8))
+             if _ierr else ft.Container(height=0)),
+            ft.Container(height=10),
+            ft.Row([ft.Container(expand=True),
+                    ghost_btn(strings.t("users_invite_cancel"), on_click=_toggle_invite),
+                    ghost_btn(strings.t("users_addexisting_btn"), icon=ft.Icons.GROUP_ADD,
+                              on_click=_do_add_existing),
+                    green_btn(strings.t("users_invite_send"), icon=ft.Icons.SEND,
+                              on_click=_do_invite)], spacing=10),
+        ], spacing=0),
+        padding=14, margin=ft.Margin.only(bottom=12), bgcolor=T.CARD_2,
+        border_radius=T.R, border=ft.Border.all(1, T.BORDER))
+        if getattr(app, "_users_invite_open", False) else ft.Container())
+
+    # Help line: inline the SAME icon the per-row button uses (ft.Icons.TUNE)
+    # in place of the gear-glyph marker the translations carry, so the hint and
+    # the actual button can never disagree.
+    _hl = strings.t("users_help_line")
+    if "\u2699" in _hl:
+        _hb, _ha = _hl.split("\u2699", 1)
+        help_line = ft.Row([
+            ft.Text(_hb.rstrip(), size=12, color=T.INK_3, weight=ft.FontWeight.BOLD),
+            ft.Icon(ft.Icons.TUNE, size=15, color=T.INK_3),
+            ft.Text(_ha.lstrip(), size=12, color=T.INK_3, weight=ft.FontWeight.BOLD),
+        ], spacing=4, wrap=True, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+    else:
+        help_line = ft.Text(_hl, size=12, color=T.INK_3, weight=ft.FontWeight.BOLD,
+                            no_wrap=False)
+
+    body = ft.Column([card(ft.Column([
         ft.Row([sec_head("U", strings.t("users_sec_head")), ft.Container(expand=True),
-                ghost_btn(strings.t("users_refresh"), icon=ft.Icons.REFRESH,
-                          on_click=lambda e: _load(app, force=True))],
+                green_btn(strings.t("users_invite_btn"), icon=ft.Icons.PERSON_ADD_ALT,
+                          on_click=_toggle_invite)],
                vertical_alignment=ft.CrossAxisAlignment.CENTER),
         ft.Container(height=6),
-        ft.Text(strings.t("users_help_line"), size=12, color=T.INK_3,
-                weight=ft.FontWeight.BOLD, no_wrap=False),
+        help_line,
         ft.Container(height=14),
+        invite_panel,
         hover_field(search),
         ft.Container(height=12),
         list_holder,
         pager_holder,
-    ], spacing=0))
+    ], spacing=0))], spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
 
     return app.shell(strings.t("users_title"),
                      strings.t("users_subtitle"),

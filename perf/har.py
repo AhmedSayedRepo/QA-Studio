@@ -19,6 +19,8 @@ from datetime import datetime
 from typing import List, Optional, Tuple
 from urllib.parse import urlparse
 
+_MAX_HAR_BYTES = 64 * 1024 * 1024   # 64 MB cap — bound json.load against a huge HAR
+
 from .models import Assertion, AssertionKind, PerfRequest, PerfScenario
 
 # Headers the browser/transport manages or JMeter recomputes - never replay these.
@@ -86,6 +88,14 @@ def scenarios_from_har(har_path: str, include_domains: Optional[List[str]] = Non
     Values are captured LITERALLY (no {{variables}}); this is exact replay. Use the
     Data CSV / a later parameterization pass to vary accounts or search terms.
     """
+    _sz = 0
+    try:
+        _sz = os.path.getsize(har_path)
+    except OSError:
+        pass
+    if _sz > _MAX_HAR_BYTES:
+        raise ValueError("HAR file is too large (%d MB; max %d MB)."
+                         % (_sz // (1024 * 1024), _MAX_HAR_BYTES // (1024 * 1024)))
     with open(har_path, encoding="utf-8") as f:
         har = json.load(f)
     log = (har or {}).get("log") or {}
