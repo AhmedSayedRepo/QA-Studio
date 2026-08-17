@@ -120,6 +120,7 @@ Deno.serve(async (req) => {
           role: am.role || "Viewer",
           org_id: (typeof am.org_id === "string" ? am.org_id : "") || "",
           caps: Array.isArray(am.caps) ? am.caps : null,
+          name: ((u.user_metadata && (u.user_metadata.name || u.user_metadata.full_name)) || ""),
           created_at: u.created_at,
           last_sign_in_at: u.last_sign_in_at,
           confirmed: Boolean(u.email_confirmed_at || u.confirmed_at),
@@ -227,12 +228,21 @@ Deno.serve(async (req) => {
       } else if (callerIsManager) {
         meta.org_id = callerOrg;   // defensive: pin org on every manager write
       }
-      if (Object.keys(meta).length === 0) {
-        return json({ error: "Provide a role, caps and/or org_id to update." }, 400);
+      // Display name (user_metadata) — anyone who can manage this user (inScope,
+      // checked above) may set it; may be the ONLY field in the update.
+      const setName = (body.name !== undefined);
+      const nm = (body.name || "").toString().trim();
+      if (Object.keys(meta).length === 0 && !setName) {
+        return json({ error: "Provide a role, caps, org_id and/or name to update." }, 400);
       }
-      const { data: upd, error: updErr } = await admin.auth.admin.updateUserById(userId, { app_metadata: meta });
+      const updatePayload = {};
+      if (Object.keys(meta).length) updatePayload.app_metadata = meta;
+      if (setName) {
+        updatePayload.user_metadata = { ...(tgt.user.user_metadata || {}), name: nm, full_name: nm };
+      }
+      const { data: upd, error: updErr } = await admin.auth.admin.updateUserById(userId, updatePayload);
       if (updErr) return json({ error: updErr.message }, 500);
-      return json({ ok: true, id: upd.user.id, ...meta });
+      return json({ ok: true, id: upd.user.id, ...meta, ...(setName ? { name: nm } : {}) });
     }
 
     return json({ error: "Method not allowed." }, 405);

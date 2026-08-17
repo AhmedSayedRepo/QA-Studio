@@ -47,7 +47,8 @@ def _init(app):
     for k, v in (("_users_list", None), ("_users_loading", False),
                  ("_users_msg", None), ("_users_busy", None),
                  ("_users_expanded", set()), ("_users_invite_err", None),
-                 ("_users_invite_vals", {}),
+                 ("_users_invite_vals", {}), ("_users_invite_err_name", False),
+                 ("_users_invite_err_email", False),
                  ("_users_search", ""), ("_users_page", 0),
                  ("_users_invite_open", False), ("_users_list_uid", None)):
         if not hasattr(app, k):
@@ -236,10 +237,26 @@ def screen(app):
     _cur_role = [None]
     _cur_caps = [None]
 
-    def _perm_panel(uid, role, caps, busy, org=""):
+    def _perm_panel(uid, role, caps, busy, org="", name=""):
         _cur_role[0] = role
         _cur_caps[0] = caps
         eff = auth.caps_for({"role": role, "caps": caps})
+        # Display-name editor — available to any admin who can manage this user.
+        _nf = ft.TextField(
+            value=name or "", hint_text=strings.t("users_name_hint"), dense=True,
+            text_size=12.5, border_color=T.BORDER, focused_border_color=T.VIOLET,
+            border_radius=T.R_SM, expand=True,
+            content_padding=ft.Padding.symmetric(vertical=10, horizontal=12))
+        _name_editor = [
+            ft.Text(strings.t("users_name_section"), size=11,
+                    weight=ft.FontWeight.BOLD, color=T.INK_3),
+            ft.Container(height=6),
+            ft.Row([hover_field(_nf), ghost_btn(strings.t("users_name_set"),
+                    on_click=(None if busy else (lambda e, w=_nf:
+                        _save_inline(uid, lambda: auth.admin_set_name(uid, (w.value or "").strip())))))],
+                   spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            ft.Container(height=12),
+        ]
         nav = [(k, lbl) for k, lbl, kind in auth.CATALOG if kind == "nav"]
         act = [(k, lbl) for k, lbl, kind in auth.CATALOG if kind == "act"]
 
@@ -270,7 +287,7 @@ def screen(app):
                 ft.Container(height=12),
             ]
         return ft.Container(
-            ft.Column(_org_editor + [
+            ft.Column(_name_editor + _org_editor + [
                 ft.Row([
                     ft.Text(strings.t("users_perms_title"), size=12,
                             weight=ft.FontWeight.W_800, color=T.INK),
@@ -398,7 +415,7 @@ def screen(app):
 
         children = [head]
         if expanded:
-            children.append(_perm_panel(uid, role, caps, busy, org=u.get("org_id") or ""))
+            children.append(_perm_panel(uid, role, caps, busy, org=u.get("org_id") or "", name=u.get("name") or ""))
         return ft.Container(
             ft.Column(children, spacing=0),
             padding=ft.Padding.symmetric(vertical=12, horizontal=14),
@@ -500,6 +517,8 @@ def screen(app):
         app._users_invite_open = not getattr(app, "_users_invite_open", False)
         app._users_invite_err = None
         app._users_invite_vals = {}
+        app._users_invite_err_name = False
+        app._users_invite_err_email = False
         app.ui_safe(app.render)
 
     # Invite values + validation error live in app state so a validation
@@ -509,16 +528,19 @@ def screen(app):
     # a separate red line below the fields (app-standard border+note pattern).
     _iv = app._users_invite_vals if isinstance(getattr(app, "_users_invite_vals", None), dict) else {}
     _ierr = getattr(app, "_users_invite_err", None)
+    _nerr = bool(getattr(app, "_users_invite_err_name", False))
+    _eerr = bool(getattr(app, "_users_invite_err_email", False))
     _inv_name = ft.TextField(
         value=_iv.get("name", "") or "",
-        hint_text=strings.t("login_full_name_hint"), dense=True, text_size=13,
-        border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
+        hint_text=strings.t("login_full_name_hint") + " *", dense=True, text_size=13,
+        border_color=(T.RED if _nerr else T.BORDER),
+        focused_border_color=(T.RED if _nerr else T.VIOLET), border_radius=T.R,
         content_padding=ft.Padding.symmetric(vertical=11, horizontal=12), expand=True)
     _inv_email = ft.TextField(
         value=_iv.get("email", "") or "",
-        hint_text=strings.t("users_invite_email_hint"), dense=True, text_size=13,
-        border_color=(T.RED if _ierr else T.BORDER),
-        focused_border_color=(T.RED if _ierr else T.VIOLET), border_radius=T.R,
+        hint_text=strings.t("users_invite_email_hint") + " *", dense=True, text_size=13,
+        border_color=(T.RED if _eerr else T.BORDER),
+        focused_border_color=(T.RED if _eerr else T.VIOLET), border_radius=T.R,
         content_padding=ft.Padding.symmetric(vertical=11, horizontal=12), expand=True)
     _inv_role = ft.Dropdown(
         value=_iv.get("role", "Viewer") or "Viewer", width=180, dense=True, text_size=13,
@@ -585,7 +607,11 @@ def screen(app):
 
     def _run_invite(fn, email):
         # Persist typed values first, then validate — a re-render keeps them.
+        # (Add-existing needs only a valid email; the full name is not required
+        # here since the target already has an account.)
         _capture_invite()
+        app._users_invite_err_name = False
+        app._users_invite_err_email = (not _EMAIL_RE.match(email))
         if not _EMAIL_RE.match(email):
             app._users_invite_err = strings.t("users_invite_bad_email")
             app.ui_safe(app.render)
@@ -599,6 +625,7 @@ def screen(app):
                 # Server rejection (already a member, other org, …) shows under
                 # the email field too; panel stays open to fix and retry.
                 app._users_invite_err = msg
+                app._users_invite_err_email = True
                 if getattr(app, "active", None) == "users":
                     app.ui_safe(app.render)
                 return
@@ -618,22 +645,32 @@ def screen(app):
 
     def _do_invite(e=None):
         email = (_inv_email.value or "").strip()
+        name = (_inv_name.value or "").strip()
         role = _inv_role.value or "Viewer"
         org = ((_inv_org.value or "").strip() or None) if _inv_org is not None else None
         _capture_invite()
+        # Both the full name and a valid email are mandatory.
+        app._users_invite_err_name = (not name)
+        app._users_invite_err_email = (not _EMAIL_RE.match(email))
+        if not name:
+            app._users_invite_err = strings.t("users_invite_name_required")
+            app.ui_safe(app.render)
+            return
         if not _EMAIL_RE.match(email):
             app._users_invite_err = strings.t("users_invite_bad_email")
             app.ui_safe(app.render)
             return
         app._users_invite_err = None
+        app._users_invite_err_name = False
+        app._users_invite_err_email = False
         app.ui_safe(app.render)
 
         def _work():
-            name = (_inv_name.value or "").strip()
             ok, res = auth.admin_invite_user(email, role=role, org_id=org, name=name)
             if not ok:
                 # Server rejection (already registered, other org, …) inline.
                 app._users_invite_err = res if isinstance(res, str) else str(res)
+                app._users_invite_err_email = True
                 if getattr(app, "active", None) == "users":
                     app.ui_safe(app.render)
                 return

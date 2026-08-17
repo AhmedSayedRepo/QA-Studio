@@ -15,6 +15,40 @@ import strings
 from ui import card, grad, logo_img
 
 
+def _saved_logins(app):
+    v = app.creds.get("saved_logins") if isinstance(getattr(app, "creds", None), dict) else None
+    return [l for l in v if isinstance(l, dict) and (l.get("email") or "").strip()] if isinstance(v, list) else []
+
+
+def _save_login(app, email, pw):
+    """Remember a login in the SHARED creds file (dedup by email, most-recent
+    first, capped) so it can be offered on the next sign-in. Passwords are stored
+    via the same encrypted store the app already uses for auto-login."""
+    email = (email or "").strip()
+    pw = pw or ""
+    if not email or not pw or not isinstance(getattr(app, "creds", None), dict):
+        return
+    logins = [l for l in _saved_logins(app)
+              if (l.get("email") or "").lower() != email.lower()]
+    logins.insert(0, {"email": email, "password": pw})
+    app.creds["saved_logins"] = logins[:6]
+    try:
+        store.save(app.creds)
+    except Exception:
+        pass
+
+
+def _remove_login(app, email):
+    if not isinstance(getattr(app, "creds", None), dict):
+        return
+    app.creds["saved_logins"] = [l for l in _saved_logins(app)
+                                 if (l.get("email") or "").lower() != (email or "").lower()]
+    try:
+        store.save(app.creds)
+    except Exception:
+        pass
+
+
 def login_parallax(app, e):
     """Shift the login backdrop with the cursor (like the WebView2 parallax).
 
@@ -316,7 +350,7 @@ def login_gate(app):
     email_tf, email_col = _field(strings.t("login_email_label"), strings.t("login_email_hint"), ft.Icons.MAIL_OUTLINE,
                                  getattr(app, "_auth_email", ""))
     pwd_tf, pwd_col = _field(strings.t("login_password_label"), strings.t("login_password_hint"), ft.Icons.LOCK_OUTLINE,
-                             password=True)
+                             getattr(app, "_auth_prefill_pw", ""), password=True)
 
     newpw_tf = newpw_col = confpw_tf = confpw_col = None
     if reset_mode:
@@ -327,6 +361,7 @@ def login_gate(app):
 
     def _stash():
         app._auth_email = email_tf.value or ""
+        app._auth_prefill_pw = pwd_tf.value or ""
         if name_tf is not None:
             app._auth_name = name_tf.value or ""
 
@@ -361,6 +396,15 @@ def login_gate(app):
                     # _on_secure_creds_ready): the user has explicitly signed in
                     # again, so later vault bootstraps may restore normally.
                     app._user_signed_out = False
+                    # Remember-me: persist this login to the SHARED creds file
+                    # NOW, before _switch_user_creds() repoints the store at the
+                    # per-user file, so it's offered on the login screen next time.
+                    try:
+                        if getattr(app, "_login_remember", True):
+                            _save_login(app, email_tf.value, pwd_tf.value)
+                    except Exception:
+                        pass
+                    app._auth_prefill_pw = ""   # don't leave the pw in memory state
                     # Load THIS user's own per-user creds file FIRST, then apply the
                     # login screen's chosen theme on top of it — order matters. This
                     # used to run the other way around: apply + save the login theme
@@ -561,6 +605,64 @@ def login_gate(app):
         c.on_hover = _h
         return c
 
+    # ── Remember-me + saved-logins picker (sign-in mode only) ──────────────
+    if not hasattr(app, "_login_remember"):
+        app._login_remember = (bool(app.creds.get("remember_me", True))
+                               if isinstance(getattr(app, "creds", None), dict) else True)
+
+    def _toggle_remember(e=None):
+        app._login_remember = (bool(e.control.value) if e is not None
+                               else (not app._login_remember))
+        try:
+            if isinstance(getattr(app, "creds", None), dict):
+                app.creds["remember_me"] = app._login_remember
+                store.save(app.creds)
+        except Exception:
+            pass
+    remember_cb = ft.Row([
+        ft.Checkbox(value=bool(getattr(app, "_login_remember", True)),
+                    on_change=_toggle_remember, active_color=accent, check_color="#FFFFFF",
+                    scale=0.85),
+        ft.Text(strings.t("login_remember"), size=12.5, color=INK2, weight=ft.FontWeight.W_600),
+    ], spacing=2, tight=True, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+
+    saved_section = None
+    _saved = _saved_logins(app)
+    if (not signup) and (not reset_mode) and _saved:
+        _chips = []
+        for _l in _saved[:6]:
+            _em = (_l.get("email") or "").strip()
+            if not _em:
+                continue
+
+            def _pick(e=None, em=_em, pw=(_l.get("password") or "")):
+                app._auth_email = em
+                app._auth_prefill_pw = pw
+                app.ui_safe(app.render)
+
+            def _rm(e=None, em=_em):
+                _remove_login(app, em)
+                app.ui_safe(app.render)
+
+            _chips.append(ft.Container(
+                ft.Row([ft.Icon(ft.Icons.ACCOUNT_CIRCLE, size=15, color=accent),
+                        ft.Text(_em, size=12, color=INK, weight=ft.FontWeight.W_600, no_wrap=True),
+                        ft.Container(ft.Icon(ft.Icons.CLOSE, size=13, color=CAP),
+                                     on_click=_rm, ink=True, border_radius=6, padding=2,
+                                     tooltip=strings.t("login_saved_remove"))],
+                       spacing=7, tight=True, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                on_click=_pick, ink=True, border_radius=10,
+                padding=ft.Padding.symmetric(vertical=7, horizontal=10),
+                bgcolor=_op(accent, 0.10), border=ft.Border.all(1, _op(accent, 0.35))))
+        if _chips:
+            saved_section = ft.Column([
+                ft.Text(strings.t("login_saved_logins"), size=11, color=CAP, font_family=MONO,
+                        style=ft.TextStyle(letter_spacing=0.8)),
+                ft.Container(height=8),
+                ft.Row(_chips, wrap=True, spacing=8, run_spacing=8),
+                ft.Container(height=18),
+            ], spacing=0)
+
     _header_row = ft.Row([ft.Container(logo_img(48), width=48, height=48, border_radius=12,
                              bgcolor=None, alignment=ft.Alignment.CENTER),
                 ft.Text("QA Studio", size=17, weight=ft.FontWeight.W_700,
@@ -604,11 +706,14 @@ def login_gate(app):
                     style=ft.TextStyle(letter_spacing=0.4)),
             ft.Container(height=26),
         ]
+        if saved_section is not None:
+            rows.append(saved_section)
         for col in [c for c in (name_col, email_col, pwd_col) if c is not None]:
             rows += [col, ft.Container(height=16)]
         if not signup:
-            rows.append(ft.Row([_link(strings.t("login_forgot_password"), _forgot)],
-                               alignment=ft.MainAxisAlignment.END))
+            rows.append(ft.Row([remember_cb, ft.Container(expand=True),
+                                _link(strings.t("login_forgot_password"), _forgot)],
+                               vertical_alignment=ft.CrossAxisAlignment.CENTER))
         if banner:
             rows += [ft.Container(height=8), banner]
         rows += [ft.Container(height=20), btn, ft.Container(height=18),

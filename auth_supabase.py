@@ -851,6 +851,13 @@ def admin_set_org(user_id, org_id):
     return (True, "Organization updated.") if ok else (False, err)
 
 
+def admin_set_name(user_id, name):
+    """Set a managed user's display name (user_metadata.name), server-enforced
+    to users the caller may manage. Returns (ok, msg)."""
+    ok, err = _admin_post({"user_id": user_id, "name": (name or "").strip()})
+    return (True, "Name updated.") if ok else (False, err)
+
+
 # -- Organizations (via the 'orgs' Edge Function) -----------------------------
 def list_orgs():
     """List organizations. Super admin gets the full directory (with contact
