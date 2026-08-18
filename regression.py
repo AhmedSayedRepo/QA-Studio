@@ -2319,7 +2319,6 @@ def _init(app):
                  ("_cp_iterations", []), ("_cp_iter_loading", False),
                  ("_cp_sprint_paths", []), ("_cp_sprint_name", ""),
                  ("_cp_stories_loading", False), ("_cp_enriching", False),
-                 ("_cp_ai_timeout", False),
                  ("_cp_ai_scored", None), ("_cp_ai_total", 0),
                  ("_cp_rows", []), ("_cp_all_rows", []),
                  ("_cp_story_ids", []), ("_cp_story_open", False),
@@ -3575,12 +3574,10 @@ def _cp_load_stories(app):
         app._cp_story_ids = []
         app._cp_stories_loading = False
         app._cp_enriching = False
-        app._cp_ai_timeout = False
         app._cp_ai_scored = None
         _repaint_unless_open(app, "_cp_sprint_open")
         return
     app._cp_stories_loading = True
-    app._cp_ai_timeout = False
     app._cp_ai_scored = None
     # Enrichment (Azure priority + content heuristic + the AI complexity call)
     # runs AFTER the story list loads and can take 20–30s. Estimates aren't
@@ -3716,38 +3713,18 @@ def _cp_load_stories(app):
     threading.Thread(target=_work, daemon=True).start()
 
 
-_CP_AI_TIMEOUT_S = 30   # cap the AI complexity call; past this, fall back to the
-                        # size heuristic and prompt the user to switch AI provider.
+def _cp_ai_scores(app, texts):
+    """Get AI complexity scores without a Sprint Plan-specific time limit.
 
-
-def _cp_ai_scores_with_timeout(app, texts, timeout=_CP_AI_TIMEOUT_S):
-    """Run the AI complexity call but never wait more than `timeout` seconds.
-
-    The call can't be force-killed, so on timeout we stop waiting
-    (shutdown(wait=False) — the orphaned thread finishes and its result is
-    discarded) and fall back to the heuristic. Sets app._cp_ai_timeout so the
-    plan can tell the user the AI provider timed out and to switch it in Setup."""
-    app._cp_ai_timeout = False
+    This runs in the existing background enrichment thread, so a slow provider
+    does not block the UI. Provider errors still fall back to the heuristic.
+    """
     if not texts:
         return {}
-    import concurrent.futures as _cf
-    ex = _cf.ThreadPoolExecutor(max_workers=1)
-    fut = ex.submit(_fetch_cp_ai_complexity, app, texts)
     try:
-        return fut.result(timeout=timeout) or {}
-    except _cf.TimeoutError:
-        app._cp_ai_timeout = True
-        try:
-            import diag_log
-            diag_log.log("regression.cp_ai_timeout",
-                         Exception(f"AI complexity call exceeded {timeout}s"))
-        except Exception:
-            pass
-        return {}
+        return _fetch_cp_ai_complexity(app, texts) or {}
     except Exception:
         return {}
-    finally:
-        ex.shutdown(wait=False)
 
 
 def _cp_run_enrichment(app, gen):
@@ -3769,7 +3746,7 @@ def _cp_run_enrichment(app, gen):
             def _cx_chain():
                 try:
                     _c, _t = _fetch_cp_complexity(app, [_sid(r["id"]) for r in agg])
-                    _cx["comp"], _cx["texts"], _cx["ai"] = _c, _t, _cp_ai_scores_with_timeout(app, _t)
+                    _cx["comp"], _cx["texts"], _cx["ai"] = _c, _t, _cp_ai_scores(app, _t)
                 except Exception:
                     _cx["comp"], _cx["texts"], _cx["ai"] = {}, {}, {}
             import threading as _th_cp
@@ -3791,7 +3768,7 @@ def _cp_run_enrichment(app, gen):
                 r["feature_name"] = (fnames.get(r.get("feature_id"), "")
                                      if r.get("feature_id") else "")
             # Content-complexity units per story → drives a non-random estimate.
-            # The AI signal is best-effort: timeout / failure / no-credit just
+            # The AI signal is best-effort: failure / no-credit just
             # leaves ai_scores empty and the blend falls back to the heuristic.
             _cx_t.join()
             comp, texts = (_cx.get("comp") or {}), (_cx.get("texts") or {})
@@ -3811,8 +3788,7 @@ def _cp_run_enrichment(app, gen):
                     _model = "?"
                 _dl2.log_warn("regression.cp_ai_enrichment",
                               f"AI scored {app._cp_ai_scored}/{app._cp_ai_total} "
-                              f"stories (provider={_prov}, model={_model}, "
-                              f"timeout={'yes' if getattr(app, '_cp_ai_timeout', False) else 'no'})")
+                              f"stories (provider={_prov}, model={_model})")
             except Exception:
                 pass
             comp = _cp_blend_complexity(comp, ai_scores)
@@ -3858,7 +3834,6 @@ def _cp_replan(app):
     app._cp_stories_gen = getattr(app, "_cp_stories_gen", 0) + 1
     _gen = app._cp_stories_gen
     app._cp_enriching = True
-    app._cp_ai_timeout = False
     # Keep the current plan on screen; badge it provisional while re-enriching.
     # Prefer an in-place refresh so re-clicking Regenerate doesn't jump the scroll.
     if not _cp_refresh_inplace(app):
@@ -4864,22 +4839,9 @@ def _create_screen(app):
             border=ft.Border.all(1, "#EAD9A8"),
             margin=ft.Margin.only(top=12), visible=_cp_prov)
 
-        # AI complexity call hit the 30s cap → estimate fell back to the size
-        # heuristic. Tell the user to switch provider (only when NOT still
-        # refining, so it doesn't fight the provisional badge above).
-        _cp_timed_out = bool(getattr(app, "_cp_ai_timeout", False)) and not _cp_prov
-        timeout_note = ft.Container(
-            ft.Row([ft.Icon(ft.Icons.WARNING_AMBER_ROUNDED, size=16, color=T.RED),
-                    _txt(strings.t("reg_ai_timeout"),
-                         color=T.RED, size=12, weight=ft.FontWeight.W_500, expand=True)],
-                   spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-            padding=10, bgcolor=T.RED_SOFT, border_radius=T.R,
-            border=ft.Border.all(1, ft.Colors.with_opacity(0.4, T.RED)),
-            margin=ft.Margin.only(top=12), visible=_cp_timed_out)
-
         # Did the AI actually contribute? A prominent banner — icon chip + bold
         # title + detail — answering "is the AI enrichment really working?".
-        # Hidden while refining (badge covers it) and on timeout (note covers it).
+        # Hidden while refining, when the provisional badge covers it.
         def _ai_style():
             n = getattr(app, "_cp_ai_scored", None)
             m = getattr(app, "_cp_ai_total", 0) or 0
@@ -4906,7 +4868,7 @@ def _create_screen(app):
             ], spacing=11, vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
         _cp_ai_n = getattr(app, "_cp_ai_scored", None)
-        _show_ai_line = (_cp_ai_n is not None) and (not _cp_prov) and (not _cp_timed_out)
+        _show_ai_line = (_cp_ai_n is not None) and (not _cp_prov)
         _ai0 = _ai_style()
         ai_line = ft.Container(
             _ai_banner_row(),
@@ -4931,7 +4893,7 @@ def _create_screen(app):
 
         def _apply_cp_state():
             """In-place refresh when the enrichment state flips (provisional →
-            final, or → timeout): toggles the badge / timeout note / AI banner +
+            final): toggles the badge / AI banner +
             the Export/Email/Assign locks AND rebuilds the table + KPIs (hours
             change when enrichment lands) WITHOUT a full app.render(). The full
             render was what jumped the scroll on every Generate/Regenerate and
@@ -4939,12 +4901,10 @@ def _create_screen(app):
             if getattr(app, "active", None) != "testplan":
                 return
             prov = bool(getattr(app, "_cp_enriching", False))
-            timed = bool(getattr(app, "_cp_ai_timeout", False)) and not prov
             n = getattr(app, "_cp_ai_scored", None)
-            show_ai = (n is not None) and (not prov) and (not timed)
+            show_ai = (n is not None) and (not prov)
             try:
                 prov_badge.visible = prov
-                timeout_note.visible = timed
                 _bg, _bd = _ai_style()[4], _ai_style()[5]
                 ai_line.content = _ai_banner_row()
                 ai_line.bgcolor = _bg

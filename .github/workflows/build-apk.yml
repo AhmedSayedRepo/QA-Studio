@@ -116,6 +116,10 @@ jobs:
           # crashes. Any future package dir (e.g. more backends) must be added
           # here the same way; a bare `cp *.py` will silently skip it.
           cp -r tracker /tmp/mobile/ 2>/dev/null || true
+          # perf/ backs the Performance screen. performance.py imports it at
+          # startup, so omitting this package prevents the Android app from
+          # launching with "ModuleNotFoundError: No module named 'perf'".
+          cp -r perf /tmp/mobile/ 2>/dev/null || true
           # VERSION must ship in the bundle: the mobile update NOTICE compares
           # engine.local_version() (reads this file) against the repo's copy —
           # without it local_version() returns 0.0.0 and every launch nags.
