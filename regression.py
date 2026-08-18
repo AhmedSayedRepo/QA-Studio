@@ -4918,7 +4918,7 @@ def _create_screen(app):
                                         else _assign_testers)
                 _assign_btn.opacity = 0.5 if prov else 1.0
                 _refresh_all()   # table + KPIs + workload with the (possibly new) hours
-                for _c in (prov_badge, timeout_note, ai_line,
+                for _c in (prov_badge, ai_line,
                            _exports_ui, _email_ui, _assign_btn):
                     try:
                         _c.update()
@@ -4932,7 +4932,7 @@ def _create_screen(app):
         app._cp_apply_state = _apply_cp_state
 
         results = card(ft.Column([
-            sec_head("3", strings.t("reg_plan")), prov_badge, timeout_note,
+            sec_head("3", strings.t("reg_plan")), prov_badge,
             ft.Container(height=12), kpi_strip, ai_line,
             ft.Container(height=14), table, workload_ui,
             ft.Divider(height=22, color=T.BORDER),

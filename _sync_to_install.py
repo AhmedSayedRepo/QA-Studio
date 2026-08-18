@@ -45,13 +45,12 @@ for pat in patterns:
                     try: os.remove(pyc)
                     except: pass
 
-# Package SUBDIRECTORIES. The glob above is top-level only, so a package like
-# tracker/ (the multi-backend adapter) is invisible to it — the installed copy
-# would be missing the whole package and crash on `import tracker` the moment a
-# non-Azure backend is used. Running `python main.py` from THIS dev folder hides
-# it (tracker/ is right here); only the installed copy is affected. Sync each
-# package dir recursively. Add any future package here.
-PACKAGE_DIRS = ["tracker"]
+# Package SUBDIRECTORIES. The glob above is top-level only, so packages such as
+# tracker/ (backend adapters) and perf/ (the Performance screen) would otherwise
+# be absent from the installed copy and fail at import time. Running `python
+# main.py` from this dev folder hides that problem because the packages are here.
+# Sync each package dir recursively. Add any future package here.
+PACKAGE_DIRS = ["tracker", "perf"]
 for pkg in PACKAGE_DIRS:
     src_dir = os.path.join(SRC, pkg)
     if not os.path.isdir(src_dir):

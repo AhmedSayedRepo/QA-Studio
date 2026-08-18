@@ -659,8 +659,12 @@ def login_gate(app):
                 ft.Text(strings.t("login_saved_logins"), size=11, color=CAP, font_family=MONO,
                         style=ft.TextStyle(letter_spacing=0.8)),
                 ft.Container(height=8),
-                ft.Row(_chips, wrap=True, spacing=8, run_spacing=8),
-                ft.Container(height=18),
+                # Keep saved accounts available without allowing their wrapped
+                # chips to make the login card taller than the viewport. The
+                # picker shows the first row and scrolls to additional accounts.
+                ft.Column([ft.Row(_chips, wrap=True, spacing=8, run_spacing=8)],
+                          height=42, scroll=ft.ScrollMode.AUTO, spacing=0),
+                ft.Container(height=12),
             ], spacing=0)
 
     _header_row = ft.Row([ft.Container(logo_img(48), width=48, height=48, border_radius=12,
