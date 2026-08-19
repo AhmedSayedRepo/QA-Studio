@@ -182,7 +182,7 @@ def grad(stops, diagonal=True):
 
 
 def _grad_button(text, icon, on_click, stops, shadow_rgb, shadow_a,
-                 expand=False, disabled=False, height=46, wrap=False):
+                 expand=False, disabled=False, height=46, wrap=False, tooltip=None):
     """Gradient pill button (Container-based) matching the mockup CTAs.
     Same call shape as primary_btn/green_btn so call sites don't change."""
     inner = []
@@ -201,6 +201,7 @@ def _grad_button(text, icon, on_click, stops, shadow_rgb, shadow_a,
         padding=ft.Padding.symmetric(horizontal=18, vertical=0),
         gradient=grad(stops), ink=True,
         on_click=(None if disabled else on_click),
+        tooltip=tooltip,
         opacity=(0.45 if disabled else 1),
         shadow=(None if disabled else _btn_shadow(shadow_rgb, shadow_a)))
     # subtle hover lift (press-ready CTA feel)
@@ -357,9 +358,11 @@ def logo_img(size=38, fallback_icon=None, fallback_color="#FFFFFF"):
 _READONLY = False
 
 
-def primary_btn(text, icon=None, on_click=None, expand=False, disabled=False, wrap=False):
+def primary_btn(text, icon=None, on_click=None, expand=False, disabled=False, wrap=False,
+                tooltip=None):
     return _grad_button(text, icon, on_click, T.GRAD_PRIMARY, T.VIOLET, 0.6,
-                        expand=expand, disabled=disabled or _READONLY, height=46, wrap=wrap)
+                        expand=expand, disabled=disabled or _READONLY, height=46, wrap=wrap,
+                        tooltip=tooltip)
 
 
 def _disabled_wrap(w, disabled, op=0.45):
@@ -375,25 +378,26 @@ def _disabled_wrap(w, disabled, op=0.45):
 
 
 def green_btn(text, icon=None, on_click=None, expand=False, height=42, disabled=False,
-              ignore_ro=False):
+              ignore_ro=False, tooltip=None):
     # ignore_ro=True: this button is gated by its OWN per-action permission (passed
     # as `disabled`), not by the screen-level read-only flag.
     return _grad_button(text, icon, on_click, T.GRAD_GREEN, T.GREEN, 0.5,
                         expand=expand, height=height,
-                        disabled=disabled or (_READONLY and not ignore_ro))
+                        disabled=disabled or (_READONLY and not ignore_ro), tooltip=tooltip)
 
 def ghost_btn(text, icon=None, on_click=None, expand=False, disabled=False,
-              ignore_ro=False):
+              ignore_ro=False, tooltip=None):
     disabled = disabled or (_READONLY and not ignore_ro)
     btn = ft.OutlinedButton(
         text, icon=icon, on_click=(None if disabled else on_click), height=46,
+        tooltip=tooltip,
         style=ft.ButtonStyle(color=(T.INK_3 if disabled else T.INK_2),
             side=ft.BorderSide(1, T.BORDER),
             shape=ft.RoundedRectangleBorder(radius=T.R),
             padding=ft.Padding.symmetric(horizontal=16, vertical=0)))
     return _disabled_wrap(_wrap_btn(btn, expand), disabled, op=0.55)
 
-def danger_btn(text, icon=None, on_click=None, disabled=False, expand=False):
+def danger_btn(text, icon=None, on_click=None, disabled=False, expand=False, tooltip=None):
     # `expand` added to match green_btn/ghost_btn, which already had it. Without
     # it a danger action couldn't share a Row evenly with its sibling, so on
     # mobile the primary button stretched full-width and Stop wrapped onto its
@@ -410,6 +414,11 @@ def danger_btn(text, icon=None, on_click=None, disabled=False, expand=False):
     if expand:
         try:
             out.expand = True
+        except Exception:
+            pass
+    if tooltip:
+        try:
+            out.tooltip = tooltip
         except Exception:
             pass
     return out

@@ -30,24 +30,24 @@ const SUPER_ROLES = ["SuperAdmin", "Admin"];
 // Roles an OrgManager is allowed to hand out (never SuperAdmin/Admin).
 const MANAGER_ASSIGNABLE = ["OrgManager", "Member", "Viewer"];
 
-function json(body, status = 200) {
+function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: { ...CORS, "Content-Type": "application/json" },
   });
 }
 
-function roleOf(u) {
+function roleOf(u: any): string {
   const am = (u && u.app_metadata) || {};
   return am.role || "Viewer";
 }
-function orgOf(u) {
+function orgOf(u: any): string {
   const am = (u && u.app_metadata) || {};
   const o = am.org_id;
   return (typeof o === "string" && o) ? o : "";
 }
-const isSuper = (role) => SUPER_ROLES.includes(role);
-const isManager = (role) => role === "OrgManager";
+const isSuper = (role: string) => SUPER_ROLES.includes(role);
+const isManager = (role: string) => role === "OrgManager";
 
 // Strong, human-friendly temporary password (skips ambiguous chars like O/0/l/1)
 // using the Web Crypto RNG. 16 chars across 4 classes so it satisfies any
@@ -58,8 +58,8 @@ function genTempPassword() {
   const digit = "23456789";
   const sym = "!@#$%*?";
   const all = upper + lower + digit + sym;
-  const r = (n) => crypto.getRandomValues(new Uint32Array(1))[0] % n;
-  const pick = (set) => set[r(set.length)];
+  const r = (n: number) => crypto.getRandomValues(new Uint32Array(1))[0] % n;
+  const pick = (set: string) => set[r(set.length)];
   const out = [pick(upper), pick(lower), pick(digit), pick(sym)];
   for (let i = 0; i < 12; i++) out.push(pick(all));
   for (let i = out.length - 1; i > 0; i--) {   // Fisher–Yates shuffle
@@ -67,6 +67,19 @@ function genTempPassword() {
     [out[i], out[j]] = [out[j], out[i]];
   }
   return out.join("");
+}
+
+// Best-effort central audit. An audit outage must not turn a legitimate role
+// correction into a locked-out support incident, but all normal mutations are
+// recorded after the tenant-management migration is deployed.
+async function audit(admin: any, orgId: string, actorId: string, targetId: string,
+                     action: string, before: Record<string, unknown>, after: Record<string, unknown>) {
+  const { error } = await admin.rpc("record_admin_audit", {
+    p_org_id: orgId || null, p_actor_id: actorId, p_target_user_id: targetId || null,
+    p_action: action, p_entity_type: "user", p_entity_id: targetId || null,
+    p_before: before || {}, p_after: after || {}, p_details: {},
+  });
+  if (error && !/does not exist|relation/i.test(error.message || "")) throw error;
 }
 
 Deno.serve(async (req) => {
@@ -81,7 +94,7 @@ Deno.serve(async (req) => {
   const token = authHeader.replace(/^Bearer\s+/i, "").trim();
   if (!token) return json({ error: "Missing access token." }, 401);
 
-  const caller = createClient(url, anonKey);
+  const caller = createClient(url!, anonKey!);
   const { data: who, error: whoErr } = await caller.auth.getUser(token);
   if (whoErr || !who || !who.user) return json({ error: "Invalid or expired token." }, 401);
 
@@ -97,12 +110,12 @@ Deno.serve(async (req) => {
     return json({ error: "Your account has no organization assigned. Ask a super admin to set it." }, 403);
   }
 
-  const admin = createClient(url, serviceKey, {
+  const admin = createClient(url!, serviceKey!, {
     auth: { autoRefreshToken: false, persistSession: false },
   });
 
   // May the caller act on this target user?
-  const inScope = (targetUser) => {
+  const inScope = (targetUser: any) => {
     if (callerIsSuper) return true;
     if (isSuper(roleOf(targetUser))) return false;   // manager can't touch a super
     return orgOf(targetUser) === callerOrg;           // ...only own-org users
@@ -112,8 +125,15 @@ Deno.serve(async (req) => {
     if (req.method === "GET") {
       const { data, error } = await admin.auth.admin.listUsers({ page: 1, perPage: 200 });
       if (error) return json({ error: error.message }, 500);
+      const { data: lifecycleRows, error: lifecycleError } = await admin
+        .from("user_lifecycle").select("user_id,status,access_expires_at,suspended_at");
+      if (lifecycleError && !/does not exist|relation/i.test(lifecycleError.message || "")) {
+        return json({ error: lifecycleError.message }, 500);
+      }
+      const lifecycleByUser = new Map((lifecycleRows || []).map((row) => [row.user_id, row]));
       let users = data.users.map((u) => {
         const am = (u.app_metadata) || {};
+        const lifecycle: Record<string, any> = lifecycleByUser.get(u.id) || {};
         return {
           id: u.id,
           email: u.email,
@@ -124,6 +144,9 @@ Deno.serve(async (req) => {
           created_at: u.created_at,
           last_sign_in_at: u.last_sign_in_at,
           confirmed: Boolean(u.email_confirmed_at || u.confirmed_at),
+          status: lifecycle.status || (u.banned_until ? "suspended" : "active"),
+          access_expires_at: lifecycle.access_expires_at || null,
+          suspended_at: lifecycle.suspended_at || null,
         };
       });
       if (callerIsManager) users = users.filter((u) => u.org_id === callerOrg);
@@ -151,15 +174,17 @@ Deno.serve(async (req) => {
           if (!MANAGER_ASSIGNABLE.includes(addRole)) addRole = "Member";
           const { error } = await admin.auth.admin.updateUserById(target.id, { app_metadata: { org_id: callerOrg, role: addRole } });
           if (error) return json({ error: error.message }, 500);
+          await audit(admin, callerOrg, who.user.id, target.id, "user.organization_assigned", { org_id: tOrg, role: roleOf(target) }, { org_id: callerOrg, role: addRole });
           return json({ ok: true, id: target.id, email: addEmail, org_id: callerOrg, role: addRole });
         }
         // super admin: assign to a named org (blank leaves org unchanged)
         if (!ROLES.includes(addRole)) addRole = "Member";
-        const sMeta = { role: addRole };
+        const sMeta: Record<string, any> = { role: addRole };
         const sOrg = (body.org_id || "").toString().trim();
         if (sOrg) sMeta.org_id = sOrg;
         const { error } = await admin.auth.admin.updateUserById(target.id, { app_metadata: sMeta });
         if (error) return json({ error: error.message }, 500);
+        await audit(admin, sOrg || tOrg, who.user.id, target.id, "user.organization_assigned", { org_id: tOrg, role: roleOf(target) }, { org_id: sOrg || tOrg, role: addRole });
         return json({ ok: true, id: target.id, email: addEmail, org_id: sOrg, role: addRole });
       }
 
@@ -197,6 +222,7 @@ Deno.serve(async (req) => {
           }
           return json({ error: m || "Could not create the account." }, 500);
         }
+        await audit(admin, org, who.user.id, created.user.id, "user.invited", {}, { email: inviteEmail, role, org_id: org });
         return json({ ok: true, id: created.user.id, invited: inviteEmail, role, org_id: org, name: fullName, temp_password: tempPw });
       }
 
@@ -208,7 +234,7 @@ Deno.serve(async (req) => {
       if (tgtErr || !tgt || !tgt.user) return json({ error: "User not found." }, 404);
       if (!inScope(tgt.user)) return json({ error: "That user isn't in your organization." }, 403);
 
-      const meta = {};
+      const meta: Record<string, any> = {};
       if (body.role !== undefined) {
         const newRole = body.role.toString();
         if (!ROLES.includes(newRole)) return json({ error: "Invalid role." }, 400);
@@ -235,13 +261,16 @@ Deno.serve(async (req) => {
       if (Object.keys(meta).length === 0 && !setName) {
         return json({ error: "Provide a role, caps, org_id and/or name to update." }, 400);
       }
-      const updatePayload = {};
+      const updatePayload: Record<string, any> = {};
       if (Object.keys(meta).length) updatePayload.app_metadata = meta;
       if (setName) {
         updatePayload.user_metadata = { ...(tgt.user.user_metadata || {}), name: nm, full_name: nm };
       }
       const { data: upd, error: updErr } = await admin.auth.admin.updateUserById(userId, updatePayload);
       if (updErr) return json({ error: updErr.message }, 500);
+      await audit(admin, (meta.org_id !== undefined ? meta.org_id : orgOf(tgt.user)), who.user.id, userId,
+                  "user.updated", { role: roleOf(tgt.user), org_id: orgOf(tgt.user), caps: tgt.user.app_metadata?.caps || null, name: tgt.user.user_metadata?.name || tgt.user.user_metadata?.full_name || "" },
+                  { role: meta.role !== undefined ? meta.role : roleOf(tgt.user), org_id: meta.org_id !== undefined ? meta.org_id : orgOf(tgt.user), caps: meta.caps !== undefined ? meta.caps : tgt.user.app_metadata?.caps || null, name: setName ? nm : tgt.user.user_metadata?.name || tgt.user.user_metadata?.full_name || "" });
       return json({ ok: true, id: upd.user.id, ...meta, ...(setName ? { name: nm } : {}) });
     }
 

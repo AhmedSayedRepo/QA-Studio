@@ -52,6 +52,7 @@ import flet as ft
 import theme as T
 import engine as E
 import backend_setup
+import image_assets
 from ui import hover_field
 
 # ── Effort model (HARDCODED — change here if your team's numbers differ) ───────
@@ -1449,37 +1450,6 @@ def _stamp(app):
     return f"{prefix}_{base}_{datetime.now():%Y%m%d-%H%M}"
 
 
-def _ask_save_path(fmt, default_name):
-    """Open a native OS 'Save As' dialog (tkinter) and return the chosen path.
-        str   -> the path the user picked
-        None  -> the user cancelled
-        False -> no native dialog available (caller should fall back)
-    Must be called OFF the UI thread — it spins up its own hidden Tk root."""
-    try:
-        import tkinter as tk
-        from tkinter import filedialog
-    except Exception:
-        return False
-    try:
-        root = tk.Tk()
-        root.withdraw()
-        try:
-            root.attributes("-topmost", True)
-        except Exception:
-            pass
-        path = filedialog.asksaveasfilename(
-            parent=root, title=strings.t("reg_save_dialog_title"),
-            initialfile=default_name, defaultextension="." + fmt,
-            filetypes=[(f"{fmt.upper()} file", f"*.{fmt}"), ("All files", "*.*")])
-        try:
-            root.update(); root.destroy()
-        except Exception:
-            pass
-        return path or None
-    except Exception:
-        return False
-
-
 def export_json(app):
     d = plan_payload(app)
     for s in d.get("stories", []):          # link each story id to its Azure work item
@@ -1903,41 +1873,38 @@ def _export_row(app, set_status=None):
                 _notify("err", "Pick a sprint first.")
                 return
 
-            def work():
-                try:
-                    dest = _ask_save_path(fmt, _stamp(app) + "." + fmt)
-                    if dest is None:
-                        return                       # user cancelled the dialog
-                    path = EXPORTERS[fmt](app)
-                    if dest and dest is not False:   # a path was chosen → move there
-                        if not dest.lower().endswith("." + fmt):
-                            dest += "." + fmt
-                        import shutil
-                        if os.path.abspath(dest) != os.path.abspath(path):
-                            shutil.move(path, dest)
-                        path = dest
+            def _selected(dest):
+                def work():
                     try:
-                        import platform_caps as _pc
-                        if _pc.is_mobile():
-                            # dest was never real here (_ask_save_path's tkinter
-                            # dialog doesn't exist on mobile, returns False) —
-                            # path is a sandboxed app-data file. A popup names it
-                            # and starts the save/share so it leaves the device.
-                            app.ui_safe(lambda p=path, f=fmt: app._mobile_download_popup(
-                                p, f"{f.upper()} export ready"))
-                            _notify("ok", f"{fmt.upper()} ready — tap Download to save it.")
-                        else:
-                            _pc.open_folder(os.path.dirname(path))
+                        path = EXPORTERS[fmt](app)
+                        target = dest if dest.lower().endswith("." + fmt) else dest + "." + fmt
+                        import shutil
+                        if os.path.abspath(target) != os.path.abspath(path):
+                            shutil.move(path, target)
+                        path = target
+                        try:
+                            import platform_caps as _pc
+                            if _pc.is_mobile():
+                                app.ui_safe(lambda p=path, f=fmt: app._mobile_download_popup(
+                                    p, f"{f.upper()} export ready"))
+                                _notify("ok", f"{fmt.upper()} ready — tap Download to save it.")
+                            else:
+                                _pc.open_folder(os.path.dirname(path))
+                                _notify("ok", f"Saved: {path}")
+                        except Exception:
                             _notify("ok", f"Saved: {path}")
-                    except Exception:
-                        _notify("ok", f"Saved: {path}")
-                except ModuleNotFoundError:
-                    _notify("err", f"Missing dependency: {_MISSING_DEP.get(fmt, fmt)}")
-                except Exception as ex:
-                    import traceback as _tb
-                    _perf_log(f"sprint export {fmt} FAILED:\n{_tb.format_exc()}")
-                    _notify("err", f"Export failed: {str(ex)[:160]}")
-            threading.Thread(target=work, daemon=True).start()
+                    except ModuleNotFoundError:
+                        _notify("err", f"Missing dependency: {_MISSING_DEP.get(fmt, fmt)}")
+                    except Exception as ex:
+                        import traceback as _tb
+                        _perf_log(f"sprint export {fmt} FAILED:\n{_tb.format_exc()}")
+                        _notify("err", f"Export failed: {str(ex)[:160]}")
+                threading.Thread(target=work, daemon=True).start()
+
+            image_assets.choose_save_path(
+                app, strings.t("reg_save_dialog_title"), _stamp(app) + "." + fmt,
+                [fmt], _selected,
+                lambda: _notify("err", strings.t("file_picker_unavailable")))
         return _do
 
     def _exp_btn(label, icon, color, fmt):
@@ -5556,19 +5523,19 @@ def screen(app):
                 app._err(strings.t("reg_calc_first"))
                 return
 
-            def work():
-                dest = _ask_save_path(fmt, _stamp(app) + "." + fmt)
-                if dest is False:
-                    _do_export_to(fmt)
-                elif dest:
+            def _selected(dest):
+                def work():
                     _do_export_to(fmt, dest)
-                else:
-                    return
-                msg = app._reg_export_msg
-                if msg:
-                    app.ui_safe(lambda m=msg: (app._toast(m[1]) if m[0] == "ok"
-                                               else app._err(m[1])))
-            threading.Thread(target=work, daemon=True).start()
+                    msg = app._reg_export_msg
+                    if msg:
+                        app.ui_safe(lambda m=msg: (app._toast(m[1]) if m[0] == "ok"
+                                                   else app._err(m[1])))
+                threading.Thread(target=work, daemon=True).start()
+
+            image_assets.choose_save_path(
+                app, strings.t("reg_save_dialog_title"), _stamp(app) + "." + fmt,
+                [fmt], _selected,
+                lambda: app._err(strings.t("file_picker_unavailable")))
         return _do
 
     def _email(e):

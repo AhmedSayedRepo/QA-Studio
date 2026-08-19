@@ -17,6 +17,21 @@ import strings
 # Each feature: key, icon, title, one-line blurb, `details` (fuller prose
 # paragraphs), and `points` (key bullets).
 FEATURES = [
+    {"key": "whats_new", "icon": ft.Icons.NEW_RELEASES, "title": "What's new",
+     "blurb": "The latest release adds organization-aware administration, clearer access control, identity assets, and a more consistent multilingual experience.",
+     "details": [
+         "QA Studio now treats an organization as a real workspace. Administrators can configure its identity, locale, time zone, support contact, retention setting, logo, projects, and teams — while organization managers work only inside their assigned organization.",
+         "Projects and teams can be created, edited, and assigned to users. Projects can be a manual organization scope or imported from the selected test-management backend, so the source of each project remains clear.",
+         "The administration audit is now a dedicated, paginated screen. It turns role, access, project/team, sender, and identity changes into readable events with the actor, affected user, organization, and time shown together.",
+         "Profile pictures and organization logos are validated before upload, safely fit their fixed containers, and can be removed to restore the default avatar or QA Studio logo. The saved-account picker and login language selection also make returning to the app easier.",
+     ],
+     "points": [
+         "Organization identity: logo, locale, time zone, support email, retention, and allowed domains.",
+         "Project and team records: add, edit, identify the backend source, and assign members.",
+         "Lifecycle controls: suspend, reactivate, sign out everywhere, and send recovery credentials.",
+         "Dedicated audit trail with readable events, filters, and pagination.",
+         "Seven-language UI, a login language picker, saved-account picker, and profile image preview.",
+     ]},
     {"key": "setup", "icon": ft.Icons.TUNE, "title": "Setup",
      "blurb": "Connect your AI provider and Azure DevOps, then pick a project, "
               "test plan, and user stories. Everything else runs on this selection.",

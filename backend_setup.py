@@ -119,6 +119,30 @@ def label_for(name):
     return name
 
 
+def backend_allowed_for_user(app, name):
+    """Whether the signed-in user may select this test-management backend.
+
+    The project-import permissions are intentionally also the backend-selection
+    permissions: selecting a backend exposes its connection credentials and is
+    the prerequisite to discovering its projects.  Keep the check here (rather
+    than only in the Organizations screen) so a saved Jira/TestRail selection
+    cannot bypass a later permission revoke.
+    """
+    try:
+        import auth_supabase as auth
+        if not auth.configured():
+            return True
+        return auth.can_import_project_source(getattr(app, "user", None), name)
+    except Exception:
+        # Authentication failures must not turn into a privilege grant.
+        return False
+
+
+def _allowed_backend_names(app):
+    return [name for name, _label, _blurb in BACKENDS
+            if backend_allowed_for_user(app, name)]
+
+
 # ══════════════════════════════════════════════════════════════════════════
 #  Validation
 # ══════════════════════════════════════════════════════════════════════════
@@ -130,10 +154,13 @@ def validate_for_connect(app):
     reporting the first missing required field rather than raising.
     """
     creds = getattr(app, "creds", {}) or {}
+    name = active(creds)
+    # This is the authoritative client-side guard as connection can be started
+    # with a previously saved backend value, without reopening the picker.
+    if not backend_allowed_for_user(app, name):
+        return False, strings.t("main_no_screen_access")
     if is_azure(creds):
         return True, ""          # main.py keeps its own Azure org/PAT checks
-
-    name = active(creds)
 
     if name in _HYBRIDS:
         # Hybrid: validate the SOURCE creds + the TestRail target creds.
@@ -301,6 +328,59 @@ def connect_and_list_projects(app):
     projects = backend.fetch_projects()
     return sorted({(p.ref.key or p.name) for p in projects if (p.ref.key or p.name)})
 
+
+def list_projects_for_backend(app, backend_name):
+    """Return ``[{key, name}]`` for one locally configured backend.
+
+    Organization project source selection runs on the administrator's device:
+    provider credentials never leave that device or get written to the
+    organization registry.  This deliberately differs from the tenant-admin
+    service, which persists only the selected backend identity and project key.
+    """
+    name = str(backend_name or "").strip().lower()
+    if name not in _NAMES:
+        raise ValueError("Unsupported project backend.")
+    creds = dict(getattr(app, "creds", {}) or {})
+
+    # Reuse an already validated, connected project catalogue when it belongs
+    # to the requested provider.  It avoids another network call and keeps the
+    # selected names exactly aligned with Setup.
+    if name == active(creds) and bool(getattr(app, "connected", False)):
+        current = getattr(app, "_projects", []) or []
+        return [{"key": str(item), "name": str(item)} for item in current if str(item).strip()]
+
+    # QA Studio has one active tracker connection per device.  Do not mutate
+    # engine globals to probe an inactive provider while a run may be using the
+    # active one; the administrator can switch and connect it in Setup first.
+    if name != active(creds):
+        raise ValueError("Select this backend in Setup and connect it before importing its projects.")
+
+    if name in (AZURE, AZURE_TESTRAIL):
+        org, pat = (creds.get("org") or "").strip(), (creds.get("pat") or "").strip()
+        if not org or not pat:
+            raise ValueError("Save Azure DevOps organization and PAT in Setup first.")
+        import engine as E
+        E.set_credentials(org=org, pat=pat)
+        values = E.fetch_projects(pat)
+        return [{"key": str(item), "name": str(item)} for item in values if str(item).strip()]
+
+    # Tracker backends accept an explicit config, so changing the picker never
+    # mutates the app's active backend or the credentials saved by Setup.
+    import tracker
+    source_creds = dict(creds)
+    source_creds["backend"] = name
+    backend = tracker.get_backend(source_creds, name=name, config=source_creds)
+    backend.validate_credentials()
+    items = []
+    seen = set()
+    for project in backend.fetch_projects():
+        ref = getattr(project, "ref", None)
+        key = str(getattr(ref, "key", "") or getattr(project, "name", "")).strip()
+        label = str(getattr(project, "name", "") or key).strip()
+        if key and key not in seen:
+            seen.add(key)
+            items.append({"key": key, "name": label})
+    return sorted(items, key=lambda item: (item["name"].lower(), item["key"].lower()))
 
 def fetch_plans(app, project):
     """Test plans for `project`, in main.py's existing `[{"id","name"}]` shape.
@@ -1387,6 +1467,19 @@ def picker_rows(app, field_label, hover_field):
     import theme as T
     creds = getattr(app, "creds", {}) or {}
     current = active(creds)
+    allowed = _allowed_backend_names(app)
+    # A capability can be revoked after a backend was saved.  Make that stored
+    # selection unusable immediately, rather than leaving a Jira/TestRail
+    # credential form visible to someone who may now use Azure only.
+    if current not in allowed:
+        current = allowed[0] if allowed else ""
+        if current:
+            creds["backend"] = current
+            try:
+                import store
+                store.save(creds)
+            except Exception:
+                pass
 
     # Mirrors main.py's project_dd/prov_dd EXACTLY. Flet 0.85 specifics that
     # each cost a render crash when guessed instead of copied:
@@ -1404,20 +1497,22 @@ def picker_rows(app, field_label, hover_field):
     _hidden = {TESTRAIL}
     if current != JIRA_ZEPHYR:
         _hidden.add(JIRA_ZEPHYR)
-    _pick = sorted((b for b in BACKENDS if b[0] not in _hidden),
+    _pick = sorted((b for b in BACKENDS
+                    if b[0] in allowed and b[0] not in _hidden),
                    key=lambda b: b[1].lower())
     app.backend_dd = ft.Dropdown(
-        value=current,
+        value=(current or None),
         options=[ft.DropdownOption(key=key, text=label) for key, label, _ in _pick],
         on_select=lambda e: _on_pick(app, e),
         border_color=T.BORDER, focused_border_color=T.VIOLET,
         border_radius=T.R, text_size=13, filled=True, bgcolor=T.CARD,
         content_padding=ft.Padding.symmetric(vertical=12, horizontal=8),
-        expand=True)
+        disabled=not bool(_pick), expand=True)
 
-    blurb = strings.t("bset_blurb_" + current)
+    blurb = (strings.t("bset_blurb_" + current) if current
+             else strings.t("main_no_screen_access"))
     return [
-        _section_header(ft, T, label_for(current)),
+        _section_header(ft, T, label_for(current or AZURE)),
         field_label(strings.t("bset_backend"), req=True,
                     hint=strings.t("bset_backend_hint")),
         ft.Container(hover_field(app.backend_dd), padding=ft.Padding.only(top=4)),
@@ -1445,6 +1540,16 @@ def _on_pick(app, e):
     # was silently rejected: the dropdown changed visually but nothing saved or
     # re-rendered, leaving the fields showing the previous backend.
     if chosen not in _NAMES:
+        return
+    if not backend_allowed_for_user(app, chosen):
+        try:
+            app._toast(strings.t("main_no_screen_access"))
+        except Exception:
+            pass
+        try:
+            app.render()
+        except Exception:
+            pass
         return
     app.creds["backend"] = chosen
     # Reset the edit-lock so the newly-selected backend shows its saved creds

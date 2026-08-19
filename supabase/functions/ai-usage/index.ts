@@ -70,6 +70,17 @@ function cleanInt(v: unknown): number | null {
   return n;
 }
 
+function orgOf(user: { app_metadata?: Record<string, unknown> }): string {
+  return typeof user.app_metadata?.org_id === "string" ? user.app_metadata.org_id.trim() : "";
+}
+
+async function isActive(admin: any, userId: string): Promise<boolean> {
+  const { data, error } = await admin.from("user_lifecycle")
+    .select("status,access_expires_at").eq("user_id", userId).maybeSingle();
+  if (error || !data) return true; // legacy accounts are admitted until lifecycle backfill runs
+  return data.status === "active" && (!data.access_expires_at || Date.parse(data.access_expires_at) > Date.now());
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
 
@@ -90,6 +101,9 @@ Deno.serve(async (req: Request) => {
   const admin = createClient(url, serviceKey, {
     auth: { autoRefreshToken: false, persistSession: false },
   });
+  const callerOrg = orgOf(who.user);
+  if (!callerOrg) return json({ error: "Your account has no organization assignment." }, 403);
+  if (!await isActive(admin, who.user.id)) return json({ error: "Your account is suspended or expired." }, 403);
 
   try {
     if (req.method === "POST") {
@@ -99,13 +113,25 @@ Deno.serve(async (req: Request) => {
       const input_tokens = cleanInt(body.input_tokens ?? 0);
       const output_tokens = cleanInt(body.output_tokens ?? 0);
       const tag = body.tag == null ? null : cleanStr(body.tag, 60);
+      const projectId = cleanStr(body.project_id ?? "", 80);
       if (!provider || !model || input_tokens === null || output_tokens === null) {
         return json({ error: "Invalid usage payload." }, 400);
+      }
+      if (projectId) {
+        const { data: membership, error: membershipError } = await admin
+          .from("project_memberships").select("project_id,organization_projects!inner(org_id,is_active)")
+          .eq("project_id", projectId).eq("user_id", who.user.id).maybeSingle();
+        if (membershipError || !membership || (membership as any).organization_projects?.org_id !== callerOrg
+            || !(membership as any).organization_projects?.is_active) {
+          return json({ error: "You are not assigned to that active project." }, 403);
+        }
       }
 
       const { error } = await admin.from("ai_usage_events").insert({
         user_id: who.user.id,
         user_email: who.user.email ?? "(no email)",
+        org_id: callerOrg,
+        project_id: projectId || null,
         provider,
         model,
         input_tokens,
@@ -122,15 +148,17 @@ Deno.serve(async (req: Request) => {
       // constrained to their own user_id below, so there's no request shape
       // that leaks another user's rows to a non-Admin caller.
       const callerRole = (who.user.app_metadata as Record<string, unknown>)?.role;
-      const isAdmin = callerRole === "Admin";
+      const isAdmin = callerRole === "Admin" || callerRole === "SuperAdmin" || callerRole === "OrgManager";
 
       const q = new URL(req.url).searchParams;
       const start = q.get("start"); // 'YYYY-MM-DD', inclusive
       const end = q.get("end");     // 'YYYY-MM-DD', inclusive
+      const requestedProject = q.get("project_id") ?? "";
 
       let query = admin
         .from("ai_usage_events")
-        .select("created_at, user_email, provider, model, input_tokens, output_tokens, tag")
+        .select("created_at, user_email, provider, model, input_tokens, output_tokens, tag, project_id")
+        .eq("org_id", callerOrg)
         .order("created_at", { ascending: true })
         .limit(MAX_ROWS);
       if (!isAdmin) {
@@ -139,6 +167,7 @@ Deno.serve(async (req: Request) => {
         // back, regardless of what query params they send.
         query = query.eq("user_id", who.user.id);
       }
+      if (requestedProject) query = query.eq("project_id", requestedProject);
       if (start) query = query.gte("created_at", `${start}T00:00:00Z`);
       if (end) query = query.lte("created_at", `${end}T23:59:59.999Z`);
 
@@ -147,7 +176,7 @@ Deno.serve(async (req: Request) => {
       return json({
         rows: data ?? [],
         truncated: (data ?? []).length >= MAX_ROWS,
-        scope: isAdmin ? "all" : "own",
+        scope: isAdmin ? "organization" : "own",
       });
     }
 

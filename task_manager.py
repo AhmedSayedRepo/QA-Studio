@@ -27,6 +27,7 @@ import theme as T
 import engine as E
 import backend_setup
 import strings
+import image_assets
 
 # A story can get up to this many child tasks in one "Create child tasks" run
 # (a batch/patch of tasks per story) — keeps a single run bounded and the UI
@@ -937,8 +938,6 @@ def _tm_export_row(app, res):
     """Excel / PDF / JSON export buttons for the workload report — same
     save-dialog + status-notify pattern as regression.py's _export_row, minus
     Word (kept out to control scope; can be added the same way if wanted)."""
-    import regression as R
-
     def _notify(kind, text):
         app._tm_report_export_msg = (kind, text)
         app.ui_safe(lambda k=kind, t=text: (app._toast(t) if k == "ok" else app._err(t)))
@@ -947,35 +946,36 @@ def _tm_export_row(app, res):
 
     def _go(fmt):
         def _do(e):
-            def work():
-                try:
-                    dest = R._ask_save_path(fmt, _tm_stamp(app, res) + "." + fmt)
-                    if dest is None:
-                        return
-                    path = _fns[fmt](app, res)
-                    if dest and dest is not False:
-                        if not dest.lower().endswith("." + fmt):
-                            dest += "." + fmt
-                        import shutil
-                        if os.path.abspath(dest) != os.path.abspath(path):
-                            shutil.move(path, dest)
-                        path = dest
+            def _selected(dest):
+                def work():
                     try:
-                        import platform_caps as _pc
-                        if _pc.is_mobile():
-                            app.ui_safe(lambda p=path, f=fmt: app._mobile_download_popup(
-                                p, strings.t("tm_export_ready_title", fmt=f.upper())))
-                            _notify("ok", strings.t("tm_export_ready_dl", fmt=fmt.upper()))
-                        else:
-                            _pc.open_folder(os.path.dirname(path))
+                        path = _fns[fmt](app, res)
+                        target = dest if dest.lower().endswith("." + fmt) else dest + "." + fmt
+                        import shutil
+                        if os.path.abspath(target) != os.path.abspath(path):
+                            shutil.move(path, target)
+                        path = target
+                        try:
+                            import platform_caps as _pc
+                            if _pc.is_mobile():
+                                app.ui_safe(lambda p=path, f=fmt: app._mobile_download_popup(
+                                    p, strings.t("tm_export_ready_title", fmt=f.upper())))
+                                _notify("ok", strings.t("tm_export_ready_dl", fmt=fmt.upper()))
+                            else:
+                                _pc.open_folder(os.path.dirname(path))
+                                _notify("ok", strings.t("tm_saved", path=path))
+                        except Exception:
                             _notify("ok", strings.t("tm_saved", path=path))
-                    except Exception:
-                        _notify("ok", strings.t("tm_saved", path=path))
-                except ModuleNotFoundError as md:
-                    _notify("err", strings.t("tm_missing_dep", name=md.name))
-                except Exception as ex:
-                    _notify("err", strings.t("tm_export_failed", err=str(ex)[:160]))
-            threading.Thread(target=work, daemon=True).start()
+                    except ModuleNotFoundError as md:
+                        _notify("err", strings.t("tm_missing_dep", name=md.name))
+                    except Exception as ex:
+                        _notify("err", strings.t("tm_export_failed", err=str(ex)[:160]))
+                threading.Thread(target=work, daemon=True).start()
+
+            image_assets.choose_save_path(
+                app, strings.t("reg_save_dialog_title"), _tm_stamp(app, res) + "." + fmt,
+                [fmt], _selected,
+                lambda: _notify("err", strings.t("file_picker_unavailable")))
         return _do
 
     def _btn(label, icon, color, fmt):

@@ -5875,9 +5875,16 @@ def ensure_sender_creds():
     return bool(GMAIL_APP_PASS)
 
 
-def send_report(to_addrs, subject, html_body, attachments=None):
+def send_report(to_addrs, subject, html_body, attachments=None, refresh_sender=True):
     """Send an HTML email via Gmail SMTP, with optional file attachments.
-    Returns (ok, error_msg)."""
+    Returns (ok, error_msg).
+
+    ``refresh_sender`` is normally True so report sends pick up the latest
+    organization setting. Setup's explicit sender test sets it to False after
+    placing the just-saved values in memory, preventing a background refresh
+    for a SuperAdmin's own organization from replacing the selected org's
+    settings mid-test.
+    """
     import smtplib
     from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
@@ -5885,7 +5892,8 @@ def send_report(to_addrs, subject, html_body, attachments=None):
     from email.mime.application import MIMEApplication
     # Backstop: refresh the shared sender creds just before sending, in case this
     # site reached us without its own pre-check having done so.
-    ensure_sender_creds()
+    if refresh_sender:
+        ensure_sender_creds()
     if not GMAIL_APP_PASS or not to_addrs:
         return False, "No Gmail password or recipients configured."
     # multipart/related so the HTML can reference the logo as cid:qastudio-logo

@@ -103,6 +103,42 @@ def screen(app):
                 padding=4, bgcolor=T.CARD_2, border_radius=T.R,
                 border=ft.Border.all(1, T.BORDER))
 
+        # Profile images belong to the signed-in user, not to this device or
+        # the shared organization credential set. The app center-crops the
+        # source image to a validated square; this preview mirrors the avatar.
+        current_user = getattr(app, "user", None) or {}
+        avatar_url = str((getattr(app, "_identity_visuals", {}) or {}).get("avatar_url") or "")
+        initial = str(current_user.get("name") or current_user.get("email") or "?").strip()[:1].upper()
+        avatar_preview = (ft.Image(src=avatar_url, width=48, height=48,
+                                   fit=ft.BoxFit.COVER, border_radius=24)
+                          if avatar_url else ft.Container(
+                              ft.Text(initial, size=17, weight=ft.FontWeight.BOLD, color="#FFFFFF"),
+                              width=48, height=48, alignment=ft.Alignment.CENTER,
+                              border_radius=24, gradient=ft.LinearGradient(
+                                  begin=ft.Alignment.TOP_LEFT, end=ft.Alignment.BOTTOM_RIGHT,
+                                  colors=[T.VIOLET, getattr(T, "VIOLET_H", T.VIOLET)])))
+        profile_actions = [
+            ghost_btn(strings.t("profile_choose"), icon=ft.Icons.UPLOAD,
+                      disabled=(ro or not bool(current_user)),
+                      on_click=(None if ro else lambda e: app._upload_profile_picture()),
+                      tooltip=strings.t("profile_tip_photo")),
+        ]
+        if avatar_url:
+            profile_actions.append(
+                danger_btn(strings.t("profile_remove"), icon=ft.Icons.DELETE_OUTLINE,
+                           disabled=ro,
+                           on_click=(None if ro else lambda e: app._remove_profile_picture()),
+                           tooltip=strings.t("profile_tip_remove")))
+        profile = card(ft.Column([
+            ft.Text(strings.t("profile_title"), size=11, weight=ft.FontWeight.BOLD, color=T.INK_3),
+            ft.Container(height=4),
+            srow(strings.t("profile_photo"), strings.t("profile_photo_desc"),
+                 ft.Row([ft.Container(avatar_preview, width=48, height=48,
+                                      border_radius=24, clip_behavior=ft.ClipBehavior.HARD_EDGE),
+                         *profile_actions], spacing=10,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER)),
+        ], spacing=0))
+
         appearance = card(ft.Column([
             ft.Text(strings.t("set_appearance"), size=11, weight=ft.FontWeight.BOLD, color=T.INK_3),
             ft.Container(height=4),
@@ -143,37 +179,35 @@ def screen(app):
                            on_click=lambda e: _share_diag_log(app))),
         ], spacing=0))
 
-        # ── Security (Admins only) — idle auto-logout policy ──
-        security = None
-        if app._is_admin():
-            cur = app._idle_minutes()
+        # ── Security — every account controls its own idle-logout preference ──
+        cur = app._idle_minutes()
 
-            def _idle_seg():
-                def opt(label, mins):
-                    sel = (cur == mins)
-                    return ft.Container(
-                        ft.Text(label, size=12, weight=ft.FontWeight.BOLD,
-                                color=(T.VIOLET_INK if sel else T.INK_2)),
-                        height=34, alignment=ft.Alignment.CENTER,
-                        padding=ft.Padding.symmetric(vertical=0, horizontal=14),
-                        bgcolor=(T.VIOLET_SOFT if sel else None), border_radius=T.R_SM,
-                        border=ft.Border.all(1, T.VIOLET if sel else ft.Colors.TRANSPARENT),
-                        on_click=(None if ro else
-                                  (lambda e, m=mins: (None if cur == m
-                                                      else app._set_idle_minutes(m)))))
-                labels = [(strings.t("set_idle_off"), 0), ("5m", 5), ("15m", 15), ("30m", 30), ("60m", 60)]
+        def _idle_seg():
+            def opt(label, mins):
+                sel = (cur == mins)
                 return ft.Container(
-                    ft.Row([opt(l, m) for l, m in labels], spacing=4, tight=True),
-                    padding=4, bgcolor=T.CARD_2, border_radius=T.R,
-                    border=ft.Border.all(1, T.BORDER))
+                    ft.Text(label, size=12, weight=ft.FontWeight.BOLD,
+                            color=(T.VIOLET_INK if sel else T.INK_2)),
+                    height=34, alignment=ft.Alignment.CENTER,
+                    padding=ft.Padding.symmetric(vertical=0, horizontal=14),
+                    bgcolor=(T.VIOLET_SOFT if sel else None), border_radius=T.R_SM,
+                    border=ft.Border.all(1, T.VIOLET if sel else ft.Colors.TRANSPARENT),
+                    on_click=(None if ro else
+                              (lambda e, m=mins: (None if cur == m
+                                                  else app._set_idle_minutes(m)))))
+            labels = [(strings.t("set_idle_off"), 0), ("5m", 5), ("15m", 15), ("30m", 30), ("60m", 60)]
+            return ft.Container(
+                ft.Row([opt(l, m) for l, m in labels], spacing=4, tight=True),
+                padding=4, bgcolor=T.CARD_2, border_radius=T.R,
+                border=ft.Border.all(1, T.BORDER))
 
-            security = card(ft.Column([
-                ft.Text(strings.t("set_security"), size=11, weight=ft.FontWeight.BOLD, color=T.INK_3),
-                ft.Container(height=4),
-                srow(strings.t("set_idle_logout"),
-                     strings.t("set_idle_logout_desc"),
-                     _idle_seg()),
-            ], spacing=0))
+        security = card(ft.Column([
+            ft.Text(strings.t("set_security"), size=11, weight=ft.FontWeight.BOLD, color=T.INK_3),
+            ft.Container(height=4),
+            srow(strings.t("set_idle_logout"),
+                 strings.t("set_idle_logout_desc"),
+                 _idle_seg()),
+        ], spacing=0))
 
         # ── Remote runs — sync THIS user's credentials to the per-user vault ──
         # Deliberately no fetch at build time (no load-on-render — see
@@ -259,7 +293,7 @@ def screen(app):
                             on_click=lambda e: app._reset_prefs())),
         ], spacing=0))
 
-        cards = ([appearance, data, remote] + ([security] if security else [])
+        cards = ([profile, appearance, data, remote] + ([security] if security else [])
                  + ([device_security] if device_security else []) + [reset])
         body = ft.Column(cards, spacing=16, scroll=ft.ScrollMode.AUTO, expand=True)
         return app.shell(strings.t("settings"), strings.t("set_subtitle"), body)

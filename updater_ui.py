@@ -80,6 +80,10 @@ def dismiss_update(app):
     app.render()
 
 def do_update(app):
+    # Keep the version from the update check.  The updater clears the banner
+    # state on success, but the completion dialog should still be able to say
+    # exactly which release has just been installed.
+    target_version = str((app._update_info or {}).get("remote") or "")
     app._updating = True
     app.render()
 
@@ -90,7 +94,7 @@ def do_update(app):
             if ok:
                 app._update_info = {"update": False}
                 app._update_dismissed = True
-                app._show_restart_dialog(msg)
+                app._show_restart_dialog(msg, target_version)
             else:
                 app.render()
                 app._show_update_error(msg)
@@ -145,7 +149,39 @@ def show_update_error(app, msg):
         actions_alignment=ft.MainAxisAlignment.END)
     app._show_dialog(dlg)
 
-def show_restart_dialog(app, msg):
+def show_restart_dialog(app, msg, version=""):
+    """Show the post-update hand-off, including the release highlights.
+
+    This dialog is only opened after ``apply_update`` succeeds, so the notes
+    are a useful, once-per-update explanation rather than a persistent banner
+    users have to dismiss on every launch.
+    """
+    notes = [
+        (ft.Icons.DOMAIN, "upd_note_tenants"),
+        (ft.Icons.GROUPS, "upd_note_access"),
+        (ft.Icons.FACT_CHECK, "upd_note_audit"),
+        (ft.Icons.LANGUAGE, "upd_note_experience"),
+    ]
+    note_rows = []
+    for icon, key in notes:
+        note_rows.append(ft.Row([
+            ft.Container(ft.Icon(icon, size=15, color=T.CYAN), width=24,
+                         alignment=ft.Alignment.TOP_CENTER),
+            ft.Text(strings.t(key), size=11.5, color=T.INK_2,
+                    weight=ft.FontWeight.W_500, expand=True),
+        ], spacing=7, vertical_alignment=ft.CrossAxisAlignment.START))
+
+    release_card = ft.Container(
+        ft.Column([
+            ft.Text(strings.t("upd_whats_new"), size=12.5, color=T.INK,
+                    weight=ft.FontWeight.W_800),
+            ft.Text(strings.t("upd_whats_new_version", version=version or E.local_version()),
+                    size=11, color=T.INK_3, weight=ft.FontWeight.W_500),
+            ft.Container(height=2),
+            *note_rows,
+        ], spacing=6, tight=True),
+        bgcolor=T.CARD_2, border=ft.Border.all(1, T.BORDER),
+        border_radius=T.R_MD, padding=ft.Padding.symmetric(horizontal=13, vertical=11))
     dlg = ft.AlertDialog(
         modal=True,
         title=ft.Row([
@@ -161,8 +197,10 @@ def show_restart_dialog(app, msg):
                 ft.Container(height=6),
                 ft.Text(strings.t("upd_restart_body"),
                         size=13, color=T.INK_2, weight=ft.FontWeight.W_500),
+                ft.Container(height=5),
+                release_card,
             ], spacing=2, tight=True),
-            width=430),
+            width=480),
         actions=[
             ghost_btn(strings.t("upd_later"), on_click=lambda e: app._close_dialog()),
             green_btn(strings.t("upd_restart_now"), icon=ft.Icons.RESTART_ALT,

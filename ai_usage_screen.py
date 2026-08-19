@@ -51,6 +51,11 @@ _EXPORTERS = {"json": E.export_usage_json, "xlsx": E.export_usage_xlsx,
              "docx": E.export_usage_docx, "pdf": E.export_usage_pdf}
 
 
+def _refresh_screen(app):
+    """Redraw AI Usage without replacing the persistent desktop navigation rail."""
+    app.render(preserve_rail=(getattr(app, "active", None) == "ai_usage"))
+
+
 def _init(app):
     today = _utc_today()
     defaults = {
@@ -75,7 +80,7 @@ def _load(app):
         return
     app._usage_loading = True
     app._usage_msg = None
-    app.ui_safe(app.render)
+    app.ui_safe(lambda: _refresh_screen(app))
 
     def _work():
         ok, res = E.usage_report_all_users(app._usage_start or None, app._usage_end or None)
@@ -87,7 +92,7 @@ def _load(app):
             app._usage_report = None
             app._usage_msg = ("err", res)
         if getattr(app, "active", None) == "ai_usage":
-            app.ui_safe(app.render)
+            app.ui_safe(lambda: _refresh_screen(app))
     threading.Thread(target=_work, daemon=True).start()
 
 
@@ -125,15 +130,15 @@ def _email(app):
             return
         if not E.ensure_sender_creds():
             app._usage_email_status = strings.t("usage_no_gmail")
-            app.ui_safe(app.render)
+            app.ui_safe(lambda: _refresh_screen(app))
             return
         to = [x.strip() for x in re.split(r"[,\s;]+", (app._usage_email_to or "")) if x.strip()]
         if not to:
             app._usage_email_status = strings.t("usage_enter_recipient")
-            app.ui_safe(app.render)
+            app.ui_safe(lambda: _refresh_screen(app))
             return
         app._usage_email_status = strings.t("usage_sending")
-        app.ui_safe(app.render)
+        app.ui_safe(lambda: _refresh_screen(app))
 
         def work():
             html = E.build_ai_usage_email(report)
@@ -141,7 +146,7 @@ def _email(app):
             def show():
                 app._usage_email_status = (strings.t("usage_email_sent", to=', '.join(to)) if ok
                                            else strings.t("usage_email_failed", err=err))
-                app.render()
+                _refresh_screen(app)
             app.ui_safe(show)
         threading.Thread(target=work, daemon=True).start()
     return _do
@@ -191,7 +196,7 @@ def _date_field(app, label, value_str, on_pick, disabled=False):
             # bumped past a Flet release that fixes #6145 upstream.
             d = d + timedelta(days=1)
             on_pick(d.strftime("%Y-%m-%d"))
-        app.ui_safe(app.render)
+        app.ui_safe(lambda: _refresh_screen(app))
 
     dp = ft.DatePicker(value=val, first_date=date(2020, 1, 1),
                        last_date=_utc_today(), on_change=_changed)
@@ -261,7 +266,7 @@ def _report_body(app, is_admin):
     def _set_provider(prov):
         def _do(e):
             app._usage_provider_filter = prov
-            app.ui_safe(app.render)
+            app.ui_safe(lambda: _refresh_screen(app))
         return _do
 
     provider_filter = ft.Row([

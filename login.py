@@ -12,12 +12,16 @@ import store
 import auth_supabase as auth
 import platform_caps
 import strings
+import engine as E
 from ui import card, grad, logo_img
 
 
 def _saved_logins(app):
     v = app.creds.get("saved_logins") if isinstance(getattr(app, "creds", None), dict) else None
     return [l for l in v if isinstance(l, dict) and (l.get("email") or "").strip()] if isinstance(v, list) else []
+
+
+_MAX_SAVED_LOGINS = 24
 
 
 def _save_login(app, email, pw):
@@ -31,7 +35,10 @@ def _save_login(app, email, pw):
     logins = [l for l in _saved_logins(app)
               if (l.get("email") or "").lower() != email.lower()]
     logins.insert(0, {"email": email, "password": pw})
-    app.creds["saved_logins"] = logins[:6]
+    # The selector is searchable, so retaining a practical account history no
+    # longer makes the login card taller or forces users through a tiny chip
+    # scroller. Keep the most recently used accounts first.
+    app.creds["saved_logins"] = logins[:_MAX_SAVED_LOGINS]
     try:
         store.save(app.creds)
     except Exception:
@@ -87,6 +94,23 @@ def login_gate(app):
     email/password with sign-up + forgot-password, matching the previous look
     but 100% Flet, so there is no embedded browser that can freeze."""
     import os as _os
+    # The pre-sign-in credential store keeps the last interface-language
+    # default, while a signed-in account keeps its own Settings preference.
+    # Make the login gate honour the active value before any localized controls
+    # are created (including when it is reached immediately after sign-out).
+    _login_ui_lang = str(getattr(app, "ui_lang", strings.UI_LANG) or "en").lower()
+    if _login_ui_lang not in E.LANGUAGES:
+        _login_ui_lang = "en"
+    app.ui_lang = _login_ui_lang
+    try:
+        strings.set_ui_lang(_login_ui_lang)
+        # Keep the desktop composition stable: Flutter's page-level RTL reverses
+        # the entire hero/card Row, not just Arabic text, producing a mirrored
+        # two-tone login screen. Arabic text itself is Unicode bidi-aware; its
+        # fields below are explicitly right aligned.
+        app.page.rtl = False
+    except Exception:
+        pass
     # The login keeps its OWN theme (defaults to dark, like the old WebView2
     # login) with a working toggle; the choice is applied to the whole app on
     # successful sign-in.
@@ -177,6 +201,51 @@ def login_gate(app):
         except Exception:
             pass
     theme_btn.on_hover = _theme_hover
+
+    # Same native-name interface-language picker used in Settings. It belongs
+    # in the compact card header so the login form remains short and no extra
+    # scrollable area is introduced.
+    _login_rtl = (_login_ui_lang == "ar")
+
+    def _set_login_ui_lang(e):
+        code = str(getattr(e.control, "value", "") or "en").lower()
+        if code not in E.LANGUAGES:
+            code = "en"
+        app.ui_lang = code
+        app._login_ui_lang_touched = True
+        # Keep this choice separate from the account preference that is loaded
+        # as part of a successful sign-in.
+        app._login_ui_lang_selected = code
+        try:
+            strings.set_ui_lang(code)
+            app.page.rtl = False
+            # Before sign-in this is the shared device store, so the next
+            # login screen starts in the same language. On successful sign-in
+            # the submit flow below copies an explicit choice into that user's
+            # Settings preference as well.
+            if isinstance(getattr(app, "creds", None), dict):
+                app.creds["ui_lang"] = code
+                store.save(app.creds)
+        except Exception:
+            pass
+        app.ui_safe(app.render)
+
+    _login_lang_kwargs = dict(
+        value=_login_ui_lang,
+        options=[ft.DropdownOption(key=code, text=info["native"])
+                 for code, info in E.LANGUAGES.items()],
+        on_select=_set_login_ui_lang,
+        border_color=_op(accent, 0.35), focused_border_color=accent,
+        border_radius=10, text_size=11.5, dense=True,
+        content_padding=ft.Padding.symmetric(vertical=5, horizontal=7),
+        color=INK, bgcolor=_op("#FFFFFF" if dark else "#0f1830", 0.10),
+        tooltip=strings.t("ui_language"))
+    try:
+        _login_lang_dd = ft.Dropdown(menu_height=300, **_login_lang_kwargs)
+    except TypeError:
+        _login_lang_dd = ft.Dropdown(**_login_lang_kwargs)
+    login_lang_picker = ft.Container(_login_lang_dd, width=106,
+                                     tooltip=strings.t("ui_language"))
 
     # background image (decode embedded jpeg once to a cached temp file)
     def _bg():
@@ -291,6 +360,7 @@ def login_gate(app):
             bgcolor=FIELD_BG, border_color=FIELD_BD,
             focused_border_color=accent, focused_bgcolor=_op(accent, 0.06),
             cursor_color=accent, text_size=15, color=FIELD_INK,
+            text_align=(ft.TextAlign.RIGHT if _login_rtl else ft.TextAlign.LEFT),
             hint_style=ft.TextStyle(size=14, color=FIELD_IC),
             content_padding=ft.Padding.symmetric(vertical=17, horizontal=14),
             border_radius=12)
@@ -338,10 +408,11 @@ def login_gate(app):
         col = ft.Column([
             ft.Text(cap, size=11, color=CAP, font_family=MONO,
                     weight=ft.FontWeight.W_600,
+                    text_align=(ft.TextAlign.RIGHT if _login_rtl else ft.TextAlign.LEFT),
                     style=ft.TextStyle(letter_spacing=1.8)),
             ft.Container(height=7),
             field_ctl,
-        ], spacing=0)
+        ], spacing=0, width=352)
         return tf, col
 
     name_tf, name_col = (_field(strings.t("login_full_name_label"), strings.t("login_full_name_hint"), ft.Icons.PERSON_OUTLINE,
@@ -377,6 +448,9 @@ def login_gate(app):
         _stash()
         if not (email_tf.value or "").strip() or not (pwd_tf.value or ""):
             app._auth_msg = ("err", strings.t("login_err_enter_credentials"))
+            app.ui_safe(app.render); return
+        if signup and not auth.password_meets_policy(pwd_tf.value or ""):
+            app._auth_msg = ("err", strings.t("reset_password_policy"))
             app.ui_safe(app.render); return
         app._gate_busy = True; app._auth_msg = None
         app.ui_safe(app.render)
@@ -415,7 +489,37 @@ def login_gate(app):
                     # THAT file's saved theme. Net effect: picking dark on the login
                     # screen got silently discarded the moment sign-in completed,
                     # replaced by whatever this account last had saved (often light).
+                    # Switching to the account's file restores its prior language.
+                    # Preserve an explicit language selected on this sign-in screen
+                    # before loading those account settings.
+                    explicit_login_ui_lang = ""
+                    if getattr(app, "_login_ui_lang_touched", False):
+                        explicit_login_ui_lang = str(
+                            getattr(app, "_login_ui_lang_selected", "") or ""
+                        ).lower()
+                        if explicit_login_ui_lang not in E.LANGUAGES:
+                            explicit_login_ui_lang = ""
+
                     app._switch_user_creds()   # load this user's own per-user creds
+                    # A deliberate language change made before sign-in is the
+                    # user's new Settings default. If the picker was untouched,
+                    # _switch_user_creds() has already restored this account's
+                    # existing Settings preference instead.
+                    if explicit_login_ui_lang:
+                        chosen_ui_lang = explicit_login_ui_lang
+                        app.ui_lang = chosen_ui_lang
+                        strings.set_ui_lang(chosen_ui_lang)
+                        try:
+                            app.page.rtl = strings.ui_is_rtl()
+                        except Exception:
+                            pass
+                        try:
+                            app.creds["ui_lang"] = chosen_ui_lang
+                            store.save(app.creds)
+                        except Exception:
+                            pass
+                        app._login_ui_lang_touched = False
+                        app._login_ui_lang_selected = ""
                     try:
                         T.apply_theme(app._login_theme)
                         # Mark the theme as user-authoritative for THIS session so
@@ -478,8 +582,8 @@ def login_gate(app):
             return
         p1 = (newpw_tf.value or "") if newpw_tf is not None else ""
         p2 = (confpw_tf.value or "") if confpw_tf is not None else ""
-        if len(p1) < 8:
-            app._auth_msg = ("err", strings.t("reset_too_short")); app.ui_safe(app.render); return
+        if not auth.password_meets_policy(p1):
+            app._auth_msg = ("err", strings.t("reset_password_policy")); app.ui_safe(app.render); return
         if p1 != p2:
             app._auth_msg = ("err", strings.t("reset_mismatch")); app.ui_safe(app.render); return
         app._gate_busy = True; app._auth_msg = None
@@ -629,78 +733,171 @@ def login_gate(app):
     saved_section = None
     _saved = _saved_logins(app)
     if (not signup) and (not reset_mode) and _saved:
-        _chips = []
-        for _l in _saved[:6]:
-            _em = (_l.get("email") or "").strip()
-            if not _em:
-                continue
+        _saved_count_text = ft.Text(strings.t("login_saved_count", count=len(_saved)),
+                                    size=10.5, color=CAP)
+        # The former inline chip row was only 42px tall. Once two or more
+        # addresses were saved, its nested scrolling was both hard to discover
+        # and hard to use. Keep the login card stable and put account discovery
+        # in a searchable dialog with a comfortably sized results list instead.
+        def _open_saved_accounts(_e=None):
+            results = ft.Column([], spacing=6, scroll=ft.ScrollMode.AUTO, height=300)
 
-            def _pick(e=None, em=_em, pw=(_l.get("password") or "")):
+            def _select(em, pw):
+                # Update the existing controls in place. Rendering the entire
+                # login gate here would lose keyboard focus and makes choosing
+                # an account look like a page refresh.
                 app._auth_email = em
                 app._auth_prefill_pw = pw
-                app.ui_safe(app.render)
+                email_tf.value = em
+                pwd_tf.value = pw
+                try:
+                    email_tf.update()
+                    pwd_tf.update()
+                except Exception:
+                    pass
+                try:
+                    app._close_dialog()
+                except Exception:
+                    pass
 
-            def _rm(e=None, em=_em):
-                _remove_login(app, em)
-                app.ui_safe(app.render)
+            def _render_accounts(query=""):
+                q = (query or "").strip().lower()
+                accounts = [item for item in _saved_logins(app)
+                            if not q or q in (item.get("email") or "").lower()]
+                rows = []
+                for item in accounts:
+                    em = (item.get("email") or "").strip()
+                    if not em:
+                        continue
+                    pw = item.get("password") or ""
 
-            _chips.append(ft.Container(
-                ft.Row([ft.Icon(ft.Icons.ACCOUNT_CIRCLE, size=15, color=accent),
-                        ft.Text(_em, size=12, color=INK, weight=ft.FontWeight.W_600, no_wrap=True),
-                        ft.Container(ft.Icon(ft.Icons.CLOSE, size=13, color=CAP),
-                                     on_click=_rm, ink=True, border_radius=6, padding=2,
-                                     tooltip=strings.t("login_saved_remove"))],
-                       spacing=7, tight=True, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                on_click=_pick, ink=True, border_radius=10,
-                padding=ft.Padding.symmetric(vertical=7, horizontal=10),
-                bgcolor=_op(accent, 0.10), border=ft.Border.all(1, _op(accent, 0.35))))
-        if _chips:
-            saved_section = ft.Column([
-                ft.Text(strings.t("login_saved_logins"), size=11, color=CAP, font_family=MONO,
-                        style=ft.TextStyle(letter_spacing=0.8)),
-                ft.Container(height=8),
-                # Keep saved accounts available without allowing their wrapped
-                # chips to make the login card taller than the viewport. The
-                # picker shows the first row and scrolls to additional accounts.
-                ft.Column([ft.Row(_chips, wrap=True, spacing=8, run_spacing=8)],
-                          height=42, scroll=ft.ScrollMode.AUTO, spacing=0),
-                ft.Container(height=12),
-            ], spacing=0)
+                    def _pick(_e=None, email=em, password=pw):
+                        _select(email, password)
+
+                    def _remove(_e=None, email=em):
+                        _remove_login(app, email)
+                        remaining = len(_saved_logins(app))
+                        _saved_count_text.value = strings.t("login_saved_count", count=remaining)
+                        saved_section.visible = bool(remaining)
+                        try:
+                            _saved_count_text.update()
+                            saved_section.update()
+                        except Exception:
+                            pass
+                        _render_accounts(search.value)
+
+                    remove_btn = ft.Container(
+                        ft.Icon(ft.Icons.CLOSE, size=16, color=CAP),
+                        on_click=_remove, ink=True, border_radius=8, padding=7,
+                        tooltip=strings.t("login_saved_remove"))
+                    row = ft.Container(
+                        ft.Row([
+                            ft.Container(ft.Icon(ft.Icons.ACCOUNT_CIRCLE, size=20, color=accent),
+                                         width=34, height=34, border_radius=10,
+                                         bgcolor=_op(accent, 0.12), alignment=ft.Alignment.CENTER),
+                            ft.Text(em, size=13, color=INK, weight=ft.FontWeight.W_600,
+                                    no_wrap=True, expand=True),
+                            remove_btn,
+                        ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                        on_click=_pick, ink=True, border_radius=11,
+                        padding=ft.Padding.symmetric(vertical=8, horizontal=10),
+                        bgcolor=_op(accent, 0.07), border=ft.Border.all(1, _op(accent, 0.25)))
+                    rows.append(row)
+                if not rows:
+                    rows = [ft.Container(
+                        ft.Text(strings.t("login_saved_no_match"), size=12.5, color=CAP,
+                                text_align=ft.TextAlign.CENTER),
+                        padding=18, alignment=ft.Alignment.CENTER)]
+                results.controls = rows
+                try:
+                    results.update()
+                except Exception:
+                    pass
+
+            search = ft.TextField(
+                hint_text=strings.t("login_saved_search"), autofocus=True,
+                prefix_icon=ft.Icons.SEARCH, border_color=_op(accent, 0.35),
+                focused_border_color=accent, border_radius=11, text_size=13,
+                color=INK, hint_style=ft.TextStyle(color=CAP),
+                content_padding=ft.Padding.symmetric(vertical=11, horizontal=12),
+                on_change=lambda e: _render_accounts(e.control.value))
+            _render_accounts()
+            dlg = ft.AlertDialog(
+                modal=True,
+                title=ft.Row([
+                    ft.Container(ft.Icon(ft.Icons.ACCOUNT_CIRCLE, size=19, color=accent),
+                                 width=34, height=34, border_radius=10,
+                                 bgcolor=_op(accent, 0.12), alignment=ft.Alignment.CENTER),
+                    ft.Column([
+                        ft.Text(strings.t("login_saved_accounts"), size=16,
+                                weight=ft.FontWeight.W_700, color=INK),
+                        ft.Text(strings.t("login_saved_accounts_hint"), size=11.5, color=CAP),
+                    ], spacing=1, tight=True),
+                ], spacing=10),
+                content=ft.Container(
+                    width=420,
+                    content=ft.Column([search, ft.Container(height=10), results], spacing=0, tight=True)),
+                actions=[ft.TextButton(strings.t("main_close"), on_click=lambda _e: app._close_dialog())])
+            app._show_dialog(dlg)
+
+        saved_section = ft.Column([
+            ft.Text(strings.t("login_saved_logins"), size=11, color=CAP, font_family=MONO,
+                    style=ft.TextStyle(letter_spacing=0.8)),
+            ft.Container(height=8),
+            ft.Container(
+                ft.Row([
+                    ft.Container(ft.Icon(ft.Icons.ACCOUNT_CIRCLE, size=17, color=accent),
+                                 width=29, height=29, border_radius=9,
+                                 bgcolor=_op(accent, 0.12), alignment=ft.Alignment.CENTER),
+                    ft.Column([
+                        ft.Text(strings.t("login_saved_accounts"), size=12.5, color=INK,
+                                weight=ft.FontWeight.W_700),
+                        _saved_count_text,
+                    ], spacing=0, tight=True, expand=True),
+                    ft.Icon(ft.Icons.KEYBOARD_ARROW_RIGHT, size=19, color=CAP),
+                ], spacing=9, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                on_click=_open_saved_accounts, ink=True, border_radius=11,
+                padding=ft.Padding.symmetric(vertical=8, horizontal=10),
+                bgcolor=_op(accent, 0.08), border=ft.Border.all(1, _op(accent, 0.32)),
+                tooltip=strings.t("login_saved_picker_tip"), width=352),
+            ft.Container(height=8),
+        ], spacing=0, width=352)
 
     _header_row = ft.Row([ft.Container(logo_img(48), width=48, height=48, border_radius=12,
                              bgcolor=None, alignment=ft.Alignment.CENTER),
                 ft.Text("QA Studio", size=17, weight=ft.FontWeight.W_700,
                         color=HEAD, font_family=DISP),
                 ft.Container(expand=True),
+                login_lang_picker,
                 theme_btn],
-               spacing=11, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+               spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
     if reset_mode:
         # Same card chrome, "Set your password" body.
         rows = [
             _header_row,
-            ft.Container(height=24),
+            ft.Container(height=16),
             ft.Text(strings.t("reset_title"), size=34, weight=ft.FontWeight.W_700,
                     color=HEAD, font_family=DISP),
             ft.Container(height=6),
             ft.Text(strings.t("reset_sub"), size=13, color=INK2, font_family=MONO,
                     style=ft.TextStyle(letter_spacing=0.4)),
-            ft.Container(height=26),
-            newpw_col, ft.Container(height=16),
+            ft.Container(height=18),
+            newpw_col, ft.Container(height=12),
             confpw_col, ft.Container(height=10),
             ft.Text(strings.t("reset_hint"), size=11.5, color=CAP, font_family=MONO,
                     style=ft.TextStyle(letter_spacing=0.3)),
         ]
         if banner:
             rows += [ft.Container(height=12), banner]
-        rows += [ft.Container(height=20), btn, ft.Container(height=18),
+        rows += [ft.Container(height=16), btn, ft.Container(height=12),
                  ft.Row([_link(strings.t("reset_signout"),
                                lambda _e=None: app._sign_out())],
                         alignment=ft.MainAxisAlignment.CENTER, tight=True)]
     else:
         rows = [
             _header_row,
-            ft.Container(height=24),
+            ft.Container(height=16),
             ft.Text(strings.t("login_welcome_back") if not signup else strings.t("login_create_account_title"),
                     size=34, weight=ft.FontWeight.W_700, color=HEAD, font_family=DISP),
             ft.Container(height=6),
@@ -708,28 +905,30 @@ def login_gate(app):
                     else strings.t("login_signup_subtitle"),
                     size=13, color=INK2, font_family=MONO,
                     style=ft.TextStyle(letter_spacing=0.4)),
-            ft.Container(height=26),
+            ft.Container(height=18),
         ]
         if saved_section is not None:
             rows.append(saved_section)
         for col in [c for c in (name_col, email_col, pwd_col) if c is not None]:
-            rows += [col, ft.Container(height=16)]
+            rows += [col, ft.Container(height=12)]
         if not signup:
             rows.append(ft.Row([remember_cb, ft.Container(expand=True),
                                 _link(strings.t("login_forgot_password"), _forgot)],
                                vertical_alignment=ft.CrossAxisAlignment.CENTER))
         if banner:
             rows += [ft.Container(height=8), banner]
-        rows += [ft.Container(height=20), btn, ft.Container(height=18),
+        rows += [ft.Container(height=16), btn, ft.Container(height=12),
                  ft.Row([ft.Text(strings.t("login_new_prompt") if not signup
                                  else strings.t("login_have_account_prompt"),
                                  size=12.5, color=INK2, weight=ft.FontWeight.W_600),
                          _link(strings.t("login_create_one") if not signup else strings.t("login_sign_in_link"), _switch)],
                         spacing=6, alignment=ft.MainAxisAlignment.CENTER, tight=True)]
-    form = ft.Column(rows, spacing=0, width=352, tight=True)
+    form = ft.Column(rows, spacing=0, width=352, tight=True,
+                     horizontal_alignment=(ft.CrossAxisAlignment.END if _login_rtl
+                                           else ft.CrossAxisAlignment.START))
 
     card = ft.Container(
-        form, width=440, padding=42, border_radius=26,
+        form, width=440, padding=ft.Padding.symmetric(horizontal=42, vertical=26), border_radius=26,
         gradient=ft.LinearGradient(begin=ft.Alignment.TOP_LEFT,
                                    end=ft.Alignment.BOTTOM_RIGHT, colors=CARD_GRAD),
         border=ft.Border.all(1.5, CARD_BD),
@@ -846,7 +1045,10 @@ def login_gate(app):
                          gradient=ft.LinearGradient(
                              begin=ft.Alignment.CENTER_LEFT,
                              end=ft.Alignment.CENTER_RIGHT, colors=SCRIM)),
-            ft.Container(centered_card, expand=4, padding=30),
+            # Reserve a little more room for the fixed footer. This moves the
+            # card up by 16px without changing its content or card dimensions.
+            ft.Container(centered_card, expand=4,
+                         padding=ft.Padding.only(left=30, right=30, top=30, bottom=62)),
         ], spacing=0, expand=True)
 
     # Footer (version • copyright • status), like the original login.

@@ -20,6 +20,7 @@ import traceback
 import flet as ft
 import theme as T
 import regression
+import image_assets
 from ui import card, primary_btn, green_btn, ghost_btn, field_label, sec_head
 
 from perf import service
@@ -437,97 +438,6 @@ def _preview_worker(app):
             pass
 
 
-def _ask_open_path(title, patterns):
-    """Native 'open file' dialog (tkinter) - mirrors main._ask_folder_path /
-    regression's Save-As idiom byte for byte. MUST be called OFF the UI thread:
-    it spins its own hidden Tk root, and a blocking Tk dialog on Flet's own event
-    loop silently fails. Returns path / None (cancelled) / False (no native dialog)."""
-    try:
-        import tkinter as tk
-        from tkinter import filedialog
-    except Exception:
-        return False
-    try:
-        root = tk.Tk()
-        root.withdraw()
-        try:
-            root.attributes("-topmost", True)
-        except Exception:
-            pass
-        path = filedialog.askopenfilename(parent=root, title=title, filetypes=patterns)
-        try:
-            root.update()
-            root.destroy()
-        except Exception:
-            pass
-        return path or None
-    except Exception:
-        return False
-
-
-def _ask_csv_path():
-    return _ask_open_path(strings.t("perf_dlg_select_csv"),
-                          [(strings.t("perf_ft_csv"), "*.csv"), (strings.t("perf_ft_all"), "*.*")])
-
-
-def _ask_har_path():
-    return _ask_open_path(strings.t("perf_dlg_select_har"),
-                          [(strings.t("perf_ft_har"), "*.har"), (strings.t("perf_ft_all"), "*.*")])
-
-
-def _ask_folder_path():
-    """Native folder chooser for the optional output directory. Off-thread."""
-    try:
-        import tkinter as tk
-        from tkinter import filedialog
-    except Exception:
-        return False
-    try:
-        root = tk.Tk()
-        root.withdraw()
-        try:
-            root.attributes("-topmost", True)
-        except Exception:
-            pass
-        path = filedialog.askdirectory(parent=root, title=strings.t("perf_dlg_choose_out"))
-        try:
-            root.update()
-            root.destroy()
-        except Exception:
-            pass
-        return path or None
-    except Exception:
-        return False
-
-
-def _ask_save_html(default="qastudio-performance-report.html"):
-    """Native 'save as' dialog for the exported HTML report. Off-thread (see
-    _ask_open_path). Returns path / None / False."""
-    try:
-        import tkinter as tk
-        from tkinter import filedialog
-    except Exception:
-        return False
-    try:
-        root = tk.Tk()
-        root.withdraw()
-        try:
-            root.attributes("-topmost", True)
-        except Exception:
-            pass
-        path = filedialog.asksaveasfilename(
-            parent=root, title=strings.t("perf_dlg_save_report"), defaultextension=".html",
-            initialfile=default, filetypes=[(strings.t("perf_ft_html"), "*.html"), (strings.t("perf_ft_all"), "*.*")])
-        try:
-            root.update()
-            root.destroy()
-        except Exception:
-            pass
-        return path or None
-    except Exception:
-        return False
-
-
 def _report_meta(app):
     # Inline the logo as a base64 data URI so it renders in the STANDALONE
     # exported file (E._logo_tag is a cid: reference that only resolves inside an
@@ -897,21 +807,25 @@ def screen(app):
         if not res:
             return
 
-        def work():
-            path = _ask_save_html()
-            if not path:
-                return
-            try:
-                with open(path, "w", encoding="utf-8") as f:
-                    f.write(_report_html(app, res))
-                _logline(app, f"Report exported: {path}", "ok")
+        def _selected(path):
+            def work():
+                out_path = path if path.lower().endswith(".html") else path + ".html"
                 try:
-                    os.startfile(path)
-                except Exception:
-                    pass
-            except Exception as ex:
-                _logline(app, f"Export failed: {str(ex)[:160]}", "err")
-        threading.Thread(target=work, daemon=True).start()
+                    with open(out_path, "w", encoding="utf-8") as f:
+                        f.write(_report_html(app, res))
+                    _logline(app, f"Report exported: {out_path}", "ok")
+                    try:
+                        os.startfile(out_path)
+                    except Exception:
+                        pass
+                except Exception as ex:
+                    _logline(app, f"Export failed: {str(ex)[:160]}", "err")
+            threading.Thread(target=work, daemon=True).start()
+
+        image_assets.choose_save_path(
+            app, strings.t("perf_dlg_save_report"), "qastudio-performance-report.html",
+            ["html"], _selected,
+            lambda: _logline(app, strings.t("file_picker_unavailable"), "err"))
 
     def do_email_report(e=None):
         if _get(app, "_perf_emailing", False):
@@ -985,39 +899,37 @@ def screen(app):
                     _fin()
         threading.Thread(target=work, daemon=True).start()
 
-    def _pick_into(attr, picker):
+    def _pick_into(attr, title, extensions):
         # Field is built by _auto_field (bound to attr), so set the attr and
         # re-render — same idiom automation's folder browse uses. Off the UI thread.
-        def work():
-            p = picker()
-            if p:
-                setattr(app, attr, p)
-                try:
-                    app.ui_safe(app.render)
-                except Exception:
-                    app.render()
-        threading.Thread(target=work, daemon=True).start()
+        def _selected(path):
+            setattr(app, attr, path)
+            try:
+                app.ui_safe(app.render)
+            except Exception:
+                app.render()
+        image_assets.choose_file(app, title, extensions, _selected,
+                                 lambda: _logline(app, strings.t("file_picker_unavailable"), "err"))
 
     def do_browse(e=None):
-        _pick_into("_perf_data_path", _ask_csv_path)
+        _pick_into("_perf_data_path", strings.t("perf_dlg_select_csv"), ["csv"])
 
     def do_browse_har(e=None):
-        _pick_into("_perf_har_path", _ask_har_path)
+        _pick_into("_perf_har_path", strings.t("perf_dlg_select_har"), ["har"])
 
     def do_browse_out(e=None):
-        def work():
-            p = _ask_folder_path()
-            if p:
-                app._perf_out_dir = p
-                _persist_out_dir(app)          # remember it like Automation does
-                try:
-                    app.ui_safe(app.render)
-                except Exception:
-                    app.render()
-        threading.Thread(target=work, daemon=True).start()
+        def _selected(path):
+            app._perf_out_dir = path
+            _persist_out_dir(app)              # remember it like Automation does
+            try:
+                app.ui_safe(app.render)
+            except Exception:
+                app.render()
+        image_assets.choose_directory(app, strings.t("perf_dlg_choose_out"), _selected,
+                                      lambda: _logline(app, strings.t("folder_picker_unavailable"), "err"))
 
     def do_browse_users(e=None):
-        _pick_into("_perf_tok_csv", _ask_csv_path)
+        _pick_into("_perf_tok_csv", strings.t("perf_dlg_select_csv"), ["csv"])
 
     def do_fetch_tokens(e=None):
         if _get(app, "_perf_tok_running", False) or _get(app, "_perf_running", False):
@@ -1028,52 +940,52 @@ def screen(app):
 
     def do_detect_login(e=None):
         # Pick a login HAR and auto-fill the login config from it.
-        def work():
-            p = _ask_har_path()
-            if not p:
-                return
-            app._perf_tok_login_har = p
-            try:
-                cfg = token_prefetch.detect_login_config_from_har(p)
-            except Exception as ex:
-                _logline(app, f"Couldn't read that HAR: {str(ex)[:120]}", "err")
-                cfg = {"ok": False}
-            if cfg.get("ok"):
-                app._perf_tok_url = cfg.get("url", "")
-                app._perf_tok_format = cfg.get("body_format", "json")
-                app._perf_tok_userfield = cfg.get("user_field", "email")
-                app._perf_tok_passfield = cfg.get("pass_field", "password")
-                app._perf_tok_jsonpath = cfg.get("token_json_path", "")
-                app._perf_tok_header = cfg.get("token_header", "")
-                _logline(app, f"Detected login: {cfg.get('method')} {cfg.get('url')} "
-                              f"({cfg.get('body_format')}), fields "
-                              f"{cfg.get('user_field')}/{cfg.get('pass_field')}.", "ok")
-                if cfg.get("token_json_path"):
-                    _logline(app, f"Token found at JSON path: {cfg['token_json_path']}", "ok")
-                elif cfg.get("token_header"):
-                    _logline(app, f"Token found in header: {cfg['token_header']}", "ok")
-                # Clean detection (url + a token location) → keep fields locked;
-                # otherwise unlock so the user can fix what's missing.
-                complete = bool(cfg.get("url")) and bool(
-                    cfg.get("token_json_path") or cfg.get("token_header"))
-                app._perf_tok_editable = not complete
-                if cfg.get("note"):
-                    _logline(app, cfg["note"], "warn")
-                if complete:
-                    _logline(app, "Settings locked (read-only). They'll unlock if a login "
-                                  "test fails.", "dim")
+        def _selected(p):
+            def work():
+                app._perf_tok_login_har = p
+                try:
+                    cfg = token_prefetch.detect_login_config_from_har(p)
+                except Exception as ex:
+                    _logline(app, f"Couldn't read that HAR: {str(ex)[:120]}", "err")
+                    cfg = {"ok": False}
+                if cfg.get("ok"):
+                    app._perf_tok_url = cfg.get("url", "")
+                    app._perf_tok_format = cfg.get("body_format", "json")
+                    app._perf_tok_userfield = cfg.get("user_field", "email")
+                    app._perf_tok_passfield = cfg.get("pass_field", "password")
+                    app._perf_tok_jsonpath = cfg.get("token_json_path", "")
+                    app._perf_tok_header = cfg.get("token_header", "")
+                    _logline(app, f"Detected login: {cfg.get('method')} {cfg.get('url')} "
+                                  f"({cfg.get('body_format')}), fields "
+                                  f"{cfg.get('user_field')}/{cfg.get('pass_field')}.", "ok")
+                    if cfg.get("token_json_path"):
+                        _logline(app, f"Token found at JSON path: {cfg['token_json_path']}", "ok")
+                    elif cfg.get("token_header"):
+                        _logline(app, f"Token found in header: {cfg['token_header']}", "ok")
+                    # Clean detection (url + a token location) → keep fields locked;
+                    # otherwise unlock so the user can fix what's missing.
+                    complete = bool(cfg.get("url")) and bool(
+                        cfg.get("token_json_path") or cfg.get("token_header"))
+                    app._perf_tok_editable = not complete
+                    if cfg.get("note"):
+                        _logline(app, cfg["note"], "warn")
+                    if complete:
+                        _logline(app, "Settings locked (read-only). They'll unlock if a login "
+                                      "test fails.", "dim")
+                    else:
+                        _logline(app, "Some settings couldn't be detected — they're editable "
+                                      "below; fill them in.", "warn")
                 else:
-                    _logline(app, "Some settings couldn't be detected — they're editable "
-                                  "below; fill them in.", "warn")
-            else:
-                app._perf_tok_editable = True
-                _logline(app, cfg.get("note", "Couldn't detect a login in that HAR. Fill the "
-                              "settings below manually."), "warn")
-            try:
-                app.ui_safe(app.render)
-            except Exception:
-                app.render()
-        threading.Thread(target=work, daemon=True).start()
+                    app._perf_tok_editable = True
+                    _logline(app, cfg.get("note", "Couldn't detect a login in that HAR. Fill the "
+                                  "settings below manually."), "warn")
+                try:
+                    app.ui_safe(app.render)
+                except Exception:
+                    app.render()
+            threading.Thread(target=work, daemon=True).start()
+        image_assets.choose_file(app, strings.t("perf_dlg_select_har"), ["har"], _selected,
+                                 lambda: _logline(app, strings.t("file_picker_unavailable"), "err"))
 
     # ---- left column: one card() per section, exactly like automation.py ----
     hint = lambda t: ft.Text(t, size=11, color=T.INK_3, weight=ft.FontWeight.W_500)

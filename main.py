@@ -431,10 +431,17 @@ class QAStudio:
             T.NAV.append({"id": "users", "label": "Users",
                           "icon": "GROUP", "ix": "U"})
 
-        # Organizations tab (super-admin only; rail() hides it via nav.orgs cap).
+        # Organizations tab (SuperAdmin or org-scoped Organization Manager;
+        # rail() applies the navigation capability and role boundary).
         if not any(n.get("id") == "orgs" for n in T.NAV):
             T.NAV.append({"id": "orgs", "label": "Organizations",
                           "icon": "BUSINESS", "ix": "Or"})
+
+        # Audit is separate from Organizations so the configuration surface
+        # remains focused even as the administrative history grows.
+        if not any(n.get("id") == "audit" for n in T.NAV):
+            T.NAV.append({"id": "audit", "label": "Audit",
+                          "icon": "FACT_CHECK", "ix": "Au"})
 
         # AI Usage tab — visible to every signed-in user (nav.ai_usage is in
         # every role preset): a Member/Viewer sees their OWN usage, an Admin
@@ -447,6 +454,11 @@ class QAStudio:
         # External-auth (Supabase): None until restored / signed in. When auth is
         # not configured, this stays None and the app is un-gated (runs as before).
         self.user = None
+        # Signed, short-lived URLs for the currently authenticated account's
+        # avatar and organization logo.  These are intentionally memory-only:
+        # the paths remain private in Supabase Storage and are re-signed after
+        # each session restore or account switch.
+        self._identity_visuals = {"avatar_url": "", "organization_logo_url": ""}
         # Restore a cached session SYNCHRONOUSLY before the first render. Right
         # after the WebView2 login the session is already on disk, so this makes
         # the app open straight into the signed-in UI — no flash of a sign-in
@@ -476,7 +488,7 @@ class QAStudio:
         # Resume a prior session in the background so a returning user skips the
         # gate without blocking startup on the network.
         self._restore_session_async()
-        # Idle auto-logout: sign out after 30 min with no user activity.
+        # Idle auto-logout: each signed-in user chooses their own timeout.
         self._last_activity = time.time()
         self._start_idle_watch()
         # Just-in-time shared-sender refresh: engine calls this right before any
@@ -747,6 +759,321 @@ class QAStudio:
         except Exception:
             return False
 
+    def _can_manage_org_email(self):
+        """True when this user may configure an organization sender.
+
+        Auth-disabled desktop use keeps the old local-only credential flow.
+        With Supabase enabled, the Edge Function derives the Organization
+        Manager's target from the signed JWT and permits a SuperAdmin to select
+        an existing target organization explicitly.
+        """
+        if not auth.configured():
+            return True
+        try:
+            return auth.can_manage_org_settings(getattr(self, "user", None))
+        except Exception:
+            return False
+
+    def _is_super_admin_org_email_manager(self):
+        """Whether this Setup view needs an organization selector."""
+        if not auth.configured():
+            return False
+        try:
+            return auth.is_super_admin(getattr(self, "user", None))
+        except Exception:
+            return False
+
+    def _org_email_target_id(self):
+        """The sender-settings target currently displayed in Setup.
+
+        Organization Managers never provide a target to the function: its
+        server-side authorization derives their scope from the JWT. A
+        SuperAdmin sends the selected id, which the function validates against
+        the organizations table before it reads or writes anything.
+        """
+        if self._is_super_admin_org_email_manager():
+            return str(getattr(self, "_org_email_target", "") or "").strip()
+        try:
+            return auth.org_id_of(getattr(self, "user", None))
+        except Exception:
+            return ""
+
+    def _tenant_project_scope_org_id(self):
+        """Effective organization displayed by Setup's project-scope card.
+
+        A SuperAdmin uses the same selected organization as the sender picker;
+        organization managers remain bound to the org in their verified token.
+        """
+        target = self._org_email_target_id()
+        return target or auth.current_org_id()
+
+    def _load_org_email_targets(self):
+        """Load the SuperAdmin's organization list without blocking Setup."""
+        if (not self._is_super_admin_org_email_manager()
+                or getattr(self, "_org_email_targets_loading", False)
+                or getattr(self, "_org_email_targets_loaded", False)):
+            return
+        self._org_email_targets_loading = True
+        self._org_email_targets_error = ""
+
+        def work():
+            try:
+                ok, result = auth.list_orgs()
+            except Exception as ex:
+                ok, result = False, str(ex)
+
+            def apply():
+                self._org_email_targets_loading = False
+                # One attempt per Setup view avoids a render → failed request →
+                # render retry loop while the device is offline.
+                self._org_email_targets_loaded = True
+                if ok and isinstance(result, list):
+                    self._org_email_targets = result
+                else:
+                    self._org_email_targets = []
+                    self._org_email_targets_error = str(result or "Unknown error")
+                if getattr(self, "active", "") == "setup":
+                    self._refresh_org_sender_scope()
+            self.ui_safe(apply)
+
+        try:
+            threading.Thread(target=work, daemon=True).start()
+        except Exception as ex:
+            self._org_email_targets_loading = False
+            self._org_email_targets_error = str(ex)
+
+    def _on_org_email_target_change(self, e=None):
+        """Select and securely load a SuperAdmin's target organization sender."""
+        target = str(getattr(getattr(e, "control", None), "value", "") or "").strip()
+        self._org_email_target = target
+        self._org_email_target_error = ""
+        self._org_email_target_loading = bool(target)
+        self._org_email_sync_status = strings.t("org_sender_syncing") if target else ""
+        self._org_email_inherited_from = ""
+        self._org_email_audit = []
+        # Project scope follows the selected SuperAdmin organization too.
+        self._tenant_project_scope_loaded = False
+        self._tenant_project_scope_projects = []
+        self._tenant_project_scope_teams = []
+        self._tenant_project_scope_error = ""
+
+        # Do not leave a previously selected organization's sender visible while
+        # the new settings are loading; that could be accidentally saved into
+        # the new organization. These are in-memory values until the user saves.
+        for key in ("gmail_sender", "gmail_sender_name", "gmail"):
+            self.creds[key] = ""
+        try:
+            # engine.set_credentials intentionally ignores a blank sender during
+            # normal field edits; here we are switching security scopes, so it
+            # must be cleared before any new organization's response arrives.
+            E.set_credentials(gmail="", gmail_sender_name="")
+            E.GMAIL_SENDER = ""
+        except Exception:
+            pass
+        self._sender_unlocked = self._sender_name_unlocked = self._gmail_unlocked = False
+        if getattr(self, "active", "") == "setup":
+            self._refresh_org_sender_scope()
+            self._refresh_org_sender_fields()
+            self._refresh_tenant_project_scope_cell()
+        if not target:
+            return
+
+        def work():
+            try:
+                ok, result = auth.get_org_settings(org_id=target, include_audit=True)
+            except Exception as ex:
+                ok, result = False, str(ex)
+
+            def apply():
+                # A slower response for an earlier choice must never overwrite
+                # the values of the organization currently selected in the UI.
+                if target != self._org_email_target_id():
+                    return
+                self._org_email_target_loading = False
+                if ok and isinstance(result, dict):
+                    email = (result.get("settings") or {}).get("email") or {}
+                    if isinstance(email, dict):
+                        self.creds["gmail_sender"] = str(email.get("sender") or "")
+                        self.creds["gmail_sender_name"] = str(email.get("sender_name") or "")
+                        self.creds["gmail"] = str(email.get("app_password") or "")
+                        self._org_email_inherited_from = str(
+                            email.get("inherited_from_org_id") or "")
+                        self._org_email_audit = (result.get("audit")
+                                                 if isinstance(result.get("audit"), list) else [])
+                        self._org_email_sync_status = strings.t("org_sender_synced")
+                        try:
+                            E.set_credentials(
+                                gmail=self.creds["gmail"] or None,
+                                gmail_sender=self.creds["gmail_sender"] or None,
+                                gmail_sender_name=self.creds["gmail_sender_name"] or None)
+                        except Exception:
+                            pass
+                else:
+                    self._org_email_target_error = str(result or "Unknown error")
+                    self._org_email_sync_status = strings.t(
+                        "org_sender_sync_failed", err=self._org_email_target_error)
+                if getattr(self, "active", "") == "setup":
+                    self._refresh_org_sender_scope()
+                    self._refresh_org_sender_fields()
+                    self._refresh_tenant_project_scope_cell()
+            self.ui_safe(apply)
+
+        try:
+            threading.Thread(target=work, daemon=True).start()
+        except Exception as ex:
+            self._org_email_target_loading = False
+            self._org_email_target_error = str(ex)
+
+    def _org_email_audit_control(self):
+        events = {
+            "email_settings_saved": strings.t("org_sender_audit_saved"),
+            "email_sender_inherited": strings.t("org_sender_audit_inherited"),
+            "email_auto_synced": strings.t("org_sender_audit_auto_synced"),
+            "email_test_succeeded": strings.t("org_sender_audit_test_ok"),
+            "email_test_failed": strings.t("org_sender_audit_test_failed"),
+        }
+        rows = []
+        visible_audit = [item for item in (getattr(self, "_org_email_audit", []) or [])
+                         if isinstance(item, dict) and item.get("event") != "email_auto_synced"][:5]
+        for item in visible_audit:
+            if not isinstance(item, dict):
+                continue
+            # Older deployments may contain automatic-sync records. They are
+            # intentionally not user-facing activity: a normal refresh must
+            # not push useful sender saves/tests out of this compact panel.
+            event = events.get(str(item.get("event") or ""), "Sender activity")
+            stamp = str(item.get("created_at") or "").replace("T", " ")[:19]
+            rows.append(ft.Text((f"{stamp}  —  " if stamp else "") + event,
+                                size=11, color=T.INK_3))
+        if not rows:
+            rows = [ft.Text(strings.t("org_sender_audit_empty"), size=11, color=T.INK_3)]
+        return ft.Column(rows, spacing=4, tight=True)
+
+    def _load_tenant_project_scope(self):
+        """Load the signed-in user's visible organization project scope.
+
+        This is display-only and runs outside the Setup render. Azure/Jira
+        project discovery remains the authority for the selectable project
+        list after Connect, while this card makes the configured tenant scope
+        visible before a provider connection exists.
+        """
+        org_id = self._tenant_project_scope_org_id()
+        if not org_id or getattr(self, "_tenant_project_scope_loading", False):
+            return
+        if (getattr(self, "_tenant_project_scope_org", "") == org_id
+                and getattr(self, "_tenant_project_scope_loaded", False)):
+            return
+        self._tenant_project_scope_loading = True
+        self._tenant_project_scope_org = org_id
+
+        def work():
+            ok, result = auth.get_tenant_overview(org_id)
+            self._tenant_project_scope_loading = False
+            self._tenant_project_scope_loaded = True
+            if ok and isinstance(result, dict):
+                self._tenant_project_scope_projects = (
+                    result.get("projects", []) if isinstance(result.get("projects"), list) else [])
+                self._tenant_project_scope_teams = (
+                    result.get("teams", []) if isinstance(result.get("teams"), list) else [])
+                self._tenant_project_scope_error = ""
+            else:
+                self._tenant_project_scope_projects = []
+                self._tenant_project_scope_teams = []
+                self._tenant_project_scope_error = str(result or "")
+            if getattr(self, "active", "") == "setup":
+                self.ui_safe(self._refresh_tenant_project_scope_cell)
+        self._bg(work)
+
+    def _tenant_project_scope_card(self):
+        """Small, pre-connect view of projects configured for this tenant."""
+        org_id = self._tenant_project_scope_org_id()
+        if not org_id:
+            return None
+        self._load_tenant_project_scope()
+        loading = bool(getattr(self, "_tenant_project_scope_loading", False))
+        error = str(getattr(self, "_tenant_project_scope_error", "") or "")
+        projects = getattr(self, "_tenant_project_scope_projects", []) or []
+        teams = getattr(self, "_tenant_project_scope_teams", []) or []
+        is_admin = auth.can_manage_users(getattr(self, "user", None))
+        if loading:
+            content = ft.Row([
+                ft.ProgressRing(width=15, height=15, stroke_width=2, color=T.VIOLET),
+                ft.Text(strings.t("tenant_setup_projects_loading"), size=11.5, color=T.INK_3),
+            ], spacing=8)
+        elif error:
+            content = ft.Text(strings.t("tenant_setup_projects_error"), size=11.5, color=T.INK_3,
+                              no_wrap=False, tooltip=error)
+        elif not projects:
+            # Members see only projects assigned to them; distinguish that
+            # intentional empty scope from an administrator having configured
+            # no projects at all.  It prevents a member from assuming Setup is
+            # broken when access simply has not been granted yet.
+            content = ft.Container(ft.Row([
+                ft.Container(ft.Icon(ft.Icons.FOLDER_SHARED_OUTLINED, size=20,
+                                     color=T.VIOLET_INK), width=36, height=36,
+                             alignment=ft.Alignment.CENTER, bgcolor=T.VIOLET_SOFT,
+                             border_radius=10),
+                ft.Column([
+                    ft.Text(strings.t("tenant_setup_projects_empty_title"), size=12,
+                            weight=ft.FontWeight.W_700, color=T.INK),
+                    ft.Text(strings.t("tenant_setup_projects_empty_admin" if is_admin
+                                      else "tenant_setup_projects_empty_member"),
+                            size=11, color=T.INK_3, no_wrap=False),
+                ], spacing=3, expand=True),
+            ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                padding=ft.Padding.symmetric(vertical=12, horizontal=12), bgcolor=T.CARD_2,
+                border=ft.Border.all(1, T.BORDER), border_radius=T.R)
+        else:
+            rows = []
+            for project in projects:
+                if not isinstance(project, dict):
+                    continue
+                name = str(project.get("name") or project.get("external_key") or "—")
+                key = str(project.get("external_key") or "")
+                rows.append(ft.Container(ft.Row([
+                    ft.Icon(ft.Icons.FOLDER_OUTLINED, size=15, color=T.VIOLET_INK),
+                    ft.Text(name, size=12, weight=ft.FontWeight.W_700, color=T.INK, expand=True),
+                    ft.Text(key, size=10.5, color=T.INK_3, tooltip=key or None),
+                ], spacing=8), padding=ft.Padding.symmetric(vertical=7, horizontal=9),
+                   bgcolor=T.CARD_2, border=ft.Border.all(1, T.BORDER), border_radius=T.R,
+                   # ``strings.t`` itself uses ``key`` as its first argument;
+                   # keep the project value distinct so Python never receives
+                   # two values for that parameter while building Setup.
+                   tooltip=strings.t("tenant_setup_project_tip", name=name,
+                                     project_key=key)))
+            content = ft.Column(rows or [ft.Text(strings.t("tenant_setup_projects_empty"), size=11.5,
+                                                  color=T.INK_3)], spacing=6)
+        team_rows = []
+        for team in teams:
+            if not isinstance(team, dict):
+                continue
+            name = str(team.get("name") or "—")
+            description = str(team.get("description") or "").strip()
+            team_rows.append(ft.Container(ft.Row([
+                ft.Icon(ft.Icons.GROUP_OUTLINED, size=15, color=T.VIOLET_INK),
+                ft.Column([
+                    ft.Text(name, size=12, weight=ft.FontWeight.W_700, color=T.INK),
+                    *([ft.Text(description, size=10.5, color=T.INK_3, no_wrap=False)] if description else []),
+                ], spacing=2, expand=True),
+            ], spacing=8), padding=ft.Padding.symmetric(vertical=7, horizontal=9),
+               bgcolor=T.CARD_2, border=ft.Border.all(1, T.BORDER), border_radius=T.R,
+               tooltip=strings.t("tenant_setup_team_tip", name=name)))
+        team_content = ft.Column(team_rows, spacing=6) if team_rows else ft.Text(
+            strings.t("tenant_setup_teams_empty_admin" if is_admin else "tenant_setup_teams_empty"),
+            size=11, color=T.INK_3)
+        return card(ft.Column([
+            sec_head("Pr", strings.t("tenant_setup_projects")),
+            ft.Container(height=6),
+            ft.Text(strings.t("tenant_setup_projects_help"), size=11.5, color=T.INK_3, no_wrap=False),
+            ft.Container(height=9), content,
+            ft.Container(height=13), ft.Container(height=1, bgcolor=T.BORDER), ft.Container(height=12),
+            ft.Text(strings.t("tenant_setup_teams_admin" if is_admin else "tenant_setup_teams"),
+                    size=11.5, weight=ft.FontWeight.W_700, color=T.INK),
+            ft.Container(height=4),
+            ft.Text(strings.t("tenant_setup_teams_help"), size=10.5, color=T.INK_3, no_wrap=False),
+            ft.Container(height=8), team_content,
+        ], spacing=0))
+
     def _nav_label(self, n):
         """Localized nav label for the current INTERFACE language.
         Falls back to the built-in English label for any nav id that has
@@ -765,9 +1092,29 @@ class QAStudio:
                 "titles": "nav.sprint_report", "automation": "nav.automation",
                 "task_manager": "nav.task_manager",
                 "links": "nav.links", "settings": "nav.settings",
-                "users": "nav.users", "orgs": "nav.orgs",
+                "users": "nav.users", "orgs": "nav.orgs", "audit": "nav.audit",
                 "ai_usage": "nav.ai_usage",
                 "remote_runs": "nav.run"}.get(screen)
+
+    def can_open_screen(self, screen):
+        """Return whether this user may open a screen.
+
+        Capability chips can narrow an administrator's access, but they must
+        never elevate a Member or Viewer into an administrative screen.  The
+        Users and Organizations routes therefore require both their navigation
+        capability and the matching trusted role boundary.
+        """
+        if not auth.configured():
+            return True
+        user = getattr(self, "user", None)
+        cap = self._screen_nav_cap(screen)
+        if screen == "users":
+            return auth.can_manage_users(user) and (not cap or self.can(cap))
+        if screen == "orgs":
+            return auth.can_manage_org_settings(user) and (not cap or self.can(cap))
+        if screen == "audit":
+            return auth.can_manage_users(user) and (not cap or self.can(cap))
+        return not cap or self.can(cap)
 
     def _screen_action_cap(self, screen):
         """Capability needed to ACT on a screen (None = the screen has no actions).
@@ -788,8 +1135,7 @@ class QAStudio:
 
     def _first_allowed_screen(self):
         for n in T.NAV:
-            c = self._screen_nav_cap(n["id"])
-            if not c or self.can(c):
+            if self.can_open_screen(n["id"]):
                 return n["id"]
         return None   # nothing permitted (e.g. access revoked) → locked screen
 
@@ -1144,6 +1490,98 @@ class QAStudio:
             self._refresh_org_settings()
         except Exception:
             pass
+        try:
+            self._refresh_identity_visuals()
+        except Exception:
+            pass
+
+    def _refresh_identity_visuals(self):
+        """Fetch private, signed avatar/logo URLs for the active identity only."""
+        user = getattr(self, "user", None) or {}
+        uid = str(user.get("id") or "")
+        if not auth.configured() or not uid:
+            self._identity_visuals = {"avatar_url": "", "organization_logo_url": ""}
+            return
+
+        def work():
+            try:
+                ok, data = auth.get_identity_visuals()
+            except Exception:
+                return
+            # Never apply a delayed response belonging to an account that has
+            # since signed out or switched on this same device.
+            current = str((getattr(self, "user", None) or {}).get("id") or "")
+            if not ok or current != uid or not isinstance(data, dict):
+                return
+            self._identity_visuals = {
+                "avatar_url": str(data.get("avatar_url") or ""),
+                "organization_logo_url": str(data.get("organization_logo_url") or ""),
+            }
+            if getattr(self, "user", None):
+                def _apply():
+                    # Desktop navigation deliberately preserves its existing
+                    # rail to retain scroll position. Patch its pinned logo
+                    # independently before the normal content refresh.
+                    self._refresh_rail_logo()
+                    self.render(preserve_rail=True)
+                self.ui_safe(_apply)
+
+        self._bg(work)
+
+    def _upload_profile_picture(self):
+        """Choose and upload a square avatar for the signed-in user."""
+        if not auth.configured() or not getattr(self, "user", None):
+            self._err(strings.t("profile_upload_unavailable"))
+            return
+        import image_assets
+
+        message_for = {
+            "size": "profile_image_size", "dimensions": "profile_image_dimensions",
+            "format": "profile_image_format", "empty": "profile_image_picker",
+        }
+
+        def rejected(reason):
+            self._err(strings.t(message_for.get(reason, "profile_image_picker")))
+
+        def ready(payload):
+            self._toast(strings.t("profile_uploading"))
+
+            def work():
+                try:
+                    ok, data = auth.upload_profile_picture(**payload)
+                except Exception as ex:
+                    ok, data = False, str(ex)
+                if not ok:
+                    self.ui_safe(lambda: self._err(strings.t("image_upload_failed", error=str(data)[:160])))
+                    return
+                self._identity_visuals["avatar_url"] = str((data or {}).get("avatar_url") or "")
+                self.ui_safe(lambda: (self._toast(strings.t("profile_photo_saved")),
+                                      self.render(preserve_rail=True)))
+
+            self._bg(work)
+
+        image_assets.choose_square_image(self, strings.t("profile_choose"), ready, rejected)
+
+    def _remove_profile_picture(self):
+        """Remove the current user's cloud avatar and restore initials."""
+        if not auth.configured() or not getattr(self, "user", None):
+            self._err(strings.t("profile_upload_unavailable"))
+            return
+        self._toast(strings.t("profile_removing"))
+
+        def work():
+            try:
+                ok, data = auth.remove_profile_picture()
+            except Exception as ex:
+                ok, data = False, str(ex)
+            if not ok:
+                self.ui_safe(lambda: self._err(strings.t("image_remove_failed", error=str(data)[:160])))
+                return
+            self._identity_visuals["avatar_url"] = ""
+            self.ui_safe(lambda: (self._toast(strings.t("profile_photo_removed")),
+                                  self.render(preserve_rail=True)))
+
+        self._bg(work)
 
     def _no_access_screen(self):
         return ft.Container(
@@ -1241,6 +1679,11 @@ class QAStudio:
         # process — _switch_user_creds() below re-bootstraps the vault and
         # re-enters that callback, which would otherwise sign the user straight
         # back in (see the guard there). Cleared by a successful sign-in.
+        # Preserve the current account's Settings interface language as the
+        # shared login-screen default. That keeps the sign-in gate visually in
+        # step with Settings without copying credentials or other user data.
+        _login_ui_lang = str(getattr(self, "ui_lang", "en") or "en").lower()
+        _login_ui_lang = _login_ui_lang if _login_ui_lang in E.LANGUAGES else "en"
         self._user_signed_out = True
         self.user = None
         # Drop signed-in-user-scoped admin caches so the NEXT account never
@@ -1251,6 +1694,14 @@ class QAStudio:
         self._auth_msg = None           # clear login-card state (also the reset gate)
         self._gate_busy = False
         self._switch_user_creds()       # revert to the shared default cred file
+        try:
+            self.ui_lang = _login_ui_lang
+            strings.set_ui_lang(_login_ui_lang)
+            self.page.rtl = strings.ui_is_rtl()
+            self.creds["ui_lang"] = _login_ui_lang
+            store.save(self.creds)
+        except Exception:
+            pass
         # The login screen keeps its OWN theme flag (login.py's app._login_theme —
         # only ever set by its own toggle or on a successful sign-in), which never
         # syncs FROM the app's theme on the way back OUT. Left alone, it falls back
@@ -1304,13 +1755,58 @@ class QAStudio:
     def _login_gate(self):
         return login.login_gate(self)
 
+    def _organization_logo(self, size=48):
+        """Render the current org logo while retaining the QA Studio fallback."""
+        source = str((getattr(self, "_identity_visuals", {}) or {}).get("organization_logo_url") or "")
+        if source:
+            return ft.Container(
+                ft.Image(src=source, width=size, height=size,
+                         fit=ft.BoxFit.COVER, border_radius=12),
+                width=size, height=size, border_radius=12,
+                clip_behavior=ft.ClipBehavior.HARD_EDGE,
+                border=ft.Border.all(1, T.RAIL_LINE),
+                tooltip=strings.t("org_logo"))
+        return ft.Container(logo_img(size), width=size, height=size,
+                            bgcolor=(None if _logo_b64() else T.VIOLET),
+                            gradient=(None if _logo_b64() else grad(T.GRAD_LOGO)),
+                            border_radius=12,
+                            shadow=(None if _logo_b64() else _btn_shadow(T.STORY, 0.5)),
+                            alignment=ft.Alignment.CENTER)
+
+    def _refresh_rail_logo(self):
+        """Refresh the pinned desktop brand without replacing the rail scroller."""
+        holder = getattr(self, "_rail_brand_logo", None)
+        if holder is None:
+            return
+        source = str((getattr(self, "_identity_visuals", {}) or {}).get("organization_logo_url") or "")
+        if source:
+            holder.content = ft.Image(src=source, width=48, height=48,
+                                      fit=ft.BoxFit.COVER, border_radius=12)
+            holder.bgcolor = None
+            holder.gradient = None
+            holder.shadow = None
+            holder.border = ft.Border.all(1, T.RAIL_LINE)
+            holder.clip_behavior = ft.ClipBehavior.HARD_EDGE
+            holder.tooltip = strings.t("org_logo")
+        else:
+            holder.content = logo_img(48)
+            holder.bgcolor = None if _logo_b64() else T.VIOLET
+            holder.gradient = None if _logo_b64() else grad(T.GRAD_LOGO)
+            holder.shadow = None if _logo_b64() else _btn_shadow(T.STORY, 0.5)
+            holder.border = None
+            holder.clip_behavior = None
+            holder.tooltip = None
+        try:
+            holder.update()
+        except Exception:
+            pass
+
     def rail(self):
         # Show each tab only if the user is permitted to open it (per-user nav
         # capabilities). When auth is off, can() is True so every tab shows.
         nav_items = []
         for n in T.NAV:
-            _nv = self._screen_nav_cap(n["id"])
-            if _nv and not self.can(_nv):
+            if not self.can_open_screen(n["id"]):
                 continue
             # Platform gating (mobile Phase 0): same skip mechanism as the
             # per-user capability gate above, keyed on what the PLATFORM can
@@ -1343,6 +1839,7 @@ class QAStudio:
                          or (n["id"] == "links")
                          or (n["id"] == "users")
                          or (n["id"] == "orgs")
+                         or (n["id"] == "audit")
                          or (n["id"] == "ai_usage")
                          or (n["id"] == "run" and (getattr(self, "_run_active", False)
                                                    or st == "active"
@@ -1383,30 +1880,40 @@ class QAStudio:
                     on_hover=(_nav_hover if (clickable and not is_active) else None),
                     on_click=(lambda e, nid=n["id"]: self.goto(nid)) if clickable else None,
                 ))
+        # During a desktop navigation we keep the existing scrollable Column
+        # mounted and replace only its children.  Recreating the Column is what
+        # made Flet reset the sidebar to offset zero on every selection.
+        if (getattr(self, "_preserve_desktop_rail", False)
+                and getattr(self, "_desktop_rail", None) is not None
+                and getattr(self, "_rail_scroll", None) is not None):
+            self._rail_scroll.controls = nav_items
+            return self._desktop_rail
         conn_color  = T.GREEN if self.connected else T.INK_3
         _prov = self.current_provider()
         conn_text   = (T.disp_name(_prov) + " · Claude") if (self.connected and _prov=="anthropic")                       else (T.disp_name(_prov) if self.connected else strings.t("conn_not_connected"))
         conn_sub    = strings.t("conn_connected") if self.connected else strings.t("conn_enter_creds")
+        brand_logo = self._organization_logo(48)
+        self._rail_brand_logo = brand_logo
         return ft.Container(
             width=244, bgcolor=T.RAIL, gradient=grad(T.GRAD_RAIL, diagonal=False),
             content=ft.Column([
+                # The native window actions belong on the top-right. A compact
+                # desktop identifier here replaces the macOS-style traffic
+                # lights, which were misleading on Windows.
                 ft.Container(
                     ft.Row([
-                        ft.Container(width=12, height=12, bgcolor="#FF5F57", border_radius=6),
-                        ft.Container(width=12, height=12, bgcolor="#FEBC2E", border_radius=6),
-                        ft.Container(width=12, height=12, bgcolor="#28C840", border_radius=6),
-                    ], spacing=8),
-                    padding=ft.Padding.only(left=16, top=14, bottom=2)),
+                        ft.Container(ft.Icon(ft.Icons.COMPUTER, size=14, color=T.RAIL_DIM),
+                                     width=24, height=24, border_radius=7,
+                                     alignment=ft.Alignment.CENTER, bgcolor=T.CARD_2),
+                        ft.Text("WINDOWS DESKTOP", size=9, weight=ft.FontWeight.BOLD,
+                                color=T.RAIL_DIM, font_family="Consolas",
+                                style=ft.TextStyle(letter_spacing=1.0)),
+                    ], spacing=7, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    padding=ft.Padding.only(left=14, top=9, bottom=4)),
                 # Brand (logo + Check updates) is PINNED — it never scrolls.
                 ft.Container(
                     ft.Row([
-                        ft.Container(logo_img(48),
-                                     width=48, height=48,
-                                     bgcolor=(None if _logo_b64() else T.VIOLET),
-                                     gradient=(None if _logo_b64() else grad(T.GRAD_LOGO)),
-                                     border_radius=12,
-                                     shadow=(None if _logo_b64() else _btn_shadow(T.STORY, 0.5)),
-                                     alignment=ft.Alignment.CENTER),
+                        brand_logo,
                         ft.Column([
                             ft.Text("QA Studio", size=15, weight=ft.FontWeight.BOLD, color=T.RAIL_INK),
                             ft.Row([
@@ -1556,20 +2063,56 @@ class QAStudio:
         role_col = {"Admin": T.VIOLET, "Member": getattr(T, "GREEN", "#1F9D57"),
                     "Viewer": T.INK_3}.get(role, T.INK_3)
 
-        # gradient avatar + a small "online" dot cut out from the chip background
+        # Image uploads are center-cropped to a validated square before server
+        # upload. The holder still clips the signed URL into the same circular
+        # space used by the initials fallback, so it cannot disturb the header.
+        initial_text = ft.Text(initial, size=14, weight=ft.FontWeight.W_800, color="#FFFFFF")
+        avatar_url = str((getattr(self, "_identity_visuals", {}) or {}).get("avatar_url") or "")
+        avatar_content = (ft.Image(src=avatar_url, width=34, height=34,
+                                   fit=ft.BoxFit.COVER, border_radius=17)
+                          if avatar_url else initial_text)
         avatar = ft.Container(
-            ft.Text(initial, size=14, weight=ft.FontWeight.W_800, color="#FFFFFF"),
+            avatar_content,
             width=34, height=34, border_radius=17, alignment=ft.Alignment.CENTER,
-            gradient=ft.LinearGradient(begin=ft.Alignment.TOP_LEFT,
-                                       end=ft.Alignment.BOTTOM_RIGHT,
-                                       colors=[T.VIOLET, getattr(T, "VIOLET_H", T.VIOLET)]),
+            clip_behavior=ft.ClipBehavior.HARD_EDGE,
+            gradient=(None if avatar_url else ft.LinearGradient(
+                begin=ft.Alignment.TOP_LEFT, end=ft.Alignment.BOTTOM_RIGHT,
+                colors=[T.VIOLET, getattr(T, "VIOLET_H", T.VIOLET)])),
             shadow=ft.BoxShadow(blur_radius=10, spread_radius=-2, offset=ft.Offset(0, 2),
                                 color=_op(T.VIOLET, 0.5)))
         avatar_wrap = ft.Stack([
             avatar,
             ft.Container(width=11, height=11, border_radius=6, bgcolor="#22C55E",
                          border=ft.Border.all(2, T.CARD), right=-1, bottom=-1),
-        ], width=34, height=34)
+        ], width=34, height=34, clip_behavior=ft.ClipBehavior.NONE)
+        avatar_display = avatar_wrap
+        if avatar_url:
+            # Flet 0.85's native tooltip accepts text only and header parents
+            # clip an out-of-bounds hover card. A click-to-expand dialog is
+            # therefore the reliable full-resolution preview on Windows;
+            # hover keeps the discovery hint without destabilizing the header.
+            def _open_avatar_preview(e=None):
+                dialog = ft.AlertDialog(
+                    modal=False,
+                    title=ft.Text(strings.t("avatar_preview_title"), size=15,
+                                  weight=ft.FontWeight.W_800, color=T.INK),
+                    content=ft.Container(
+                        ft.Image(src=avatar_url, width=300, height=300,
+                                 fit=ft.BoxFit.COVER, border_radius=150),
+                        width=308, height=308, padding=4, border_radius=154,
+                        bgcolor=T.CARD_2, clip_behavior=ft.ClipBehavior.HARD_EDGE),
+                    actions=[ft.TextButton(strings.t("avatar_preview_close"),
+                                           on_click=lambda e: self._close_all_dialogs())],
+                    bgcolor=T.CARD)
+                self._show_dialog(dialog)
+
+            if not compact:
+                # Stack itself does not reliably dispatch a pointer click on
+                # Flet 0.85. Wrap it in an ink-enabled Container instead.
+                avatar_display = ft.Container(
+                    avatar_wrap, on_click=_open_avatar_preview, ink=True,
+                    border_radius=20, padding=3,
+                    tooltip=strings.t("avatar_tip_preview"))
 
         role_pill = ft.Container(
             ft.Text(strings.t("role_" + str(role).lower()).upper(), size=8.5, weight=ft.FontWeight.W_800, color=role_col,
@@ -1613,12 +2156,18 @@ class QAStudio:
                 avatar_wrap, on_click=_open_account_popup, ink=True,
                 border_radius=20, padding=3, tooltip=name)
 
+        name_text = ft.Text(name, size=12.5, weight=ft.FontWeight.W_800, color=T.INK,
+                            max_lines=1, overflow=ft.TextOverflow.ELLIPSIS)
+        # Keep stable handles for the in-place profile refresh from Users.
+        # Rebuilding the full page just to update this small header chip causes
+        # the Windows scroll jump the user-management screen avoids elsewhere.
+        self._account_initial_text = initial_text
+        self._account_name_text = name_text
         chip = ft.Container(
             ft.Row([
-                avatar_wrap,
+                avatar_display,
                 ft.Column([
-                    ft.Text(name, size=12.5, weight=ft.FontWeight.W_800, color=T.INK,
-                            max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                    name_text,
                     ft.Container(role_pill, margin=ft.Margin.only(top=3)),
                 ], spacing=0, tight=True),
                 ft.Container(width=2),
@@ -1641,6 +2190,25 @@ class QAStudio:
                 pass
         chip.on_hover = _chip_hover
         return chip
+
+    def _refresh_account_identity(self):
+        """Patch the desktop account chip after the signed-in user's name changes.
+
+        This deliberately updates only the two affected controls; Users keeps
+        its open panel and scroll position intact.
+        """
+        u = getattr(self, "user", None) or {}
+        name = u.get("name") or u.get("email") or "Signed in"
+        initial = name.strip()[:1].upper() or "?"
+        for control, value in ((getattr(self, "_account_name_text", None), name),
+                               (getattr(self, "_account_initial_text", None), initial)):
+            if control is None:
+                continue
+            try:
+                control.value = value
+                control.update()
+            except Exception:
+                pass
 
     def _toggle_theme(self):
         new = "dark" if getattr(T, "MODE", "light") == "light" else "light"
@@ -1900,8 +2468,7 @@ class QAStudio:
         filters rail() applies (per-user capability + platform gating)."""
         out = []
         for n in T.NAV:
-            _nv = self._screen_nav_cap(n["id"])
-            if _nv and not self.can(_nv):
+            if not self.can_open_screen(n["id"]):
                 continue
             if n["id"] == "automation" and not platform_caps.has_automation():
                 continue
@@ -1998,10 +2565,7 @@ class QAStudio:
 
         brand = ft.Container(
             ft.Row([
-                ft.Container(logo_img(44), width=44, height=44,
-                             bgcolor=(None if _logo_b64() else T.VIOLET),
-                             gradient=(None if _logo_b64() else grad(T.GRAD_LOGO)),
-                             border_radius=12, alignment=ft.Alignment.CENTER),
+                self._organization_logo(44),
                 ft.Column([
                     ft.Text("QA Studio", size=15, weight=ft.FontWeight.BOLD, color=T.RAIL_INK),
                     ft.Text(f"v{E.local_version()}", size=10, color=T.RAIL_DIM,
@@ -2127,22 +2691,27 @@ class QAStudio:
             body.disabled = bool(getattr(self, "readonly", False))
         except Exception:
             pass
-        # Track the body's PRIMARY scrollable column so _restore_scroll can reapply
-        # its offset after a full render — even when the scroller is nested (an open
-        # multiselect panel, or a Row body like Setup). This is what stops the
-        # dropdown list / page from snapping to the top on select.
+        HEADER_H = 94
+        GAP = 18
+        self._install_top_gap(body, HEADER_H + GAP)
+        # Track the body's PRIMARY scrollable column.  On a same-screen desktop
+        # refresh we transplant the new controls into the mounted Column, which
+        # keeps Flutter's native scroll offset intact instead of resetting first
+        # and relying on a delayed scroll_to().
         scroller = (body if (isinstance(body, ft.Column)
                              and getattr(body, "scroll", None) is not None)
                     else self._find_scroller(body))
+        self._body_scroll_reused = False
+        if (scroller is not None and getattr(self, "_preserve_body_scroll", False)
+                and not platform_caps.is_mobile()):
+            body, scroller, self._body_scroll_reused = self._reuse_primary_scroller(
+                body, scroller)
         if scroller is not None:
             try:
                 scroller.on_scroll = self._track_scroll
                 self._left_scroll = scroller
             except Exception:
                 pass
-        HEADER_H = 94
-        GAP = 18
-        self._install_top_gap(body, HEADER_H + GAP)
         # Header badge mirrors the LEFT-NAV badge for this screen (S / Ru / Rp / Rg /
         # SP / SR / A / L / U), so the header pill and the rail always agree.
         if badge is None:
@@ -2178,32 +2747,48 @@ class QAStudio:
                 gradient=ft.LinearGradient(
                     begin=ft.Alignment.TOP_CENTER, end=ft.Alignment.BOTTOM_CENTER,
                     colors=list(T.GRAD_PAGE)))
-        return ft.Row([
-            self.rail(),
+        content_stack = ft.Stack([
             ft.Container(
-                ft.Stack([
-                    ft.Container(
-                        # Selection scoped to the content body only — the left nav
-                        # (self.rail()) and the header sit outside it, so they stay
-                        # non-selectable. Content text is drag-select + Ctrl+C.
-                        # Inner GestureDetector so an empty-space tap in the content
-                        # still closes open dropdowns: SelectionArea otherwise claims
-                        # taps in the arena, so the outer close-away detector never
-                        # fires. A child tap recognizer wins over the SelectionArea
-                        # ancestor for empty space, while checkboxes/buttons keep
-                        # their own taps and drag-to-select (pan) is unaffected.
-                        ft.SelectionArea(content=ft.GestureDetector(
-                            content=body, on_tap=self._close_dropdowns)),
-                        expand=True,
-                        padding=ft.Padding.only(left=22, right=22, bottom=22),
-                        clip_behavior=ft.ClipBehavior.HARD_EDGE),
-                    header,
-                ], expand=True),
+                # Selection scoped to the content body only — the left nav
+                # (self.rail()) and the header sit outside it, so they stay
+                # non-selectable. Content text is drag-select + Ctrl+C.
+                # Inner GestureDetector so an empty-space tap in the content
+                # still closes open dropdowns: SelectionArea otherwise claims
+                # taps in the arena, so the outer close-away detector never
+                # fires. A child tap recognizer wins over the SelectionArea
+                # ancestor for empty space, while checkboxes/buttons keep
+                # their own taps and drag-to-select (pan) is unaffected.
+                ft.SelectionArea(content=ft.GestureDetector(
+                    content=body, on_tap=self._close_dropdowns)),
                 expand=True,
-                gradient=ft.LinearGradient(
-                    begin=ft.Alignment.TOP_CENTER, end=ft.Alignment.BOTTOM_CENTER,
-                    colors=list(T.GRAD_PAGE))),   # theme-aware page wash (dark in dark mode)
-        ], spacing=0, expand=True)
+                padding=ft.Padding.only(left=22, right=22, bottom=22),
+                clip_behavior=ft.ClipBehavior.HARD_EDGE),
+            header,
+        ], expand=True)
+
+        # A navigation hand-off reuses the mounted desktop row.  The rail's
+        # scrollable Column stays the same Flet control; only its item controls
+        # and the content stack change.
+        if (getattr(self, "_preserve_desktop_rail", False)
+                and getattr(self, "_desktop_shell", None) is not None
+                and getattr(self, "_desktop_content_host", None) is not None):
+            self.rail()  # refresh active nav styling without replacing its Column
+            self._desktop_content_host.content = content_stack
+            self._desktop_shell_reused = True
+            return self._desktop_shell
+
+        content_host = ft.Container(
+            content_stack,
+            expand=True,
+            gradient=ft.LinearGradient(
+                begin=ft.Alignment.TOP_CENTER, end=ft.Alignment.BOTTOM_CENTER,
+                colors=list(T.GRAD_PAGE)))   # theme-aware page wash (dark in dark mode)
+        rail = self.rail()
+        desktop_shell = ft.Row([rail, content_host], spacing=0, expand=True)
+        self._desktop_rail = rail
+        self._desktop_content_host = content_host
+        self._desktop_shell = desktop_shell
+        return desktop_shell
 
     # ---- Useful Links ----
     def _links_path(self):
@@ -2577,8 +3162,7 @@ class QAStudio:
 
     def goto(self, screen):
         # Permission gate: block navigation to a screen the user can't open.
-        _nv = self._screen_nav_cap(screen)
-        if _nv and not self.can(_nv):
+        if not self.can_open_screen(screen):
             try:
                 self._toast(strings.t("main_no_screen_access"))
             except Exception:
@@ -2618,11 +3202,13 @@ class QAStudio:
             self._rr_poll_stop = True
             self._rr_view_id = None
         self.active = screen
-        self.render()
+        # On desktop the shell keeps its rail mounted and swaps only the body,
+        # so choosing a navigation item cannot reset the user's rail scroll.
+        self.render(preserve_rail=True)
         # Opportunistically check for a newer version when the user navigates.
         self._maybe_check_update_on_nav()
 
-    def render(self):
+    def render(self, preserve_rail=False, preserve_setup_scroll=False):
         """Entry point for every screen (re)render.
 
         NOTE: an earlier version of this method auto-detected Regression Plan
@@ -2638,11 +3224,31 @@ class QAStudio:
         mechanism itself (_reg_render_with_overlay in regression.py) is still
         used, but now only at the ONE call site that's genuinely slow — the
         Generate button's completion callback — not for every render()."""
-        self._render_body()
+        self._render_body(preserve_rail=preserve_rail,
+                          preserve_setup_scroll=preserve_setup_scroll)
 
-    def _render_body(self):
+    def _render_body(self, preserve_rail=False, preserve_setup_scroll=False):
         import time as _pt
         _r0 = _pt.perf_counter()
+        _same_screen = getattr(self, "_last_active", None) == self.active
+        # Background loaders (plans, iterations, members, automation state, ...)
+        # historically called render() without preserve_rail=True.  Reuse the
+        # mounted desktop shell whenever it exists so those callbacks cannot
+        # rebuild the rail and reset its native scroll position.
+        self._preserve_desktop_rail = bool(
+            not platform_caps.is_mobile()
+            and getattr(self, "_desktop_shell", None) is not None
+            and getattr(self, "_desktop_content_host", None) is not None)
+        # On a same-screen loading refresh, retain the real scrolling Column
+        # rather than creating one at offset zero and trying to restore it later.
+        self._preserve_body_scroll = bool(_same_screen and not platform_caps.is_mobile())
+        # Setup has a long form.  A completed connection needs to replace its
+        # cards, but it must not throw the person back to the beginning.  Keep
+        # its actual scrolling Column alive for that one controlled refresh.
+        self._preserve_setup_scroll = bool(
+            (preserve_setup_scroll or _same_screen)
+            and self.active == "setup" and not platform_caps.is_mobile())
+        self._desktop_shell_reused = False
         self._last_activity = _pt.time()   # any re-render counts as user activity
         # THEME-FLASH GATE (mobile, first launch only). When the theme is
         # genuinely unknown — nothing cached in mobile_prefs, nothing in creds
@@ -2691,8 +3297,7 @@ class QAStudio:
             # buttons disabled) when the user lacks THIS screen's action capability.
             if auth.configured() and getattr(self, "user", None):
                 self._maybe_revalidate()      # pick up admin revoke/role changes
-                _nv = self._screen_nav_cap(self.active)
-                if _nv and not self.can(_nv):
+                if not self.can_open_screen(self.active):
                     self.active = self._first_allowed_screen() or "_locked"
             _av = self._screen_action_cap(self.active)
             if auth.configured() and getattr(self, "user", None):
@@ -2710,6 +3315,11 @@ class QAStudio:
             # Hard gate: when external auth is configured and nobody is signed in,
             # show the sign-in / sign-up screen instead of the app.
             if auth.configured() and not getattr(self, "user", None):
+                # This gate replaces the app root, so its old desktop shell is
+                # detached.  Drop the cache before the next sign-in.
+                self._desktop_shell = None
+                self._desktop_rail = None
+                self._desktop_content_host = None
                 view = self._login_gate()
             elif (auth.configured() and getattr(self, "user", None)
                   and self.user.get("must_reset")):
@@ -2717,6 +3327,9 @@ class QAStudio:
                 # the app is usable. Rendered by the LOGIN screen in reset_mode
                 # (same neon card UI); app_metadata.must_reset is cleared server-
                 # side by auth.change_own_password.
+                self._desktop_shell = None
+                self._desktop_rail = None
+                self._desktop_content_host = None
                 view = self._login_gate()
             elif self.active == "_locked":
                 view = self._no_access_screen()
@@ -2740,6 +3353,9 @@ class QAStudio:
                 view = users_screen.screen(self)
             elif self.active == "orgs":
                 view = orgs_screen.screen(self)
+            elif self.active == "audit":
+                import audit_screen
+                view = audit_screen.screen(self)
             elif self.active == "ai_usage":
                 view = ai_usage_screen.screen(self)
             elif self.active == "remote_runs":
@@ -2750,6 +3366,18 @@ class QAStudio:
                 view = self.settings_screen()
             else:
                 view = self.report_screen()
+            # shell() has already patched the persistent desktop content host.
+            # Do not wrap/clear/add the cached root again: doing so would still
+            # detach the rail and lose its native scroll offset.
+            if getattr(self, "_desktop_shell_reused", False):
+                with self._render_lock:
+                    self.page.update()
+                # The normal path preserves the actual scrolling control.  A
+                # screen without a reusable scroller still gets the previous
+                # best-effort restore instead of being left at offset zero.
+                if not getattr(self, "_body_scroll_reused", False):
+                    self._restore_scroll()
+                return
             # After a fresh sign-in, let the main app fade + rise into place slowly.
             if getattr(self, "_land_app", False) and getattr(self, "user", None):
                 self._land_app = False
@@ -3361,8 +3989,8 @@ class QAStudio:
     def _show_update_error(self, msg):
         return updater_ui.show_update_error(self, msg)
 
-    def _show_restart_dialog(self, msg):
-        return updater_ui.show_restart_dialog(self, msg)
+    def _show_restart_dialog(self, msg, version=""):
+        return updater_ui.show_restart_dialog(self, msg, version)
 
     def _quit_after_update(self):
         return updater_ui.quit_after_update(self)
@@ -3673,6 +4301,112 @@ class QAStudio:
         except Exception:
             self.render()
 
+    def _org_sender_scope_options(self):
+        """Build the SuperAdmin sender-picker options from its cached directory."""
+        target = self._org_email_target_id()
+        options, option_ids = [], set()
+        for org in getattr(self, "_org_email_targets", []) or []:
+            if not isinstance(org, dict):
+                continue
+            org_id = str(org.get("id") or "").strip()
+            if not org_id:
+                continue
+            name = str(org.get("name") or org_id).strip()
+            options.append(ft.DropdownOption(key=org_id,
+                           text=name if name == org_id else f"{name} ({org_id})"))
+            option_ids.add(org_id)
+        if target and target not in option_ids:
+            options.insert(0, ft.DropdownOption(key=target, text=target))
+        return options
+
+    def _org_sender_scope_status(self):
+        if getattr(self, "_org_email_targets_error", ""):
+            return strings.t("org_sender_scope_error", err=self._org_email_targets_error)
+        return (strings.t("org_sender_scope_loading")
+                if getattr(self, "_org_email_targets_loading", False)
+                else strings.t("org_sender_scope_hint"))
+
+    def _build_org_sender_fields(self):
+        """The sender-only portion of Setup, safe to replace in place."""
+        super_scope = self._is_super_admin_org_email_manager()
+        if not (self._can_manage_org_email()
+                and (not super_scope or self._org_email_target_id())):
+            return ft.Container()
+        self._sender_cell = ft.Container(self._make_cred_field("sender"),
+                                         padding=ft.Padding.only(top=4, bottom=12))
+        self._sender_name_cell = ft.Container(self._make_cred_field("sender_name"),
+                                              padding=ft.Padding.only(top=4, bottom=12))
+        self._gmail_cell = ft.Container(self._make_cred_field("gmail"),
+                                        padding=ft.Padding.only(top=4))
+        self._org_email_audit_cell = ft.Container(self._org_email_audit_control(),
+                                                  padding=ft.Padding.only(top=4))
+        controls = [
+            ft.Container(height=12),
+            field_label(strings.t("au_email_sender"), hint="optional"), self._sender_cell,
+            field_label(strings.t("au_sender_name"), hint=strings.t("au_sender_name_hint")), self._sender_name_cell,
+            ft.Row([ft.Column([
+                field_label(strings.t("au_gmail_pw"), hint="optional", req=False,
+                            info=strings.t("au_gmail_pw_info"), on_info=lambda e: self._show_help("gmail")),
+                self._gmail_cell,
+            ], expand=True, spacing=0)]),
+            ft.Container(height=8),
+            ft.Text(strings.t("org_sender_audit"), size=11, color=T.INK_2, weight=ft.FontWeight.BOLD),
+            self._org_email_audit_cell,
+        ]
+        if self._org_sender_test_recipient():
+            controls += [
+                ft.Container(height=4),
+                ft.Row([ghost_btn(strings.t("org_sender_test"), icon=ft.Icons.SEND_OUTLINED,
+                                  on_click=self._send_org_sender_test,
+                                  disabled=(getattr(self, "_org_sender_test_running", False)
+                                            or getattr(self, "_org_email_target_loading", False)),
+                                  tooltip=strings.t("org_sender_test_hint"))], alignment=ft.MainAxisAlignment.END),
+                ft.Text(strings.t("org_sender_test_hint"), size=11, color=T.INK_3),
+            ]
+        return ft.Column(controls, spacing=0)
+
+    def _refresh_org_sender_fields(self):
+        """Replace sender controls only; preserve Setup's outer scroll position."""
+        cell = getattr(self, "_org_email_fields_cell", None)
+        if cell is None:
+            self.render()
+            return
+        try:
+            cell.content = self._build_org_sender_fields()
+            cell.update()
+        except Exception:
+            self.render()
+
+    def _refresh_org_sender_scope(self):
+        """Patch the selector/status after a target or directory response."""
+        picker = getattr(self, "_org_email_scope_picker", None)
+        status = getattr(self, "_org_email_scope_status", None)
+        try:
+            if picker is not None:
+                picker.options = self._org_sender_scope_options()
+                picker.value = self._org_email_target_id() or None
+                picker.update()
+            if status is not None:
+                status.value = self._org_sender_scope_status()
+                status.color = (T.RED if getattr(self, "_org_email_targets_error", "") else T.INK_3)
+                status.update()
+        except Exception:
+            pass
+
+    def _refresh_tenant_project_scope_cell(self):
+        """Patch the selected organization's pre-connect project card in place."""
+        cell = getattr(self, "_tenant_project_scope_cell", None)
+        if cell is None:
+            self.render()
+            return
+        try:
+            content = self._tenant_project_scope_card()
+            cell.content = content
+            cell.visible = bool(content)
+            cell.update()
+        except Exception:
+            self.render()
+
     def _connection_edit(self):
         name = self._provider_choice
         # Cap the menu height so the (now grouped) provider list scrolls instead of
@@ -3731,8 +4465,6 @@ class QAStudio:
         # that one row, not the whole screen.
         self._pat_cell = ft.Container(self._make_cred_field("pat"),
                                       padding=ft.Padding.only(top=4))
-        self._gmail_cell = ft.Container(self._make_cred_field("gmail"),
-                                        padding=ft.Padding.only(top=4))
 
         # Azure Organization field (one-time set, preserved, Update to change).
         # Deliberately does NOT fall back to E.AZURE_ORG when this account has
@@ -3745,15 +4477,6 @@ class QAStudio:
         # this row in place (no full render → no scroll jump).
         self._org_cell = ft.Container(self._build_org_row(),
                                       padding=ft.Padding.only(top=4, bottom=12))
-
-        # Gmail sender address + display NAME — in-place cells too (Save/Update
-        # + lock behaviour identical to every other credential field). Sender
-        # name previously auto-saved on every keystroke; it now has an explicit
-        # Save button like the rest.
-        self._sender_cell = ft.Container(self._make_cred_field("sender"),
-                                         padding=ft.Padding.only(top=4, bottom=12))
-        self._sender_name_cell = ft.Container(self._make_cred_field("sender_name"),
-                                              padding=ft.Padding.only(top=4, bottom=12))
 
         # ── Test Management (see backend_setup.py / TRACKER_BACKENDS_PLAN.md §0) ──
         # This section is DELIBERATELY FIRST on the Setup screen and rendered as a
@@ -3802,25 +4525,39 @@ class QAStudio:
                         on_info=lambda e: self._show_help("api_key")),
             self._ai_key_cell,
         ]
-        # Email setup (sender address/name + Gmail App Password) is Admin-only —
-        # it's a shared, org-wide credential used to send reports for everyone,
-        # not a per-user setting, so only admins should see or edit it here.
-        if self._is_admin():
+        # Email setup is organization-owned. An Organization Manager sees only
+        # their JWT-bound organization; a SuperAdmin first picks an existing
+        # organization and the server verifies that choice before access.
+        _super_sender_scope = self._is_super_admin_org_email_manager()
+        if _super_sender_scope:
+            if not hasattr(self, "_org_email_target"):
+                self._org_email_target = auth.org_id_of(getattr(self, "user", None))
+            self._load_org_email_targets()
+            _target = self._org_email_target_id()
+            _scope_kwargs = dict(
+                value=_target or None, options=self._org_sender_scope_options(),
+                hint_text=strings.t("org_sender_scope_select"),
+                on_select=self._on_org_email_target_change,
+                border_color=T.BORDER, focused_border_color=T.VIOLET,
+                border_radius=T.R, content_padding=ft.Padding.symmetric(vertical=12, horizontal=12),
+                text_size=13, filled=True, bgcolor=T.CARD, expand=True,
+                tooltip=strings.t("org_sender_scope_hint"))
+            try:
+                _scope_dd = ft.Dropdown(menu_height=320, **_scope_kwargs)
+            except TypeError:
+                _scope_dd = ft.Dropdown(**_scope_kwargs)
+            self._org_email_scope_picker = _scope_dd
+            self._org_email_scope_status = ft.Text(
+                self._org_sender_scope_status(), size=11,
+                color=(T.RED if getattr(self, "_org_email_targets_error", "") else T.INK_3))
             _fields += [
                 ft.Container(height=12),
-                field_label(strings.t("au_email_sender"), hint="optional"),
-                self._sender_cell,
-                field_label(strings.t("au_sender_name"), hint=strings.t("au_sender_name_hint")),
-                self._sender_name_cell,
-                ft.Row([
-                    ft.Column([
-                        field_label(strings.t("au_gmail_pw"), hint="optional", req=False,
-                                    info=strings.t("au_gmail_pw_info"),
-                                    on_info=lambda e: self._show_help("gmail")),
-                        self._gmail_cell,
-                    ], expand=True, spacing=0),
-                ]),
+                field_label(strings.t("org_sender_scope"), req=True),
+                ft.Container(hover_field(_scope_dd), padding=ft.Padding.only(top=4, bottom=4)),
+                self._org_email_scope_status,
             ]
+        self._org_email_fields_cell = ft.Container(self._build_org_sender_fields())
+        _fields.append(self._org_email_fields_cell)
         return ft.Column(_fields, spacing=0)
 
     # Credential fields whose save affects ONLY themselves (no "THIS RUN"
@@ -3846,6 +4583,13 @@ class QAStudio:
         and return the row. Shared by first render and in-place refresh, so both
         produce an identical control."""
         cfg = self._INPLACE_CRED_FIELDS[kind]
+        _sender_tip_keys = {
+            "sender": "org_sender_tip_address",
+            "sender_name": "org_sender_tip_name",
+            "gmail": "org_sender_tip_password",
+        }
+        _sender_tip = (strings.t(_sender_tip_keys[kind])
+                       if kind in _sender_tip_keys else None)
         raw = self.creds.get(cfg["value_key"], "")
         val = raw or (getattr(E, cfg["env"], "") if cfg.get("env") else "")
         editable = (not bool(raw)) or getattr(self, f"_{kind}_unlocked", False)
@@ -3855,10 +4599,12 @@ class QAStudio:
             bgcolor=(T.CARD if editable else T.CARD_2),
             border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
             content_padding=ft.Padding.symmetric(vertical=12, horizontal=12),
-            text_size=13, expand=True)
+            text_size=13, expand=True, tooltip=_sender_tip)
         setattr(self, f"{kind}_field", field)
-        btn = (green_btn(strings.t("main_org_save"), on_click=getattr(self, f"_save_{kind}")) if editable
-               else ghost_btn(strings.t("main_update_btn"), on_click=getattr(self, f"_unlock_{kind}")))
+        btn = (green_btn(strings.t("main_org_save"), on_click=getattr(self, f"_save_{kind}"),
+                         tooltip=(strings.t("org_sender_tip_save") if _sender_tip else None)) if editable
+               else ghost_btn(strings.t("main_update_btn"), on_click=getattr(self, f"_unlock_{kind}"),
+                              tooltip=(strings.t("org_sender_tip_update") if _sender_tip else None)))
         setattr(self, f"{kind}_btn", btn)
         return ft.Row([hover_field(field), btn], spacing=8)
 
@@ -4484,22 +5230,130 @@ class QAStudio:
     def _unlock_sender(self, e=None):
         self._sender_unlocked = True; self._refresh_cred_field("sender")
 
+    def _org_sender_test_recipient(self):
+        """The only allowed recipient for a Setup sender test.
+
+        A test is deliberately delivered to the authenticated administrator's
+        own address rather than an arbitrary text field. This prevents Setup
+        from becoming an unaudited bulk-email or address-probing surface.
+        """
+        try:
+            return str((getattr(self, "user", None) or {}).get("email") or "").strip()
+        except Exception:
+            return ""
+
+    def _send_org_sender_test(self, e=None):
+        """Persist the displayed org sender settings, then send one SMTP test.
+
+        The operation runs off the UI thread. It writes through the same
+        authorization-protected org-settings endpoint used by the individual
+        Save buttons, then sends only to the signed-in administrator.
+        """
+        if getattr(self, "_org_sender_test_running", False):
+            return
+        recipient = self._org_sender_test_recipient()
+        if not recipient:
+            self._toast(strings.t("org_sender_test_recipient_missing"))
+            return
+        target_org = self._org_email_target_id()
+        if self._is_super_admin_org_email_manager() and not target_org:
+            self._toast(strings.t("org_sender_scope_required"))
+            return
+        if getattr(self, "_org_email_target_loading", False):
+            self._toast(strings.t("org_sender_test_wait"))
+            return
+
+        # Read the controls so the test can validate the values currently shown
+        # in Setup. The button then persists that exact set atomically before
+        # sending, rather than racing the three individual Save workers.
+        sender = self._field_or_saved("sender_field", self.creds.get("gmail_sender", ""))
+        sender_name = self._field_or_saved(
+            "sender_name_field", self.creds.get("gmail_sender_name", ""))
+        app_password = self._field_or_saved("gmail_field", self.creds.get("gmail", ""))
+        if not sender or not app_password:
+            self._toast(strings.t("org_sender_test_save_first"))
+            return
+
+        self._org_sender_test_running = True
+        self.render()
+        self._toast(strings.t("org_sender_test_sending", email=recipient))
+
+        def work():
+            try:
+                if auth.configured():
+                    ok, msg = auth.admin_set_org_email(
+                        sender, sender_name, app_password,
+                        org_id=(target_org if self._is_super_admin_org_email_manager() else None))
+                    if not ok:
+                        raise RuntimeError(msg)
+                E.set_credentials(gmail=app_password, gmail_sender=sender,
+                                  gmail_sender_name=sender_name)
+                ok, msg = E.send_report(
+                    [recipient],
+                    "QA Studio — sender configuration test",
+                    "<h2>QA Studio sender test</h2>"
+                    "<p>Your organization’s report sender is configured and can send email.</p>",
+                    refresh_sender=False)
+                if not ok:
+                    raise RuntimeError(msg or "Unknown SMTP error")
+                outcome = (True, "")
+            except Exception as ex:
+                outcome = (False, str(ex))
+
+            # The SMTP call runs on this device, so record its result explicitly
+            # after it finishes. The server stores only success/failure and a
+            # truncated error message — never the Gmail App Password.
+            audit_payload = None
+            if auth.configured():
+                try:
+                    auth.record_org_email_test(
+                        target_org if self._is_super_admin_org_email_manager() else None,
+                        outcome[0], outcome[1])
+                    audit_ok, audit_payload = auth.get_org_settings(
+                        org_id=(target_org if self._is_super_admin_org_email_manager() else None),
+                        include_audit=True)
+                    if not audit_ok:
+                        audit_payload = None
+                except Exception:
+                    pass
+
+            def apply():
+                self._org_sender_test_running = False
+                if isinstance(audit_payload, dict) and isinstance(audit_payload.get("audit"), list):
+                    self._org_email_audit = audit_payload["audit"]
+                if getattr(self, "active", "") == "setup":
+                    self.render()
+                if outcome[0]:
+                    self._toast(strings.t("org_sender_test_sent", email=recipient))
+                else:
+                    self._toast(strings.t("org_sender_test_failed", err=outcome[1]))
+            self.ui_safe(apply)
+
+        try:
+            threading.Thread(target=work, daemon=True).start()
+        except Exception as ex:
+            self._org_sender_test_running = False
+            self._toast(strings.t("org_sender_test_failed", err=str(ex)))
+
     def _push_org_email(self):
-        """Best-effort: share the just-saved email config (sender / sender name /
-        Gmail App Password) with EVERY other user by writing it to the shared
-        org-wide settings — this is what makes 'an Admin configures it once' work,
-        instead of each user needing their own local copy. Admin-only server-side
-        (the org-settings Edge Function checks app_metadata.role); we also check
-        locally so this is a silent no-op rather than a wasted network call when
-        auth isn't set up (offline/dev use — these fields still just save locally
-        via store.save above, exactly like before this feature existed).
+        """Publish the just-saved sender config to its organization.
+
+        The Edge Function derives an Organization Manager's target from their
+        signed JWT. A SuperAdmin supplies the selector's target id, but the
+        function validates both their role and that the organization exists.
+        Other organizations never receive this sender credential.
+        In auth-disabled desktop use, fields remain local-only as before.
 
         Runs in the background and NEVER blocks or fails the local Save the caller
-        already did — if sharing fails (offline, function not reachable, token
-        expired, permission denied server-side despite the local admin check),
+        already did — if publishing fails (offline, function not reachable, token
+        expired, permission denied server-side despite the local scope check),
         the user sees a distinct toast explaining THAT part failed, while their
         own local credentials remain saved and usable regardless."""
-        if not (auth.configured() and self._is_admin()):
+        if not (auth.configured() and self._can_manage_org_email()):
+            return
+        target_org = self._org_email_target_id()
+        if self._is_super_admin_org_email_manager() and not target_org:
+            self._toast(strings.t("org_sender_scope_required"))
             return
 
         def work():
@@ -4507,7 +5361,8 @@ class QAStudio:
                 ok, msg = auth.admin_set_org_email(
                     self.creds.get("gmail_sender", ""),
                     self.creds.get("gmail_sender_name", ""),
-                    self.creds.get("gmail", ""))
+                    self.creds.get("gmail", ""),
+                    org_id=(target_org if self._is_super_admin_org_email_manager() else None))
             except Exception as ex:
                 ok, msg = False, str(ex)
             if not ok:
@@ -4520,13 +5375,36 @@ class QAStudio:
             # method must never raise into a Save button's click handler.
             pass
 
+    async def _apply_org_email_refresh_to_setup(self):
+        """Apply an org-sender fetch on Flet 0.85's asyncio UI loop.
+
+        ``page.run_task()`` is Flet's supported path for a background result
+        that mutates controls. Calling ``Control.update()`` through this app's
+        general ``ui_safe()`` helper uses ``page.run_thread()``, which is fine
+        for heavy background rendering but can leave a small imperative patch
+        unpainted on this Flet version. This narrow coroutine is intentionally
+        used only for the three credential cells.
+        """
+        if getattr(self, "active", "") != "setup":
+            return
+        self._refresh_cred_field("sender", "sender_name", "gmail")
+        audit_cell = getattr(self, "_org_email_audit_cell", None)
+        if audit_cell is not None:
+            try:
+                audit_cell.content = self._org_email_audit_control()
+                audit_cell.update()
+            except Exception:
+                pass
+
     def _refresh_org_settings(self):
         """Background-fetch the shared org-wide email settings (sender / sender
         name / Gmail App Password, set once by an Admin via _push_org_email
         above) and apply them via E.set_credentials — so THIS signed-in user's
         install sends reports with the same config as everyone else, regardless
-        of what (if anything) is in their own local creds file. Called after
-        every sign-in / session-restore / sign-out (see _switch_user_creds).
+        of what (if anything) is in their own local creds file. If Setup is
+        already open when the background request completes, its sender fields
+        are also rebuilt to reflect the fetched values. Called after every
+        sign-in / session-restore / sign-out (see _switch_user_creds).
 
         Deliberately silent on every failure path (auth not configured, not
         signed in yet, offline, function/table not set up, malformed response):
@@ -4558,21 +5436,42 @@ class QAStudio:
 
         def work():
             try:
-                ok, data = auth.get_org_settings()
+                ok, data = auth.get_org_settings(include_audit=True)
             except Exception:
                 return
             if not ok or not isinstance(data, dict):
                 return
-            em = data.get("email")
+            settings = data.get("settings") or {}
+            em = settings.get("email") if isinstance(settings, dict) else None
             if not isinstance(em, dict):
                 return
+            # Keep this in memory (not store.save): the Setup controls are built
+            # from self.creds, while the encrypted per-user file remains the
+            # user's own local configuration until they explicitly save.
+            self.creds["gmail_sender"] = str(em.get("sender") or "")
+            self.creds["gmail_sender_name"] = str(em.get("sender_name") or "")
+            self.creds["gmail"] = str(em.get("app_password") or "")
+            self._org_email_inherited_from = str(em.get("inherited_from_org_id") or "")
+            if isinstance(data.get("audit"), list):
+                self._org_email_audit = data["audit"]
+            self._org_email_sync_status = strings.t("org_sender_synced")
             try:
                 E.set_credentials(
-                    gmail=(em.get("app_password") or None),
-                    gmail_sender=(em.get("sender") or None),
-                    gmail_sender_name=(em.get("sender_name") or None))
+                    gmail=self.creds["gmail"],
+                    gmail_sender=self.creds["gmail_sender"],
+                    gmail_sender_name=self.creds["gmail_sender_name"])
             except Exception:
                 pass
+            # The request often finishes AFTER Setup has rendered. Flet 0.85
+            # needs the imperative cell updates queued on its own asyncio loop.
+            try:
+                self.page.run_task(self._apply_org_email_refresh_to_setup)
+            except Exception:
+                # A page can be closing while the request resolves. Fall back to
+                # the app's general dispatcher rather than letting a refresh
+                # failure affect reporting or sign-in.
+                self.ui_safe(lambda: self._refresh_cred_field(
+                    "sender", "sender_name", "gmail"))
         try:
             threading.Thread(target=work, daemon=True).start()
         except Exception:
@@ -4597,7 +5496,9 @@ class QAStudio:
             _caps = auth.caps_for(getattr(self, "user", None))
             if not any(str(_c).startswith("act.") for _c in _caps):
                 return
-            ok, data = auth.get_org_settings()
+            target_org = (self._org_email_target_id()
+                          if self._is_super_admin_org_email_manager() else None)
+            ok, data = auth.get_org_settings(org_id=target_org or None)
             if not ok or not isinstance(data, dict):
                 return
             em = data.get("email")
@@ -5438,6 +6339,17 @@ class QAStudio:
             self._connect_status_text = ft.Text(self._connect_status, size=12,
                                                 color=T.INK_2, weight=ft.FontWeight.BOLD,
                                                 expand=True)
+            self._connect_status_row = ft.Container(
+                ft.Row([
+                    ft.ProgressRing(width=16, height=16, stroke_width=2, color=T.VIOLET),
+                    self._connect_status_text,
+                ], spacing=10),
+                padding=ft.Padding.symmetric(vertical=10, horizontal=0),
+                visible=bool(self._connecting),
+            )
+            self._connect_btn = primary_btn(
+                strings.t("main_connect_btn"), icon=ft.Icons.POWER, expand=True, wrap=True,
+                disabled=self._connecting, on_click=lambda e: self._connect())
             return card(ft.Column([
                 ft.Text(strings.t("main_step1"), size=11, weight=ft.FontWeight.BOLD, color=T.VIOLET_INK),
                 ft.Container(height=13),
@@ -5457,16 +6369,8 @@ class QAStudio:
                                          strings.t("au_step_loads_projects"),
                                          strings.t("au_step_fetches_plans")])],
                 ft.Container(expand=True),
-                *([ ft.Container(
-                        ft.Row([
-                            ft.ProgressRing(width=16, height=16, stroke_width=2, color=T.VIOLET),
-                            self._connect_status_text,
-                        ], spacing=10),
-                        padding=ft.Padding.symmetric(vertical=10, horizontal=0),
-                    )] if self._connecting else []),
-                primary_btn(strings.t("main_connect_btn"), icon=ft.Icons.POWER, expand=True, wrap=True,
-                            disabled=self._connecting,
-                            on_click=lambda e: self._connect()),
+                self._connect_status_row,
+                self._connect_btn,
                 ft.Container(
                     ft.Row([
                         ft.Icon(ft.Icons.LOCK_OUTLINE, size=12, color=T.INK_3),
@@ -5540,7 +6444,10 @@ class QAStudio:
         my_gen = self._connect_gen
         self._connecting = True
         self._connect_status = strings.t("main_validating_pat")
-        self.render()   # show the spinner immediately
+        # The right panel's spinner/button are mounted before the click.  Patch
+        # those controls in place instead of rebuilding Setup and snapping both
+        # Setup and the navigation rail back to their starts.
+        self._set_connect_loading(True)
 
         def _friendly(msg):
             m = (msg or "").lower()
@@ -5652,7 +6559,7 @@ class QAStudio:
                 if alive():
                     self._connecting = False
                     self._connect_status = ""
-                    self._safe_render()
+                    self._safe_render(preserve_rail=True, preserve_setup_scroll=True)
         self._bg(work)
 
     def _bg(self, fn):
@@ -5730,6 +6637,70 @@ class QAStudio:
                 if found is not None:
                     return found
         return None
+
+    def _replace_control_ref(self, root, target, replacement, depth=0):
+        """Replace one control reference in a newly-built screen tree.
+
+        Flet controls are stateful on the client.  Retaining the already-mounted
+        scrollable Column is the reliable way to keep its offset through a data
+        refresh; this helper swaps that one new reference for the mounted one
+        before the new shell content is installed.
+        """
+        if root is target:
+            return replacement, True
+        if root is None or depth > 10:
+            return root, False
+        for attr in ("content", "controls"):
+            try:
+                child = getattr(root, attr, None)
+            except Exception:
+                continue
+            if isinstance(child, list):
+                for i, item in enumerate(child):
+                    if item is target:
+                        child[i] = replacement
+                        return root, True
+                    _, changed = self._replace_control_ref(item, target, replacement, depth + 1)
+                    if changed:
+                        return root, True
+            elif child is target:
+                try:
+                    setattr(root, attr, replacement)
+                    return root, True
+                except Exception:
+                    continue
+            elif child is not None:
+                _, changed = self._replace_control_ref(child, target, replacement, depth + 1)
+                if changed:
+                    return root, True
+        return root, False
+
+    def _reuse_primary_scroller(self, body, fresh):
+        """Keep a same-screen desktop scroller mounted while refreshing its rows.
+
+        Returns (body, scroller, reused).  It intentionally falls back silently:
+        a non-standard screen layout should still render normally rather than
+        risking a stale control tree.
+        """
+        mounted = getattr(self, "_left_scroll", None)
+        if mounted is None:
+            return body, fresh, False
+        if mounted is fresh:
+            return body, fresh, True
+        try:
+            mounted.controls = list(getattr(fresh, "controls", []) or [])
+            for name in ("spacing", "run_spacing", "horizontal_alignment",
+                         "alignment", "tight", "expand"):
+                try:
+                    setattr(mounted, name, getattr(fresh, name))
+                except Exception:
+                    pass
+            body, replaced = self._replace_control_ref(body, fresh, mounted)
+            if not replaced:
+                return body, fresh, False
+            return body, mounted, True
+        except Exception:
+            return body, fresh, False
 
     def _restore_scroll(self):
         # Restore scroll after a full render so opening a dropdown / ticking a
@@ -5875,17 +6846,37 @@ class QAStudio:
         self._connect_status = msg
         txt = getattr(self, "_connect_status_text", None)
         if txt is None:
-            self._safe_render()
+            self._safe_render(preserve_rail=True, preserve_setup_scroll=True)
             return
         def _upd():
             try:
                 txt.value = msg
                 txt.update()
             except Exception:
-                self._safe_render()
+                self._safe_render(preserve_rail=True, preserve_setup_scroll=True)
         self.ui_safe(_upd)
 
-    def _safe_render(self):
+    def _set_connect_loading(self, loading):
+        """Toggle Setup's Connect progress affordance without re-rendering it."""
+        def _upd():
+            status = getattr(self, "_connect_status_row", None)
+            button = getattr(self, "_connect_btn", None)
+            text = getattr(self, "_connect_status_text", None)
+            if status is None or button is None or text is None:
+                self._safe_render(preserve_rail=True, preserve_setup_scroll=True)
+                return
+            try:
+                status.visible = bool(loading)
+                text.value = self._connect_status or ""
+                button.disabled = bool(loading)
+                button.opacity = 0.60 if loading else 1.0
+                status.update()
+                button.update()
+            except Exception:
+                self._safe_render(preserve_rail=True, preserve_setup_scroll=True)
+        self.ui_safe(_upd)
+
+    def _safe_render(self, preserve_rail=False, preserve_setup_scroll=False):
         """Render from a background worker, serialized on Flet's event loop.
 
         Used to render inline on the CALLING thread and then push an extra
@@ -5894,7 +6885,9 @@ class QAStudio:
         (see ui_safe's docstring — concurrent diffs desync the client
         tree), so route the whole render through ui_safe instead; running
         on the session loop also makes the extra repaint kick unnecessary."""
-        self.ui_safe(self.render)
+        self.ui_safe(lambda: self.render(
+            preserve_rail=preserve_rail,
+            preserve_setup_scroll=preserve_setup_scroll))
 
     def _load_plans(self):
         if not self.project:
@@ -7443,7 +8436,7 @@ class QAStudio:
         """Write `text` straight to the Windows clipboard via ctypes — no window
         needs to stay alive afterward, and nothing async is involved.
 
-        This replaces an EARLIER fallback that used tkinter's clipboard_clear()/
+        This replaces an EARLIER fallback that used a separate native clipboard API
         clipboard_append(), which caused a real, reproduced bug: Windows'
         clipboard normally uses DELAY-RENDER — clipboard_append() doesn't hand
         the actual text to the OS immediately, it just registers the calling
@@ -7546,7 +8539,7 @@ class QAStudio:
             # client, and a long log can be several thousand characters; if that
             # channel has an undocumented payload limit on this build, this
             # bypasses it entirely. An EARLIER version of this fallback used
-            # tkinter's clipboard_append(), which caused a real reported bug —
+            # a native clipboard append call, which caused a real reported bug —
             # Notepad hanging on the next paste — because of how Windows'
             # delay-render clipboard interacts with a destroyed window; see
             # _win_clipboard_set's docstring for the full explanation. This
@@ -8842,58 +9835,12 @@ class QAStudio:
             pass
         self.ui_safe(self.render)
 
-    @staticmethod
-    def _ask_folder_path(title):
-        """Open a native OS folder-picker (tkinter) and return the chosen path.
-            str   -> the path the user picked
-            None  -> the user cancelled
-            False -> no native dialog available (caller should fall back)
-        Mirrors regression._ask_save_path (the exporters' 'Save As' dialog) byte
-        for byte — same library, same call shape, same tri-state return. Must be
-        called OFF the UI thread: it spins up its own hidden Tk root, and the
-        previous bug was calling the picker synchronously from the Flet on_click
-        handler itself (Flet's own event loop and a blocking native Tk dialog on
-        the SAME thread), which is why it silently failed every time."""
-        try:
-            import tkinter as tk
-            from tkinter import filedialog
-        except Exception:
-            return False
-        try:
-            root = tk.Tk()
-            root.withdraw()
-            try:
-                root.attributes("-topmost", True)
-            except Exception:
-                pass
-            path = filedialog.askdirectory(parent=root, title=title)
-            try:
-                root.update(); root.destroy()
-            except Exception:
-                pass
-            return path or None
-        except Exception:
-            return False
-
     def _browse_auto_folder(self, e=None):
-        """Native folder picker for the automation project folder — lets the user
-        select an EXISTING generated project to push (a forgotten run) without
-        regenerating, or set where the next run writes. Same picker + threading
-        pattern as the working Regression/Sprint Plan export 'Save As' dialog:
-        runs on a background thread, and a cancel just closes with no toast
-        (only a genuinely unavailable dialog shows the paste-path message)."""
-        def work():
-            p = self._ask_folder_path("Select the automation project folder")
-            if p:
-                self._set_auto_local_path(p)
-            elif p is False:
-                # No native dialog available at all (e.g. Tcl/Tk missing) — the
-                # one case that still needs a message, since there's no other
-                # way to know a picker was attempted at all.
-                self.ui_safe(lambda: self._toast(
-                    strings.t("au_msg_no_folder_picker")))
-            # p is None => user cancelled: do nothing, same as the exporters.
-        threading.Thread(target=work, daemon=True).start()
+        """Choose the automation project folder through Flet's shared picker."""
+        import image_assets
+        image_assets.choose_directory(
+            self, "Select the automation project folder", self._set_auto_local_path,
+            lambda: self._toast(strings.t("au_msg_no_folder_picker")))
 
     def _push_automation(self):
         import os as _os

@@ -20,7 +20,7 @@ from ui import primary_btn, ghost_btn
 
 
 def idle_minutes(app):
-    """Configured idle-logout minutes (0 = off). Admin-set, stored in creds."""
+    """Current user's idle-logout minutes (0 = off), stored in their prefs."""
     try:
         v = int(app.creds.get("idle_minutes", app.IDLE_MINUTES_DEFAULT))
     except Exception:
@@ -29,7 +29,7 @@ def idle_minutes(app):
 
 
 def set_idle_minutes(app, minutes):
-    """Persist the idle-logout policy (admin only) and reset the idle clock."""
+    """Persist this user's idle-logout preference and reset their idle clock."""
     app.creds["idle_minutes"] = int(minutes)
     try:
         import store

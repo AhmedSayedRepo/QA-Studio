@@ -131,7 +131,12 @@ def _apply_credentials(E, run):
     Returns a short description for the activity feed."""
     uid = str(run.get("created_by") or "").strip()
     if uid:
-        rows = _sb("POST", "rpc/worker_get_credentials", payload={"p_user_id": uid}) or []
+        # project_id is written by the database scope trigger after validating
+        # the requesting user's JWT and membership. The worker therefore never
+        # accepts a project identity from an environment variable or workflow
+        # input when resolving project-specific Vault credentials.
+        rows = _sb("POST", "rpc/worker_get_credentials", payload={
+            "p_user_id": uid, "p_project_id": run.get("project_id") or None}) or []
         c = rows[0] if rows else None
         if (not c or not (c.get("azure_pat") or "").strip()
                 or not (c.get("ai_api_key") or "").strip()):

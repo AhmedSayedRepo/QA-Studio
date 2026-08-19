@@ -16,19 +16,27 @@ const CORS = {
 };
 const SUPER_ROLES = ["SuperAdmin", "Admin"];
 
-function json(body, status = 200) {
+type AppUser = { app_metadata?: Record<string, unknown> };
+
+function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { ...CORS, "Content-Type": "application/json" } });
 }
-function roleOf(u) { const am = (u && u.app_metadata) || {}; return am.role || "Viewer"; }
-function orgOf(u) { const am = (u && u.app_metadata) || {}; const o = am.org_id; return (typeof o === "string" && o) ? o : ""; }
-const isSuper = (r) => SUPER_ROLES.includes(r);
+function roleOf(u: AppUser) {
+  const role = u.app_metadata?.role;
+  return typeof role === "string" ? role : "Viewer";
+}
+function orgOf(u: AppUser) {
+  const orgId = u.app_metadata?.org_id;
+  return typeof orgId === "string" ? orgId : "";
+}
+const isSuper = (role: string) => SUPER_ROLES.includes(role);
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
 
-  const url = Deno.env.get("SUPABASE_URL");
-  const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-  const anonKey = Deno.env.get("SUPABASE_ANON_KEY");
+  const url = Deno.env.get("SUPABASE_URL")!;
+  const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+  const anonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
 
   const token = (req.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "").trim();
   if (!token) return json({ error: "Missing access token." }, 401);
@@ -82,11 +90,17 @@ Deno.serve(async (req) => {
         return json({ ok: true, id, deleted: true });
       }
 
-      // upsert (create or edit)
+      // Upsert (create or edit). New organizations automatically inherit the
+      // creating SuperAdmin's platform sender. This is an organisation default,
+      // not a UI action: saving sender values for that org later materializes a
+      // local override through org-settings.
       const id = (body.id || "").toString().trim();
       const name = (body.name || "").toString().trim();
       if (!id) return json({ error: "Organization id is required." }, 400);
       if (!name) return json({ error: "Organization name is required." }, 400);
+      const { data: existing, error: existingError } = await admin
+        .from("orgs").select("id").eq("id", id).maybeSingle();
+      if (existingError) return json({ error: existingError.message }, 500);
       const row = {
         id,
         name,
@@ -97,7 +111,20 @@ Deno.serve(async (req) => {
       };
       const { error } = await admin.from("orgs").upsert(row, { onConflict: "id" });
       if (error) return json({ error: error.message }, 500);
-      return json({ ok: true, id, name });
+      let senderInherited = false;
+      if (!existing && callerOrg && callerOrg !== id) {
+        const { error: inheritError } = await admin.rpc("inherit_org_email_settings", {
+          p_org_id: id, p_source_org_id: callerOrg, p_actor_id: who.user.id,
+        });
+        if (inheritError) {
+          // Keep organization creation successful even if the optional default
+          // could not be saved; the caller can retry after backend setup.
+          return json({ ok: true, id, name, sender_inherited: false,
+                        sender_inherit_warning: inheritError.message });
+        }
+        senderInherited = true;
+      }
+      return json({ ok: true, id, name, sender_inherited: senderInherited });
     }
 
     return json({ error: "Method not allowed." }, 405);

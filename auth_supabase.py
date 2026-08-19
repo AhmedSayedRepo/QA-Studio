@@ -34,6 +34,7 @@ import os
 import json
 import time
 import threading
+from urllib.parse import urlencode
 
 import requests
 
@@ -120,7 +121,17 @@ CATALOG = [
     ("nav.users",         "Users (admin)",            "nav"),
     ("act.manage_users",  "Manage users & roles",     "act"),
     ("nav.orgs",          "Organizations (admin)",    "nav"),
+    ("nav.audit",         "Audit (admin)",            "nav"),
     ("act.manage_orgs",   "Manage organizations",     "act"),
+    # Import permissions are deliberately per test-management integration.
+    # A manual organization project is always available; these keys govern
+    # discovering/importing projects from the corresponding connected backend.
+    ("act.import_azure_projects", "Import Azure DevOps projects", "act"),
+    ("act.import_jira_zephyr_projects", "Import Jira + Zephyr projects", "act"),
+    ("act.import_xray_projects", "Import Jira + Xray projects", "act"),
+    ("act.import_testrail_projects", "Import TestRail projects", "act"),
+    ("act.import_azure_testrail_projects", "Import Azure → TestRail projects", "act"),
+    ("act.import_jira_testrail_projects", "Import Jira → TestRail projects", "act"),
     ("nav.ai_usage",      "AI Usage",                 "nav"),
     ("act.view_usage",    "View ALL users' AI usage (admin)", "act"),
 ]
@@ -136,8 +147,11 @@ ACT_KEYS = [k for k, _, kind in CATALOG if kind == "act"]
 # is. The real security boundary for "everyone's usage" is server-side — the
 # Edge Function's own hard Admin-role check (see supabase/functions/ai-usage)
 # — this preset just keeps the nav/UI consistent with that.
-_NAV_NO_USERS = [k for k in NAV_KEYS if k not in ("nav.users", "nav.orgs")]
-_ACT_NO_MANAGE = [k for k in ACT_KEYS if k not in ("act.manage_users", "act.view_usage", "act.manage_orgs")]
+_NAV_NO_USERS = [k for k in NAV_KEYS if k not in ("nav.users", "nav.orgs", "nav.audit")]
+_ACT_NO_MANAGE = [k for k in ACT_KEYS if k not in ("act.manage_users", "act.view_usage", "act.manage_orgs",
+                                                    "act.import_azure_projects", "act.import_jira_zephyr_projects",
+                                                    "act.import_xray_projects", "act.import_testrail_projects",
+                                                    "act.import_azure_testrail_projects", "act.import_jira_testrail_projects")]
 
 # Role presets (the starting point; admins can customise per user afterwards).
 #   SuperAdmin  — global admin: manages users across ALL orgs, assigns org_id.
@@ -146,10 +160,19 @@ _ACT_NO_MANAGE = [k for k in ACT_KEYS if k not in ("act.manage_users", "act.view
 ROLE_PRESETS = {
     "SuperAdmin": set(ALL_KEYS),                               # everything, all orgs
     "Admin":      set(ALL_KEYS),                               # legacy alias of SuperAdmin
-    "OrgManager": set(ALL_KEYS) - {"act.view_usage", "nav.orgs", "act.manage_orgs"},  # own-org user mgmt only
+    # Organization Managers administer their own tenant identity, project and
+    # team scope.  The Edge Functions bind them to their JWT org_id; they never
+    # receive global tenant creation/deletion or cross-organization access.
+    "OrgManager": set(ALL_KEYS) - {"act.view_usage"},
     "Member":     set(_NAV_NO_USERS) | set(_ACT_NO_MANAGE),    # all but user mgmt
     "Viewer":     set(_NAV_NO_USERS),                          # see all, do nothing
 }
+# Exact pre-organization-screen OrgManager baseline. Existing accounts often
+# have this list persisted in app_metadata.caps, so changing ROLE_PRESETS alone
+# would not grant the new tenant screen until an administrator manually edits
+# every user. Upgrade only this exact legacy baseline; a genuinely customised
+# capability list remains authoritative.
+_LEGACY_ORG_MANAGER_CAPS = set(ALL_KEYS) - {"act.view_usage", "nav.orgs", "act.manage_orgs"}
 DEFAULT_ROLE = "Viewer"
 # Roles that carry GLOBAL admin power (all orgs). "Admin" is the legacy alias.
 SUPER_ROLES = ("SuperAdmin", "Admin")
@@ -159,6 +182,17 @@ CAP_VIEW = "nav.report"
 CAP_GENERATE = "act.run"
 CAP_RUN = "act.run"
 CAP_AUTOMATION = "act.automation"
+# Kept only as a compatibility alias for older signed custom-capability lists.
+# New role presets and the permission editor use the provider-specific keys.
+LEGACY_CAP_MANAGE_PROJECT_SOURCES = "act.manage_project_sources"
+PROJECT_SOURCE_CAPS = {
+    "azure": "act.import_azure_projects",
+    "jira_zephyr": "act.import_jira_zephyr_projects",
+    "xray": "act.import_xray_projects",
+    "testrail": "act.import_testrail_projects",
+    "azure_testrail": "act.import_azure_testrail_projects",
+    "jira_testrail": "act.import_jira_testrail_projects",
+}
 CAP_EDIT_PROVIDERS = "act.connect"
 CAP_EXPORT = "act.export"
 CAP_REGRESSION = "act.regression"
@@ -388,6 +422,8 @@ def sign_up(email, password, name=None):
     message tells them to check their inbox, and `user` is None."""
     if not configured():
         return False, "Auth is not configured.", None
+    if not password_meets_policy(password):
+        return False, "Password does not meet the security requirements.", None
     body = {"email": (email or "").strip(), "password": password or ""}
     if name:
         body["data"] = {"name": name}
@@ -544,8 +580,11 @@ def change_own_password(new_password):
     if not configured():
         return False, "Auth is not configured."
     pw = new_password or ""
-    if len(pw) < 8:
-        return False, "Password must be at least 8 characters."
+    # Keep the desktop gate aligned with the server-side set-password function.
+    # The Edge Function is still the authority: this only gives the user a
+    # prompt, localized error before making a network call.
+    if not password_meets_policy(pw):
+        return False, "Password does not meet the security requirements."
     tok = access_token()
     if not tok:
         return False, "You’re not signed in."
@@ -560,6 +599,21 @@ def change_own_password(new_password):
     if r.status_code != 200:
         return False, _friendly(r)
     return True, "Password updated."
+
+
+def password_meets_policy(password):
+    """Return whether a new QA Studio password meets the shared policy.
+
+    Supabase Auth remains responsible for hashing and for its configured
+    breached-password checks.  This helper prevents the desktop reset screen
+    from accepting a password that the token-protected Edge Function rejects.
+    """
+    value = password or ""
+    return (len(value) >= 12 and not any(ch.isspace() for ch in value)
+            and any(ch.isupper() for ch in value)
+            and any(ch.islower() for ch in value)
+            and any(ch.isdigit() for ch in value)
+            and any(not ch.isalnum() for ch in value))
 
 
 def request_password_reset(email):
@@ -653,14 +707,31 @@ def caps_for(user):
     if not user:
         return set()
     custom = user.get("caps")
-    if isinstance(custom, list):
-        return set(custom)
-    return set(ROLE_PRESETS.get(user.get("role"), ROLE_PRESETS.get(DEFAULT_ROLE, set())))
+    caps = (set(custom) if isinstance(custom, list)
+            else set(ROLE_PRESETS.get(user.get("role"), ROLE_PRESETS.get(DEFAULT_ROLE, set()))))
+    if user.get("role") == "OrgManager" and isinstance(custom, list) and caps == _LEGACY_ORG_MANAGER_CAPS:
+        caps.update({"nav.orgs", "act.manage_orgs"})
+    # Existing installations may still have the former one-size-fits-all key
+    # signed into app_metadata. Treat it as all provider import permissions
+    # until an administrator saves the user's new explicit selections.
+    if LEGACY_CAP_MANAGE_PROJECT_SOURCES in caps:
+        caps.update(PROJECT_SOURCE_CAPS.values())
+    return caps
 
 
 def can(user, key):
     """True if `user` is granted capability `key` (a CATALOG key like 'act.run')."""
     return key in caps_for(user)
+
+
+def can_import_project_source(user, source):
+    """Whether ``user`` may discover/import a project from this backend.
+
+    Manual organization scopes never depend on a device connection or an
+    import permission. Unknown sources are denied defensively.
+    """
+    source = str(source or "manual")
+    return source == "manual" or can(user, PROJECT_SOURCE_CAPS.get(source, ""))
 
 
 # Back-compat: old call sites used has()/permissions_for().
@@ -674,8 +745,8 @@ def permissions_for(user):
 
 def is_admin(user):
     """True if the user is a SuperAdmin (global admin). "Admin" is the legacy
-    alias. Gates the GLOBAL admin surfaces (all-users AI usage, org-wide email
-    settings, shared links) — NOT org-scoped user management (see
+    alias. Gates the GLOBAL admin surfaces (all-users AI usage and shared
+    links) — NOT org-scoped user management or organization settings (see
     can_manage_users), which org managers also have."""
     return bool(user) and (user.get("role") in SUPER_ROLES)
 
@@ -694,6 +765,16 @@ def can_manage_users(user):
     """May reach the Users screen (super admin OR org manager). The Edge
     Function still enforces WHICH users they can actually see/change."""
     return is_super_admin(user) or is_org_manager(user)
+
+
+def can_manage_org_settings(user):
+    """Whether this user may manage organization settings.
+
+    A SuperAdmin may choose any existing organization; an Organization Manager
+    remains limited to the organization in their signed ``org_id`` claim. The
+    Edge Function repeats and enforces that distinction server-side.
+    """
+    return is_super_admin(user) or (bool(org_id_of(user)) and is_org_manager(user))
 
 
 def org_id_of(user):
@@ -899,6 +980,100 @@ def _orgs_post(payload):
     return True, (r.json() or {})
 
 
+# -- Tenant administration (profiles, projects/teams, lifecycle and audit) ----
+# All org selection is re-derived by the tenant-admin Edge Function from the
+# verified token. ``org_id`` is therefore only a SuperAdmin convenience hint;
+# an OrgManager can never use it to escape their own tenant.
+def _tenant_admin(method="GET", payload=None, params=None):
+    if not configured():
+        return False, "Auth is not configured."
+    tok = access_token()
+    if not tok:
+        return False, "You’re not signed in."
+    try:
+        if method == "POST":
+            r = _client().post(_functions_url("tenant-admin"),
+                               headers={"Authorization": f"Bearer {tok}"},
+                               json=(payload or {}), timeout=_TIMEOUT)
+        else:
+            r = _client().get(_functions_url("tenant-admin"),
+                              headers={"Authorization": f"Bearer {tok}"},
+                              params=(params or {}), timeout=_TIMEOUT)
+    except Exception as ex:
+        return False, f"Network error: {ex}"
+    if r.status_code == 404:
+        return False, "The ‘tenant-admin’ Edge Function isn’t deployed yet."
+    if r.status_code != 200:
+        return False, _friendly(r)
+    try:
+        return True, (r.json() or {})
+    except Exception as ex:
+        return False, f"Bad tenant-admin response: {ex}"
+
+
+def get_tenant_overview(org_id=None):
+    params = {}
+    if org_id:
+        params["org_id"] = str(org_id)
+    return _tenant_admin(params=params)
+
+
+def get_admin_audit(org_id=None, action=None):
+    params = {"view": "audit"}
+    if org_id:
+        params["org_id"] = str(org_id)
+    if action:
+        params["action"] = str(action)
+    return _tenant_admin(params=params)
+
+
+def get_identity_visuals():
+    """Return signed image URLs for the caller and their organization."""
+    return _tenant_admin(params={"view": "visuals"})
+
+
+def upload_profile_picture(image_base64, mime_type, extension):
+    """Upload the signed-in user's validated square profile image."""
+    return admin_tenant_action("upload_avatar", image_base64=image_base64,
+                               mime_type=mime_type, extension=extension)
+
+
+def remove_profile_picture():
+    """Remove the signed-in user's profile image and restore initials."""
+    return admin_tenant_action("remove_avatar")
+
+
+def upload_organization_logo(org_id, image_base64, mime_type, extension):
+    """Upload an organization logo; server re-derives the caller's scope."""
+    return admin_tenant_action("upload_organization_logo", org_id=org_id,
+                               image_base64=image_base64,
+                               mime_type=mime_type, extension=extension)
+
+
+def remove_organization_logo(org_id):
+    """Remove an organization logo and restore the QA Studio brand fallback."""
+    return admin_tenant_action("remove_organization_logo", org_id=org_id)
+
+
+def admin_tenant_action(action, org_id=None, **values):
+    payload = {"action": action, **values}
+    if org_id is not None:
+        payload["org_id"] = str(org_id)
+    ok, res = _tenant_admin(method="POST", payload=payload)
+    return (True, res) if ok else (False, res)
+
+
+def admin_set_user_lifecycle(user_id, action, access_expires_at=None, reason=""):
+    if action not in ("suspend", "reactivate", "force_signout", "recovery_email", "recovery_link"):
+        return False, "Invalid lifecycle action."
+    vals = {"user_id": user_id}
+    if access_expires_at is not None:
+        vals["access_expires_at"] = access_expires_at
+    if reason:
+        vals["reason"] = reason
+    return admin_tenant_action(action, **vals)
+
+
 def admin_upsert_org(org_id, name, contact_name="", contact_email="", contact_phone=""):
     """Super-admin only: create or edit an organization. Returns (ok, msg)."""
     org_id = (org_id or "").strip()
@@ -920,17 +1095,23 @@ def admin_delete_org(org_id):
     return (True, "Organization deleted.") if ok else (False, res)
 
 
-# ── Shared org-wide settings (via the 'org-settings' Edge Function) ───────────
+# ── Organization-scoped settings (via the 'org-settings' Edge Function) ───────
 # Same pattern as admin-users above: a server-side Edge Function holds the
-# service_role key and enforces Admin-only writes; the desktop app only ever
-# sends the caller's own token. Any signed-in user may READ (so a value an
-# Admin sets is picked up by every install), only an Admin may WRITE. Today
-# this holds one key, "email" (Gmail sender/App Password used to send
-# reports) — the {key, value} shape leaves room for more shared settings later
-# without another backend change.
-def get_org_settings():
-    """Any signed-in user: fetch the shared org-wide settings dict, e.g.
+# service_role key and enforces organization-manager-only writes; the desktop app only ever
+# sends the caller's own token. The function derives the organization from the
+# verified token, so a value saved in one organization is never exposed to
+# another. Users who can export may read their own organization's values;
+# organization managers may write them. Today this holds one key, "email"
+# (Gmail sender/App Password used to send reports).
+def get_org_settings(org_id=None, include_audit=False):
+    """Fetch organization settings, e.g.
     {"email": {"sender": ..., "sender_name": ..., "app_password": ...}}.
+
+    ``org_id`` is optional and is accepted by the server only for a SuperAdmin;
+    Organization Managers and every other role remain bound to the organization
+    in their signed JWT. The client-side parameter is convenience only, never a
+    security boundary.
+
     Returns (ok, settings_dict_or_message). EVERY failure mode — auth not
     configured, not signed in, offline, function not deployed, bad response —
     returns (False, message) rather than raising. Callers should treat False
@@ -942,8 +1123,17 @@ def get_org_settings():
     tok = access_token()
     if not tok:
         return False, "You’re not signed in."
+    target_org = str(org_id or "").strip()
+    endpoint = _functions_url("org-settings")
+    query = {}
+    if target_org:
+        query["org_id"] = target_org
+    if include_audit:
+        query["audit"] = "1"
+    if query:
+        endpoint += "?" + urlencode(query)
     try:
-        r = _client().get(_functions_url("org-settings"),
+        r = _client().get(endpoint,
                           headers={"Authorization": f"Bearer {tok}"}, timeout=_TIMEOUT)
     except Exception as ex:
         return False, f"Network error: {ex}"
@@ -953,7 +1143,10 @@ def get_org_settings():
     if r.status_code != 200:
         return False, _friendly(r)
     try:
-        return True, (r.json() or {}).get("settings", {})
+        body = r.json() or {}
+        # Preserve the long-standing get_org_settings() contract for every
+        # existing caller. The richer audit payload is opt-in for Setup.
+        return True, (body if include_audit else body.get("settings", {}))
     except Exception as ex:
         return False, f"Bad response from org-settings: {ex}"
 
@@ -980,18 +1173,86 @@ def _org_settings_post(payload):
     return True, None
 
 
-def admin_set_org_email(sender, sender_name, app_password):
-    """Admin-only: set the shared org-wide email sender config (address,
-    display name, Gmail App Password) that every signed-in user's install
-    picks up — configured once here instead of per-user/per-machine. The
-    server verifies the caller is an Admin (app_metadata.role) before writing;
-    a non-admin token gets a clean 403 back, never a silent partial write.
+def admin_set_org_email(sender, sender_name, app_password, org_id=None):
+    """Set an organization's email sender config (address, display name, Gmail
+    App Password). ``org_id`` is optional and only a SuperAdmin may use it to
+    select an existing organization; Organization Managers remain restricted to
+    their own signed organization by the server.
+
     Returns (ok, msg)."""
     value = {"sender": (sender or "").strip(),
             "sender_name": (sender_name or "").strip(),
             "app_password": (app_password or "").strip()}
-    ok, err = _org_settings_post({"key": "email", "value": value})
-    return (True, "Email settings saved for everyone.") if ok else (False, err)
+    payload = {"action": "save_email", "value": value}
+    target_org = str(org_id or "").strip()
+    if target_org:
+        payload["org_id"] = target_org
+    ok, err = _org_settings_post(payload)
+    return (True, "Email settings saved for the selected organization.") if ok else (False, err)
+
+
+def get_org_email_audit(org_id=None):
+    """Fetch an authorized manager's latest organization email audit entries.
+    Returns (ok, list_or_message)."""
+    ok, data = get_org_settings(org_id=org_id, include_audit=True)
+    if not ok:
+        return False, data
+    if not isinstance(data, dict):
+        return False, "Bad response from org-settings."
+    audit = data.get("audit", [])
+    return (True, audit) if isinstance(audit, list) else (False, "Bad audit response.")
+
+
+def get_org_email_audit_feed(org_id="", actor_id="", event="", since=""):
+    """SuperAdmin-only cross-organization sender audit feed.
+
+    Filters are sent to the protected ``org-settings`` Edge Function; the
+    desktop app never receives a direct database permission for the audit table.
+    Returns (ok, {"audit": rows, "sender_changes": rows,
+    "email_health": rows}_or_message).
+    """
+    if not configured():
+        return False, "Auth is not configured."
+    tok = access_token()
+    if not tok:
+        return False, "You’re not signed in."
+    query = {"audit_feed": "1"}
+    for key, value in (("org_id", org_id), ("actor_id", actor_id),
+                       ("event", event), ("since", since)):
+        value = str(value or "").strip()
+        if value:
+            query[key] = value
+    try:
+        r = _client().get(_functions_url("org-settings") + "?" + urlencode(query),
+                          headers={"Authorization": f"Bearer {tok}"}, timeout=_TIMEOUT)
+    except Exception as ex:
+        return False, f"Network error: {ex}"
+    if r.status_code != 200:
+        return False, _friendly(r)
+    try:
+        payload = r.json() or {}
+        audit = payload.get("audit", [])
+        changes = payload.get("sender_changes", [])
+        health = payload.get("email_health", [])
+        if (not isinstance(audit, list) or not isinstance(changes, list)
+                or not isinstance(health, list)):
+            return False, "Bad audit response."
+        return True, {"audit": audit, "sender_changes": changes,
+                      "email_health": health}
+    except Exception as ex:
+        return False, f"Bad response from org-settings: {ex}"
+
+
+def record_org_email_test(org_id, success, error=""):
+    """Best-effort server audit entry for a Setup sender test. No password is
+    sent or stored in this event."""
+    payload = {"action": "email_test", "success": bool(success)}
+    target_org = str(org_id or "").strip()
+    if target_org:
+        payload["org_id"] = target_org
+    if error:
+        payload["error"] = str(error)[:500]
+    return _org_settings_post(payload)
 
 
 # ── AI usage tracking (via the 'ai-usage' Edge Function) ──────────────────────
@@ -1085,6 +1346,36 @@ def user_id():
     return str(u.get("id") or "")
 
 
+def current_org_id():
+    """Organization from the locally cached verified session claims.
+
+    This is only used as a display/convenience hint. Every server mutation
+    independently derives the effective organization from its verified token.
+    """
+    with _lock:
+        data = _load_session() or {}
+    user = data.get("user") or {}
+    meta = user.get("app_metadata") or {}
+    return str(meta.get("org_id") or "").strip()
+
+
+def resolve_current_org_project(external_key):
+    """Return the current tenant's configured project UUID for an Azure/project
+    key. A missing mapping deliberately returns an empty id; the caller can
+    preserve legacy local runs while remote execution reports an actionable
+    project-assignment error once tenant scoping has been deployed."""
+    key = str(external_key or "").strip()
+    if not key:
+        return None
+    ok, overview = get_tenant_overview()
+    if not ok:
+        return None
+    for project in overview.get("projects", []):
+        if str(project.get("external_key") or "") == key and project.get("is_active", True):
+            return str(project.get("id") or "")
+    return ""
+
+
 def sync_remote_credentials(azure_org, azure_pat, ai_provider, ai_api_key, ai_model="",
                             gmail_sender="", gmail_sender_name="", gmail_app_pass=""):
     """Upsert the CALLER'S OWN remote-run credentials (rpc set_my_credentials,
@@ -1137,13 +1428,21 @@ def enqueue_remote_run(kind, project, plan_id, story_ids, existing_mode="skip",
     uid = user_id()
     if not tok or not uid:
         return False, "Not signed in."
+    project_id = resolve_current_org_project(project)
+    # New tenant-enabled organizations must register an external project and
+    # assign the caller before a remote run can be queued. Legacy deployments
+    # (where tenant-admin has not yet been deployed) keep their existing path.
+    if current_org_id() and project_id == "":
+        return False, ("This project is not configured for your organization. "
+                       "An organization manager must add it and assign you first.")
     row = {"kind": "titles" if str(kind).startswith("title") else "steps",
            "project": str(project or ""), "plan_id": int(plan_id),
            "story_ids": [int(s) for s in (story_ids or [])],
            "existing_mode": existing_mode or "skip",
            "output_lang": output_lang or "ar",
            "email_recipients": [e.strip() for e in (email_recipients or []) if e.strip()],
-           "created_by": uid}
+           "created_by": uid,
+           "project_id": project_id or None}
     try:
         r = _client().post(f"{SUPABASE_URL}/rest/v1/remote_runs",
                            headers={"Authorization": f"Bearer {tok}",

@@ -122,17 +122,26 @@ the steps below so the server actually enforces this, not just the app's UI.
 
 ## 5.1 Create the table (SQL editor, once)
 
+For new projects, apply `supabase/migrations/20260818000000_org_scoped_settings.sql`
+with the Supabase CLI. It creates `organization_settings`, scoped by `org_id`.
+It intentionally leaves the old global `org_settings` data untouched rather
+than copying a shared sender credential across organizations. Each organization
+manager must save its own sender after the migration.
+
 ```sql
-create table if not exists public.org_settings (
-  key         text primary key,
+create table if not exists public.organization_settings (
+  org_id      text not null references public.orgs(id) on delete cascade,
+  key         text not null check (char_length(key) between 1 and 128),
   value       jsonb not null,
   updated_at  timestamptz not null default now(),
-  updated_by  uuid references auth.users(id)
+  updated_by  uuid references auth.users(id) on delete set null,
+  primary key (org_id, key)
 );
 -- No RLS policies are added on purpose: this table is only ever touched by the
 -- Edge Function using the service_role key, which bypasses RLS. Client code
 -- never talks to this table directly.
-alter table public.org_settings enable row level security;
+alter table public.organization_settings enable row level security;
+revoke all on table public.organization_settings from anon, authenticated;
 ```
 
 ## 5.2 Deploy the function
@@ -145,9 +154,9 @@ alter table public.org_settings enable row level security;
 
 ## 5.3 Use it
 
-In QA Studio's Settings screen, an Admin sets the shared sender address, name,
-and Gmail App Password once; every other signed-in user with export permission
-(Admin or Member) picks it up automatically on their next sign-in. Viewers
+In QA Studio's Settings screen, an Organization Manager sets that organization's
+sender address, name, and Gmail App Password once. Only users in that same
+organization with export permission receive it on their next sign-in. Viewers
 never receive it, from either the app or the server.
 
 # 6. The `ai-usage` function (per-user usage, whole-org report for Admins)

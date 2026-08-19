@@ -21,6 +21,7 @@ import theme as T
 import engine as E
 import backend_setup
 import strings
+import image_assets
 
 # Story states that count as "done" for the report.
 _DONE = {"done", "closed", "completed", "resolved", "accepted"}
@@ -695,33 +696,6 @@ def _reset_custom_logo():
         pass
 
 
-def _ask_logo_path():
-    """Native 'open file' image dialog (tkinter). MUST run OFF the UI thread
-    (mirrors performance._ask_open_path). Returns path / None (cancelled) /
-    False (no native dialog, e.g. mobile)."""
-    try:
-        import tkinter as tk
-        from tkinter import filedialog
-    except Exception:
-        return False
-    try:
-        root = tk.Tk(); root.withdraw()
-        try:
-            root.attributes("-topmost", True)
-        except Exception:
-            pass
-        path = filedialog.askopenfilename(
-            parent=root, title=strings.t("spr_logo_choose"),
-            filetypes=[("Images", "*.png *.jpg *.jpeg"), ("All files", "*.*")])
-        try:
-            root.update(); root.destroy()
-        except Exception:
-            pass
-        return path or None
-    except Exception:
-        return False
-
-
 def _decode_assets():
     """Write the report brand images (logo + colour band) to temp PNGs and return
     (logo_path, band_path); ('' , '') if unavailable. The LOGO honours THIS USER's
@@ -1322,60 +1296,51 @@ def screen(app):
             app._copy_text_to_clipboard("\n".join(lines), strings.t("spr_copied"))
 
         def _download(e):
-            def _w():
-                try:
-                    import platform_caps as _pc
-                    # Ask WHERE to save (native 'Save As') — same flow as the Sprint
-                    # Plan / Regression exporters. Mobile has no tkinter dialog, so
-                    # _ask_save_path returns False and we fall back to the download
-                    # popup. Runs off the UI thread (app._bg), as _ask_save_path needs.
-                    _rr = getattr(app, "_st_report", None) or {}
-                    _base = (re.sub(r"[^A-Za-z0-9_-]+", "_",
-                                    (_rr.get("sprint_name") or "sprint")).strip("_")
-                             or "sprint")
-                    _default = f"SprintReport_{_base}_{datetime.now():%Y%m%d-%H%M}.docx"
-                    dest = R._ask_save_path("docx", _default)
-                    if dest is None:
-                        return                        # user cancelled the dialog
-                    p = _export_docx(app)
-                    if dest and dest is not False:    # a location was chosen → move there
-                        if not dest.lower().endswith(".docx"):
-                            dest += ".docx"
+            _rr = getattr(app, "_st_report", None) or {}
+            _base = (re.sub(r"[^A-Za-z0-9_-]+", "_",
+                            (_rr.get("sprint_name") or "sprint")).strip("_")
+                     or "sprint")
+            _default = f"SprintReport_{_base}_{datetime.now():%Y%m%d-%H%M}.docx"
+
+            def _selected(dest):
+                def _w():
+                    try:
+                        import platform_caps as _pc
+                        p = _export_docx(app)
+                        target = dest if dest.lower().endswith(".docx") else dest + ".docx"
                         import shutil
-                        if os.path.abspath(dest) != os.path.abspath(p):
-                            shutil.move(p, dest)
-                        p = dest
-                    if _pc.is_mobile():
-                        app.ui_safe(lambda pp=p: app._mobile_download_popup(
-                            pp, strings.t("spr_word_ready")))
-                    else:
-                        _pc.open_folder(os.path.dirname(p))
-                        app.ui_safe(lambda pp=p: app._toast(strings.t("spr_saved_docx", path=pp)))
-                except ImportError:
-                    app.ui_safe(lambda: app._err(strings.t("spr_needs_docx")))
-                except Exception as ex:
-                    app.ui_safe(lambda e=ex: app._err(strings.t("spr_export_failed", err=ex)))
-            app._bg(_w)
+                        if os.path.abspath(target) != os.path.abspath(p):
+                            shutil.move(p, target)
+                        p = target
+                        if _pc.is_mobile():
+                            app.ui_safe(lambda pp=p: app._mobile_download_popup(
+                                pp, strings.t("spr_word_ready")))
+                        else:
+                            _pc.open_folder(os.path.dirname(p))
+                            app.ui_safe(lambda pp=p: app._toast(strings.t("spr_saved_docx", path=pp)))
+                    except ImportError:
+                        app.ui_safe(lambda: app._err(strings.t("spr_needs_docx")))
+                    except Exception as ex:
+                        app.ui_safe(lambda e=ex: app._err(strings.t("spr_export_failed", err=ex)))
+                app._bg(_w)
+
+            image_assets.choose_save_path(
+                app, strings.t("reg_save_dialog_title"), _default, ["docx"], _selected,
+                lambda: app._err(strings.t("file_picker_unavailable")))
 
         def _pick_logo(e=None):
-            import platform_caps as _pc
-            if _pc.is_mobile():
-                app._toast(strings.t("spr_logo_mobile"))
-                return
-            def _w():
-                src = _ask_logo_path()
-                if src is False:                      # no native dialog
-                    app.ui_safe(lambda: app._toast(strings.t("spr_logo_mobile")))
-                    return
-                if not src:                           # cancelled
-                    return
-                ok, msg = _save_custom_logo(src)
-                if ok:
-                    app.ui_safe(lambda: (app._toast(strings.t("spr_logo_saved")),
-                                         app.render()))
-                else:
-                    app.ui_safe(lambda m=msg: app._err(m))
-            app._bg(_w)
+            def _selected(src):
+                def _w():
+                    ok, msg = _save_custom_logo(src)
+                    if ok:
+                        app.ui_safe(lambda: (app._toast(strings.t("spr_logo_saved")),
+                                             app.render()))
+                    else:
+                        app.ui_safe(lambda m=msg: app._err(m))
+                app._bg(_w)
+            image_assets.choose_file(
+                app, strings.t("spr_logo_choose"), ["png", "jpg", "jpeg", "webp"], _selected,
+                lambda: app._toast(strings.t("spr_logo_mobile")))
 
         def _reset_logo(e=None):
             _reset_custom_logo()

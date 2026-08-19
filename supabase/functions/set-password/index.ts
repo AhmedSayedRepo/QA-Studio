@@ -27,6 +27,15 @@ function json(body, status = 200) {
   });
 }
 
+function meetsPasswordPolicy(password: string) {
+  return password.length >= 12
+    && !/\s/.test(password)
+    && /[a-z]/.test(password)
+    && /[A-Z]/.test(password)
+    && /\d/.test(password)
+    && /[^A-Za-z0-9]/.test(password);
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   if (req.method !== "POST") return json({ error: "POST only." }, 405);
@@ -47,8 +56,8 @@ Deno.serve(async (req) => {
   let body = {};
   try { body = await req.json(); } catch { body = {}; }
   const password = (body.password || "").toString();
-  if (password.length < 8) {
-    return json({ error: "Password must be at least 8 characters." }, 400);
+  if (!meetsPasswordPolicy(password)) {
+    return json({ error: "Password must be at least 12 characters and include uppercase, lowercase, a number, and a symbol." }, 400);
   }
 
   const admin = createClient(url, serviceKey, {

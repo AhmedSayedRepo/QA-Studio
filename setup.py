@@ -37,6 +37,14 @@ def screen(app):
             ft.Container(height=12),
             conn_body,
         ], spacing=0))
+        # Show organization project scopes before Connect. The normal picker is
+        # still populated only from the validated provider connection.
+        tenant_project_card = app._tenant_project_scope_card()
+        # The selected sender organization changes this card's tenant. Keep a
+        # stable cell mounted so that change does not rebuild Setup or scroll
+        # the user back to the top.
+        app._tenant_project_scope_cell = ft.Container(
+            tenant_project_card, visible=bool(tenant_project_card))
 
         # ── Tool selector card ──
         # Output-language description as a STABLE cell so the language picker
@@ -77,10 +85,18 @@ def screen(app):
         # Its story loader is gated on plan_id (Viewers have none), so it won't fetch.
         task_card = app._task_card() if (app.connected or app.readonly) else app._task_locked()
 
-        app._left_scroll = ft.Column(
-            [connection_card, tool_card, task_card],
-            spacing=14, scroll=ft.ScrollMode.AUTO, expand=True,
-            key="setup_scroll", on_scroll=app._track_scroll)
+        setup_controls = [connection_card, app._tenant_project_scope_cell, tool_card, task_card]
+        prior_scroll = getattr(app, "_left_scroll", None)
+        if getattr(app, "_preserve_setup_scroll", False) and prior_scroll is not None:
+            # Preserve Flet's real native offset during the completed Connect
+            # refresh.  Replacing this Column would require a delayed
+            # scroll_to() and visibly jumps to the top first.
+            prior_scroll.controls = setup_controls
+            app._left_scroll = prior_scroll
+        else:
+            app._left_scroll = ft.Column(
+                setup_controls, spacing=14, scroll=ft.ScrollMode.AUTO, expand=True,
+                key="setup_scroll", on_scroll=app._track_scroll)
         left = app._left_scroll
 
         right = app._setup_right()
