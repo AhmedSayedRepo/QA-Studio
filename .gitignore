@@ -45,3 +45,8 @@ apk_out/
 # Performance-test generated artifacts (emitted JMeter projects / run output)
 perf_out/
 qastudio_perf/
+
+# Local recovery and diagnostics
+_to_delete/
+supabase/_migration_hold/
+_perf_english.json
