@@ -181,7 +181,7 @@ def _release_notes_card(version):
     note_rows = []
     for icon, key in notes:
         note_rows.append(ft.Row([
-            ft.Container(ft.Icon(icon, size=15, color=T.CYAN), width=24,
+            ft.Container(ft.Icon(icon, size=15, color=T.STORY), width=24,
                          alignment=ft.Alignment.TOP_CENTER),
             ft.Text(strings.t(key), size=11.5, color=T.INK_2,
                     weight=ft.FontWeight.W_500, expand=True),

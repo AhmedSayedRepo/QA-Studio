@@ -390,6 +390,7 @@ class QAStudio:
         self._update_info = None     # set by background check_for_update
         self._last_nav_update_check = 0
         self._update_check_inflight = False
+        self._release_notice_scheduled = False
         self._updating = False
         self._update_dismissed = False
         self._closing = False        # set on close to stop background loops
@@ -3206,6 +3207,10 @@ class QAStudio:
         # On desktop the shell keeps its rail mounted and swaps only the body,
         # so choosing a navigation item cannot reset the user's rail scroll.
         self.render(preserve_rail=True)
+        # A startup dialog cannot be opened until Flet has mounted its first
+        # frame. Retry any unseen release summary on navigation as well, so an
+        # initial-frame race can never make a completed update invisible.
+        self._show_pending_update_notice()
         # Opportunistically check for a newer version when the user navigates.
         self._maybe_check_update_on_nav()
 
@@ -4031,18 +4036,45 @@ class QAStudio:
                                E._ver_newer(installed_version, seen_version))
         if not pending_version and not advanced_since_seen:
             return
-        version = pending_version or installed_version
-        try:
-            updater_ui.show_post_update_dialog(self, version)
-        except Exception:
-            # Leave both records intact so a later launch can retry rather than
-            # silently losing the notification.
+        if getattr(self, "_release_notice_scheduled", False):
             return
-        # Only acknowledge after Flet accepted the dialog. This prevents repeat
-        # popups while still allowing a retry if startup fails beforehand.
-        E.mark_release_notice_seen(version)
-        if pending_version:
-            E.clear_pending_update_notice()
+        version = pending_version or installed_version
+
+        def _present():
+            self._release_notice_scheduled = False
+            try:
+                updater_ui.show_post_update_dialog(self, version)
+            except Exception as ex:
+                # Leave both records intact so a later navigation/relaunch can
+                # retry. Log the real reason; a prior bare swallow made this
+                # exact startup failure look like "nothing happened".
+                try:
+                    import diag_log
+                    diag_log.log("release_notice", ex)
+                except Exception:
+                    pass
+                return
+            # Only acknowledge after Flet has accepted the dialog. This prevents
+            # repeat popups while allowing a retry if startup fails beforehand.
+            E.mark_release_notice_seen(version)
+            if pending_version:
+                E.clear_pending_update_notice()
+
+        async def _after_first_frame():
+            # page.show_dialog() during the same frame as page.add()/update()
+            # can be dropped by Flet 0.85. Yield one short frame first.
+            import asyncio
+            await asyncio.sleep(0.25)
+            _present()
+
+        self._release_notice_scheduled = True
+        try:
+            self.page.run_task(_after_first_frame)
+        except Exception:
+            # Fallback for older Flet page implementations. It remains
+            # deliberately non-blocking and retries on the next navigation.
+            self._release_notice_scheduled = False
+            self.ui_safe(_present)
 
     def _quit_after_update(self):
         return updater_ui.quit_after_update(self)
