@@ -9052,6 +9052,52 @@ def clear_pending_update_notice():
     except Exception:
         pass
 
+
+def _seen_release_notice_path():
+    """Return the durable, non-sensitive release-note acknowledgement path."""
+    try:
+        import platform_caps as _pc_update
+        d = _pc_update.app_data_dir()
+        os.makedirs(d, exist_ok=True)
+        return os.path.join(d, "seen_release_notice.json")
+    except Exception:
+        return ""
+
+
+def get_seen_release_notice_version():
+    """Return the most recent version whose post-update summary was shown."""
+    path = _seen_release_notice_path()
+    if not path:
+        return ""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return _clean_ver(str((data or {}).get("version") or ""))
+    except Exception:
+        return ""
+
+
+def mark_release_notice_seen(version):
+    """Atomically record that the supplied release summary has been presented."""
+    path = _seen_release_notice_path()
+    version = _clean_ver(str(version or ""))
+    if not path or not version:
+        return False
+    try:
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"version": version, "seen_at": time.time()}, f,
+                      ensure_ascii=False)
+        os.replace(tmp, path)
+        return True
+    except Exception:
+        try:
+            if os.path.exists(path + ".tmp"):
+                os.remove(path + ".tmp")
+        except Exception:
+            pass
+        return False
+
 def _parse_ver(v):
     """'1.2.0' -> (1,2,0); tolerant of extra/missing parts."""
     parts = re.findall(r"\d+", str(v))

@@ -389,6 +389,7 @@ class QAStudio:
         # update-check state
         self._update_info = None     # set by background check_for_update
         self._last_nav_update_check = 0
+        self._update_check_inflight = False
         self._updating = False
         self._update_dismissed = False
         self._closing = False        # set on close to stop background loops
@@ -3934,6 +3935,11 @@ class QAStudio:
         # user hit. Mobile's sole update path is now _check_mobile_update().
         if not platform_caps.has_self_update():
             return
+        # Startup and a quick navigation can overlap. Keep one network request
+        # in flight, then render its result on whichever screen is current.
+        if getattr(self, "_update_check_inflight", False):
+            return
+        self._update_check_inflight = True
         try:
             info = E.check_for_update()
             self._update_info = info
@@ -3942,9 +3948,11 @@ class QAStudio:
             # it or was still in flight. (render() rebuilds the banner from
             # _update_info, so a repaint is all that's needed.)
             if info.get("update") and not self._update_dismissed:
-                self.ui_safe(self.render)
+                self._safe_render(preserve_rail=True, preserve_setup_scroll=True)
         except Exception:
             pass
+        finally:
+            self._update_check_inflight = False
 
     def _manual_update_check(self):
         """User-triggered check. Always reports the outcome (up-to-date / newer /
@@ -3957,7 +3965,7 @@ class QAStudio:
             remote = info.get("remote")
             if info.get("update"):
                 self._update_dismissed = False
-                self.ui_safe(self.render)   # the banner will appear
+                self._safe_render(preserve_rail=True, preserve_setup_scroll=True)
             elif info.get("error"):
                 self.ui_safe(lambda: self._toast(strings.t("update_check_failed", err=info["error"])))
             elif remote:
@@ -3970,13 +3978,21 @@ class QAStudio:
             pass
 
     def _maybe_check_update_on_nav(self):
-        """Throttled check fired on navigation — at most once every 30 seconds.
-        Keeps the banner current as the user moves around the app without
-        hammering GitHub on every single click."""
+        """Check after navigation, with a short network throttle.
+
+        A relaunch starts an immediate check; every screen switch also gets a
+        chance to notify if that check missed a transient network failure. Once
+        an update is known, the persisted in-memory result is rendered on every
+        screen without another request.
+        """
         import time as _t
         now = _t.time()
         last = getattr(self, "_last_nav_update_check", 0)
-        if now - last < 30:
+        info = getattr(self, "_update_info", None) or {}
+        # Do not wait through the normal throttle after startup/no-network
+        # failures; a user changing screens is an intentional retry. Healthy
+        # responses are checked at most once every 30 seconds.
+        if info and not info.get("error") and now - last < 30:
             return
         self._last_nav_update_check = now
         try:
@@ -4000,14 +4016,33 @@ class QAStudio:
         return updater_ui.show_restart_dialog(self, msg, version)
 
     def _show_pending_update_notice(self):
-        notice = E.get_pending_update_notice()
-        version = str((notice or {}).get("version") or "")
-        if not version:
+        """Show the release summary after both automatic and manual updates.
+
+        Older builds cannot write the pending marker introduced for the
+        self-updater. Comparing the installed version to the locally
+        acknowledged version closes that compatibility gap: an externally
+        installed release still gets one clear summary on its first launch.
+        """
+        notice = E.get_pending_update_notice() or {}
+        pending_version = str(notice.get("version") or "")
+        installed_version = E.local_version()
+        seen_version = E.get_seen_release_notice_version()
+        advanced_since_seen = (not seen_version or
+                               E._ver_newer(installed_version, seen_version))
+        if not pending_version and not advanced_since_seen:
             return
-        # Clear after the dialog is successfully handed to Flet. If startup is
-        # interrupted before that point, it remains for the next launch.
-        updater_ui.show_post_update_dialog(self, version)
-        E.clear_pending_update_notice()
+        version = pending_version or installed_version
+        try:
+            updater_ui.show_post_update_dialog(self, version)
+        except Exception:
+            # Leave both records intact so a later launch can retry rather than
+            # silently losing the notification.
+            return
+        # Only acknowledge after Flet accepted the dialog. This prevents repeat
+        # popups while still allowing a retry if startup fails beforehand.
+        E.mark_release_notice_seen(version)
+        if pending_version:
+            E.clear_pending_update_notice()
 
     def _quit_after_update(self):
         return updater_ui.quit_after_update(self)
