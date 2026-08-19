@@ -23,9 +23,17 @@ def banner(app):
     local = info.get("local", "")
     if app._updating:
         inner = ft.Row([
-            ft.ProgressRing(width=16, height=16, stroke_width=2, color=T.VIOLET),
-            ft.Text(strings.t("upd_updating"), size=12.5, color=T.INK, weight=ft.FontWeight.BOLD),
-        ], spacing=10, tight=True)
+            ft.Container(ft.ProgressRing(width=18, height=18, stroke_width=2,
+                                         color=T.VIOLET), width=36, height=36,
+                         border_radius=10, bgcolor=T.VIOLET_SOFT,
+                         alignment=ft.Alignment.CENTER),
+            ft.Column([
+                ft.Text(strings.t("upd_updating"), size=12.5, color=T.INK,
+                        weight=ft.FontWeight.BOLD),
+                ft.Text(strings.t("upd_updating_desc"), size=10.5, color=T.INK_3,
+                        weight=ft.FontWeight.W_500),
+            ], spacing=1, tight=True),
+        ], spacing=10, tight=True, vertical_alignment=ft.CrossAxisAlignment.CENTER)
     else:
         update_btn = ft.Container(
             ft.Row([
@@ -80,15 +88,27 @@ def dismiss_update(app):
     app.render()
 
 def do_update(app):
+    # Event queues can contain a second click before the first repaint lands.
+    # A guard in the operation itself prevents two concurrent pulls/installs.
+    if getattr(app, "_updating", False):
+        return
     # Keep the version from the update check.  The updater clears the banner
     # state on success, but the completion dialog should still be able to say
     # exactly which release has just been installed.
     target_version = str((app._update_info or {}).get("remote") or "")
     app._updating = True
     app.render()
+    try:
+        app._toast(strings.t("upd_update_started"))
+    except Exception:
+        pass
 
     def work():
         ok, msg = E.apply_update(cb=lambda m, t="dim": None)
+        if ok:
+            # If the window is closed before the UI callback can run, the next
+            # launch still has a trustworthy, local record to show once.
+            E.save_pending_update_notice(target_version)
         def finish():
             app._updating = False
             if ok:
@@ -149,13 +169,9 @@ def show_update_error(app, msg):
         actions_alignment=ft.MainAxisAlignment.END)
     app._show_dialog(dlg)
 
-def show_restart_dialog(app, msg, version=""):
-    """Show the post-update hand-off, including the release highlights.
 
-    This dialog is only opened after ``apply_update`` succeeds, so the notes
-    are a useful, once-per-update explanation rather than a persistent banner
-    users have to dismiss on every launch.
-    """
+def _release_notes_card(version):
+    """Build the localized release-note card shared by both completion flows."""
     notes = [
         (ft.Icons.DOMAIN, "upd_note_tenants"),
         (ft.Icons.GROUPS, "upd_note_access"),
@@ -170,8 +186,7 @@ def show_restart_dialog(app, msg, version=""):
             ft.Text(strings.t(key), size=11.5, color=T.INK_2,
                     weight=ft.FontWeight.W_500, expand=True),
         ], spacing=7, vertical_alignment=ft.CrossAxisAlignment.START))
-
-    release_card = ft.Container(
+    return ft.Container(
         ft.Column([
             ft.Text(strings.t("upd_whats_new"), size=12.5, color=T.INK,
                     weight=ft.FontWeight.W_800),
@@ -182,6 +197,16 @@ def show_restart_dialog(app, msg, version=""):
         ], spacing=6, tight=True),
         bgcolor=T.CARD_2, border=ft.Border.all(1, T.BORDER),
         border_radius=T.R_MD, padding=ft.Padding.symmetric(horizontal=13, vertical=11))
+
+
+def show_restart_dialog(app, msg, version=""):
+    """Show the post-update hand-off, including the release highlights.
+
+    This dialog is only opened after ``apply_update`` succeeds, so the notes
+    are a useful, once-per-update explanation rather than a persistent banner
+    users have to dismiss on every launch.
+    """
+    release_card = _release_notes_card(version)
     dlg = ft.AlertDialog(
         modal=True,
         title=ft.Row([
@@ -202,10 +227,40 @@ def show_restart_dialog(app, msg, version=""):
             ], spacing=2, tight=True),
             width=480),
         actions=[
-            ghost_btn(strings.t("upd_later"), on_click=lambda e: app._close_dialog()),
+            ghost_btn(strings.t("upd_later"), on_click=lambda e: (
+                E.clear_pending_update_notice(), app._close_dialog())),
             green_btn(strings.t("upd_restart_now"), icon=ft.Icons.RESTART_ALT,
                       on_click=lambda e: app._restart_app(), height=46),
         ],
+        actions_alignment=ft.MainAxisAlignment.END,
+    )
+    app._show_dialog(dlg)
+
+
+def show_post_update_dialog(app, version):
+    """Show the saved completion notice after a restart/early close.
+
+    The update has already completed by this point, so this is informational
+    only: it deliberately has no restart action and clears itself on Continue.
+    """
+    release_card = _release_notes_card(version)
+    dlg = ft.AlertDialog(
+        modal=True,
+        title=ft.Row([
+            ft.Container(ft.Icon(ft.Icons.CHECK_CIRCLE, size=18, color=T.GREEN),
+                         width=34, height=34, bgcolor=T.GREEN_SOFT, border_radius=9,
+                         alignment=ft.Alignment.CENTER),
+            ft.Text(strings.t("upd_update_complete"), size=16,
+                    weight=ft.FontWeight.W_800, color=T.INK),
+        ], spacing=10, tight=True),
+        content=ft.Container(ft.Column([
+            ft.Text(strings.t("upd_updated_version", version=version), size=13,
+                    color=T.INK, weight=ft.FontWeight.W_700),
+            ft.Container(height=8),
+            release_card,
+        ], spacing=2, tight=True), width=480),
+        actions=[green_btn(strings.t("upd_continue"), on_click=lambda e: (
+            E.clear_pending_update_notice(), app._close_dialog()), height=46)],
         actions_alignment=ft.MainAxisAlignment.END,
     )
     app._show_dialog(dlg)
@@ -223,6 +278,9 @@ def restart_app(app):
     process tree (via `start`), so the `taskkill /T` we run on ourselves
     below can't kill it. The helper waits for THIS pid to exit, then starts
     a fresh app."""
+    # The user has already seen the completion dialog and explicitly chose to
+    # restart, so do not show the same notice again after the new process opens.
+    E.clear_pending_update_notice()
     app._close_dialog()
     try:
         import sys, os, subprocess, tempfile

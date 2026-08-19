@@ -8993,6 +8993,65 @@ def local_version():
     except Exception:
         return "0.0.0"
 
+
+# A source/exe update can finish after the user closes the window.  Keep this
+# tiny, non-sensitive hand-off outside the install folder, otherwise the only
+# completion state lives in the old process and the next launch has no way to
+# show the release notes or confirm success.
+def _pending_update_notice_path():
+    try:
+        import platform_caps as _pc_update
+        d = _pc_update.app_data_dir()
+        os.makedirs(d, exist_ok=True)
+        return os.path.join(d, "pending_update_notice.json")
+    except Exception:
+        return ""
+
+
+def save_pending_update_notice(version):
+    """Persist one post-update notice for the next application launch."""
+    path = _pending_update_notice_path()
+    if not path:
+        return False
+    try:
+        data = {"version": _clean_ver(str(version or "")), "created_at": time.time()}
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        os.replace(tmp, path)
+        return True
+    except Exception:
+        try:
+            if os.path.exists(path + ".tmp"):
+                os.remove(path + ".tmp")
+        except Exception:
+            pass
+        return False
+
+
+def get_pending_update_notice():
+    """Return the pending update notice without consuming it."""
+    path = _pending_update_notice_path()
+    if not path:
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        version = _clean_ver(str((data or {}).get("version") or ""))
+        return {"version": version} if version else {}
+    except Exception:
+        return {}
+
+
+def clear_pending_update_notice():
+    """Mark the one-time post-update confirmation as seen."""
+    path = _pending_update_notice_path()
+    try:
+        if path and os.path.exists(path):
+            os.remove(path)
+    except Exception:
+        pass
+
 def _parse_ver(v):
     """'1.2.0' -> (1,2,0); tolerant of extra/missing parts."""
     parts = re.findall(r"\d+", str(v))

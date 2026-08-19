@@ -17,7 +17,7 @@ import strings
 # Each feature: key, icon, title, one-line blurb, `details` (fuller prose
 # paragraphs), and `points` (key bullets).
 FEATURES = [
-    {"key": "whats_new", "icon": ft.Icons.NEW_RELEASES, "title": "What's new",
+    {"key": "whats_new", "nav_key": "help_whats_new_nav", "icon": ft.Icons.NEW_RELEASES, "title": "What's new",
      "blurb": "The latest release adds organization-aware administration, clearer access control, identity assets, and a more consistent multilingual experience.",
      "details": [
          "QA Studio now treats an organization as a real workspace. Administrators can configure its identity, locale, time zone, support contact, retention setting, logo, projects, and teams — while organization managers work only inside their assigned organization.",
@@ -613,11 +613,12 @@ def show(app, initial=None):
         tail = ([ft.Container(expand=True),
                  ft.Icon(ft.Icons.DESKTOP_WINDOWS_OUTLINED, size=13, color=T.AMBER)]
                 if plat == "desktop" else [])
+        nav_label_key = feat.get("nav_key") or ("help_" + feat["key"] + "_title")
         return ft.Container(
             ft.Row([
                 ft.Icon(feat["icon"], size=15,
                         color=(T.VIOLET_INK if selected else T.INK_2)),
-                ft.Text(strings.t("help_" + feat["key"] + "_title"), size=12.5,
+                ft.Text(strings.t(nav_label_key), size=12.5,
                         weight=ft.FontWeight.BOLD,
                         color=(T.VIOLET_INK if selected else T.INK_2)),
                 *tail,

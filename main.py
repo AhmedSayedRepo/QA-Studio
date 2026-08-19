@@ -3653,6 +3653,13 @@ class QAStudio:
             except Exception:
                 pass
         self.render()
+        # If an update completed after the previous window was closed, its UI
+        # callback could not show the restart/release-notes dialog.  Replay the
+        # one-time confirmation now that the updated process is alive.
+        try:
+            self._show_pending_update_notice()
+        except Exception:
+            pass
         # Mobile update NOTICE. Self-guards: no-op on desktop, and skips while
         # not signed in — so at build time (before login, especially with
         # biometrics on) it does nothing. The real triggers are post-login
@@ -3991,6 +3998,16 @@ class QAStudio:
 
     def _show_restart_dialog(self, msg, version=""):
         return updater_ui.show_restart_dialog(self, msg, version)
+
+    def _show_pending_update_notice(self):
+        notice = E.get_pending_update_notice()
+        version = str((notice or {}).get("version") or "")
+        if not version:
+            return
+        # Clear after the dialog is successfully handed to Flet. If startup is
+        # interrupted before that point, it remains for the next launch.
+        updater_ui.show_post_update_dialog(self, version)
+        E.clear_pending_update_notice()
 
     def _quit_after_update(self):
         return updater_ui.quit_after_update(self)
