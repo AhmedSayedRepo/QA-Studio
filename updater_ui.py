@@ -10,6 +10,7 @@ import theme as T
 import engine as E
 from ui import ghost_btn, green_btn
 import strings
+import release_notes
 
 
 def banner(app):
@@ -83,12 +84,48 @@ def banner(app):
         shadow=ft.BoxShadow(blur_radius=34, spread_radius=-8, offset=ft.Offset(0, 14),
                             color=ft.Colors.with_opacity(0.40, "#05060F")))
 
-def dismiss_update(app):
-    app._update_dismissed = True
+
+def show_update_banner(app):
+    """Mount or refresh the compact card outside the app-shell layout."""
+    card = banner(app)
+    if card is None:
+        hide_update_banner(app)
+        return
+    overlay = getattr(app.page, "overlay", None)
+    if overlay is None:
+        return
+    host = getattr(app, "_update_overlay", None)
+    if host is None or host not in overlay:
+        host = ft.Container(content=card, top=14, left=0, right=0,
+                            alignment=ft.Alignment.TOP_CENTER)
+        app._update_overlay = host
+        overlay.append(host)
+        app.page.update()
+        return
+    host.content = card
     try:
-        app._close_dialog()
+        host.update()
+    except Exception:
+        app.page.update()
+
+
+def hide_update_banner(app):
+    """Remove the compact card without rebuilding the current screen."""
+    host = getattr(app, "_update_overlay", None)
+    if host is None:
+        return
+    try:
+        if host in app.page.overlay:
+            app.page.overlay.remove(host)
+            app.page.update()
     except Exception:
         pass
+    app._update_overlay = None
+
+
+def dismiss_update(app):
+    app._update_dismissed = True
+    hide_update_banner(app)
 
 
 def show_update_available_dialog(app, info):
@@ -155,7 +192,9 @@ def do_update(app):
     target_version = str((app._update_info or {}).get("remote") or "")
     app._updating = True
     try:
-        show_updating_dialog(app)
+        # The original compact card also owns the progress state. Refreshing
+        # its page-overlay host cannot alter shell constraints or scroll.
+        show_update_banner(app)
     except Exception:
         pass
     try:
@@ -171,10 +210,7 @@ def do_update(app):
             E.save_pending_update_notice(target_version)
         def finish():
             app._updating = False
-            try:
-                app._close_dialog()
-            except Exception:
-                pass
+            hide_update_banner(app)
             if ok:
                 app._update_info = {"update": False}
                 app._update_dismissed = True
@@ -234,15 +270,21 @@ def show_update_error(app, msg):
 
 
 def _release_notes_card(version):
-    """Build the localized release-note card shared by both completion flows."""
-    notes = [
-        (ft.Icons.DOMAIN, "upd_note_tenants"),
-        (ft.Icons.GROUPS, "upd_note_access"),
-        (ft.Icons.FACT_CHECK, "upd_note_audit"),
-        (ft.Icons.LANGUAGE, "upd_note_experience"),
-    ]
+    """Build notes authored for this exact version, or return ``None``."""
+    note_keys = release_notes.keys_for(version or E.local_version())
+    if not note_keys:
+        return None
+    icons = {
+        "upd_note_tenants": ft.Icons.DOMAIN,
+        "upd_note_access": ft.Icons.GROUPS,
+        "upd_note_audit": ft.Icons.FACT_CHECK,
+        "upd_note_experience": ft.Icons.LANGUAGE,
+        "upd_note_378_update": ft.Icons.SYSTEM_UPDATE_ALT,
+        "upd_note_378_setup": ft.Icons.VERTICAL_ALIGN_TOP,
+    }
     note_rows = []
-    for icon, key in notes:
+    for key in note_keys:
+        icon = icons.get(key, ft.Icons.NEW_RELEASES)
         note_rows.append(ft.Row([
             ft.Container(ft.Icon(icon, size=15, color=T.STORY), width=24,
                          alignment=ft.Alignment.TOP_CENTER),
@@ -270,6 +312,15 @@ def show_restart_dialog(app, msg, version=""):
     users have to dismiss on every launch.
     """
     release_card = _release_notes_card(version)
+    content_controls = [
+        ft.Text(strings.t("upd_updated_body"),
+                size=13, color=T.INK, weight=ft.FontWeight.W_700),
+        ft.Container(height=6),
+        ft.Text(strings.t("upd_restart_body"),
+                size=13, color=T.INK_2, weight=ft.FontWeight.W_500),
+    ]
+    if release_card is not None:
+        content_controls.extend([ft.Container(height=5), release_card])
     dlg = ft.AlertDialog(
         modal=True,
         title=ft.Row([
@@ -279,15 +330,7 @@ def show_restart_dialog(app, msg, version=""):
             ft.Text(strings.t("upd_update_complete"), size=16, weight=ft.FontWeight.W_800, color=T.INK),
         ], spacing=10, tight=True),
         content=ft.Container(
-            ft.Column([
-                ft.Text(strings.t("upd_updated_body"),
-                        size=13, color=T.INK, weight=ft.FontWeight.W_700),
-                ft.Container(height=6),
-                ft.Text(strings.t("upd_restart_body"),
-                        size=13, color=T.INK_2, weight=ft.FontWeight.W_500),
-                ft.Container(height=5),
-                release_card,
-            ], spacing=2, tight=True),
+            ft.Column(content_controls, spacing=2, tight=True),
             width=480),
         actions=[
             ghost_btn(strings.t("upd_later"), on_click=lambda e: (
@@ -307,6 +350,12 @@ def show_post_update_dialog(app, version):
     only: it deliberately has no restart action and clears itself on Continue.
     """
     release_card = _release_notes_card(version)
+    content_controls = [
+        ft.Text(strings.t("upd_updated_version", version=version), size=13,
+                color=T.INK, weight=ft.FontWeight.W_700),
+    ]
+    if release_card is not None:
+        content_controls.extend([ft.Container(height=8), release_card])
     dlg = ft.AlertDialog(
         modal=True,
         title=ft.Row([
@@ -316,12 +365,7 @@ def show_post_update_dialog(app, version):
             ft.Text(strings.t("upd_update_complete"), size=16,
                     weight=ft.FontWeight.W_800, color=T.INK),
         ], spacing=10, tight=True),
-        content=ft.Container(ft.Column([
-            ft.Text(strings.t("upd_updated_version", version=version), size=13,
-                    color=T.INK, weight=ft.FontWeight.W_700),
-            ft.Container(height=8),
-            release_card,
-        ], spacing=2, tight=True), width=480),
+        content=ft.Container(ft.Column(content_controls, spacing=2, tight=True), width=480),
         actions=[green_btn(strings.t("upd_continue"), on_click=lambda e: (
             E.clear_pending_update_notice(), app._close_dialog()), height=46)],
         actions_alignment=ft.MainAxisAlignment.END,

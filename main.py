@@ -4007,10 +4007,10 @@ class QAStudio:
         return updater_ui.show_restart_dialog(self, msg, version)
 
     def _show_update_available_notice(self, info):
-        """Present one native dialog per available version for this launch.
+        """Present the compact floating update card for this launch.
 
         The check runs off the UI thread; Flet must finish mounting the shell
-        before opening a dialog.  Keeping this outside render() prevents an
+        before mounting the overlay. Keeping this outside render() prevents an
         update notice from changing any screen's scrolling layout.
         """
         remote = str((info or {}).get("remote") or "")
@@ -4030,7 +4030,7 @@ class QAStudio:
             # later navigation or manual check will retry it for this version.
             if getattr(self, "_dialog_depth", 0):
                 return
-            updater_ui.show_update_available_dialog(self, current)
+            updater_ui.show_update_banner(self)
 
         async def _after_first_frame():
             import asyncio

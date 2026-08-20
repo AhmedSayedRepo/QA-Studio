@@ -12,25 +12,22 @@ import theme as T
 import platform_caps
 from ui import ghost_btn
 import strings
+import engine as E
+import release_notes
 
 
 # Each feature: key, icon, title, one-line blurb, `details` (fuller prose
 # paragraphs), and `points` (key bullets).
 FEATURES = [
     {"key": "whats_new", "nav_key": "help_whats_new_nav", "icon": ft.Icons.NEW_RELEASES, "title": "What's new",
-     "blurb": "The latest release adds organization-aware administration, clearer access control, identity assets, and a more consistent multilingual experience.",
+     "blurb": "The latest release improves update reliability and Setup scrolling.",
      "details": [
-         "QA Studio now treats an organization as a real workspace. Administrators can configure its identity, locale, time zone, support contact, retention setting, logo, projects, and teams — while organization managers work only inside their assigned organization.",
-         "Projects and teams can be created, edited, and assigned to users. Projects can be a manual organization scope or imported from the selected test-management backend, so the source of each project remains clear.",
-         "The administration audit is now a dedicated, paginated screen. It turns role, access, project/team, sender, and identity changes into readable events with the actor, affected user, organization, and time shown together.",
-         "Profile pictures and organization logos are validated before upload, safely fit their fixed containers, and can be removed to restore the default avatar or QA Studio logo. The saved-account picker and login language selection also make returning to the app easier.",
+         "The updater now compares normalized dependency files, so Windows line endings no longer start an unnecessary dependency installation after an otherwise successful update.",
+         "Setup preserves its mounted scroll area during in-place refreshes and restores its header spacer correctly, keeping the first section reachable without a full-screen rebuild.",
      ],
      "points": [
-         "Organization identity: logo, locale, time zone, support email, retention, and allowed domains.",
-         "Project and team records: add, edit, identify the backend source, and assign members.",
-         "Lifecycle controls: suspend, reactivate, sign out everywhere, and send recovery credentials.",
-         "Dedicated audit trail with readable events, filters, and pagination.",
-         "Seven-language UI, a login language picker, saved-account picker, and profile image preview.",
+         "Updates skip dependency installation when requirements have not actually changed.",
+         "Setup keeps its scroll position and top content accessible after refreshes.",
      ]},
     {"key": "setup", "icon": ft.Icons.TUNE, "title": "Setup",
      "blurb": "Connect your AI provider and Azure DevOps, then pick a project, "
@@ -559,7 +556,9 @@ def _content(feat):
             ft.Container(ft.Icon(feat["icon"], size=20, color=T.VIOLET_INK),
                          width=40, height=40, bgcolor=T.VIOLET_SOFT, border_radius=10,
                          alignment=ft.Alignment.CENTER),
-            ft.Text(strings.t("help_" + feat["key"] + "_title"), size=19, weight=ft.FontWeight.BOLD, color=T.INK),
+            ft.Text(strings.t("help_" + feat["key"] + "_title",
+                              **({"version": E.local_version()} if feat["key"] == "whats_new" else {})),
+                    size=19, weight=ft.FontWeight.BOLD, color=T.INK),
             ft.Container(expand=True),
             _platform_badge(_platform_of(feat)),
         ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER),
@@ -586,7 +585,9 @@ def _content(feat):
 
 def show(app, initial=None):
     """Open the searchable feature guide as a modal."""
-    app._helpg_sel = initial or FEATURES[0]["key"]
+    available_features = [f for f in FEATURES
+                          if f["key"] != "whats_new" or release_notes.keys_for(E.local_version())]
+    app._helpg_sel = initial or available_features[0]["key"]
     app._helpg_query = ""
     # MOBILE uses a master→detail drill-in instead of the desktop two-pane
     # layout. The old layout was a fixed 880px-wide Row (232px nav + content);
@@ -637,9 +638,9 @@ def show(app, initial=None):
 
     def _refresh():
         q = (app._helpg_query or "").strip().lower()
-        shown = [f for f in FEATURES if _matches(f, q)]
+        shown = [f for f in available_features if _matches(f, q)]
         nav_col.controls = [_nav_item(f) for f in shown] or [empty_hint]
-        cur = next((f for f in FEATURES if f["key"] == app._helpg_sel), FEATURES[0])
+        cur = next((f for f in available_features if f["key"] == app._helpg_sel), available_features[0])
         content_col.controls = _content(cur)
         if _mobile:
             if getattr(app, "_helpg_mobile_detail", False):

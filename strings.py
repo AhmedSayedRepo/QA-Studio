@@ -10590,6 +10590,84 @@ _RELEASE_NOTES_I18N = {
 for _language, _values in _RELEASE_NOTES_I18N.items():
     _STRINGS[_language].update(_values)
 
+# Current release copy is intentionally separate from the historical 3.7.1
+# keys above.  The updater selects notes by exact version in release_notes.py;
+# these Help entries describe only the current authored release.
+_RELEASE_378_I18N = {
+    "en": {
+        "upd_note_378_update": "Updates no longer reinstall dependencies just because Windows line endings differ.",
+        "upd_note_378_setup": "Setup keeps its scroll position and restores the top connection section correctly after refreshes.",
+        "help_whats_new_title": "What’s new in QA Studio {version}",
+        "help_whats_new_blurb": "Update installation and Setup scrolling are more reliable in this release.",
+        "help_whats_new_d0": "The updater now compares normalized dependency files. Windows line endings no longer start an unnecessary dependency installation after an otherwise successful update.",
+        "help_whats_new_d1": "Setup preserves its mounted scroll area during in-place refreshes and restores its header spacing correctly, keeping the first connection section reachable without a full-screen rebuild.",
+        "help_whats_new_p0": "Dependency installation is skipped when requirements have not actually changed.",
+        "help_whats_new_p1": "Setup keeps its scroll position and top content accessible after refreshes.",
+    },
+    "ar": {
+        "upd_note_378_update": "لم تعد التحديثات تعيد تثبيت الاعتماديات لمجرد اختلاف نهايات الأسطر في Windows.",
+        "upd_note_378_setup": "تحافظ شاشة الإعداد على موضع التمرير وتستعيد قسم الاتصال العلوي بشكل صحيح بعد التحديث.",
+        "help_whats_new_title": "ما الجديد في QA Studio {version}",
+        "help_whats_new_blurb": "أصبح تثبيت التحديثات والتمرير في شاشة الإعداد أكثر موثوقية في هذا الإصدار.",
+        "help_whats_new_d0": "يقارن محدّث التطبيق الآن ملفات الاعتماديات بعد توحيد تنسيقها، لذلك لم تعد اختلافات نهايات الأسطر في Windows تبدأ تثبيتاً غير ضروري بعد نجاح التحديث.",
+        "help_whats_new_d1": "تحافظ شاشة الإعداد على منطقة التمرير أثناء التحديث الموضعي وتستعيد تباعد الرأس بشكل صحيح، ليظل قسم الاتصال الأول متاحاً دون إعادة بناء الشاشة كاملة.",
+        "help_whats_new_p0": "يتم تخطي تثبيت الاعتماديات عندما لا تتغير المتطلبات فعلياً.",
+        "help_whats_new_p1": "تحافظ شاشة الإعداد على موضع التمرير وإمكانية الوصول إلى المحتوى العلوي بعد التحديث.",
+    },
+    "fr": {
+        "upd_note_378_update": "Les mises à jour ne réinstallent plus les dépendances à cause des seules fins de ligne Windows.",
+        "upd_note_378_setup": "La page Configuration conserve sa position et restaure correctement la section de connexion après actualisation.",
+        "help_whats_new_title": "Nouveautés de QA Studio {version}",
+        "help_whats_new_blurb": "L’installation des mises à jour et le défilement de Configuration sont plus fiables.",
+        "help_whats_new_d0": "Le programme de mise à jour compare désormais des fichiers de dépendances normalisés. Les fins de ligne Windows ne lancent plus une installation inutile après une mise à jour réussie.",
+        "help_whats_new_d1": "Configuration conserve sa zone de défilement pendant les actualisations sur place et restaure correctement l’espacement de l’en-tête, sans reconstruction complète de l’écran.",
+        "help_whats_new_p0": "L’installation des dépendances est ignorée lorsque les exigences n’ont pas réellement changé.",
+        "help_whats_new_p1": "Configuration conserve sa position et l’accès au contenu supérieur après actualisation.",
+    },
+    "tr": {
+        "upd_note_378_update": "Güncellemeler artık yalnızca Windows satır sonları farklı diye bağımlılıkları yeniden kurmuyor.",
+        "upd_note_378_setup": "Kurulum ekranı yenilemeden sonra kaydırma konumunu korur ve üst bağlantı bölümünü doğru geri yükler.",
+        "help_whats_new_title": "QA Studio {version} yenilikleri",
+        "help_whats_new_blurb": "Bu sürümde güncelleme kurulumu ve Kurulum ekranı kaydırması daha güvenilir.",
+        "help_whats_new_d0": "Güncelleyici artık normalleştirilmiş bağımlılık dosyalarını karşılaştırır. Windows satır sonları, başarılı bir güncellemeden sonra gereksiz bağımlılık kurulumunu başlatmaz.",
+        "help_whats_new_d1": "Kurulum ekranı yerinde yenilemeler sırasında kaydırma alanını korur ve başlık boşluğunu doğru geri yükleyerek ilk bağlantı bölümünü erişilebilir tutar.",
+        "help_whats_new_p0": "Gereksinimler gerçekten değişmediyse bağımlılık kurulumu atlanır.",
+        "help_whats_new_p1": "Kurulum ekranı yenilemelerden sonra kaydırma konumunu ve üst içeriği korur.",
+    },
+    "es": {
+        "upd_note_378_update": "Las actualizaciones ya no reinstalan dependencias solo por diferencias de finales de línea de Windows.",
+        "upd_note_378_setup": "Configuración conserva la posición de desplazamiento y restaura correctamente la sección superior tras actualizarse.",
+        "help_whats_new_title": "Novedades de QA Studio {version}",
+        "help_whats_new_blurb": "La instalación de actualizaciones y el desplazamiento de Configuración son más fiables.",
+        "help_whats_new_d0": "El actualizador ahora compara archivos de dependencias normalizados. Los finales de línea de Windows ya no inician una instalación innecesaria después de una actualización correcta.",
+        "help_whats_new_d1": "Configuración conserva su área de desplazamiento durante las actualizaciones internas y restaura correctamente el espacio del encabezado, sin reconstruir toda la pantalla.",
+        "help_whats_new_p0": "La instalación de dependencias se omite cuando los requisitos no han cambiado realmente.",
+        "help_whats_new_p1": "Configuración conserva la posición y el acceso al contenido superior después de actualizarse.",
+    },
+    "de": {
+        "upd_note_378_update": "Updates installieren Abhängigkeiten nicht mehr nur wegen abweichender Windows-Zeilenenden neu.",
+        "upd_note_378_setup": "Einrichtung behält die Scrollposition und stellt den oberen Verbindungsbereich nach Aktualisierungen korrekt wieder her.",
+        "help_whats_new_title": "Neuerungen in QA Studio {version}",
+        "help_whats_new_blurb": "Update-Installation und Scrollen in Einrichtung sind in dieser Version zuverlässiger.",
+        "help_whats_new_d0": "Der Updater vergleicht jetzt normalisierte Abhängigkeitsdateien. Windows-Zeilenenden lösen nach einem erfolgreichen Update keine unnötige Installation mehr aus.",
+        "help_whats_new_d1": "Einrichtung behält den Scrollbereich bei direkten Aktualisierungen bei und stellt den Kopfabstand korrekt wieder her, ohne den gesamten Bildschirm neu aufzubauen.",
+        "help_whats_new_p0": "Die Installation wird übersprungen, wenn sich die Anforderungen nicht tatsächlich geändert haben.",
+        "help_whats_new_p1": "Einrichtung behält nach Aktualisierungen Scrollposition und oberen Inhalt bei.",
+    },
+    "nl": {
+        "upd_note_378_update": "Updates installeren afhankelijkheden niet meer opnieuw alleen door afwijkende Windows-regeleinden.",
+        "upd_note_378_setup": "Instellen behoudt de scrollpositie en herstelt het bovenste verbindingsgedeelte correct na verversen.",
+        "help_whats_new_title": "Wat is nieuw in QA Studio {version}",
+        "help_whats_new_blurb": "Update-installatie en scrollen in Instellen zijn betrouwbaarder in deze versie.",
+        "help_whats_new_d0": "De updater vergelijkt nu genormaliseerde afhankelijkheidsbestanden. Windows-regeleinden starten na een geslaagde update geen onnodige installatie meer.",
+        "help_whats_new_d1": "Instellen behoudt het scrollgebied tijdens interne vernieuwingen en herstelt de kopafstand correct, zonder het volledige scherm opnieuw op te bouwen.",
+        "help_whats_new_p0": "Installatie wordt overgeslagen wanneer de vereisten niet werkelijk zijn gewijzigd.",
+        "help_whats_new_p1": "Instellen behoudt na verversen de scrollpositie en toegang tot de bovenste inhoud.",
+    },
+}
+for _language, _values in _RELEASE_378_I18N.items():
+    _STRINGS[_language].update(_values)
+
 _UPDATE_COMPLETION_I18N = {
     "en": {"upd_update_started": "Update started in the background.", "upd_updating_desc": "Keep QA Studio open — restart options appear when it is ready.", "upd_updated_version": "QA Studio is now on version {version}.", "upd_continue": "Continue"},
     "ar": {"upd_update_started": "بدأ التحديث في الخلفية.", "upd_updating_desc": "أبقِ QA Studio مفتوحاً — ستظهر خيارات إعادة التشغيل عندما يصبح جاهزاً.", "upd_updated_version": "QA Studio يعمل الآن بالإصدار {version}.", "upd_continue": "متابعة"},
