@@ -85,7 +85,64 @@ def banner(app):
 
 def dismiss_update(app):
     app._update_dismissed = True
-    app.render()
+    try:
+        app._close_dialog()
+    except Exception:
+        pass
+
+
+def show_update_available_dialog(app, info):
+    """Native update notice that does not change the app-shell layout."""
+    remote = str((info or {}).get("remote") or "")
+    local = str((info or {}).get("local") or E.local_version())
+
+    def _start(e):
+        app._close_dialog()
+        do_update(app)
+
+    dlg = ft.AlertDialog(
+        modal=True,
+        title=ft.Row([
+            ft.Container(ft.Icon(ft.Icons.SYSTEM_UPDATE_ALT, size=18, color=T.VIOLET),
+                         width=34, height=34, bgcolor=T.VIOLET_SOFT, border_radius=9,
+                         alignment=ft.Alignment.CENTER),
+            ft.Text(strings.t("upd_update_available"), size=16,
+                    weight=ft.FontWeight.W_800, color=T.INK),
+        ], spacing=10, tight=True),
+        content=ft.Container(ft.Column([
+            ft.Text(strings.t("upd_version_ready", remote=remote, local=local),
+                    size=13, color=T.INK, weight=ft.FontWeight.W_700),
+            ft.Container(height=6),
+            ft.Text(strings.t("upd_update_now_tip"), size=11.5,
+                    color=T.INK_3, weight=ft.FontWeight.W_500),
+        ], spacing=2, tight=True), width=430),
+        actions=[
+            ghost_btn(strings.t("upd_later"), on_click=lambda e: dismiss_update(app)),
+            green_btn(strings.t("upd_update_now"), icon=ft.Icons.DOWNLOAD,
+                      on_click=_start, height=46),
+        ],
+        actions_alignment=ft.MainAxisAlignment.END,
+    )
+    app._show_dialog(dlg)
+
+
+def show_updating_dialog(app):
+    """Keep an explicit, non-dismissible progress state while updating."""
+    dlg = ft.AlertDialog(
+        modal=True,
+        title=ft.Row([
+            ft.Container(ft.ProgressRing(width=19, height=19, stroke_width=2,
+                                         color=T.VIOLET), width=34, height=34,
+                         bgcolor=T.VIOLET_SOFT, border_radius=9,
+                         alignment=ft.Alignment.CENTER),
+            ft.Text(strings.t("upd_updating"), size=16,
+                    weight=ft.FontWeight.W_800, color=T.INK),
+        ], spacing=10, tight=True),
+        content=ft.Container(ft.Text(strings.t("upd_updating_desc"), size=12.5,
+                                     color=T.INK_2, weight=ft.FontWeight.W_500),
+                             width=430),
+    )
+    app._show_dialog(dlg)
 
 def do_update(app):
     # Event queues can contain a second click before the first repaint lands.
@@ -97,7 +154,10 @@ def do_update(app):
     # exactly which release has just been installed.
     target_version = str((app._update_info or {}).get("remote") or "")
     app._updating = True
-    app.render()
+    try:
+        show_updating_dialog(app)
+    except Exception:
+        pass
     try:
         app._toast(strings.t("upd_update_started"))
     except Exception:
@@ -111,12 +171,15 @@ def do_update(app):
             E.save_pending_update_notice(target_version)
         def finish():
             app._updating = False
+            try:
+                app._close_dialog()
+            except Exception:
+                pass
             if ok:
                 app._update_info = {"update": False}
                 app._update_dismissed = True
                 app._show_restart_dialog(msg, target_version)
             else:
-                app.render()
                 app._show_update_error(msg)
         app.ui_safe(finish)
     app._bg(work)
@@ -196,7 +259,7 @@ def _release_notes_card(version):
             *note_rows,
         ], spacing=6, tight=True),
         bgcolor=T.CARD_2, border=ft.Border.all(1, T.BORDER),
-        border_radius=T.R_MD, padding=ft.Padding.symmetric(horizontal=13, vertical=11))
+        border_radius=T.R_LG, padding=ft.Padding.symmetric(horizontal=13, vertical=11))
 
 
 def show_restart_dialog(app, msg, version=""):

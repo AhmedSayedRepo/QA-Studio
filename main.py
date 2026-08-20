@@ -390,6 +390,7 @@ class QAStudio:
         self._update_info = None     # set by background check_for_update
         self._last_nav_update_check = 0
         self._update_check_inflight = False
+        self._update_notice_scheduled_for = ""
         self._release_notice_scheduled = False
         self._updating = False
         self._update_dismissed = False
@@ -3207,10 +3208,6 @@ class QAStudio:
         # On desktop the shell keeps its rail mounted and swaps only the body,
         # so choosing a navigation item cannot reset the user's rail scroll.
         self.render(preserve_rail=True)
-        # A startup dialog cannot be opened until Flet has mounted its first
-        # frame. Retry any unseen release summary on navigation as well, so an
-        # initial-frame race can never make a completed update invisible.
-        self._show_pending_update_notice()
         # Opportunistically check for a newer version when the user navigates.
         self._maybe_check_update_on_nav()
 
@@ -3406,21 +3403,11 @@ class QAStudio:
             # `view`) already happened OUTSIDE the lock.
             with self._render_lock:
                 self.page.controls.clear()
-                banner = None
-                try:
-                    banner = self._update_banner()
-                except Exception:
-                    banner = None
-                if banner is not None:
-                    # Float the update card OVER the app (top-centre) as an overlay, so it
-                    # never reserves a strip, leaves no gap, and clears the window controls.
-                    _root = ft.Stack([
-                        ft.Container(view, expand=True),
-                        ft.Container(banner, top=14, left=0, right=0,
-                                     alignment=ft.Alignment.TOP_CENTER),
-                    ], expand=True)
-                else:
-                    _root = view
+                # Update availability is presented as a dialog after the shell
+                # has mounted.  Do not wrap the root in an overlay Stack here:
+                # in Flet 0.85 that changes the height constraints of nested
+                # scrolling Columns and makes the Setup form appear clipped.
+                _root = view
                 try:
                     _root = self._with_window_chrome(_root)
                 except Exception:
@@ -3949,11 +3936,10 @@ class QAStudio:
             info = E.check_for_update()
             self._update_info = info
             # Repaint whenever an update is available and not dismissed, so the
-            # banner appears on the next interaction even if a prior check missed
-            # it or was still in flight. (render() rebuilds the banner from
-            # _update_info, so a repaint is all that's needed.)
+            # dialog appears on the next interaction even if a prior check missed
+            # it or was still in flight. This does not re-render the shell.
             if info.get("update") and not self._update_dismissed:
-                self._safe_render(preserve_rail=True, preserve_setup_scroll=True)
+                self._show_update_available_notice(info)
         except Exception:
             pass
         finally:
@@ -3970,7 +3956,7 @@ class QAStudio:
             remote = info.get("remote")
             if info.get("update"):
                 self._update_dismissed = False
-                self._safe_render(preserve_rail=True, preserve_setup_scroll=True)
+                self._show_update_available_notice(info)
             elif info.get("error"):
                 self.ui_safe(lambda: self._toast(strings.t("update_check_failed", err=info["error"])))
             elif remote:
@@ -4020,25 +4006,56 @@ class QAStudio:
     def _show_restart_dialog(self, msg, version=""):
         return updater_ui.show_restart_dialog(self, msg, version)
 
-    def _show_pending_update_notice(self):
-        """Show the release summary after both automatic and manual updates.
+    def _show_update_available_notice(self, info):
+        """Present one native dialog per available version for this launch.
 
-        Older builds cannot write the pending marker introduced for the
-        self-updater. Comparing the installed version to the locally
-        acknowledged version closes that compatibility gap: an externally
-        installed release still gets one clear summary on its first launch.
+        The check runs off the UI thread; Flet must finish mounting the shell
+        before opening a dialog.  Keeping this outside render() prevents an
+        update notice from changing any screen's scrolling layout.
+        """
+        remote = str((info or {}).get("remote") or "")
+        if (not remote or self._update_dismissed or
+                getattr(self, "_update_notice_scheduled_for", "") == remote):
+            return
+
+        self._update_notice_scheduled_for = remote
+
+        def _present():
+            self._update_notice_scheduled_for = ""
+            current = self._update_info or {}
+            if (self._update_dismissed or not current.get("update") or
+                    str(current.get("remote") or "") != remote):
+                return
+            # Do not stack an update prompt over a user-initiated modal. A
+            # later navigation or manual check will retry it for this version.
+            if getattr(self, "_dialog_depth", 0):
+                return
+            updater_ui.show_update_available_dialog(self, current)
+
+        async def _after_first_frame():
+            import asyncio
+            await asyncio.sleep(0.25)
+            _present()
+
+        try:
+            self.page.run_task(_after_first_frame)
+        except Exception:
+            self._update_notice_scheduled_for = ""
+            self.ui_safe(_present)
+
+    def _show_pending_update_notice(self):
+        """Show release notes only after a successful in-app update.
+
+        A version copied from a development folder was never an update event;
+        treating it as one made release notes race navigation and layout.
         """
         notice = E.get_pending_update_notice() or {}
         pending_version = str(notice.get("version") or "")
-        installed_version = E.local_version()
-        seen_version = E.get_seen_release_notice_version()
-        advanced_since_seen = (not seen_version or
-                               E._ver_newer(installed_version, seen_version))
-        if not pending_version and not advanced_since_seen:
+        if not pending_version:
             return
         if getattr(self, "_release_notice_scheduled", False):
             return
-        version = pending_version or installed_version
+        version = pending_version
 
         def _present():
             self._release_notice_scheduled = False
@@ -4056,9 +4073,7 @@ class QAStudio:
                 return
             # Only acknowledge after Flet has accepted the dialog. This prevents
             # repeat popups while allowing a retry if startup fails beforehand.
-            E.mark_release_notice_seen(version)
-            if pending_version:
-                E.clear_pending_update_notice()
+            E.clear_pending_update_notice()
 
         async def _after_first_frame():
             # page.show_dialog() during the same frame as page.add()/update()

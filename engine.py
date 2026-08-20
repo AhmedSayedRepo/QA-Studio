@@ -9443,8 +9443,9 @@ def _validate_update_tree(src_root):
 
 def _apply_update_zip(cb):
     """Source (non-git) updater: download the latest release's source zip and copy
-    it over the app folder in place, then reinstall deps. Used by ZIP/.bat
-    installs that aren't git clones and aren't frozen exes.
+    it over the app folder in place. Dependencies are installed only when the
+    requirements file actually changed. Used by ZIP/.bat installs that aren't
+    git clones and aren't frozen exes.
 
     SECURITY: the .exe update path (_apply_update_exe/_verify_download) checks
     the download against a maintainer-published SHA-256 checksum file, which
@@ -9525,6 +9526,20 @@ def _apply_update_zip(cb):
         return (False, "The downloaded update doesn't look like a QA Studio "
                        f"source tree (missing {', '.join(missing)}). Update "
                        "aborted for your safety.")
+    # Most releases change application code only. Running a full `pip install`
+    # regardless of whether requirements changed can take five minutes (or hang
+    # behind a proxy) after a perfectly successful update. Compare the files
+    # before replacing the install and skip that unnecessary blocking stage.
+    old_requirements = os.path.join(dst, "requirements.txt")
+    new_requirements = os.path.join(src_root, "requirements.txt")
+    try:
+        old_req_hash = _sha256_file(old_requirements) if os.path.isfile(old_requirements) else ""
+        new_req_hash = _sha256_file(new_requirements) if os.path.isfile(new_requirements) else ""
+        requirements_changed = old_req_hash != new_req_hash
+    except Exception:
+        # A hash failure should be conservative: install requirements, but with
+        # the bounded timeout below so the updater still cannot wait forever.
+        requirements_changed = True
     try:
         import diag_log
         diag_log.log_warn("engine._apply_update_zip",
@@ -9558,16 +9573,27 @@ def _apply_update_zip(cb):
                 shutil.rmtree(_root, ignore_errors=True)
     except Exception:
         pass
-    # best-effort: install any new dependencies the update introduced
-    try:
+    # Only dependency-changing releases need pip. Keep this bounded and report
+    # a clear failure instead of stranding the update spinner for five minutes.
+    if requirements_changed:
         req = os.path.join(dst, "requirements.txt")
-        if os.path.exists(req):
+        try:
             cb("Updating dependencies…", "dim")
-            subprocess.run([sys.executable, "-m", "pip", "install", "-r", req,
-                            "--disable-pip-version-check"],
-                           creationflags=0x08000000, timeout=300)
-    except Exception:
-        pass
+            pip = subprocess.run(
+                [sys.executable, "-m", "pip", "install", "-r", req,
+                 "--disable-pip-version-check", "--no-input"],
+                creationflags=0x08000000, timeout=90,
+                capture_output=True, text=True)
+            if pip.returncode != 0:
+                detail = (pip.stderr or pip.stdout or "pip failed").strip().replace("\n", " ")
+                return (False, "Update files were copied, but dependencies could not be installed: "
+                        f"{detail[:180]}")
+        except subprocess.TimeoutExpired:
+            return (False, "Update files were copied, but dependency installation timed out after "
+                    "90 seconds. Check your network, then restart QA Studio.")
+        except Exception as e:
+            return (False, "Update files were copied, but dependencies could not be installed: "
+                    f"{str(e)[:180]}")
     cb("Update installed.", "ok")
     return (True, "Updated to the latest version.")
 
