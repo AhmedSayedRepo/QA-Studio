@@ -108,7 +108,29 @@ if not errorlevel 1 (
   exit /b 1
 )
 
-rem --- check exact-version release notes before changing VERSION ------------
+rem --- stamp any prepared notes with the version selected above -------------
+rem A draft has no version number until this point. This keeps the popup in
+rem lock-step with the number the releaser actually enters.
+where py >nul 2>&1
+if errorlevel 1 goto stamp_notes_with_python
+py -3 "%~dp0_stamp_release_notes.py" "%VER%"
+if errorlevel 1 echo [WARN] Release-note draft could not be stamped; continuing.
+goto stamp_notes_done
+
+:stamp_notes_with_python
+where python >nul 2>&1
+if errorlevel 1 goto stamp_notes_done
+python "%~dp0_stamp_release_notes.py" "%VER%"
+if errorlevel 1 echo [WARN] Release-note draft could not be stamped; continuing.
+
+:stamp_notes_done
+
+rem --- write a clean VERSION file (no trailing space/newline) ---
+rem Do this before validation so the current Help page is checked against the
+rem new release too. push.ps1 commits this file together with the notes.
+<nul set /p="%VER%" > VERSION
+
+rem --- check exact-version release notes after stamping ---------------------
 rem The updater deliberately has no fallback notes: showing highlights from an
 rem older release under a new version is worse than showing no highlights. This
 rem is an ADVISORY check only: a missing note warns clearly, but never blocks a
@@ -145,9 +167,6 @@ echo [OK] Release-note check complete (advisory only).
 
 set /p MSG=Commit message:
 if "%MSG%"=="" set "MSG=Release v%VER%"
-
-rem --- write a clean VERSION file (no trailing space/newline) ---
-<nul set /p="%VER%" > VERSION
 
 rem --- make sure install.bat uses CRLF so the downloaded asset never flash-closes ---
 powershell -NoProfile -Command "$p='install.bat'; $t=Get-Content -Raw $p; Set-Content -Path $p -Value $t -Encoding ascii"

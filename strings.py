@@ -10697,6 +10697,9 @@ _RELEASE_381_I18N = {
     "nl": {"help_whats_new_version": "3.8.1", "upd_note_381_story_picker": "Instellen toont nu direct na het kiezen van een testplan een laadindicator in de storykiezer.", "upd_note_381_activity": "Live-activiteit van Uitvoeren en Prestatie blijft leesbaar en uitgelijnd wanneer nieuwe updates binnenkomen.", "help_whats_new_title": "Wat is nieuw in QA Studio {version}", "help_whats_new_blurb": "Planselectie geeft direct feedback en live-activiteit blijft gemakkelijk te volgen.", "help_whats_new_d0": "Nadat je een testplan in Instellen kiest, toont de storykiezer een kleine laadindicator in het veld terwijl QA Studio de stories van het plan ophaalt. Deze wordt vervangen door de selecteerbare storylijst wanneer het laden klaar is.", "help_whats_new_d1": "Updates van Uitvoeren- en Prestatie-activiteit behouden nu een duidelijkere, stabielere lay-out terwijl berichten en resultaten binnenkomen. Daardoor zijn langlopende werkzaamheden eenvoudiger te volgen.", "help_whats_new_p0": "Directe, gelokaliseerde laadfeedback bij het ophalen van stories voor een gekozen testplan.", "help_whats_new_p1": "Duidelijkere live-activiteit van Uitvoeren en Prestatie tijdens het werk."},
 }
 for _language, _values in _RELEASE_381_I18N.items():
+    # These notes shipped in v3.8.2. The content was written before the final
+    # version was chosen, so keep the Help page aligned with the release.
+    _values["help_whats_new_version"] = "3.8.2"
     _STRINGS[_language].update(_values)
 
 _UPDATE_COMPLETION_I18N = {

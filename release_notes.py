@@ -21,11 +21,16 @@ RELEASE_NOTE_KEYS = {
         "upd_note_380_handoff",
         "upd_note_380_setup",
     ),
-    "3.8.1": (
+    "3.8.2": (
         "upd_note_381_story_picker",
         "upd_note_381_activity",
     ),
 }
+
+# Add the keys for the next release here while implementing its features.
+# release.bat stamps this draft with the version entered at its prompt, so
+# release-note text never has to guess a version number in advance.
+PENDING_RELEASE_NOTE_KEYS = ()
 
 
 def normalize_version(version):
