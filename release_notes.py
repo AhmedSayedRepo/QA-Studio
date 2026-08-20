@@ -13,9 +13,9 @@ RELEASE_NOTE_KEYS = {
         "upd_note_audit",
         "upd_note_experience",
     ),
-    "3.7.8": (
-        "upd_note_378_update",
-        "upd_note_378_setup",
+    "3.7.9": (
+        "upd_note_379_openai",
+        "upd_note_379_performance",
     ),
 }
 
@@ -27,4 +27,3 @@ def normalize_version(version):
 def keys_for(version):
     """Return only notes authored for *version*; never use a fallback."""
     return RELEASE_NOTE_KEYS.get(normalize_version(version), ())
-

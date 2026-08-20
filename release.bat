@@ -108,6 +108,41 @@ if not errorlevel 1 (
   exit /b 1
 )
 
+rem --- check exact-version release notes before changing VERSION ------------
+rem The updater deliberately has no fallback notes: showing highlights from an
+rem older release under a new version is worse than showing no highlights. This
+rem is an ADVISORY check only: a missing note warns clearly, but never blocks a
+rem valid release, tag, or installer deployment.
+where py >nul 2>&1
+if errorlevel 1 goto check_notes_with_python
+py -3 "%~dp0_check_release_notes.py" "%VER%" >nul 2>&1
+if errorlevel 1 goto notes_not_ready
+goto notes_ready
+
+:check_notes_with_python
+where python >nul 2>&1
+if errorlevel 1 goto notes_python_missing
+python "%~dp0_check_release_notes.py" "%VER%" >nul 2>&1
+if errorlevel 1 goto notes_not_ready
+goto notes_ready
+
+:notes_python_missing
+echo.
+echo [WARN] Python was not found, so release notes were not checked.
+echo        You can still release. Add notes later in release_notes.py and
+echo        strings.py so the update popup can describe this version.
+goto notes_ready
+
+:notes_not_ready
+echo.
+echo [WARN] Release v%VER% has no complete exact-version release notes.
+echo        Continuing with the release. The update popup will omit highlights
+echo        until notes are added for this exact version in all seven languages.
+goto notes_ready
+
+:notes_ready
+echo [OK] Release-note check complete (advisory only).
+
 set /p MSG=Commit message:
 if "%MSG%"=="" set "MSG=Release v%VER%"
 

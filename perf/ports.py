@@ -22,10 +22,19 @@ AiComplete = Callable[[str], str]
 
 #: Progress/log callback for long emit/run operations (mirrors the app's on_event).
 OnEvent = Callable[[dict], None]
+CancelCheck = Callable[[], bool]
 
 
 def noop_event(_ev: dict) -> None:  # default OnEvent
     return None
+
+
+def never_cancel() -> bool:
+    return False
+
+
+class PerfRunCancelled(RuntimeError):
+    """Raised when the caller cooperatively cancels an active load-test run."""
 
 
 class ProjectPaths:
@@ -62,7 +71,8 @@ class PerfTarget(ABC):
         """Is the tool (and its runtime) available? (ok, message-or-hint)."""
 
     def run(self, project: ProjectPaths, on_event: OnEvent = noop_event,
-            remote_hosts: str = "") -> PerfResult:
+            remote_hosts: str = "", cancel_check: CancelCheck = never_cancel
+            ) -> PerfResult:
         """Execute the emitted project and return a normalized result.
 
         remote_hosts: optional comma/space list of distributed engines (targets
@@ -88,6 +98,6 @@ class ScenarioExtractor(ABC):
 
 
 __all__ = [
-    "AiComplete", "OnEvent", "noop_event", "ProjectPaths",
-    "PerfTarget", "ScenarioExtractor",
+    "AiComplete", "OnEvent", "CancelCheck", "noop_event", "never_cancel",
+    "PerfRunCancelled", "ProjectPaths", "PerfTarget", "ScenarioExtractor",
 ]

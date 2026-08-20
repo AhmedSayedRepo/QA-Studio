@@ -14,9 +14,12 @@ from __future__ import annotations
 
 import math
 import os
+import queue
 import re
+import signal
 import shutil
 import subprocess
+import threading
 import time
 from typing import List, Optional, Tuple
 from urllib.parse import urlparse
@@ -24,7 +27,8 @@ from xml.sax.saxutils import escape
 
 from ..models import (AssertionKind, DataSource, FailureGroup, LoadProfile,
                       PerfCapability, PerfRequest, PerfResult, PerfScenario, RequestStat)
-from ..ports import OnEvent, PerfTarget, ProjectPaths, noop_event
+from ..ports import (CancelCheck, OnEvent, PerfRunCancelled, PerfTarget,
+                     ProjectPaths, never_cancel, noop_event)
 
 _VAR_RE = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
 
@@ -77,6 +81,21 @@ def _threadgroup(profile: LoadProfile) -> str:
         f'<stringProp name="ThreadGroup.duration">{int(profile.duration_s)}</stringProp>'
         '<stringProp name="ThreadGroup.delay"></stringProp>'
         '</ThreadGroup>'
+    )
+
+
+def _pacing_action(profile: LoadProfile) -> str:
+    """Pause once after each complete thread-group iteration."""
+    delay = max(0, int(profile.pacing_ms or 0))
+    if not delay:
+        return ""
+    return (
+        '<TestAction guiclass="TestActionGui" testclass="TestAction" '
+        'testname="Iteration pacing" enabled="true">'
+        '<intProp name="ActionProcessor.action">1</intProp>'
+        '<intProp name="ActionProcessor.target">0</intProp>'
+        f'<stringProp name="ActionProcessor.duration">{delay}</stringProp>'
+        '</TestAction><hashTree/>'
     )
 
 
@@ -348,6 +367,7 @@ class JMeterTarget(PerfTarget):
             tg_children += _transaction(sc.title) + "<hashTree>" + samplers + "</hashTree>"
 
         csv_block = (_csv_dataset(data) + "<hashTree/>") if data else ""
+        tg_children += _pacing_action(profile)
         tg_block = _threadgroup(profile) + "<hashTree>" + tg_children + "</hashTree>"
         plan_block = _testplan("QA Studio Performance") + "<hashTree>" + csv_block + tg_block + "</hashTree>"
         doc = (
@@ -383,7 +403,8 @@ class JMeterTarget(PerfTarget):
         return (True, "JMeter and Java found.")
 
     def run(self, project: ProjectPaths, on_event: OnEvent = noop_event,
-            remote_hosts: str = "") -> PerfResult:
+            remote_hosts: str = "", cancel_check: CancelCheck = never_cancel
+            ) -> PerfResult:
         ok, msg = self.preflight()
         if not ok:
             raise RuntimeError(msg)
@@ -410,21 +431,83 @@ class JMeterTarget(PerfTarget):
         # Capture JMeter's live output and STREAM it to on_event so its periodic
         # "summary +/=" lines show up in the app's activity log instead of only a
         # console (run() inheriting the parent stdout is why it was terminal-only).
-        flags = 0x08000000 if os.name == "nt" else 0  # CREATE_NO_WINDOW
+        flags = 0
+        if os.name == "nt":
+            flags = (getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+                     | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200))
         proc = subprocess.Popen(cmd, cwd=project.root, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, text=True, bufsize=1,
-                                creationflags=flags)
-        try:
-            for line in proc.stdout:
-                line = (line or "").rstrip()
-                if line:
-                    on_event({"type": "log", "msg": line})
-        except Exception:
-            pass
+                                creationflags=flags,
+                                start_new_session=(os.name != "nt"))
+        if cancel_check():
+            _terminate_process_tree(proc)
+            raise PerfRunCancelled("Performance run was cancelled.")
+
+        # Reading stdout directly can block forever when JMeter is quiet. A
+        # reader thread plus a timed queue keeps cancellation responsive.
+        output = queue.Queue()
+        reader_done = proc.stdout is None
+
+        def _read_output():
+            try:
+                for raw in proc.stdout:
+                    output.put(raw)
+            except Exception:
+                pass
+            finally:
+                output.put(None)
+
+        if proc.stdout is not None:
+            threading.Thread(target=_read_output, daemon=True).start()
+        while proc.poll() is None or not reader_done or not output.empty():
+            if cancel_check():
+                on_event({"type": "log", "msg": "Stopping JMeter..."})
+                _terminate_process_tree(proc)
+                raise PerfRunCancelled("Performance run was cancelled.")
+            try:
+                raw = output.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            if raw is None:
+                reader_done = True
+                continue
+            line = (raw or "").rstrip()
+            if line:
+                on_event({"type": "log", "msg": line})
         proc.wait()
         if not os.path.exists(jtl):
             raise RuntimeError("JMeter produced no results.jtl - see console output.")
         return parse_jtl(jtl, report_dir=report)
+
+
+def _terminate_process_tree(proc) -> None:
+    """Terminate only the process tree created for this JMeter run."""
+    if proc.poll() is not None:
+        return
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=5, check=False,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
+        else:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+    except Exception:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+    try:
+        proc.wait(timeout=3)
+    except Exception:
+        try:
+            if os.name != "nt":
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            else:
+                proc.kill()
+        except Exception:
+            pass
 
 
 def _prune_old_runs(root: str, keep: int = 5) -> None:

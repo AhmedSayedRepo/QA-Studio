@@ -727,6 +727,21 @@ def _extract_openai_usage_json(data):
     return _norm_usage(u.get("prompt_tokens"), u.get("completion_tokens"), exact=True)
 
 
+def _completion_limit_field(model):
+    """Return the Chat Completions token-limit field a model expects.
+
+    OpenAI's current reasoning/GPT-5 family rejects the legacy
+    ``max_tokens`` field and requires ``max_completion_tokens``.  Most
+    OpenAI-compatible providers still expect the legacy field, so this starts
+    with the documented field for known OpenAI models and keeps compatibility
+    with every other provider.
+    """
+    name = str(model or "").strip().lower()
+    if name.startswith(("gpt-5", "o1", "o3", "o4")):
+        return "max_completion_tokens"
+    return "max_tokens"
+
+
 def _openai_compat_http(cfg, prompt_text, images, max_tokens, timeout, want_json=False):
     """Pure-HTTP chat completion for any OpenAI-compatible endpoint. Mirrors the
     openai SDK branch (text or text+images, optional JSON mode)."""
@@ -738,7 +753,8 @@ def _openai_compat_http(cfg, prompt_text, images, max_tokens, timeout, want_json
                 "url": f"data:{im['media_type']};base64,{im['data']}"}})
     else:
         content = prompt_text
-    payload = {"model": cfg["model"], "max_tokens": max_tokens,
+    limit_field = _completion_limit_field(cfg.get("model"))
+    payload = {"model": cfg["model"], limit_field: max_tokens,
                "messages": [{"role": "user", "content": content}]}
     if want_json:
         payload["response_format"] = {"type": "json_object"}
@@ -746,7 +762,24 @@ def _openai_compat_http(cfg, prompt_text, images, max_tokens, timeout, want_json
     key = (cfg.get("api_key") or "").strip()
     if key:
         headers["Authorization"] = f"Bearer {key}"
-    data = _http_post_json(base + "/chat/completions", headers, payload, timeout)
+    try:
+        data = _http_post_json(base + "/chat/completions", headers, payload, timeout)
+    except RuntimeError as exc:
+        # Providers occasionally introduce a new model before their model list
+        # exposes its token-parameter capability. If its API tells us the other
+        # standard field is required, retry this one request with that field.
+        # This is deliberately limited to an explicit parameter error — no
+        # auth, quota, model, or network failure is retried here.
+        message = str(exc).lower()
+        alternate = ("max_completion_tokens" if limit_field == "max_tokens"
+                     else "max_tokens")
+        if ("unsupported parameter" not in message
+                or limit_field.lower() not in message
+                or alternate.lower() not in message):
+            raise
+        payload.pop(limit_field, None)
+        payload[alternate] = max_tokens
+        data = _http_post_json(base + "/chat/completions", headers, payload, timeout)
     return _extract_openai_text_json(data), _extract_openai_usage_json(data)
 
 

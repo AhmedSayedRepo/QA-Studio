@@ -16,6 +16,15 @@ from enum import Enum
 from typing import Dict, List, Optional
 
 
+WORKLOAD_PRESETS = {
+    "smoke": {"users": 1, "ramp_up_s": 1, "duration_s": 60, "pacing_ms": 1000},
+    "load": {"users": 50, "ramp_up_s": 60, "duration_s": 600, "pacing_ms": 500},
+    "stress": {"users": 100, "ramp_up_s": 120, "duration_s": 900, "pacing_ms": 250},
+    "spike": {"users": 200, "ramp_up_s": 10, "duration_s": 300, "pacing_ms": 0},
+    "soak": {"users": 30, "ramp_up_s": 300, "duration_s": 7200, "pacing_ms": 1000},
+}
+
+
 class PerfCapability(str, Enum):
     """What a PerfTarget can do; the UI capability-gates on these (same idea as
     the tracker Capability flags)."""
@@ -167,6 +176,7 @@ class PerfResult:
 
 
 __all__ = [
+    "WORKLOAD_PRESETS",
     "PerfCapability", "AssertionKind", "Assertion", "Extraction", "PerfRequest",
     "PerfScenario", "DataSource", "LoadProfile", "RequestStat", "FailureGroup",
     "PerfResult",

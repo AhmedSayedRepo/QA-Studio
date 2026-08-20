@@ -32,7 +32,9 @@ for pat in patterns:
         if fname in seen:
             continue
         seen.add(fname)
-        if fname.startswith("_sync") or fname.startswith("patch_"):
+        # Keep developer/release helpers out of the installed runtime folder.
+        if (fname.startswith("_sync") or fname.startswith("patch_")
+                or fname == "_check_release_notes.py"):
             continue
         dst_path = os.path.join(DST, fname)
         if (not os.path.exists(dst_path)) or _digest(src_path) != _digest(dst_path):

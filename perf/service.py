@@ -14,12 +14,14 @@ Copyright (c) 2026 Ahmed Sayed. All rights reserved. Proprietary - see LICENSE.
 from __future__ import annotations
 
 import dataclasses
+import inspect
 import re
 from typing import List, Optional, Tuple
 
 from .extract import AIExtractor, HeuristicExtractor
 from .models import (DataSource, Extraction, LoadProfile, PerfResult, PerfScenario)
-from .ports import AiComplete, OnEvent, PerfTarget, ProjectPaths, noop_event
+from .ports import (AiComplete, CancelCheck, OnEvent, PerfTarget, ProjectPaths,
+                    never_cancel, noop_event)
 from .registry import get_target
 
 # Matches an optional scheme followed by the {{host}} placeholder the heuristic
@@ -190,13 +192,19 @@ def apply_thresholds(result: PerfResult, profile: LoadProfile) -> PerfResult:
 
 
 def run(target: PerfTarget, paths: ProjectPaths, profile: LoadProfile,
-        on_event: OnEvent = noop_event, remote_hosts: str = "") -> PerfResult:
+        on_event: OnEvent = noop_event, remote_hosts: str = "",
+        cancel_check: CancelCheck = never_cancel) -> PerfResult:
     """Execute an emitted project and return a threshold-evaluated result.
     remote_hosts (comma/space list) drives distributed engines where supported."""
-    try:
-        result = target.run(paths, on_event=on_event, remote_hosts=remote_hosts)
-    except TypeError:
-        result = target.run(paths, on_event=on_event)   # targets without remote support
+    # Capability-by-signature keeps older third-party targets compatible without
+    # catching a TypeError raised *inside* their implementation.
+    params = inspect.signature(target.run).parameters
+    kwargs = {"on_event": on_event}
+    if "remote_hosts" in params:
+        kwargs["remote_hosts"] = remote_hosts
+    if "cancel_check" in params:
+        kwargs["cancel_check"] = cancel_check
+    result = target.run(paths, **kwargs)
     return apply_thresholds(result, profile)
 
 

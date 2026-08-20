@@ -21,14 +21,16 @@ import flet as ft
 import theme as T
 import regression
 import image_assets
-from ui import card, primary_btn, green_btn, ghost_btn, field_label, sec_head
+from ui import (card, danger_btn, primary_btn, green_btn, ghost_btn, field_label,
+                sec_head)
 
 from perf import service
 from perf import har as har_import
 from perf import curl as curl_import
 from perf import report as perf_report
 from perf import token_prefetch
-from perf.models import DataSource, LoadProfile
+from perf.models import DataSource, LoadProfile, WORKLOAD_PRESETS
+from perf.ports import PerfRunCancelled
 
 # An empty, fillable skeleton (NOT a fake journey) - shown in the Paste-JSON box
 # so the user sees the exact shape to fill in. Use {{variable}} placeholders that
@@ -39,6 +41,8 @@ CASES_SKELETON = [{
         {"action": "", "expected": ""},
     ],
 }]
+
+_PERF_HISTORY_LIMIT = 20
 
 
 def _get(app, key, default):
@@ -74,6 +78,24 @@ def _log_widget(msg, tone):
         padding=ft.Padding.only(top=1, bottom=1))
 
 
+def _empty_activity():
+    """Helpful empty state for the activity rail before the first action."""
+    return ft.Container(
+        ft.Column([
+            ft.Container(
+                ft.Icon(ft.Icons.TERMINAL, size=20, color=T.VIOLET_INK),
+                width=42, height=42, bgcolor=T.VIOLET_SOFT,
+                border_radius=12, alignment=ft.Alignment.CENTER),
+            ft.Text(strings.t("perf_empty_activity_title"), size=12.5,
+                    weight=ft.FontWeight.BOLD, color=T.INK),
+            ft.Text(strings.t("perf_empty_activity_body"), size=11.5,
+                    color=T.INK_3, text_align=ft.TextAlign.CENTER),
+        ], spacing=8, horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+           tight=True),
+        alignment=ft.Alignment.CENTER, expand=True,
+        padding=ft.Padding.symmetric(horizontal=18, vertical=24))
+
+
 def _logline(app, msg, tone="dim"):
     log = getattr(app, "_perf_log", None)
     if log is None:
@@ -82,6 +104,9 @@ def _logline(app, msg, tone="dim"):
     col = getattr(app, "_perf_log_col", None)
     if col is not None:
         def _do():
+            if getattr(app, "_perf_log_empty", False):
+                col.controls.clear()
+                app._perf_log_empty = False
             col.controls.append(_log_widget(msg, tone))
             try:
                 col.update()
@@ -91,6 +116,86 @@ def _logline(app, msg, tone="dim"):
             app.ui_safe(_do)
         except Exception:
             _do()
+
+
+def _refresh_performance(app):
+    """Refresh only the mounted Performance panels.
+
+    Flet 0.85 resets a newly-created scroll control to the top and its
+    ``scroll_to`` coroutine cannot reliably restore it.  The Performance screen
+    therefore installs an in-place refresher after its first mount.  The
+    preserve-rail render is only a defensive fallback for tests or an unusually
+    early callback before the screen has mounted.
+    """
+    # A worker may finish after the user has navigated elsewhere. Store its
+    # state/logs, but do not repaint an unmounted screen or disturb the new one.
+    if getattr(app, "active", "performance") != "performance":
+        return
+    refresh = getattr(app, "_perf_refresh_mounted", None)
+    if callable(refresh):
+        try:
+            refresh()
+            return
+        except Exception:
+            pass
+    try:
+        app.render(preserve_rail=True)
+    except TypeError:
+        app.render()
+
+
+def _queue_performance_refresh(app):
+    """Run the mounted refresh on Flet's UI thread from a worker callback."""
+    try:
+        app.ui_safe(lambda: _refresh_performance(app))
+    except Exception:
+        _refresh_performance(app)
+
+
+def _replace_mounted_children(mounted, fresh):
+    """Replace dynamic panel rows without removing the shell's header gap.
+
+    ``App.shell()`` inserts a first child into the primary scrolling column so
+    content starts below its fixed glass header.  Performance refreshes its
+    panels in place while a test runs; replacing ``mounted.controls`` blindly
+    used to discard that shell-owned child.  The next activity entry then made
+    the top of the left panel appear underneath the header, even at scroll 0.
+    """
+    rows = list(getattr(fresh, "controls", []) or [])
+    if getattr(mounted, "_qa_gap", False):
+        existing = list(getattr(mounted, "controls", []) or [])
+        if existing:
+            rows.insert(0, existing[0])
+    mounted.controls = rows
+
+
+def _replace_mounted_content(mounted, fresh):
+    """Replace a static panel without discarding the shell-owned top gap.
+
+    The right-hand activity rail is mounted in a ``Container`` rather than a
+    scrolling ``Column``.  ``App.shell()`` therefore wraps it in a column that
+    begins with the fixed-header spacer.  Refreshing ``mounted.content``
+    directly used to replace that wrapper, putting the activity toolbar behind
+    the fixed header after the first live log update.
+    """
+    wrapper = getattr(mounted, "content", None)
+    if getattr(mounted, "_qa_gap", False):
+        rows = list(getattr(wrapper, "controls", []) or [])
+        if rows:
+            # Keep the shell-installed spacer and replace only the rail card.
+            wrapper.controls = [rows[0], fresh]
+            return
+    mounted.content = fresh
+
+
+def _log_action_error(app, action, ex):
+    """Show one readable error while retaining the traceback in diagnostics."""
+    try:
+        regression._perf_log(
+            f"Performance {action} failed: {ex}\n{traceback.format_exc()}")
+    except Exception:
+        pass
+    _logline(app, strings.t("perf_log_action_failed", reason=str(ex)[:180]), "err")
 
 
 def _ai(app):
@@ -128,7 +233,53 @@ def _profile(app):
     if _f("_perf_min_rps", 0) > 0:                   # optional min throughput
         thr["min_throughput_rps"] = _f("_perf_min_rps", 0)
     return LoadProfile(users=_i("_perf_users", 20), ramp_up_s=_i("_perf_ramp", 15),
-                       duration_s=_i("_perf_duration", 60), thresholds=thr)
+                       duration_s=_i("_perf_duration", 60),
+                       pacing_ms=max(0, _i("_perf_pacing", 0)), thresholds=thr)
+
+
+def _apply_workload_preset(app, name):
+    """Apply one standard profile and invalidate a plan emitted with old values."""
+    name = str(name or "custom").lower()
+    app._perf_preset = name if name in WORKLOAD_PRESETS else "custom"
+    values = WORKLOAD_PRESETS.get(name)
+    if values:
+        app._perf_users = str(values["users"])
+        app._perf_ramp = str(values["ramp_up_s"])
+        app._perf_duration = str(values["duration_s"])
+        app._perf_pacing = str(values["pacing_ms"])
+        app._perf_paths = None
+        app._perf_can_run = False
+
+
+def _ensure_perf_history(app):
+    """Load per-user history/baseline once from the encrypted local store."""
+    if not hasattr(app, "_perf_history"):
+        creds = getattr(app, "creds", None)
+        raw = creds.get("perf_history", []) if isinstance(creds, dict) else []
+        app._perf_history = [dict(item) for item in raw
+                             if isinstance(item, dict)][:_PERF_HISTORY_LIMIT]
+    if not hasattr(app, "_perf_baseline"):
+        creds = getattr(app, "creds", None)
+        raw = creds.get("perf_baseline") if isinstance(creds, dict) else None
+        app._perf_baseline = dict(raw) if isinstance(raw, dict) else None
+
+
+def _persist_perf_history(app):
+    """Persist non-secret metric summaries inside the current user's vault."""
+    try:
+        import store
+        creds = getattr(app, "creds", None)
+        if not isinstance(creds, dict):
+            return
+        creds["perf_history"] = list(_get(app, "_perf_history", []) or [])[:_PERF_HISTORY_LIMIT]
+        baseline = _get(app, "_perf_baseline", None)
+        if baseline:
+            creds["perf_baseline"] = dict(baseline)
+        else:
+            creds.pop("perf_baseline", None)
+        store.save(creds)
+    except Exception:
+        pass
 
 
 def _data(app):
@@ -258,14 +409,16 @@ def _build_current_scenarios(app):
         return None
     domains = [d for d in re.split(r"[,\s]+",
                _get(app, "_perf_har_domains", "") or "") if d]
-    _logline(app, f"Parsing HAR{' for ' + ', '.join(domains) if domains else ''}...")
+    _logline(app, (strings.t("perf_log_reading_har_filtered",
+                             domains=", ".join(domains)) if domains else
+                   strings.t("perf_log_reading_har")), "info")
     scenarios = har_import.scenarios_from_har(har_path, include_domains=domains)
     if not scenarios or not scenarios[0].requests:
         _logline(app, "No matching requests in the HAR. Clear the domain filter "
                       "or check you saved the right capture.", "warn")
         return None
     n = sum(len(s.requests) for s in scenarios)
-    _logline(app, f"Imported {n} real request(s) from HAR.", "ok")
+    _logline(app, strings.t("perf_log_imported_requests", count=n), "ok")
     return _apply_advanced(app, scenarios)
 
 
@@ -287,14 +440,10 @@ def _add_worker(app):
                       f"{len(basket)} scenario(s), {total} request(s). Click "
                       "“Generate & Emit” when ready.", "ok")
     except Exception as ex:
-        _logline(app, "ERROR: " + str(ex), "err")
-        _logline(app, traceback.format_exc(), "err")
+        _log_action_error(app, "add scenario", ex)
     finally:
         app._perf_adding = False
-        try:
-            app.ui_safe(app.render)
-        except Exception:
-            pass
+        _queue_performance_refresh(app)
 
 
 def _emit_worker(app):
@@ -309,15 +458,15 @@ def _emit_worker(app):
             os.makedirs(out, exist_ok=True)
         app._perf_out = out
         _persist_out_dir(app)          # remember a typed folder too
-        _logline(app, f"Output folder: {out}", "info")
+        _logline(app, strings.t("perf_log_workspace_ready"), "info")
 
         # Prefer the accumulated basket; otherwise build from the current source
         # (keeps the simple single-source workflow working without Add-to-plan).
         basket = list(_get(app, "_perf_basket", []) or [])
         if basket:
             scenarios = basket
-            _logline(app, f"Emitting {len(scenarios)} accumulated scenario(s) "
-                          "from the plan basket...", "info")
+            _logline(app, strings.t("perf_log_combining_scenarios",
+                                    count=len(scenarios)), "info")
         else:
             scenarios = _build_current_scenarios(app)
             if not scenarios:
@@ -326,8 +475,10 @@ def _emit_worker(app):
         target, paths = service.emit_scenarios(
             scenarios, _profile(app), out, target_name="jmeter", data=_data(app))
         for s in scenarios:
-            _logline(app, f"[{s.id}] {s.title} - {s.request_count} req, vars={s.variables}", "ok")
-        _logline(app, f"Emitted: {paths.entry}", "ok")
+            _logline(app, strings.t("perf_log_scenario_ready",
+                                    name=(s.title or s.id),
+                                    requests=s.request_count), "ok")
+        _logline(app, strings.t("perf_log_plan_created"), "ok")
         if paths.data_csv:
             _logline(app, f"Data CSV copied to the project (includes any secrets it "
                           f"holds): {paths.data_csv}", "warn")
@@ -336,80 +487,134 @@ def _emit_worker(app):
         app._perf_profile = _profile(app)
         ok, msg = target.preflight()
         app._perf_can_run = ok
-        _logline(app, f"JMeter preflight: {'OK' if ok else 'NOT READY'} - {msg}",
+        _logline(app, strings.t("perf_log_tools_ready") if ok else
+                 strings.t("perf_log_tools_not_ready", reason=msg),
                  "ok" if ok else "warn")
         if ok:
-            _logline(app, "Ready — click the green “Run JMeter” button to start the "
-                          "load test.", "info")
+            _logline(app, strings.t("perf_log_ready_to_run"), "info")
         else:
-            _logline(app, "Install Apache JMeter and a Java runtime, then click "
-                          "“Generate & Emit” again.", "warn")
+            _logline(app, strings.t("perf_log_install_tools"), "warn")
     except Exception as ex:
-        _logline(app, "ERROR: " + str(ex), "err")
-        _logline(app, traceback.format_exc(), "err")
+        _log_action_error(app, "generate plan", ex)
     finally:
         app._perf_running = False
-        try:
-            app.ui_safe(app.render)
-        except Exception:
-            pass
+        _queue_performance_refresh(app)
 
 
 # JMeter console noise we drop, and the bits we keep + colour, so the Activity
 # log reads like a run summary instead of raw stdout.
 _JM_NOISE = ("scanning to locate", "to view the results", "createdb", "creating summariser",
              "waiting for possible shutdown", "starting standalone test", "tidying up",
-             "will be removed in a future release", "created the tree successfully")
+             "will be removed in a future release", "created the tree successfully",
+             "running jmeter (non-gui)")
+
+_JM_SUMMARY_RE = re.compile(
+    r"^summary\s+([+=])\s+(\d+)\s+in\s+([0-9:]+)\s+=\s+([0-9.]+)/s\s+"
+    r"Avg:\s*(\d+)\s+Min:\s*(\d+)\s+Max:\s*(\d+)\s+"
+    r"Err:\s*(\d+)\s+\(([0-9.]+)%\)"
+    r"(?:\s+Active:\s*(\d+)\s+Started:\s*(\d+)\s+Finished:\s*(\d+))?",
+    re.IGNORECASE)
+
+
+def _friendly_duration(value):
+    """Turn JMeter's HH:MM:SS duration into a short human-readable value."""
+    try:
+        hours, minutes, seconds = [int(part) for part in str(value).split(":")]
+    except (TypeError, ValueError):
+        return str(value)
+    parts = []
+    if hours:
+        parts.append(strings.t("perf_log_hours", count=hours))
+    if minutes:
+        parts.append(strings.t("perf_log_minutes", count=minutes))
+    if seconds or not parts:
+        parts.append(strings.t("perf_log_seconds", count=seconds))
+    return " ".join(parts)
+
+
+def _friendly_jmeter_line(line):
+    """Translate one JMeter console line into user-facing progress.
+
+    Returns ``(message, tone)`` or ``None`` for implementation noise. Unknown
+    error lines remain visible so troubleshooting evidence is never hidden.
+    """
+    text = str(line or "").strip()
+    low = text.lower()
+    if not text or any(s in low for s in _JM_NOISE):
+        return None
+    match = _JM_SUMMARY_RE.match(text)
+    if match:
+        (kind, requests, duration, rps, avg_ms, _min_ms, _max_ms, errors,
+         error_pct, active, _started, _finished) = match.groups()
+        values = dict(
+            requests=f"{int(requests):,}",
+            duration=_friendly_duration(duration),
+            rps=rps,
+            avg_ms=avg_ms,
+            errors=f"{int(errors):,}",
+            error_pct=error_pct,
+            active=(f"{int(active):,}" if active is not None else "0"),
+        )
+        if kind == "+":
+            return strings.t("perf_log_recent_progress", **values), (
+                "warn" if int(errors) else "dim")
+        return strings.t("perf_log_overall_progress", **values), (
+            "warn" if int(errors) else "ok")
+    if "error" in low or "exception" in low or "not found" in low:
+        return strings.t("perf_log_technical_error", detail=text), "err"
+    return strings.t("perf_log_status_detail", detail=text), "dim"
 
 
 def _jm_tone(line):
-    """Return a tone for a JMeter output line, or None to drop it as noise."""
-    low = line.lower()
-    if any(s in low for s in _JM_NOISE):
-        return None
-    if "error" in low or "exception" in low or "not found" in low:
-        return "err"
-    if "summary =" in low:                       # cumulative running total
-        # An error count that isn't "0 (0.00%)" means failures are accumulating.
-        return "warn" if ("err:" in low and "0 (0.00%)" not in low) else "ok"
-    if "summary +" in low:                       # per-interval delta
-        return "dim"
-    return "dim"
+    """Compatibility helper retained for callers that only need the tone."""
+    event = _friendly_jmeter_line(line)
+    return event[1] if event else None
 
 
 def _run_worker(app):
     try:
-        _logline(app, "Running JMeter (non-GUI); this takes about the test duration...")
+        _logline(app, strings.t("perf_log_run_started"), "info")
 
         def _on(ev):
             msg = str(ev.get("msg", "")).strip()
             if not msg:
                 return
-            tone = _jm_tone(msg)
-            if tone is not None:
-                _logline(app, msg, tone)
+            friendly = _friendly_jmeter_line(msg)
+            if friendly is not None:
+                _logline(app, friendly[0], friendly[1])
 
         hosts = (_get(app, "_perf_remote_hosts", "") or "").strip()
+        cancel_event = _get(app, "_perf_cancel_event", None)
         res = service.run(app._perf_target, app._perf_paths, app._perf_profile,
-                          on_event=_on, remote_hosts=hosts)
+                          on_event=_on, remote_hosts=hosts,
+                          cancel_check=(cancel_event.is_set if cancel_event else lambda: False))
         app._perf_result = res
         gate = {True: "PASS", False: "FAIL", None: "done"}[res.threshold_pass]
-        _logline(app, f"Run {gate}: p95={res.p95_ms:.0f}ms  err={res.error_rate * 100:.2f}%  "
-                      f"{res.throughput_rps:.1f} req/s", "ok" if res.threshold_pass else "warn")
-        # Keep a short run history (this session) for trend/compare.
+        _logline(app, strings.t("perf_log_run_finished", result=gate,
+                                p95=f"{res.p95_ms:.0f}",
+                                errors=f"{res.error_rate * 100:.2f}",
+                                rps=f"{res.throughput_rps:.1f}"),
+                 "ok" if res.threshold_pass else "warn")
+        # Keep a per-user local history for trend and baseline comparison.
         hist = list(_get(app, "_perf_history", []) or [])
-        hist.insert(0, {"when": time.strftime("%H:%M:%S"), "gate": gate,
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        profile = _get(app, "_perf_profile", None) or _profile(app)
+        hist.insert(0, {"id": time.strftime("%Y%m%d-%H%M%S"), "when": stamp, "gate": gate,
                         "p95": res.p95_ms, "err": res.error_rate * 100,
-                        "rps": res.throughput_rps, "report": getattr(res, "raw_report_dir", "")})
-        app._perf_history = hist[:8]
+                        "rps": res.throughput_rps,
+                        "users": profile.users, "duration": profile.duration_s,
+                        "report": getattr(res, "raw_report_dir", "")})
+        app._perf_history = hist[:_PERF_HISTORY_LIMIT]
+        _persist_perf_history(app)
+    except PerfRunCancelled:
+        _logline(app, strings.t("perf_cancelled"), "warn")
     except Exception as ex:
-        _logline(app, "RUN ERROR: " + str(ex), "err")
+        _log_action_error(app, "run", ex)
     finally:
         app._perf_running = False
-        try:
-            app.ui_safe(app.render)
-        except Exception:
-            pass
+        app._perf_cancelling = False
+        app._perf_cancel_event = None
+        _queue_performance_refresh(app)
 
 
 def _preview_worker(app):
@@ -429,13 +634,10 @@ def _preview_worker(app):
         _logline(app, "Preview only — nothing emitted. Click Generate & Emit to build the "
                       "plan.", "ok")
     except Exception as ex:
-        _logline(app, "Preview error: " + str(ex), "err")
+        _log_action_error(app, "preview", ex)
     finally:
         app._perf_previewing = False
-        try:
-            app.ui_safe(app.render)
-        except Exception:
-            pass
+        _queue_performance_refresh(app)
 
 
 def _report_meta(app):
@@ -547,14 +749,10 @@ def _tokens_worker(app):
                           "“Bearer {{token}}”. Each virtual user now uses its own token.",
                      "ok")
     except Exception as ex:
-        _logline(app, "Token prep error: " + str(ex), "err")
-        _logline(app, traceback.format_exc(), "err")
+        _log_action_error(app, "prepare tokens", ex)
     finally:
         app._perf_tok_running = False
-        try:
-            app.ui_safe(app.render)
-        except Exception:
-            pass
+        _queue_performance_refresh(app)
 
 
 def _persist_out_dir(app):
@@ -602,7 +800,7 @@ def _result_card(r):
                  else strings.t("perf_badge_fail_tip") if r.threshold_pass is False
                  else strings.t("perf_badge_none_tip")))
     return card(ft.Column([
-        ft.Row([sec_head("4", strings.t("perf_sec_last_result")), ft.Container(expand=True), badge],
+        ft.Row([sec_head("5", strings.t("perf_sec_last_result")), ft.Container(expand=True), badge],
                vertical_alignment=ft.CrossAxisAlignment.CENTER),
         ft.Container(height=12),
         ft.Row([
@@ -629,7 +827,7 @@ def _result_card(r):
     ], spacing=0))
 
 
-def screen(app):
+def screen(app, _fragment=False):
     # Connect gate — same centered "A few things first" state Automation and
     # Regression show, instead of locking the nav button. Keeps the nav clickable
     # so the user can open Performance and see exactly what to do next.
@@ -654,13 +852,15 @@ def screen(app):
         except Exception:
             app._perf_out_dir = ""
 
+    _ensure_perf_history(app)
+
     running = bool(_get(app, "_perf_running", False))
     can_run = bool(_get(app, "_perf_can_run", False))
 
     # Seed numeric defaults so the app's _auto_field (which reads getattr(attr))
     # shows sensible starting values instead of blanks on first open.
     for _k, _v in (("_perf_users", "20"), ("_perf_ramp", "15"), ("_perf_duration", "60"),
-                   ("_perf_p95", "800"), ("_perf_err", "1")):
+                   ("_perf_pacing", "0"), ("_perf_p95", "800"), ("_perf_err", "1")):
         if not str(_get(app, _k, "")).strip():
             setattr(app, _k, _v)
 
@@ -688,9 +888,10 @@ def screen(app):
                               "--data-raw '{\"email\":\"{{email}}\",\"password\":\"{{password}}\"}'")
 
     def _src_changed():
-        # Full re-render: HAR and cURL show different section bodies.
+        # HAR and cURL have different section bodies. Rebuild only the mounted
+        # Performance panels so the page and navigation keep their scroll state.
         app._perf_source = source.value
-        app.render()
+        _refresh_performance(app)
 
     source = ft.Dropdown(
         value=_get(app, "_perf_source", "har"), filled=True, bgcolor=T.CARD,
@@ -707,8 +908,11 @@ def screen(app):
 
     # log rail column
     app._perf_log = _get(app, "_perf_log", [])
-    log_col = ft.ListView(spacing=3, auto_scroll=True, expand=True,
-                          controls=[_log_widget(l["msg"], l["tone"]) for l in app._perf_log])
+    app._perf_log_empty = not bool(app._perf_log)
+    log_col = ft.ListView(
+        spacing=3, auto_scroll=True, expand=True,
+        controls=([_log_widget(l["msg"], l["tone"]) for l in app._perf_log]
+                  if app._perf_log else [_empty_activity()]))
     app._perf_log_col = log_col
 
     # ---- handlers ----
@@ -718,27 +922,27 @@ def screen(app):
         app._perf_running = True
         app._perf_result = None
         threading.Thread(target=_emit_worker, args=(app,), daemon=True).start()
-        app.render()
+        _refresh_performance(app)
 
     def do_add(e=None):
         if _get(app, "_perf_adding", False) or _get(app, "_perf_running", False):
             return
         app._perf_adding = True
         threading.Thread(target=_add_worker, args=(app,), daemon=True).start()
-        app.render()
+        _refresh_performance(app)
 
     def do_preview(e=None):
         if _get(app, "_perf_previewing", False) or _get(app, "_perf_running", False):
             return
         app._perf_previewing = True
         threading.Thread(target=_preview_worker, args=(app,), daemon=True).start()
-        app.render()
+        _refresh_performance(app)
 
     def do_clear_basket(e=None):
         app._perf_basket = []
         app._perf_paths = None
         app._perf_can_run = False
-        app.render()
+        _refresh_performance(app)
 
     def do_remove_scenario(idx):
         b = list(_get(app, "_perf_basket", []) or [])
@@ -747,14 +951,40 @@ def screen(app):
             app._perf_basket = b
             app._perf_paths = None
             app._perf_can_run = False
-            app.render()
+            _refresh_performance(app)
 
     def do_run(e=None):
         if _get(app, "_perf_running", False) or not _get(app, "_perf_paths", None):
             return
         app._perf_running = True
+        app._perf_cancelling = False
+        app._perf_cancel_event = threading.Event()
         threading.Thread(target=_run_worker, args=(app,), daemon=True).start()
-        app.render()
+        _refresh_performance(app)
+
+    def do_cancel(e=None):
+        event = _get(app, "_perf_cancel_event", None)
+        if not _get(app, "_perf_running", False) or event is None or event.is_set():
+            return
+        app._perf_cancelling = True
+        event.set()
+        _logline(app, strings.t("perf_cancel_requested"), "warn")
+        _refresh_performance(app)
+
+    def do_preset_changed(e=None):
+        _apply_workload_preset(app, preset.value)
+        _refresh_performance(app)
+
+    def do_set_baseline(item):
+        app._perf_baseline = dict(item)
+        _persist_perf_history(app)
+        _refresh_performance(app)
+
+    def do_clear_history(e=None):
+        app._perf_history = []
+        app._perf_baseline = None
+        _persist_perf_history(app)
+        _refresh_performance(app)
 
     def do_open(e=None):
         try:
@@ -797,10 +1027,11 @@ def screen(app):
     def do_clear_log(e=None):
         app._perf_log = []
         try:
-            log_col.controls.clear()
+            log_col.controls = [_empty_activity()]
+            app._perf_log_empty = True
             log_col.update()
         except Exception:
-            app.render()
+            _refresh_performance(app)
 
     def do_export_report(e=None):
         res = _get(app, "_perf_result", None)
@@ -901,13 +1132,10 @@ def screen(app):
 
     def _pick_into(attr, title, extensions):
         # Field is built by _auto_field (bound to attr), so set the attr and
-        # re-render — same idiom automation's folder browse uses. Off the UI thread.
+        # refresh only the mounted Performance panels from the UI thread.
         def _selected(path):
             setattr(app, attr, path)
-            try:
-                app.ui_safe(app.render)
-            except Exception:
-                app.render()
+            _queue_performance_refresh(app)
         image_assets.choose_file(app, title, extensions, _selected,
                                  lambda: _logline(app, strings.t("file_picker_unavailable"), "err"))
 
@@ -921,10 +1149,7 @@ def screen(app):
         def _selected(path):
             app._perf_out_dir = path
             _persist_out_dir(app)              # remember it like Automation does
-            try:
-                app.ui_safe(app.render)
-            except Exception:
-                app.render()
+            _queue_performance_refresh(app)
         image_assets.choose_directory(app, strings.t("perf_dlg_choose_out"), _selected,
                                       lambda: _logline(app, strings.t("folder_picker_unavailable"), "err"))
 
@@ -936,7 +1161,7 @@ def screen(app):
             return
         app._perf_tok_running = True
         threading.Thread(target=_tokens_worker, args=(app,), daemon=True).start()
-        app.render()
+        _refresh_performance(app)
 
     def do_detect_login(e=None):
         # Pick a login HAR and auto-fill the login config from it.
@@ -979,10 +1204,7 @@ def screen(app):
                     app._perf_tok_editable = True
                     _logline(app, cfg.get("note", "Couldn't detect a login in that HAR. Fill the "
                                   "settings below manually."), "warn")
-                try:
-                    app.ui_safe(app.render)
-                except Exception:
-                    app.render()
+                _queue_performance_refresh(app)
             threading.Thread(target=work, daemon=True).start()
         image_assets.choose_file(app, strings.t("perf_dlg_select_har"), ["har"], _selected,
                                  lambda: _logline(app, strings.t("file_picker_unavailable"), "err"))
@@ -1071,9 +1293,27 @@ def screen(app):
         *source_body,
     ], spacing=0))
 
+    preset = ft.Dropdown(
+        value=_get(app, "_perf_preset", "custom"), filled=True, bgcolor=T.CARD,
+        border_color=T.BORDER, focused_border_color=T.VIOLET, expand=True,
+        options=[
+            ft.DropdownOption(key="custom", text=strings.t("perf_preset_custom")),
+            *[ft.DropdownOption(key=name, text=strings.t("perf_preset_" + name))
+              for name in ("smoke", "load", "stress", "spike", "soak")],
+        ],
+        on_select=do_preset_changed)
+
     load_card = card(ft.Column([
         sec_head("2", strings.t("perf_sec_load_profile")),
         ft.Container(height=10),
+        ft.Row([
+            ft.Container(dd_field(strings.t("perf_lbl_preset"),
+                                  strings.t("perf_preset_hint"), preset), expand=2),
+            ft.Container(app._auto_field(
+                strings.t("perf_lbl_pacing"), "_perf_pacing", "0",
+                info=strings.t("perf_info_pacing")), expand=1),
+        ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.START),
+        ft.Container(height=12),
         ft.Row([
             ft.Container(app._auto_field(
                 strings.t("perf_lbl_users"), "_perf_users", "20",
@@ -1127,7 +1367,7 @@ def screen(app):
              "pulls the next row per iteration."),
         ft.Container(height=16),
         app._auto_field(
-            "Output folder (optional)", "_perf_out_dir", strings.t("perf_ph_output_folder"),
+            strings.t("perf_lbl_output_folder"), "_perf_out_dir", strings.t("perf_ph_output_folder"),
             info=strings.t("au_pf_output_info")),
         ft.Container(height=8),
         ft.Row([ghost_btn(strings.t("perf_btn_choose_folder"), icon=ft.Icons.FOLDER_OPEN,
@@ -1143,7 +1383,7 @@ def screen(app):
 
     def do_edit_login_manually(e=None):
         app._perf_tok_editable = True
-        app.render()
+        _refresh_performance(app)
 
     tok_format = ft.Dropdown(
         value=_get(app, "_perf_tok_format", "json"), filled=True,
@@ -1167,13 +1407,12 @@ def screen(app):
             tf.on_change = lambda e, a=attr, ff=tf: setattr(app, a, ff.value)
         return ft.Column([field_label(label, info=info),
                           ft.Container(tf, padding=ft.Padding.only(top=4))], spacing=0)
-    token_card = card(ft.Column([
-        sec_head("3+", strings.t("perf_sec_prepare_tokens")),
-        ft.Container(height=8),
-        hint("Have a CSV of users + passwords? QA Studio can log each one in, grab its "
-             "bearer token, and build a tokens CSV — then each virtual user load-tests "
-             "with its own token. Fills the Data CSV and Auth header for you."),
-        ft.Container(height=14),
+    token_card = card(ft.ExpansionTile(
+        title=sec_head("A", strings.t("perf_sec_prepare_tokens")),
+        subtitle=ft.Text(strings.t("perf_tokens_summary"), size=11,
+                         color=T.INK_3, weight=ft.FontWeight.W_500),
+        controls=[ft.Column([
+        ft.Container(height=10),
 
         # Step 1 — auto-detect the login config from ONE recorded login, so the
         # user doesn't hand-enter URL / fields / token path.
@@ -1244,9 +1483,15 @@ def screen(app):
                      strings.t("perf_tip_fetch"))],
                spacing=8),
         ft.Container(height=6),
-        hint("Tip: tokens can expire — run this shortly before the load test. Test your "
-             "config on a small CSV first."),
-    ], spacing=0))
+        hint(strings.t("perf_tokens_expiry_hint")),
+    ], spacing=0)],
+        expanded=bool(tok_running or _get(app, "_perf_tok_csv", "")
+                      or _get(app, "_perf_tok_login_har", "")),
+        maintain_state=True, dense=True,
+        tile_padding=ft.Padding.all(0),
+        controls_padding=ft.Padding.only(top=4),
+        text_color=T.INK, collapsed_text_color=T.INK,
+        icon_color=T.VIOLET_INK, collapsed_icon_color=T.INK_3))
 
     basket = list(_get(app, "_perf_basket", []) or [])
     adding = bool(_get(app, "_perf_adding", False))
@@ -1255,7 +1500,7 @@ def screen(app):
         _tip(primary_btn(_emit_label, on_click=do_emit, disabled=running or adding),
              "Build the JMeter plan from the basket (or, if empty, the current source). "
              "Does NOT run the test yet."),
-        _tip(ghost_btn(strings.t("perf_btn_adding") if adding else "Add to plan", icon=ft.Icons.ADD,
+        _tip(ghost_btn(strings.t("perf_btn_adding") if adding else strings.t("perf_btn_add_plan"), icon=ft.Icons.ADD,
                        on_click=do_add, disabled=adding or running, ignore_ro=True),
              "Add the current source's scenarios to the plan, then switch source / import "
              "another and add again to combine them into one load test."),
@@ -1269,11 +1514,41 @@ def screen(app):
         btns.append(_tip(green_btn(strings.t("perf_btn_run_jmeter"), on_click=do_run,
                                    disabled=running or not can_run, ignore_ro=True),
                          strings.t("perf_tip_run_jmeter")))
+        if running:
+            cancelling = bool(_get(app, "_perf_cancelling", False))
+            btns.append(_tip(
+                danger_btn(strings.t("perf_btn_stopping") if cancelling
+                           else strings.t("perf_btn_stop"),
+                           icon=ft.Icons.STOP_CIRCLE_OUTLINED, on_click=do_cancel,
+                           disabled=cancelling),
+                strings.t("perf_btn_stop")))
         btns.append(_tip(ghost_btn(strings.t("perf_btn_open_folder"), on_click=do_open, ignore_ro=True),
                          strings.t("perf_tip_open_folder")))
     _res = _get(app, "_perf_result", None)
-    buttons_row = ft.Container(ft.Row(btns, spacing=10, wrap=True),
-                              padding=ft.Padding.only(top=2, bottom=2))
+    if running:
+        _exec_text, _exec_color, _exec_bg = (
+            strings.t("perf_execute_running"), T.VIOLET_INK, T.VIOLET_SOFT)
+    elif _get(app, "_perf_paths", None) and can_run:
+        _exec_text, _exec_color, _exec_bg = (
+            strings.t("perf_execute_ready"), T.GREEN, T.GREEN_SOFT)
+    else:
+        _exec_text, _exec_color, _exec_bg = (
+            strings.t("perf_execute_draft"), T.INK_3, T.CARD_2)
+    execution_badge = ft.Container(
+        ft.Text(_exec_text, size=10.5, weight=ft.FontWeight.BOLD,
+                color=_exec_color),
+        bgcolor=_exec_bg, border=ft.Border.all(1, _exec_color),
+        border_radius=T.R_SM,
+        padding=ft.Padding.symmetric(vertical=4, horizontal=10))
+    action_card = card(ft.Column([
+        ft.Row([sec_head("4", strings.t("perf_sec_execute")),
+                ft.Container(expand=True), execution_badge],
+               vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        ft.Container(height=8),
+        hint(strings.t("perf_execute_hint")),
+        ft.Container(height=12),
+        ft.Row(btns, spacing=10, wrap=True),
+    ], spacing=0))
 
     # "In this plan" basket — scenarios accumulated across sources/imports; all
     # get emitted into ONE JMeter plan (one thread group each).
@@ -1305,14 +1580,13 @@ def screen(app):
             ft.Container(height=10),
             ft.Column(rows, spacing=8),
             ft.Container(height=8),
-            hint(f"{len(basket)} scenario(s) · {total_req} request(s) — combined into one "
-                 "JMeter plan on Generate & Emit."),
+            hint(strings.t("perf_plan_summary", scenarios=len(basket), requests=total_req)),
         ], spacing=0))
 
     left_children = [cases_card, load_card, data_card, token_card]
     if basket_card is not None:
         left_children.append(basket_card)
-    left_children.append(buttons_row)
+    left_children.append(action_card)
     if _res is not None:
         left_children.append(_result_card(_res))
         emailing = bool(_get(app, "_perf_emailing", False))
@@ -1339,7 +1613,7 @@ def screen(app):
                           on_click=do_open_report, ignore_ro=True),
                 "Open JMeter's full interactive dashboard (charts over time)."))
         report_card = card(ft.Column([
-            sec_head("5", strings.t("au_pf_report")),
+            sec_head("6", strings.t("au_pf_report")),
             ft.Container(height=8),
             hint("Two reports: QA Studio's plain-language one-pager, and JMeter's "
                  "interactive dashboard. Open either, save the QA Studio one, or email "
@@ -1358,14 +1632,18 @@ def screen(app):
         ], spacing=0))
         left_children.append(report_card)
 
-    # Run history (this session) — a compact trend list to compare runs.
+    # Persistent per-user run history with an explicit comparison baseline.
     _hist = list(_get(app, "_perf_history", []) or [])
-    if len(_hist) > 1:
+    if _hist:
+        baseline = _get(app, "_perf_baseline", None)
         h_rows = []
-        for h in _hist:
+        for h in _hist[:10]:
             gcol = {"PASS": T.GREEN, "FAIL": T.RED}.get(h.get("gate"), T.INK_2)
-            h_rows.append(ft.Row([
-                ft.Text(h.get("when", ""), size=11.5, color=T.INK_3, width=70, no_wrap=True),
+            is_baseline = bool(baseline and (
+                (h.get("id") and h.get("id") == baseline.get("id")) or h == baseline))
+            h_rows.append(ft.Container(ft.Row([
+                ft.Text(h.get("when", ""), size=11.5, color=T.INK_3,
+                        width=142, no_wrap=True),
                 ft.Text(h.get("gate", ""), size=11.5, weight=ft.FontWeight.BOLD,
                         color=gcol, width=46, no_wrap=True),
                 ft.Text(f"p95 {h.get('p95', 0):.0f} ms", size=11.5, color=T.INK_2,
@@ -1374,15 +1652,46 @@ def screen(app):
                         width=76, no_wrap=True),
                 ft.Text(f"{h.get('rps', 0):.1f}/s", size=11.5, color=T.INK_3,
                         width=64, no_wrap=True),
-            ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER))
-        left_children.append(card(ft.Column([
-            sec_head("6", strings.t("au_pf_run_history")),
+                ft.IconButton(
+                    icon=(ft.Icons.FLAG if is_baseline else ft.Icons.FLAG_OUTLINED),
+                    icon_size=16, icon_color=(T.VIOLET if is_baseline else T.INK_3),
+                    tooltip=(strings.t("perf_baseline_badge") if is_baseline
+                             else strings.t("perf_tip_set_baseline")),
+                    on_click=lambda e, item=dict(h): do_set_baseline(item),
+                    style=ft.ButtonStyle(padding=ft.Padding.all(2))),
+            ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                bgcolor=(T.VIOLET_SOFT if is_baseline else T.CARD_2),
+                border=ft.Border.all(1, T.VIOLET if is_baseline else T.BORDER),
+                border_radius=T.R, padding=ft.Padding.only(left=10, right=2, top=3, bottom=3)))
+        history_children = [
+            ft.Row([sec_head("7", strings.t("au_pf_run_history")),
+                    ft.Container(expand=True),
+                    ghost_btn(strings.t("perf_btn_clear_history"),
+                              icon=ft.Icons.DELETE_OUTLINE,
+                              on_click=do_clear_history, ignore_ro=True)],
+                   vertical_alignment=ft.CrossAxisAlignment.CENTER),
             ft.Container(height=10),
+        ]
+        if baseline:
+            current = _hist[0]
+            history_children.extend([
+                ft.Container(
+                    ft.Text(strings.t(
+                        "perf_baseline_compare",
+                        p95=float(current.get("p95", 0)) - float(baseline.get("p95", 0)),
+                        err=float(current.get("err", 0)) - float(baseline.get("err", 0)),
+                        rps=float(current.get("rps", 0)) - float(baseline.get("rps", 0))),
+                        size=11.5, color=T.INK_2, weight=ft.FontWeight.W_600),
+                    bgcolor=T.VIOLET_SOFT, border_radius=T.R,
+                    padding=ft.Padding.symmetric(vertical=9, horizontal=12)),
+                ft.Container(height=8),
+            ])
+        history_children.extend([
             ft.Column(h_rows, spacing=7),
             ft.Container(height=4),
-            hint("This session's runs, newest first — watch p95 and error rate across "
-                 "changes."),
-        ], spacing=0)))
+            hint(strings.t("perf_history_hint")),
+        ])
+        left_children.append(card(ft.Column(history_children, spacing=0)))
 
     left = ft.Column(left_children, spacing=14, scroll=ft.ScrollMode.AUTO, expand=True)
 
@@ -1399,8 +1708,8 @@ def screen(app):
         ft.Row([ft.Container(spinner),
                 ft.Text(strings.t("au_pf_activity"), size=11, weight=ft.FontWeight.BOLD, color=T.INK_3,
                         expand=True),
-                _log_btn(ft.Icons.COPY_ALL_OUTLINED, "Copy entire log", do_copy_log),
-                _log_btn(ft.Icons.DELETE_OUTLINE, "Clear log", do_clear_log, danger=True)],
+                _log_btn(ft.Icons.COPY_ALL_OUTLINED, strings.t("perf_tip_copy_log"), do_copy_log),
+                _log_btn(ft.Icons.DELETE_OUTLINE, strings.t("perf_tip_clear_log"), do_clear_log, danger=True)],
                spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER),
         height=34)
     right = card(ft.Column([
@@ -1409,7 +1718,34 @@ def screen(app):
                      border=ft.Border.all(1, T.BORDER), border_radius=T.R, padding=12),
     ], spacing=8, expand=True), expand=True)
 
-    body = ft.Row([ft.Container(left, expand=True),
-                   ft.Container(right, width=384)], spacing=22,
+    if _fragment:
+        return left, right
+
+    # Keep these two controls mounted for the lifetime of this Performance
+    # screen. Subsequent actions transplant fresh child controls into them,
+    # avoiding app.render() and preserving native body + rail scroll offsets.
+    left_host = ft.Container(left, expand=True)
+    right_host = ft.Container(right, width=384)
+
+    def _refresh_mounted():
+        if getattr(app, "active", "performance") != "performance":
+            return
+        fresh_left, fresh_right = screen(app, _fragment=True)
+        # Keep the shell-owned header spacer at index 0.  It is installed only
+        # once, when this page first mounts, and must survive every log-driven
+        # partial refresh so scroll position 0 remains below the fixed header.
+        _replace_mounted_children(left, fresh_left)
+        for name in ("spacing", "run_spacing", "horizontal_alignment",
+                     "alignment", "tight", "expand"):
+            try:
+                setattr(left, name, getattr(fresh_left, name))
+            except Exception:
+                pass
+        _replace_mounted_content(right_host, fresh_right)
+        left.update()
+        right_host.update()
+
+    app._perf_refresh_mounted = _refresh_mounted
+    body = ft.Row([left_host, right_host], spacing=22,
                   vertical_alignment=ft.CrossAxisAlignment.STRETCH, expand=True)
     return app.shell(strings.t("perf_title"), strings.t("perf_subtitle"), body)

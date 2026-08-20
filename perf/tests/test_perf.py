@@ -13,11 +13,14 @@ import os
 import tempfile
 import unittest
 import xml.etree.ElementTree as ET
+from unittest import mock
 
 from perf.models import (Assertion, AssertionKind, DataSource, LoadProfile,
+                         WORKLOAD_PRESETS,
                          PerfRequest, PerfResult, PerfScenario)
 from perf.extract import AIExtractor, HeuristicExtractor
 from perf.targets.jmeter import JMeterTarget, apply_thresholds, parse_jtl
+from perf.ports import PerfRunCancelled
 from perf.registry import get_target, target_names
 
 STEPS = [
@@ -28,6 +31,13 @@ STEPS = [
 
 
 class TestModels(unittest.TestCase):
+    def test_workload_presets_cover_standard_profiles(self):
+        self.assertEqual(
+            set(WORKLOAD_PRESETS), {"smoke", "load", "stress", "spike", "soak"})
+        self.assertEqual(WORKLOAD_PRESETS["smoke"]["users"], 1)
+        self.assertGreater(WORKLOAD_PRESETS["soak"]["duration_s"],
+                           WORKLOAD_PRESETS["load"]["duration_s"])
+
     def test_error_rate(self):
         r = PerfResult(scenario_id="1", target="jmeter", samples=200, errors=4)
         self.assertAlmostEqual(r.error_rate, 0.02)
@@ -120,6 +130,44 @@ class TestJMeterEmit(unittest.TestCase):
             self.assertIn("/api/login", xml)
             self.assertIn("Welcome", xml)                 # body-contains assertion
             self.assertTrue(os.path.exists(os.path.join(d, "run.bat")))
+
+    def test_emits_global_iteration_pacing(self):
+        with tempfile.TemporaryDirectory() as d:
+            paths = JMeterTarget().emit(
+                [self._scenario()], LoadProfile(pacing_ms=1250), d)
+            with open(paths.entry, encoding="utf-8") as f:
+                xml = f.read()
+            self.assertIn('testname="Iteration pacing"', xml)
+            self.assertIn(
+                '<stringProp name="ActionProcessor.duration">1250</stringProp>',
+                xml)
+
+    def test_run_honours_cancellation_before_waiting_for_output(self):
+        class _Proc:
+            pid = 321
+            stdout = iter(())
+            returncode = None
+
+            def poll(self):
+                return None
+
+            def wait(self, timeout=None):
+                self.returncode = 1
+                return 1
+
+        with tempfile.TemporaryDirectory() as d:
+            entry = os.path.join(d, "plan.jmx")
+            with open(entry, "w", encoding="utf-8") as f:
+                f.write("<jmeterTestPlan/>")
+            paths = type("Paths", (), {"root": d, "entry": entry})()
+            proc = _Proc()
+            target = JMeterTarget()
+            with mock.patch.object(target, "preflight", return_value=(True, "ok")), \
+                    mock.patch("perf.targets.jmeter.subprocess.Popen", return_value=proc), \
+                    mock.patch("perf.targets.jmeter._terminate_process_tree") as stop:
+                with self.assertRaises(PerfRunCancelled):
+                    target.run(paths, cancel_check=lambda: True)
+            stop.assert_called_once_with(proc)
 
     def test_csv_dataset_excludes_sensitive(self):
         with tempfile.TemporaryDirectory() as d:
