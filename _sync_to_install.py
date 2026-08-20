@@ -1,5 +1,7 @@
-"""_sync_to_install.py — copy changed .py files from dev folder to install folder.
-Run after any code change: python _sync_to_install.py
+"""_sync_to_install.py — copy changed runtime code/assets to the installed app.
+
+VERSION is intentionally excluded: only the release/update workflow changes an
+installed version, never an ad-hoc development sync.
 """
 import os, shutil, glob, hashlib
 
@@ -21,10 +23,10 @@ def _digest(p):
         return None
 
 synced = []
-# Copy .py sources PLUS assets the app reads at runtime (VERSION drives the footer
-# version; icons/backgrounds for anything not embedded). Without VERSION here the
-# installed app keeps showing its old version even after a code sync.
-patterns = ["*.py", "VERSION", "*.png", "*.jpg", "*.ico"]
+# Copy runtime source and image assets only. VERSION is deliberately not copied:
+# a development sync must never make an installed build claim it is a release
+# that was not installed through the updater/release workflow.
+patterns = ["*.py", "*.png", "*.jpg", "*.ico"]
 seen = set()
 for pat in patterns:
     for src_path in glob.glob(os.path.join(SRC, pat)):

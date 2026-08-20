@@ -3208,6 +3208,9 @@ class QAStudio:
         # On desktop the shell keeps its rail mounted and swaps only the body,
         # so choosing a navigation item cannot reset the user's rail scroll.
         self.render(preserve_rail=True)
+        # Retry a durable post-update notice after navigation if startup was
+        # too early for Flet to mount its completion dialog.
+        self._show_pending_update_notice()
         # Opportunistically check for a newer version when the user navigates.
         self._maybe_check_update_on_nav()
 
@@ -4053,12 +4056,15 @@ class QAStudio:
         pending_version = str(notice.get("version") or "")
         if not pending_version:
             return
-        if getattr(self, "_release_notice_scheduled", False):
+        if (getattr(self, "_release_notice_scheduled", False)
+                or getattr(self, "_release_notice_open", False)):
             return
         version = pending_version
 
         def _present():
             self._release_notice_scheduled = False
+            if getattr(self, "_dialog_depth", 0):
+                return
             try:
                 updater_ui.show_post_update_dialog(self, version)
             except Exception as ex:
@@ -4071,9 +4077,9 @@ class QAStudio:
                 except Exception:
                     pass
                 return
-            # Only acknowledge after Flet has accepted the dialog. This prevents
-            # repeat popups while allowing a retry if startup fails beforehand.
-            E.clear_pending_update_notice()
+            # A dialog request can be dropped in an early Flet frame. Keep the
+            # marker until the user clicks Continue, not merely until requested.
+            self._release_notice_open = True
 
         async def _after_first_frame():
             # page.show_dialog() during the same frame as page.add()/update()
@@ -4833,6 +4839,13 @@ class QAStudio:
                     except Exception:
                         pass
                 c.on_hover = _h
+            if not persist:
+                try:
+                    segments = getattr(self, "_setup_tool_segments", {})
+                    segments[key] = c
+                    self._setup_tool_segments = segments
+                except Exception:
+                    pass
             return c
         _t = strings.t("main_gen_titles") if compact else strings.t("main_tool_titles")
         _s = strings.t("main_gen_steps") if compact else strings.t("main_tool_steps")
@@ -4874,6 +4887,49 @@ class QAStudio:
                 self._fetch_estimate()
             except Exception:
                 pass
+        # Setup's generator selection is session-only. Rebuilding the page for
+        # it remounts the scrolling Setup column and snaps it back to the top.
+        if not persist and getattr(self, "active", "") == "setup":
+            patched = False
+            try:
+                for key, control in getattr(self, "_setup_tool_segments", {}).items():
+                    selected = key == k
+                    control.bgcolor = T.VIOLET_SOFT if selected else None
+                    control.border = ft.Border.all(
+                        1, T.VIOLET if selected else ft.Colors.TRANSPARENT)
+                    control.shadow = (ft.BoxShadow(
+                        blur_radius=10, spread_radius=-4,
+                        color=ft.Colors.with_opacity(0.35, T.VIOLET),
+                        offset=ft.Offset(0, 3)) if selected else None)
+                    try:
+                        control.content.controls[0].color = T.VIOLET_INK if selected else T.INK_2
+                        control.content.controls[1].color = T.VIOLET_INK if selected else T.INK_2
+                    except Exception:
+                        pass
+                    control.update()
+                    patched = True
+            except Exception:
+                pass
+            try:
+                desc = getattr(self, "_setup_desc_cell", None)
+                build_desc = getattr(self, "_setup_desc_build", None)
+                if desc is not None and callable(build_desc):
+                    desc.content = build_desc()
+                    desc.update()
+                    patched = True
+            except Exception:
+                pass
+            try:
+                summary = getattr(self, "_sum_generator", None)
+                if summary is not None:
+                    summary.value = (strings.t("main_gen_steps") if k == "steps"
+                                     else strings.t("main_gen_titles"))
+                    summary.update()
+                    patched = True
+            except Exception:
+                pass
+            if patched:
+                return
         self.render()
 
     # ---- output-language segment ----
@@ -5960,11 +6016,16 @@ class QAStudio:
         # jump this one screen — uniquely among this app's pickers — used to
         # add on top of it.
         def _build_story_picker():
+            # Match the Regression and Sprint story pickers: as soon as a test
+            # plan changes, replace the field itself with a small, localized
+            # spinner. A disabled empty picker made the background fetch look
+            # like the plan selection had not registered.
+            if self.plan_id and self._setup_stories_loading:
+                return regression._loading_field(strings.t("reg_loading_stories"))
             _ss = self._setup_stories or []
             _ph = ("Select stories" if _ss
-                   else ("Loading stories…" if (self.plan_id and self._setup_stories_loading)
-                         else ("No stories in this plan" if self.plan_id
-                               else strings.t("main_select_plan_first"))))
+                   else ("No stories in this plan" if self.plan_id
+                         else strings.t("main_select_plan_first")))
             return regression._checkbox_multiselect(
                 [(str(s["id"]), f"[{s['id']}] {(s['title'] or '')[:60]}") for s in _ss],
                 [str(s) for s in self.story_ids],
@@ -6246,6 +6307,10 @@ class QAStudio:
         self._setup_stories = None
         self._setup_stories_loading = True
         pid = self.plan_id
+        # Give immediate feedback in the existing story-picker cell. This is an
+        # in-place control update, so selecting a plan does not rebuild Setup or
+        # disturb either scroll position.
+        self.ui_safe(getattr(self, "_sync_setup_story_cell", lambda: None))
 
         def work():
             try:
@@ -6387,6 +6452,8 @@ class QAStudio:
             for i, (k, v) in enumerate(rows):
                 val_text = ft.Text(v, size=12, color=T.INK, weight=ft.FontWeight.BOLD,
                                    tooltip=full_vals.get(k))
+                if k == "Generator":
+                    self._sum_generator = val_text
                 if k == "Stories":
                     self._sum_stories = val_text
                 if k == "Test plan":
@@ -7421,8 +7488,7 @@ class QAStudio:
                 self._refresh_story_cards()
             elif ev == "story":
                 self._log_lines.append({"tone": "story", "ico": "▸",
-                                        "msg": f"Story {payload['id']} · {payload['title']}",
-                                        "ar": True})
+                                        "msg": f"Story {payload['id']} · {payload['title']}"})
             elif ev == "log":
                 # If this result replaces a "generating…" spinner line, remove that
                 # line — and any lingering "Still generating/describing…" heartbeat
@@ -7837,12 +7903,17 @@ class QAStudio:
         # copy-friendly fix is found that doesn't touch visible layout.
         _msg = ln.get("msg", "")
         _s = _msg.lstrip()
-        # Direction per line: Arabic content (flag or first strong char) → RTL,
-        # right-aligned; everything else → LTR. Prefixing a Left-to-Right Mark
+        # Direction per line: only a line whose first strong character is Arabic
+        # is RTL/right-aligned; everything else is LTR.  Story events used to
+        # unconditionally set ``ar=True``, which pushed English titles to the
+        # far edge of the activity card and disconnected them from their icon.
+        # Determining direction from the actual rendered message also repairs
+        # already-buffered entries created by older versions. Prefixing a
+        # Left-to-Right Mark
         # (U+200E) forces the paragraph base direction to LTR so trailing
         # punctuation / IDs on an English line don't get bidi-flipped to the
         # front when the whole app is in RTL (Arabic UI).
-        _ar_line = bool(ln.get("ar")) or (bool(_s) and "\u0600" <= _s[0] <= "\u06ff")
+        _ar_line = bool(_s) and "\u0600" <= _s[0] <= "\u06ff"
         txt = ft.Text(_msg if _ar_line else ("\u200e" + _msg), size=12,
                       color=color,
                       weight=ft.FontWeight.BOLD if tone in ("story", "ok") else ft.FontWeight.W_500,
@@ -7853,7 +7924,9 @@ class QAStudio:
         left = [c for c in (icon, idtxt, seqtxt) if c is not None]
         row_children = left + [txt]
         indent = ln.get("indent")
-        row = ft.Row(row_children, spacing=7, vertical_alignment=ft.CrossAxisAlignment.START)
+        row = ft.Row(row_children, spacing=7,
+                     alignment=ft.MainAxisAlignment.START,
+                     vertical_alignment=ft.CrossAxisAlignment.START)
         return ft.Container(row, padding=ft.Padding.only(
             left=22 if indent else 0, top=2, bottom=2))
 

@@ -8,6 +8,10 @@
 :: interpreter with no warning, even though flet stays pinned at 0.85.3 there
 :: too — same package version, different/less-tested Python minor version.
 cd /d "%~dp0"
+:: Emergency local dependency fallback. If the system-wide Flet package was
+:: damaged by Windows or an interrupted installer, QA Studio can use the
+:: identical pinned copy placed beside the app instead of failing before launch.
+if exist "%~dp0.flet_runtime\flet\__init__.py" set "PYTHONPATH=%~dp0.flet_runtime;%PYTHONPATH%"
 :: Nuke cached bytecode before every launch. This folder lives under Downloads,
 :: which is commonly OneDrive-synced — mtime-based .pyc invalidation can be
 :: unreliable across cloud sync/clock skew, so a stale __pycache__ can make

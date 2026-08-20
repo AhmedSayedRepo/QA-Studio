@@ -17,6 +17,14 @@ RELEASE_NOTE_KEYS = {
         "upd_note_379_openai",
         "upd_note_379_performance",
     ),
+    "3.8.0": (
+        "upd_note_380_handoff",
+        "upd_note_380_setup",
+    ),
+    "3.8.1": (
+        "upd_note_381_story_picker",
+        "upd_note_381_activity",
+    ),
 }
 
 

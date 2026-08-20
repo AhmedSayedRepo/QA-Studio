@@ -207,7 +207,7 @@ def do_update(app):
         if ok:
             # If the window is closed before the UI callback can run, the next
             # launch still has a trustworthy, local record to show once.
-            E.save_pending_update_notice(target_version)
+            E.save_pending_update_notice(target_version or E.local_version())
         def finish():
             app._updating = False
             hide_update_banner(app)
@@ -281,6 +281,10 @@ def _release_notes_card(version):
         "upd_note_experience": ft.Icons.LANGUAGE,
         "upd_note_378_update": ft.Icons.SYSTEM_UPDATE_ALT,
         "upd_note_378_setup": ft.Icons.VERTICAL_ALIGN_TOP,
+        "upd_note_380_handoff": ft.Icons.SYSTEM_UPDATE_ALT,
+        "upd_note_380_setup": ft.Icons.VERTICAL_ALIGN_TOP,
+        "upd_note_381_story_picker": ft.Icons.PENDING_OUTLINED,
+        "upd_note_381_activity": ft.Icons.FORMAT_LIST_BULLETED,
     }
     note_rows = []
     for key in note_keys:
@@ -356,6 +360,11 @@ def show_post_update_dialog(app, version):
     ]
     if release_card is not None:
         content_controls.extend([ft.Container(height=8), release_card])
+    def _continue(e):
+        E.clear_pending_update_notice()
+        app._release_notice_open = False
+        app._close_dialog()
+
     dlg = ft.AlertDialog(
         modal=True,
         title=ft.Row([
@@ -366,8 +375,7 @@ def show_post_update_dialog(app, version):
                     weight=ft.FontWeight.W_800, color=T.INK),
         ], spacing=10, tight=True),
         content=ft.Container(ft.Column(content_controls, spacing=2, tight=True), width=480),
-        actions=[green_btn(strings.t("upd_continue"), on_click=lambda e: (
-            E.clear_pending_update_notice(), app._close_dialog()), height=46)],
+        actions=[green_btn(strings.t("upd_continue"), on_click=_continue, height=46)],
         actions_alignment=ft.MainAxisAlignment.END,
     )
     app._show_dialog(dlg)

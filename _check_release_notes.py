@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 import release_notes
 import strings
@@ -19,6 +20,19 @@ HELP_KEYS = (
 )
 
 
+def _current_release_version() -> str:
+    """The Help guide has one current-release page, unlike update popups.
+
+    Historical popup notes must remain verifiable after a later release is
+    prepared, but they do not own the live Help page's shared strings.
+    """
+    try:
+        return release_notes.normalize_version(
+            Path(__file__).with_name("VERSION").read_text(encoding="utf-8"))
+    except OSError:
+        return ""
+
+
 def validate(version: str) -> list[str]:
     version = release_notes.normalize_version(version)
     errors: list[str] = []
@@ -27,13 +41,14 @@ def validate(version: str) -> list[str]:
         errors.append(f"No popup release notes are registered for {version}.")
         return errors
 
+    verify_help_page = version == _current_release_version()
     for language in SUPPORTED_LANGUAGES:
         values = strings._STRINGS.get(language, {})
-        for key in (*note_keys, *HELP_KEYS):
+        for key in (*note_keys, *(HELP_KEYS if verify_help_page else ())):
             if not str(values.get(key, "")).strip():
                 errors.append(f"{language}: missing {key}")
         authored_for = str(values.get("help_whats_new_version", "")).strip()
-        if authored_for != version:
+        if verify_help_page and authored_for != version:
             errors.append(
                 f"{language}: Help What's New is authored for "
                 f"{authored_for or 'no version'}, not {version}."
