@@ -92,6 +92,12 @@ def screen(app):
             # refresh.  Replacing this Column would require a delayed
             # scroll_to() and visibly jumps to the top first.
             prior_scroll.controls = setup_controls
+            # shell() installs a scrolling spacer above the first card so the
+            # fixed 94px header does not cover Setup at offset zero. Replacing
+            # the controls above removes that spacer but leaves the marker on
+            # the reused Column. Clear the marker so shell() restores exactly
+            # one spacer while preserving the mounted control and native offset.
+            prior_scroll._qa_gap = False
             app._left_scroll = prior_scroll
         else:
             app._left_scroll = ft.Column(

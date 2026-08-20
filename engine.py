@@ -9530,11 +9530,25 @@ def _apply_update_zip(cb):
     # regardless of whether requirements changed can take five minutes (or hang
     # behind a proxy) after a perfectly successful update. Compare the files
     # before replacing the install and skip that unnecessary blocking stage.
+    #
+    # GitHub zip archives use LF line endings while a Windows installation can
+    # contain CRLF. A raw file hash therefore reports a dependency change on
+    # every release even when the requirements entries are identical. Normalize
+    # line endings before hashing so only a real requirements change can start
+    # the dependency installer.
     old_requirements = os.path.join(dst, "requirements.txt")
     new_requirements = os.path.join(src_root, "requirements.txt")
+    def _requirements_hash(path):
+        if not os.path.isfile(path):
+            return ""
+        with open(path, "rb") as req_file:
+            content = req_file.read()
+        content = content.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+        return hashlib.sha256(content).hexdigest()
+
     try:
-        old_req_hash = _sha256_file(old_requirements) if os.path.isfile(old_requirements) else ""
-        new_req_hash = _sha256_file(new_requirements) if os.path.isfile(new_requirements) else ""
+        old_req_hash = _requirements_hash(old_requirements)
+        new_req_hash = _requirements_hash(new_requirements)
         requirements_changed = old_req_hash != new_req_hash
     except Exception:
         # A hash failure should be conservative: install requirements, but with
