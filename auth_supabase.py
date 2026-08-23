@@ -937,7 +937,11 @@ def caps_for(user):
     caps = (set(custom) if isinstance(custom, list)
             else set(ROLE_PRESETS.get(user.get("role"), ROLE_PRESETS.get(DEFAULT_ROLE, set()))))
     if user.get("role") == "OrgManager" and isinstance(custom, list) and caps == _LEGACY_ORG_MANAGER_CAPS:
-        caps.update({"nav.orgs", "act.manage_orgs"})
+        # Upgrade only the exact historical Org Manager preset.  This keeps a
+        # deliberately customised capability list authoritative, while giving
+        # older Org Managers the newer tenant and audit screens their role is
+        # allowed to use (both remain server-scoped to their own org).
+        caps.update({"nav.orgs", "nav.audit", "act.manage_orgs"})
     # Existing installations may still have the former one-size-fits-all key
     # signed into app_metadata. Treat it as all provider import permissions
     # until an administrator saves the user's new explicit selections.

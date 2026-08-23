@@ -3,15 +3,16 @@
 Every signed-in user can open this screen and see AI usage — calls, EXACT
 token counts (read straight from each provider's own response, never
 estimated), and an approximate cost — grouped by date / provider / model
-(and, for Admins, also by user). Sourced from the 'ai-usage' Supabase Edge
+(and, for organization administrators, also by user). Sourced from the 'ai-usage' Supabase Edge
 Function via engine.usage_report_all_users(); see ADMIN_USERS_SETUP.md §6 to
 deploy it.
 
-SCOPE: a Member/Viewer sees only their OWN usage; an Admin sees every signed-
-in user's usage. Both cases call the exact same function/endpoint — the
+SCOPE: a Member/Viewer sees only their OWN usage; a Super Admin or Organization
+Manager sees every signed-in user's usage within their organization. Both cases
+call the exact same function/endpoint — the
 scope is decided server-side, in the Edge Function, from the caller's own
 verified role (never from anything this client sends). This screen just
-adapts its labeling (and hides the redundant User column for a non-admin,
+adapts its labeling (and hides the redundant User column for a personal view,
 since every row is already theirs). See supabase/functions/ai-usage.
 """
 import os
@@ -259,7 +260,7 @@ def _filtered_rows_and_totals(app, report):
     return filtered, totals, unpriced, providers
 
 
-def _report_body(app, is_admin):
+def _report_body(app, is_org_scope):
     report = app._usage_report
     rows, t, unpriced, providers = _filtered_rows_and_totals(app, report)
 
@@ -310,11 +311,11 @@ def _report_body(app, is_admin):
         if unpriced else ft.Container(height=0))
 
     # (name, width, right_aligned, mono, row-value-getter). The User column
-    # only makes sense for an Admin's whole-org view — for a non-admin every
+    # only makes sense for an organization-wide view — for a personal view every
     # row is already their own, so it's just dropped rather than shown
     # repeating the same email down the whole table.
     _cols = [("Date", 178, False, True, lambda r: r.get("date_range", r["date"]))]
-    if is_admin:
+    if is_org_scope:
         _cols.append(("User", 190, False, False, lambda r: r["user"]))
     _cols += [
         ("Provider", 96, False, False, lambda r: r["provider"]),
@@ -439,8 +440,15 @@ def _report_body(app, is_admin):
 def screen(app):
     _init(app)
     me = getattr(app, "user", None)
-    is_admin = auth.configured() and auth.is_admin(me)
-    sub = (strings.t("usage_sub_admin") if is_admin
+    # The Edge Function scopes both Super Admins and Organization Managers to
+    # their organization.  Keep the presentation aligned with that verified
+    # server-side scope: a manager sees the User column, while a Member/Viewer
+    # gets only their own rows and does not need the same email repeated.
+    is_global_admin = auth.configured() and auth.is_admin(me)
+    is_org_manager = auth.configured() and auth.is_org_manager(me)
+    is_org_scope = is_global_admin or is_org_manager
+    sub = (strings.t("usage_sub_admin") if is_global_admin
+           else strings.t("usage_sub_org_manager") if is_org_manager
            else strings.t("usage_sub_user"))
 
     # NOTE: body is wrapped in a bare ft.Column([...card...]) rather than
@@ -523,7 +531,7 @@ def screen(app):
                    spacing=8),
             padding=ft.Padding.symmetric(vertical=14)))
     elif app._usage_report:
-        controls.append(_report_body(app, is_admin))
+        controls.append(_report_body(app, is_org_scope))
 
     # Scroll lives on the OUTER column, with the card as a naturally-sized
     # child inside it — same shape as setup.py's `left` column (cards stacked

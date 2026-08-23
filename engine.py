@@ -152,35 +152,83 @@ POWER_RANK = {
 # per-provider adapters above/below). Only models we're actually confident
 # about are listed; everything else is left unpriced on purpose rather than
 # guessed, so the report can honestly say "cost unknown" for a call instead of
-# quietly showing a wrong number. Update this table when a provider changes
-# published pricing (last reviewed 2026-07).
+# quietly showing a wrong number. Rates below are the providers' *standard,
+# direct-API* USD rates. They deliberately exclude batch/flex/priority pricing,
+# prompt-cache discounts, regional Azure pricing, and tool charges because the
+# compact usage event does not record enough detail to price those correctly.
+# Update this table when a provider changes published pricing (last reviewed
+# 2026-08).
 PRICING = {
     "anthropic": {
-        "claude-opus-4-8":            {"in": 15.0,  "out": 75.0},
-        "claude-sonnet-5":            {"in": 3.0,   "out": 15.0},
+        "claude-opus-4-8":            {"in": 5.0,   "out": 25.0},
+        "claude-opus-4-7":            {"in": 5.0,   "out": 25.0},
+        # Claude Sonnet 5's published introductory rate applies through
+        # 2026-08-31. The estimate is intentionally refreshed with the catalogue
+        # rather than pretending historical rows were billed at one fixed rate.
+        "claude-sonnet-5":            {"in": 2.0,   "out": 10.0},
         "claude-sonnet-4-6":          {"in": 3.0,   "out": 15.0},
-        "claude-haiku-4-5-20251001":  {"in": 0.8,   "out": 4.0},
+        "claude-haiku-4-5":           {"in": 1.0,   "out": 5.0},
+        "claude-haiku-4-5-20251001":  {"in": 1.0,   "out": 5.0},
     },
     "openai": {
-        "gpt-4o":       {"in": 2.5,  "out": 10.0},
-        "gpt-4o-mini":  {"in": 0.15, "out": 0.6},
+        "gpt-4o":        {"in": 2.5,  "out": 10.0},
+        "gpt-4o-mini":   {"in": 0.15, "out": 0.6},
+        "gpt-4.1":       {"in": 2.0,  "out": 8.0},
+        "gpt-4.1-mini":  {"in": 0.4,  "out": 1.6},
+        "gpt-4.1-nano":  {"in": 0.1,  "out": 0.4},
+        # GPT-5.6 rates below are standard direct-API, short-context, uncached
+        # pricing. Usage events do not retain cache, processing-mode, or
+        # long-context metadata, so those variants cannot be priced exactly.
+        "gpt-5.6-sol":    {"in": 5.0,  "out": 30.0},
+        "gpt-5.6-terra":  {"in": 2.0,  "out": 12.0},
+        "gpt-5.6-luna":   {"in": 0.2,  "out": 1.2},
     },
     "azure_openai": {
-        "gpt-4o":       {"in": 2.5,  "out": 10.0},
-        "gpt-4o-mini":  {"in": 0.15, "out": 0.6},
+        # Azure invoices can differ by region, service tier, and deployment
+        # contract. These are the public global pay-as-you-go equivalents, not
+        # an invoice substitute. Unknown deployment names stay unpriced.
+        "gpt-4o":        {"in": 2.5,  "out": 10.0},
+        "gpt-4o-mini":   {"in": 0.15, "out": 0.6},
+        "gpt-4.1":       {"in": 2.0,  "out": 8.0},
+        "gpt-4.1-mini":  {"in": 0.4,  "out": 1.6},
     },
     "gemini": {
-        "gemini-1.5-pro":   {"in": 1.25,  "out": 5.0},
-        "gemini-1.5-flash": {"in": 0.075, "out": 0.3},
+        # Gemini Pro has a higher long-context rate. Usage events do not retain
+        # the original prompt length, so this is the published standard <=200K
+        # tier only; calls using a larger context can cost more.
+        "gemini-2.5-pro":        {"in": 1.25, "out": 10.0},
+        "gemini-2.5-flash":      {"in": 0.3,  "out": 2.5},
+        "gemini-2.5-flash-lite": {"in": 0.1,  "out": 0.4},
+        "gemini-1.5-pro":        {"in": 1.25, "out": 5.0},
+        "gemini-1.5-flash":      {"in": 0.075,"out": 0.3},
     },
-    "ollama": {},   # local — always free, handled as a special case in price_for()
+    "deepseek": {
+        # Cache-hit and cache-miss input are priced differently by DeepSeek.
+        # Usage events currently do not expose that split, so use the published
+        # cache-miss rate rather than quietly understating the estimate.
+        "deepseek-v4-flash": {"in": 0.14,  "out": 0.28},
+        "deepseek-v4-pro":   {"in": 0.435, "out": 0.87},
+    },
+    "minimax": {
+        "MiniMax-M2":           {"in": 0.3, "out": 1.2},
+        "MiniMax-M2.1":         {"in": 0.3, "out": 1.2},
+        "MiniMax-M2.5":         {"in": 0.3, "out": 1.2},
+        "MiniMax-M2.7":         {"in": 0.3, "out": 1.2},
+        "MiniMax-M2.1-highspeed":{"in": 0.6, "out": 2.4},
+        "MiniMax-M2.5-highspeed":{"in": 0.6, "out": 2.4},
+        "MiniMax-M2.7-highspeed":{"in": 0.6, "out": 2.4},
+    },
+    "ollama": {},      # local — always free, handled in price_for()
+    "openrouter": {},  # only explicit ':free' model ids are free below
 }
 
 
 def price_for(provider, model):
     """$/1M-token rate for one provider+model, or None if we don't have a
     confident published price for it (never guessed from a similar model)."""
-    if provider == "ollama":
+    provider = str(provider or "").strip().lower()
+    model = str(model or "").strip()
+    if provider == "ollama" or (provider == "openrouter" and model.lower().endswith(":free")):
         return {"in": 0.0, "out": 0.0}
     return (PRICING.get(provider) or {}).get(model)
 
