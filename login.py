@@ -244,7 +244,10 @@ def login_gate(app):
         _login_lang_dd = ft.Dropdown(menu_height=300, **_login_lang_kwargs)
     except TypeError:
         _login_lang_dd = ft.Dropdown(**_login_lang_kwargs)
-    login_lang_picker = ft.Container(_login_lang_dd, width=106,
+    _mobile_login = platform_caps.is_mobile()
+    # On a phone the header is arranged on two lines below, so the native
+    # language name has enough room instead of being clipped to "Englis".
+    login_lang_picker = ft.Container(_login_lang_dd, width=(128 if _mobile_login else 106),
                                      tooltip=strings.t("ui_language"))
 
     # background image (decode embedded jpeg once to a cached temp file)
@@ -353,9 +356,17 @@ def login_gate(app):
                 pass
         return ft.Container(expand=True, bgcolor=_base)
 
-    # Keep every form control on the same fixed inner grid.  In particular,
-    # Saved accounts must line up exactly with the email and password fields.
-    _LOGIN_INPUT_WIDTH = 352
+    # Keep every form control on the same inner grid. On desktop it is fixed
+    # for a stable composition; on Android it is calculated from the actual
+    # viewport so the card cannot extend past either edge.
+    try:
+        _login_viewport_width = int(app.page.width or 0)
+    except Exception:
+        _login_viewport_width = 0
+    _MOBILE_CARD_WIDTH = (max(280, min(400, _login_viewport_width - 32))
+                          if _mobile_login and _login_viewport_width else 340)
+    _LOGIN_INPUT_WIDTH = (max(240, _MOBILE_CARD_WIDTH - 40)
+                          if _mobile_login else 352)
 
     def _field(cap, hint, icon, value="", password=False):
         tf = ft.TextField(
@@ -867,14 +878,23 @@ def login_gate(app):
             ft.Container(height=8),
         ], spacing=0, width=_LOGIN_INPUT_WIDTH)
 
-    _header_row = ft.Row([ft.Container(logo_img(48), width=48, height=48, border_radius=12,
-                             bgcolor=None, alignment=ft.Alignment.CENTER),
-                ft.Text("QA Studio", size=17, weight=ft.FontWeight.W_700,
-                        color=HEAD, font_family=DISP),
-                ft.Container(expand=True),
-                login_lang_picker,
-                theme_btn],
-               spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+    _brand_row = ft.Row([
+        ft.Container(logo_img(48), width=48, height=48, border_radius=12,
+                     bgcolor=None, alignment=ft.Alignment.CENTER),
+        ft.Text("QA Studio", size=17, weight=ft.FontWeight.W_700,
+                color=HEAD, font_family=DISP),
+    ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+    _header_row = (
+        ft.Column([
+            _brand_row,
+            ft.Container(height=8),
+            ft.Row([ft.Container(expand=True), login_lang_picker, theme_btn],
+                   spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        ], spacing=0)
+        if _mobile_login else ft.Row([
+            _brand_row, ft.Container(expand=True), login_lang_picker, theme_btn,
+        ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+    )
 
     if reset_mode:
         # Same card chrome, "Set your password" body.
@@ -916,23 +936,38 @@ def login_gate(app):
         for col in [c for c in (name_col, email_col, pwd_col) if c is not None]:
             rows += [col, ft.Container(height=12)]
         if not signup:
-            rows.append(ft.Row([remember_cb, ft.Container(expand=True),
-                                _link(strings.t("login_forgot_password"), _forgot)],
-                               vertical_alignment=ft.CrossAxisAlignment.CENTER))
+            _forgot_link = _link(strings.t("login_forgot_password"), _forgot)
+            rows.append(
+                ft.Column([
+                    remember_cb,
+                    ft.Row([ft.Container(expand=True), _forgot_link], spacing=0),
+                ], spacing=2)
+                if _mobile_login else ft.Row([
+                    remember_cb, ft.Container(expand=True), _forgot_link,
+                ], vertical_alignment=ft.CrossAxisAlignment.CENTER)
+            )
         if banner:
             rows += [ft.Container(height=8), banner]
-        rows += [ft.Container(height=16), btn, ft.Container(height=12),
-                 ft.Row([ft.Text(strings.t("login_new_prompt") if not signup
-                                 else strings.t("login_have_account_prompt"),
-                                 size=12.5, color=INK2, weight=ft.FontWeight.W_600),
-                         _link(strings.t("login_create_one") if not signup else strings.t("login_sign_in_link"), _switch)],
-                        spacing=6, alignment=ft.MainAxisAlignment.CENTER, tight=True)]
+        _switch_prompt = ft.Text(
+            strings.t("login_new_prompt") if not signup else strings.t("login_have_account_prompt"),
+            size=12.5, color=INK2, weight=ft.FontWeight.W_600,
+            text_align=ft.TextAlign.CENTER)
+        _switch_link = _link(
+            strings.t("login_create_one") if not signup else strings.t("login_sign_in_link"), _switch)
+        _switch_row = (
+            ft.Column([_switch_prompt, _switch_link], spacing=2,
+                      horizontal_alignment=ft.CrossAxisAlignment.CENTER)
+            if _mobile_login else ft.Row([_switch_prompt, _switch_link], spacing=6,
+                                         alignment=ft.MainAxisAlignment.CENTER, tight=True)
+        )
+        rows += [ft.Container(height=16), btn, ft.Container(height=12), _switch_row]
     form = ft.Column(rows, spacing=0, width=_LOGIN_INPUT_WIDTH, tight=True,
                      horizontal_alignment=(ft.CrossAxisAlignment.END if _login_rtl
                                            else ft.CrossAxisAlignment.START))
 
     card = ft.Container(
-        form, width=440, padding=ft.Padding.symmetric(horizontal=42, vertical=26), border_radius=26,
+        form, width=(_MOBILE_CARD_WIDTH if _mobile_login else 440),
+        padding=ft.Padding.symmetric(horizontal=(20 if _mobile_login else 42), vertical=26), border_radius=26,
         gradient=ft.LinearGradient(begin=ft.Alignment.TOP_LEFT,
                                    end=ft.Alignment.BOTTOM_RIGHT, colors=CARD_GRAD),
         border=ft.Border.all(1.5, CARD_BD),
@@ -1040,7 +1075,7 @@ def login_gate(app):
                               horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                               expand=True)
     if width and width < 900:
-        content = ft.Container(centered_card, expand=True, padding=24)
+        content = ft.Container(centered_card, expand=True, padding=(16 if _mobile_login else 24))
     else:
         content = ft.Row([
             ft.Container(ft.Column([value_prop], alignment=ft.MainAxisAlignment.CENTER,

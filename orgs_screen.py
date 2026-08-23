@@ -20,6 +20,7 @@ import auth_supabase as auth
 import backend_setup
 import image_assets
 import identity_editor
+import platform_caps
 import strings
 from ui import hover_field, field_label
 
@@ -286,6 +287,7 @@ def _save(app, fn):
 
 def screen(app):
     _init(app)
+    _mobile = platform_caps.is_mobile()
     # Do not let an old mounted screen callback mutate newly-created controls
     # while this screen is being assembled.
     app._orgs_refresh_parts = None
@@ -1216,25 +1218,44 @@ def screen(app):
         for project in data.get("projects", []) if isinstance(data.get("projects"), list) else []:
             label = (f"{project.get('name')}  ·  {project.get('external_key')}  ·  "
                      f"{strings.t('tenant_project_assigned', count=project_counts.get(project.get('id'), 0))}")
-            projects_out.append(ft.Row([
-                ft.Text(label, size=11.5, color=T.INK_3, expand=True),
-                _project_source_badge(project),
-                ghost_btn(strings.t("tenant_edit_project"), icon=ft.Icons.EDIT_OUTLINED,
-                          on_click=lambda e, p=dict(project): _start_project_edit(p),
-                          tooltip=strings.t("tenant_tip_edit_project")),
-            ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER))
+            if _mobile:
+                projects_out.append(ft.Column([
+                    ft.Text(label, size=11.5, color=T.INK_3, no_wrap=False),
+                    ft.Row([
+                        _project_source_badge(project),
+                        ghost_btn(strings.t("tenant_edit_project"), icon=ft.Icons.EDIT_OUTLINED,
+                                  on_click=lambda e, p=dict(project): _start_project_edit(p),
+                                  tooltip=strings.t("tenant_tip_edit_project")),
+                    ], spacing=8),
+                ], spacing=5))
+            else:
+                projects_out.append(ft.Row([
+                    ft.Text(label, size=11.5, color=T.INK_3, expand=True),
+                    _project_source_badge(project),
+                    ghost_btn(strings.t("tenant_edit_project"), icon=ft.Icons.EDIT_OUTLINED,
+                              on_click=lambda e, p=dict(project): _start_project_edit(p),
+                              tooltip=strings.t("tenant_tip_edit_project")),
+                ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER))
         if not projects_out:
             projects_out = [ft.Text(strings.t("tenant_no_projects"), size=11.5, color=T.INK_3)]
         for membership in data.get("team_memberships", []) if isinstance(data.get("team_memberships"), list) else []:
             team_counts[membership.get("team_id")] = team_counts.get(membership.get("team_id"), 0) + 1
         for team in data.get("teams", []) if isinstance(data.get("teams"), list) else []:
             label = f"{team.get('name')}  ·  {team_counts.get(team.get('id'), 0)} assigned"
-            teams_out.append(ft.Row([
-                ft.Text(label, size=11.5, color=T.INK_3, expand=True),
-                ghost_btn(strings.t("tenant_edit_team"), icon=ft.Icons.EDIT_OUTLINED,
-                          on_click=lambda e, t=dict(team): _start_team_edit(t),
-                          tooltip=strings.t("tenant_tip_edit_team")),
-            ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER))
+            if _mobile:
+                teams_out.append(ft.Column([
+                    ft.Text(label, size=11.5, color=T.INK_3, no_wrap=False),
+                    ghost_btn(strings.t("tenant_edit_team"), icon=ft.Icons.EDIT_OUTLINED,
+                              on_click=lambda e, t=dict(team): _start_team_edit(t),
+                              tooltip=strings.t("tenant_tip_edit_team")),
+                ], spacing=5))
+            else:
+                teams_out.append(ft.Row([
+                    ft.Text(label, size=11.5, color=T.INK_3, expand=True),
+                    ghost_btn(strings.t("tenant_edit_team"), icon=ft.Icons.EDIT_OUTLINED,
+                              on_click=lambda e, t=dict(team): _start_team_edit(t),
+                              tooltip=strings.t("tenant_tip_edit_team")),
+                ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER))
         if not teams_out:
             teams_out = [ft.Text(strings.t("tenant_no_teams"), size=11.5, color=T.INK_3)]
         for event in (app._tenant_audit or [])[:12]:
@@ -1287,39 +1308,97 @@ def screen(app):
         except Exception:
             pass
 
-    tenant_card = card(ft.Column([
-        ft.Row([sec_head("T", strings.t("tenant_head")), ft.Container(expand=True),
-                logo_action,
+    # The desktop grid makes efficient use of a wide pane. A phone must not
+    # use it: three expanded fields and the project row then each receive only
+    # a few pixels, producing the vertical character-by-character records in
+    # the Android view. Keep the same controls and callbacks, but stack their
+    # independent groups when the platform reports a mobile client.
+    _tenant_header = (
+        ft.Column([
+            ft.Row([sec_head("T", strings.t("tenant_head")), ft.Container(expand=True), logo_action],
+                   vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            ft.Container(height=8),
+            ft.Row([
                 ghost_btn(strings.t("org_logo_upload"), icon=ft.Icons.UPLOAD,
                           on_click=_open_logo_editor, tooltip=strings.t("org_logo_tip")),
-                tenant_pick], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                tenant_pick,
+            ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        ], spacing=0)
+        if _mobile else ft.Row([
+            sec_head("T", strings.t("tenant_head")), ft.Container(expand=True), logo_action,
+            ghost_btn(strings.t("org_logo_upload"), icon=ft.Icons.UPLOAD,
+                      on_click=_open_logo_editor, tooltip=strings.t("org_logo_tip")), tenant_pick,
+        ], vertical_alignment=ft.CrossAxisAlignment.CENTER)
+    )
+    _profile_primary = (
+        ft.Column([
+            ft.Column([field_label(strings.t("tenant_domains")), domains], spacing=4),
+            ft.Container(height=8),
+            ft.Column([field_label(strings.t("tenant_timezone")), timezone], spacing=4),
+        ], spacing=0)
+        if _mobile else ft.Row([
+            ft.Container(ft.Column([field_label(strings.t("tenant_domains")), domains], spacing=4), expand=True),
+            ft.Container(ft.Column([field_label(strings.t("tenant_timezone")), timezone], spacing=4), expand=True),
+        ], spacing=10)
+    )
+    _profile_secondary = (
+        ft.Column([
+            ft.Column([field_label(strings.t("tenant_locale")), locale], spacing=4),
+            ft.Container(height=8),
+            ft.Column([field_label(strings.t("tenant_support_email")), support_email], spacing=4),
+            ft.Container(height=8),
+            ft.Column([field_label(strings.t("tenant_retention")), retention], spacing=4),
+        ], spacing=0)
+        if _mobile else ft.Row([
+            ft.Container(ft.Column([field_label(strings.t("tenant_locale")), locale], spacing=4), expand=True),
+            ft.Container(ft.Column([field_label(strings.t("tenant_support_email")), support_email], spacing=4), expand=True),
+            ft.Container(ft.Column([field_label(strings.t("tenant_retention")), retention], spacing=4), width=130),
+        ], spacing=10)
+    )
+    _project_source_fields = (
+        ft.Column([
+            ft.Column([field_label(strings.t("tenant_project_source")), project_source], spacing=4),
+            ft.Container(height=8),
+            ft.Column([field_label(strings.t("tenant_provider_project")), provider_project], spacing=4),
+        ], spacing=0)
+        if _mobile else ft.Row([
+            ft.Container(ft.Column([field_label(strings.t("tenant_project_source")), project_source], spacing=4), expand=True),
+            ft.Container(ft.Column([field_label(strings.t("tenant_provider_project")), provider_project], spacing=4), expand=True),
+        ], spacing=8)
+    )
+    _project_editor = (
+        ft.Column([project_key, ft.Container(height=8), project_name,
+                   ft.Container(height=8), project_actions_holder], spacing=0)
+        if _mobile else ft.Row([project_key, project_name, project_actions_holder], spacing=8)
+    )
+    _team_editor = (
+        ft.Column([team_name, ft.Container(height=8), team_actions_holder], spacing=0)
+        if _mobile else ft.Row([team_name, team_actions_holder], spacing=8)
+    )
+
+    tenant_card = card(ft.Column([
+        _tenant_header,
         ft.Container(height=8),
         ft.Text(strings.t("tenant_desc"), size=11.5, color=T.INK_3, no_wrap=False),
         ft.Container(height=12),
-        ft.Row([ft.Container(ft.Column([field_label(strings.t("tenant_domains")), domains], spacing=4), expand=True),
-                ft.Container(ft.Column([field_label(strings.t("tenant_timezone")), timezone], spacing=4), expand=True)], spacing=10),
+        _profile_primary,
         ft.Container(height=8),
-        ft.Row([ft.Container(ft.Column([field_label(strings.t("tenant_locale")), locale], spacing=4), expand=True),
-                ft.Container(ft.Column([field_label(strings.t("tenant_support_email")), support_email], spacing=4), expand=True),
-                ft.Container(ft.Column([field_label(strings.t("tenant_retention")), retention], spacing=4), width=130)], spacing=10),
+        _profile_secondary,
         ft.Container(height=10),
         ft.Row([ft.Container(expand=True), green_btn(strings.t("tenant_save"), icon=ft.Icons.SAVE, on_click=_save_profile,
                                                        tooltip=strings.t("tenant_tip_save"))], alignment=ft.MainAxisAlignment.END),
         ft.Container(height=14),
         ft.Text(strings.t("tenant_projects"), size=12.5, weight=ft.FontWeight.W_800, color=T.INK),
         ft.Container(height=6),
-        ft.Row([
-            ft.Container(ft.Column([field_label(strings.t("tenant_project_source")), project_source], spacing=4), expand=True),
-            ft.Container(ft.Column([field_label(strings.t("tenant_provider_project")), provider_project], spacing=4), expand=True),
-        ], spacing=8),
+        _project_source_fields,
         ft.Container(height=4), provider_note_holder,
         ft.Container(height=8),
-        ft.Row([project_key, project_name, project_actions_holder], spacing=8),
+        _project_editor,
         ft.Container(height=8), project_rows_holder,
         ft.Container(height=12),
         ft.Text(strings.t("tenant_teams"), size=12.5, weight=ft.FontWeight.W_800, color=T.INK),
         ft.Container(height=6),
-        ft.Row([team_name, team_actions_holder], spacing=8),
+        _team_editor,
         ft.Container(height=8), team_rows_holder,
         ft.Container(height=10),
         ft.Text(strings.t("tenant_sso_note"), size=11, color=T.INK_3, no_wrap=False),

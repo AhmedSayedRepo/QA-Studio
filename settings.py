@@ -121,11 +121,23 @@ def screen(app):
                                               border_radius=32,
                                               clip_behavior=ft.ClipBehavior.HARD_EDGE)
         app._settings_avatar_holder = settings_avatar_holder
+        # Settings is the reliable profile entry point on Android.  The mobile
+        # header intentionally stays compact, so its avatar opens an account
+        # menu; make the profile preview itself open the same editor on every
+        # platform rather than leaving a non-interactive picture on phones.
+        settings_avatar_action = ft.Container(
+            settings_avatar_holder,
+            on_click=app._open_profile_picture_editor,
+            ink=True,
+            border_radius=34,
+            padding=2,
+            tooltip=strings.t("avatar_tip_preview" if avatar_url else "profile_choose"),
+        )
         profile = card(ft.Column([
             ft.Text(strings.t("profile_title"), size=11, weight=ft.FontWeight.BOLD, color=T.INK_3),
             ft.Container(height=4),
             srow(strings.t("profile_photo"), strings.t("profile_photo_desc"),
-                 ft.Row([settings_avatar_holder], spacing=10,
+                 ft.Row([settings_avatar_action], spacing=10,
                         vertical_alignment=ft.CrossAxisAlignment.CENTER)),
         ], spacing=0))
 

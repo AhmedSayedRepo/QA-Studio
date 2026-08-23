@@ -823,7 +823,7 @@ def screen(app):
         return " · ".join(f"{_org_name.get(k, k)}: {v}" for k, v in sorted(seat_counts.items())) or "No seats assigned"
 
     seat_label = ft.Text(strings.t("users_seat_counts", counts=_seat_counts_text()),
-                         size=10.5, color=T.INK_3, expand=True)
+                         size=10.5, color=T.INK_3, expand=True, no_wrap=False)
 
     # ── Invite a new user into an org ──────────────────────────────────────
     def _toggle_invite(e=None):
@@ -1103,6 +1103,34 @@ def screen(app):
     # screen or the persistent desktop navigation rail.
     app._users_refresh_parts = _refresh_mounted
 
+    # The desktop rows intentionally share available width. On a phone, those
+    # same flex rows shrink the seat label to one character per line and leave
+    # the filters/actions fighting for a few pixels. Stack the independent
+    # controls there; filtering still refreshes only the user list in place.
+    _mobile = platform_caps.is_mobile()
+    _filter_controls = ([org_filter] if _is_super else []) + [status_filter]
+    filters_layout = (ft.Column(_filter_controls, spacing=8)
+                      if _mobile else ft.Row(_filter_controls, spacing=8))
+    actions_layout = (
+        ft.Column([
+            seat_label,
+            ft.Container(height=4),
+            ft.Row([
+                ghost_btn(strings.t("users_export_csv"), icon=ft.Icons.DOWNLOAD,
+                          on_click=_export_csv, tooltip=strings.t("users_tip_export_csv")),
+                ghost_btn(strings.t("users_signout_filtered"), icon=ft.Icons.LOGOUT,
+                          on_click=_bulk_signout, tooltip=strings.t("users_tip_signout_filtered")),
+            ], spacing=8, wrap=True),
+        ], spacing=0)
+        if _mobile else ft.Row([
+            seat_label,
+            ghost_btn(strings.t("users_export_csv"), icon=ft.Icons.DOWNLOAD, on_click=_export_csv,
+                      tooltip=strings.t("users_tip_export_csv")),
+            ghost_btn(strings.t("users_signout_filtered"), icon=ft.Icons.LOGOUT, on_click=_bulk_signout,
+                      tooltip=strings.t("users_tip_signout_filtered")),
+        ], spacing=8)
+    )
+
     body = ft.Column([card(ft.Column([
         ft.Row([sec_head("U", strings.t("users_sec_head")), ft.Container(expand=True),
                 green_btn(strings.t("users_invite_btn"), icon=ft.Icons.PERSON_ADD_ALT,
@@ -1114,17 +1142,9 @@ def screen(app):
         invite_panel,
         hover_field(search),
         ft.Container(height=8),
-        # A wrapping Row is implemented by Flutter as Wrap, which cannot host
-        # expanded children. Both filters intentionally expand to share the
-        # desktop width, so keep this a flex Row (the mobile layout already
-        # uses the navigation drawer and can scroll the page horizontally).
-        ft.Row([org_filter, status_filter], spacing=8),
+        filters_layout,
         ft.Container(height=8),
-        ft.Row([seat_label,
-                ghost_btn(strings.t("users_export_csv"), icon=ft.Icons.DOWNLOAD, on_click=_export_csv,
-                          tooltip=strings.t("users_tip_export_csv")),
-                ghost_btn(strings.t("users_signout_filtered"), icon=ft.Icons.LOGOUT, on_click=_bulk_signout,
-                          tooltip=strings.t("users_tip_signout_filtered"))], spacing=8),
+        actions_layout,
         ft.Container(height=12),
         list_holder,
         pager_holder,

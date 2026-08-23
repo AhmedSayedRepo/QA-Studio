@@ -11442,36 +11442,43 @@ _NEXT_RELEASE_NOTES_I18N = {
         "upd_note_audit_filters": "Audit trail now has in-place filters for event type, administrator, affected user, date range, and text search.",
         "upd_note_org_manager_audit": "Organization Managers can review the audit history for their own organization without seeing another organization's records.",
         "upd_note_usage_cost_coverage": "AI Usage now estimates costs for more direct-provider models, while unknown or contract-specific prices remain clearly marked as unavailable.",
+        "upd_note_release_notes_after_restart": "After an in-app update, What’s new now appears once in the newly restarted version with that version’s exact highlights.",
     },
     "ar": {
         "upd_note_audit_filters": "يحتوي سجل التدقيق الآن على مرشحات داخل الصفحة لنوع الحدث والمسؤول والمستخدم المتأثر والنطاق الزمني والبحث النصي.",
         "upd_note_org_manager_audit": "يمكن لمديري المؤسسات مراجعة سجل التدقيق لمؤسستهم فقط دون رؤية سجلات مؤسسة أخرى.",
         "upd_note_usage_cost_coverage": "يقدّر استخدام الذكاء الاصطناعي الآن التكاليف لمزيد من نماذج المزوّدين المباشرين، بينما تبقى الأسعار غير المعروفة أو الخاصة بالعقود محددة بوضوح كغير متاحة.",
+        "upd_note_release_notes_after_restart": "بعد التحديث داخل التطبيق، تظهر ملاحظات «ما الجديد» مرة واحدة في الإصدار الذي أُعيد تشغيله، باستخدام الملخصات الدقيقة لذلك الإصدار.",
     },
     "fr": {
         "upd_note_audit_filters": "La piste d’audit propose désormais des filtres intégrés par type d’événement, administrateur, utilisateur concerné, période et recherche textuelle.",
         "upd_note_org_manager_audit": "Les responsables d’organisation peuvent consulter l’historique d’audit de leur organisation sans voir les données d’une autre organisation.",
         "upd_note_usage_cost_coverage": "Utilisation IA estime désormais les coûts pour davantage de modèles de fournisseurs directs, tandis que les prix inconnus ou contractuels restent clairement indiqués comme indisponibles.",
+        "upd_note_release_notes_after_restart": "Après une mise à jour dans l’application, les notes « Nouveautés » s’affichent une fois dans la version redémarrée avec les points clés exacts de cette version.",
     },
     "tr": {
         "upd_note_audit_filters": "Denetim izi artık olay türü, yönetici, etkilenen kullanıcı, tarih aralığı ve metin araması için yerinde filtreler sunar.",
         "upd_note_org_manager_audit": "Organizasyon Yöneticileri başka bir organizasyonun kayıtlarını görmeden kendi organizasyonlarının denetim geçmişini inceleyebilir.",
         "upd_note_usage_cost_coverage": "Yapay Zeka Kullanımı artık daha fazla doğrudan sağlayıcı modeli için maliyet tahmini sunar; bilinmeyen veya sözleşmeye özel fiyatlar ise açıkça kullanılamaz olarak işaretlenir.",
+        "upd_note_release_notes_after_restart": "Uygulama içi güncellemeden sonra Yenilikler notları artık yeniden başlatılan sürümde bir kez ve o sürümün doğru öne çıkanlarıyla gösterilir.",
     },
     "es": {
         "upd_note_audit_filters": "La auditoría ahora incluye filtros en el lugar para tipo de evento, administrador, usuario afectado, intervalo de fechas y búsqueda de texto.",
         "upd_note_org_manager_audit": "Los administradores de organización pueden revisar el historial de auditoría de su propia organización sin ver registros de otra organización.",
         "upd_note_usage_cost_coverage": "Uso de IA ahora estima costes para más modelos de proveedores directos; los precios desconocidos o específicos de contrato siguen indicados claramente como no disponibles.",
+        "upd_note_release_notes_after_restart": "Después de una actualización dentro de la aplicación, las notas de «Novedades» se muestran una vez en la versión reiniciada con los aspectos exactos de esa versión.",
     },
     "de": {
         "upd_note_audit_filters": "Der Prüfverlauf bietet jetzt In-Place-Filter für Ereignistyp, Administrator, betroffenen Benutzer, Zeitraum und Textsuche.",
         "upd_note_org_manager_audit": "Organisationsmanager können den Prüfverlauf ihrer eigenen Organisation einsehen, ohne Datensätze anderer Organisationen zu sehen.",
         "upd_note_usage_cost_coverage": "Die KI-Nutzung schätzt jetzt Kosten für mehr Direktanbieter-Modelle; unbekannte oder vertragsabhängige Preise bleiben eindeutig als nicht verfügbar gekennzeichnet.",
+        "upd_note_release_notes_after_restart": "Nach einem In-App-Update werden die „Neuigkeiten“ jetzt einmal in der neu gestarteten Version mit den exakt für diese Version hinterlegten Hinweisen angezeigt.",
     },
     "nl": {
         "upd_note_audit_filters": "Het auditspoor heeft nu filters in de pagina voor gebeurtenistype, beheerder, betrokken gebruiker, datumbereik en tekstzoeken.",
         "upd_note_org_manager_audit": "Organisatiebeheerders kunnen de auditgeschiedenis van hun eigen organisatie bekijken zonder gegevens van andere organisaties te zien.",
         "upd_note_usage_cost_coverage": "AI-gebruik schat nu kosten voor meer modellen van directe providers; onbekende of contractspecificieke prijzen blijven duidelijk als niet beschikbaar gemarkeerd.",
+        "upd_note_release_notes_after_restart": "Na een in-app-update worden de ‘Wat is nieuw’-notities nu eenmaal in de opnieuw gestarte versie getoond, met de exacte highlights van die versie.",
     },
 }
 for _language, _values in _NEXT_RELEASE_NOTES_I18N.items():

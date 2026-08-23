@@ -791,8 +791,23 @@ def _is_empty_creds(d):
     user cleared everything'."""
     if not isinstance(d, dict):
         return True
+    # Saved accounts live in the signed-out/shared vault.  They intentionally
+    # may be the *only* sensitive value there: at that point the user has not
+    # yet selected an account-specific credential slot.  Treating this as an
+    # empty payload made the mobile write guard reject Remember me, so the
+    # account picker disappeared after logout or a relaunch.
+    saved_logins = d.get("saved_logins")
+    has_saved_login = (
+        isinstance(saved_logins, list)
+        and any(
+            isinstance(item, dict)
+            and bool((item.get("email") or "").strip())
+            and bool(item.get("password"))
+            for item in saved_logins
+        )
+    )
     return not (d.get("pat") or d.get("gmail") or d.get("gmail_app_pass")
-                or (d.get("keys") or {}))
+                or (d.get("keys") or {}) or has_saved_login)
 
 
 def save(d):

@@ -1615,6 +1615,67 @@ class QAStudio:
 
         self._bg(work)
 
+    def _open_profile_picture_editor(self, e=None):
+        """Open the common profile-photo editor on desktop and Android.
+
+        The compact mobile header must not carry the desktop account pill, but
+        editing a profile picture is still a core Settings action.  Keep the
+        upload, removal and crop/rotate path in one place so both surfaces use
+        the same validation and server-side authorization.
+        """
+        if not auth.configured() or not getattr(self, "user", None):
+            self._err(strings.t("profile_upload_unavailable"))
+            return
+
+        messages = {"size": "profile_image_size", "dimensions": "profile_image_dimensions",
+                    "format": "profile_image_format", "empty": "profile_image_picker"}
+
+        def rejected(reason):
+            self._err(strings.t(messages.get(reason, "profile_image_picker")))
+
+        def save(payload):
+            ok, data = auth.upload_profile_picture(**payload)
+            if not ok:
+                return False, strings.t("image_upload_failed", error=str(data)[:160])
+            self._identity_visuals["avatar_url"] = "data:{mime};base64,{body}".format(
+                mime=payload["mime_type"], body=payload["image_base64"])
+            self.ui_safe(lambda: (self._close_all_dialogs(),
+                                  self._toast(strings.t("profile_photo_saved")),
+                                  self.render(preserve_rail=True)))
+            return True, data
+
+        def remove():
+            ok, data = auth.remove_profile_picture()
+            if not ok:
+                return False, strings.t("image_remove_failed", error=str(data)[:160])
+            self._identity_visuals["avatar_url"] = ""
+            self.ui_safe(lambda: (self._close_all_dialogs(),
+                                  self._toast(strings.t("profile_photo_removed")),
+                                  self.render(preserve_rail=True)))
+            return True, data
+
+        identity_editor.open_editor(
+            self,
+            source=str((getattr(self, "_identity_visuals", {}) or {}).get("avatar_url") or ""),
+            title=strings.t("avatar_preview_title"),
+            choose_label=strings.t("profile_choose"),
+            save_label=strings.t("avatar_edit_save"),
+            close_label=strings.t("avatar_preview_close"),
+            reset_label=strings.t("avatar_edit_reset"),
+            remove_tooltip=strings.t("profile_tip_remove"),
+            loading_label=strings.t("avatar_edit_loading"),
+            failed_label=strings.t("avatar_edit_failed"),
+            drag_hint=strings.t("identity_editor_drag"),
+            zoom_label=strings.t("avatar_edit_zoom"),
+            rotate_label=strings.t("avatar_edit_rotate"),
+            uploading_label=strings.t("profile_uploading"),
+            on_choose_error=rejected,
+            on_save=save,
+            on_remove=remove,
+            positioned_label=strings.t("identity_editor_positioned"),
+            load_failed_label=strings.t("identity_editor_source_unavailable"),
+        )
+
     def _no_access_screen(self):
         return ft.Container(
             ft.Column([
@@ -2151,47 +2212,8 @@ class QAStudio:
         ], width=avatar_size, height=avatar_size, clip_behavior=ft.ClipBehavior.NONE)
         avatar_display = avatar_wrap
         if not compact:
-            def _open_avatar_editor(e=None):
-                messages = {"size": "profile_image_size", "dimensions": "profile_image_dimensions",
-                            "format": "profile_image_format", "empty": "profile_image_picker"}
-
-                def rejected(reason):
-                    self._err(strings.t(messages.get(reason, "profile_image_picker")))
-
-                def save(payload):
-                    ok, data = auth.upload_profile_picture(**payload)
-                    if not ok:
-                        return False, strings.t("image_upload_failed", error=str(data)[:160])
-                    self._identity_visuals["avatar_url"] = "data:{mime};base64,{body}".format(
-                        mime=payload["mime_type"], body=payload["image_base64"])
-                    self.ui_safe(lambda: (self._close_all_dialogs(),
-                                          self._toast(strings.t("profile_photo_saved")),
-                                          self.render(preserve_rail=True)))
-                    return True, data
-
-                def remove():
-                    ok, data = auth.remove_profile_picture()
-                    if not ok:
-                        return False, strings.t("image_remove_failed", error=str(data)[:160])
-                    self._identity_visuals["avatar_url"] = ""
-                    self.ui_safe(lambda: (self._close_all_dialogs(),
-                                          self._toast(strings.t("profile_photo_removed")),
-                                          self.render(preserve_rail=True)))
-                    return True, data
-
-                identity_editor.open_editor(
-                    self, source=avatar_url, title=strings.t("avatar_preview_title"),
-                    choose_label=strings.t("profile_choose"), save_label=strings.t("avatar_edit_save"),
-                    close_label=strings.t("avatar_preview_close"), reset_label=strings.t("avatar_edit_reset"),
-                    remove_tooltip=strings.t("profile_tip_remove"), loading_label=strings.t("avatar_edit_loading"),
-                    failed_label=strings.t("avatar_edit_failed"), drag_hint=strings.t("identity_editor_drag"),
-                    zoom_label=strings.t("avatar_edit_zoom"), rotate_label=strings.t("avatar_edit_rotate"),
-                    uploading_label=strings.t("profile_uploading"), on_choose_error=rejected,
-                    on_save=save, on_remove=remove, positioned_label=strings.t("identity_editor_positioned"),
-                    load_failed_label=strings.t("identity_editor_source_unavailable"))
-
             avatar_display = ft.Container(
-                avatar_wrap, on_click=_open_avatar_editor, ink=True,
+                avatar_wrap, on_click=self._open_profile_picture_editor, ink=True,
                 border_radius=23, padding=3,
                 tooltip=strings.t("avatar_tip_preview" if avatar_url else "profile_choose"))
 
@@ -2218,6 +2240,14 @@ class QAStudio:
 
         if compact:
             def _open_account_popup(e):
+                def _edit_photo(_e=None):
+                    self._close_all_dialogs()
+                    self._open_profile_picture_editor()
+
+                edit_photo = ft.Container(
+                    ft.Icon(ft.Icons.EDIT_OUTLINED, size=16, color=T.INK_2),
+                    on_click=_edit_photo, ink=True, border_radius=10, padding=9,
+                    tooltip=strings.t("avatar_tip_preview" if avatar_url else "profile_choose"))
                 dlg = ft.AlertDialog(
                     modal=False,
                     content=ft.Container(
@@ -2229,6 +2259,7 @@ class QAStudio:
                                         overflow=ft.TextOverflow.ELLIPSIS),
                                 ft.Container(role_pill, margin=ft.Margin.only(top=4)),
                             ], spacing=0, tight=True, expand=True),
+                            edit_photo,
                             logout,
                         ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                         width=280, padding=ft.Padding.symmetric(vertical=4)))
@@ -4141,18 +4172,13 @@ class QAStudio:
         """Show release notes only after a successful in-app update.
 
         A version copied from a development folder was never an update event;
-        treating it as one made release notes race navigation and layout.
+        treating it as one made release notes race navigation and layout. The
+        durable marker is written only after the updater has applied a release.
         """
         notice = E.get_pending_update_notice() or {}
         pending_version = str(notice.get("version") or "")
-        # A completion dialog can legitimately have rendered before a release
-        # card existed (for example, a release published without exact notes).
-        # Once-per-version replay makes that recoverable after the app updates.
         if not pending_version:
-            pending_version = E.local_version()
-            if (not pending_version
-                    or E.get_seen_release_notice_version() == pending_version):
-                return
+            return
         if (getattr(self, "_release_notice_scheduled", False)
                 or getattr(self, "_release_notice_open", False)):
             return

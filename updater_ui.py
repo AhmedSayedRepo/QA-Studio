@@ -310,13 +310,12 @@ def _release_notes_card(version):
 
 
 def show_restart_dialog(app, msg, version=""):
-    """Show the post-update hand-off, including the release highlights.
+    """Ask the old process to restart after a successful update.
 
-    This dialog is only opened after ``apply_update`` succeeds, so the notes
-    are a useful, once-per-update explanation rather than a persistent banner
-    users have to dismiss on every launch.
+    This process still has the old modules loaded, so it cannot reliably show
+    the exact highlights that shipped with the downloaded version. The newly
+    launched process consumes the pending-update marker and shows them once.
     """
-    release_card = _release_notes_card(version)
     content_controls = [
         ft.Text(strings.t("upd_updated_body"),
                 size=13, color=T.INK, weight=ft.FontWeight.W_700),
@@ -324,8 +323,6 @@ def show_restart_dialog(app, msg, version=""):
         ft.Text(strings.t("upd_restart_body"),
                 size=13, color=T.INK_2, weight=ft.FontWeight.W_500),
     ]
-    if release_card is not None:
-        content_controls.extend([ft.Container(height=5), release_card])
     dlg = ft.AlertDialog(
         modal=True,
         title=ft.Row([
@@ -338,10 +335,7 @@ def show_restart_dialog(app, msg, version=""):
             ft.Column(content_controls, spacing=2, tight=True),
             width=480),
         actions=[
-            ghost_btn(strings.t("upd_later"), on_click=lambda e: (
-                E.clear_pending_update_notice(),
-                E.mark_release_notice_seen(version or E.local_version()),
-                app._close_dialog())),
+            ghost_btn(strings.t("upd_later"), on_click=lambda e: app._close_dialog()),
             green_btn(strings.t("upd_restart_now"), icon=ft.Icons.RESTART_ALT,
                       on_click=lambda e: app._restart_app(), height=46),
         ],
@@ -397,10 +391,8 @@ def restart_app(app):
     process tree (via `start`), so the `taskkill /T` we run on ourselves
     below can't kill it. The helper waits for THIS pid to exit, then starts
     a fresh app."""
-    # The user has already seen the completion dialog and explicitly chose to
-    # restart, so do not show the same notice again after the new process opens.
-    E.clear_pending_update_notice()
-    E.mark_release_notice_seen(str((app._update_info or {}).get("remote") or E.local_version()))
+    # Keep the durable update marker. Only the newly launched process has the
+    # new release_notes module and can show the exact stamped highlights.
     app._close_dialog()
     try:
         import sys, os, subprocess, tempfile
