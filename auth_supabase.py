@@ -34,6 +34,7 @@ import os
 import json
 import time
 import threading
+import hashlib
 from urllib.parse import urlencode
 
 import requests
@@ -250,8 +251,32 @@ def _friendly(resp):
         return f"Request failed ({resp.status_code})."
     for k in ("error_description", "msg", "message", "error"):
         if isinstance(j, dict) and j.get(k):
-            return str(j[k])
+            message = str(j[k])
+            # Edge Functions report this when a stale/corrupt cached bearer
+            # token reaches their own Supabase client.  It is not a recovery
+            # delivery failure, and the raw parser error is not actionable.
+            if ("invalid jwt" in message.lower()
+                    or "token contains an invalid number of segments" in message.lower()):
+                return "Your sign-in session is no longer valid. Please sign out and sign in again."
+            return message
     return f"Request failed ({resp.status_code})."
+
+
+def _is_invalid_session_response(resp):
+    """Whether a protected endpoint rejected the bearer before handling work."""
+    if getattr(resp, "status_code", None) != 401:
+        return False
+    try:
+        body = resp.json()
+        message = " ".join(str(body.get(k, "")) for k in
+                           ("error", "message", "msg", "error_description")
+                           if isinstance(body, dict))
+    except Exception:
+        message = getattr(resp, "text", "") or ""
+    lowered = message.lower()
+    return ("invalid jwt" in lowered or "invalid token" in lowered
+            or "token contains an invalid number of segments" in lowered
+            or "unable to parse or verify signature" in lowered)
 
 
 # ── Encrypted session cache (reuses store.py's DPAPI) ────────────────────────
@@ -549,6 +574,41 @@ def acquire_silent():
         return _user_dict(data.get("user"))
 
 
+def _looks_like_jwt(token):
+    """Cheap shape check before sending a cached value as a Bearer token.
+
+    This deliberately does not try to validate a signature locally; Supabase
+    remains the authority for that. It only prevents values such as ``None``,
+    a refresh token, or a damaged cache record from being sent as a JWT.
+    """
+    if not isinstance(token, str):
+        return False
+    parts = token.strip().split(".")
+    return len(parts) == 3 and all(parts)
+
+
+def _session_fingerprint(value):
+    """Short redacted identity for diagnostics; never log credential material."""
+    if not isinstance(value, str) or not value:
+        return "none"
+    try:
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()[:10]
+    except Exception:
+        return "present"
+
+
+def _reload_session_from_cache():
+    """Discard only this process's memory cache and re-read the durable session.
+
+    Refresh-token rotation can be completed by another window/process while this
+    process still has the prior token in memory.  Never let a failed refresh of
+    that stale value clear the newer durable session.
+    """
+    global _session_data
+    _session_data = None
+    return _load_session()
+
+
 def access_token():
     """Current bearer token (refreshing if needed), or '' — for calling your own
     token-protected backend. Returns '' when not signed in / not configured."""
@@ -558,19 +618,76 @@ def access_token():
         data = _load_session()
         if not data:
             return ""
-        if int(time.time()) >= int(data.get("expires_at", 0)) - _REFRESH_SKEW:
+        cached = data.get("access_token", "")
+        malformed = not _looks_like_jwt(cached)
+        if malformed or int(time.time()) >= int(data.get("expires_at", 0)) - _REFRESH_SKEW:
             payload, dead = _refresh(data.get("refresh_token", ""))
-            if payload and payload.get("access_token"):
+            if payload and _looks_like_jwt(payload.get("access_token", "")):
                 _store_session(payload)
                 data = _load_session()
             elif dead:
+                _save_session(None)
                 return ""     # token revoked → no bearer (session cleared at next
                               # acquire_silent); never emit a known-dead token
+            elif malformed:
+                # Do not send a bad cached value to a protected Edge Function.
+                # A transient refresh failure can be retried later, but this
+                # caller needs a usable bearer token now.
+                return ""
             else:
                 # transient — hand back the cached (expired) token rather than "";
                 # the protected call may 401, but we don't treat a blip as signed-out
-                return data.get("access_token", "")
+                return cached
         return data.get("access_token", "")
+
+
+def _force_refresh_access_token():
+    """Refresh once after a server rejects an otherwise well-formed token.
+
+    A 401 happens before a Supabase Edge Function executes the requested
+    action, making one retry safe for administrative POSTs such as recovery.
+    """
+    if not configured():
+        return ""
+    with _lock:
+        data = _load_session()
+        refresh = (data or {}).get("refresh_token", "")
+        if not refresh:
+            return ""
+        payload, dead = _refresh(refresh)
+        if payload and _looks_like_jwt(payload.get("access_token", "")):
+            _store_session(payload)
+            return payload["access_token"]
+        # If the refresh token was rotated by another desktop window, the
+        # process-local cache can be old even though the encrypted file now
+        # contains the valid session. Re-read it before ever clearing data.
+        disk_data = _reload_session_from_cache()
+        disk_refresh = (disk_data or {}).get("refresh_token", "")
+        if disk_refresh and disk_refresh != refresh:
+            if _diag:
+                try:
+                    _diag.log_warn(
+                        "auth_supabase.session_reloaded",
+                        f"stale_refresh={_session_fingerprint(refresh)} "
+                        f"current_refresh={_session_fingerprint(disk_refresh)}",
+                    )
+                except Exception:
+                    pass
+            disk_access = (disk_data or {}).get("access_token", "")
+            if _looks_like_jwt(disk_access):
+                return disk_access
+            payload, disk_dead = _refresh(disk_refresh)
+            if payload and _looks_like_jwt(payload.get("access_token", "")):
+                _store_session(payload)
+                return payload["access_token"]
+            dead = disk_dead
+        if dead:
+            # Only clear the same durable session whose refresh token was
+            # rejected. A newer rotated session must survive.
+            latest = _reload_session_from_cache()
+            if (latest or {}).get("refresh_token", "") == refresh:
+                _save_session(None)
+        return ""
 
 
 def change_own_password(new_password):
@@ -990,15 +1107,39 @@ def _tenant_admin(method="GET", payload=None, params=None):
     tok = access_token()
     if not tok:
         return False, "You’re not signed in."
-    try:
+    def _request(bearer):
         if method == "POST":
-            r = _client().post(_functions_url("tenant-admin"),
-                               headers={"Authorization": f"Bearer {tok}"},
-                               json=(payload or {}), timeout=_TIMEOUT)
-        else:
-            r = _client().get(_functions_url("tenant-admin"),
-                              headers={"Authorization": f"Bearer {tok}"},
-                              params=(params or {}), timeout=_TIMEOUT)
+            return _client().post(_functions_url("tenant-admin"),
+                                  headers={"Authorization": f"Bearer {bearer}"},
+                                  json=(payload or {}), timeout=_TIMEOUT)
+        return _client().get(_functions_url("tenant-admin"),
+                             headers={"Authorization": f"Bearer {bearer}"},
+                             params=(params or {}), timeout=_TIMEOUT)
+    try:
+        r = _request(tok)
+        if _is_invalid_session_response(r):
+            if _diag:
+                try:
+                    _diag.log_warn(
+                        "auth_supabase.tenant_admin",
+                        f"session_rejected method={method} status={r.status_code} "
+                        f"token_fp={_session_fingerprint(tok)} "
+                        f"segments={len(str(tok).split('.'))}",
+                    )
+                except Exception:
+                    pass
+            refreshed = _force_refresh_access_token()
+            if refreshed:
+                r = _request(refreshed)
+                if _diag:
+                    try:
+                        _diag.log_warn(
+                            "auth_supabase.tenant_admin",
+                            f"retry method={method} status={r.status_code} "
+                            f"token_fp={_session_fingerprint(refreshed)}",
+                        )
+                    except Exception:
+                        pass
     except Exception as ex:
         return False, f"Network error: {ex}"
     if r.status_code == 404:

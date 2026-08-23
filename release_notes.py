@@ -1,42 +1,30 @@
 """Version-specific release-note metadata.
 
-Release notes must never fall back to another version.  When a release has no
-authored entry, the updater still reports a successful update but omits the
-"What's new" card instead of presenting stale highlights.
+Authored notes are version-specific. When an exact entry has not been prepared,
+the updater uses a short localized release summary rather than showing stale
+highlights or omitting the update popup completely.
 """
 
 
-RELEASE_NOTE_KEYS = {
-    "3.7.1": (
-        "upd_note_tenants",
-        "upd_note_access",
-        "upd_note_audit",
-        "upd_note_experience",
-    ),
-    "3.7.9": (
-        "upd_note_379_openai",
-        "upd_note_379_performance",
-    ),
-    "3.8.0": (
-        "upd_note_380_handoff",
-        "upd_note_380_setup",
-    ),
-    "3.8.2": (
-        "upd_note_381_story_picker",
-        "upd_note_381_activity",
-    ),
-}
+RELEASE_NOTE_KEYS = {'3.7.1': ('upd_note_tenants', 'upd_note_access', 'upd_note_audit', 'upd_note_experience'), '3.7.9': ('upd_note_379_openai', 'upd_note_379_performance'), '3.8.0': ('upd_note_380_handoff', 'upd_note_380_setup'), '3.8.2': ('upd_note_381_story_picker', 'upd_note_381_activity'), '3.8.4': ('upd_note_org_help', 'upd_note_invite_email', 'upd_note_saved_accounts')}
 
 # Add the keys for the next release here while implementing its features.
 # release.bat stamps this draft with the version entered at its prompt, so
 # release-note text never has to guess a version number in advance.
 PENDING_RELEASE_NOTE_KEYS = ()
 
+FALLBACK_RELEASE_NOTE_KEYS = ("upd_note_release_general",)
+
 
 def normalize_version(version):
     return str(version or "").strip().lower().removeprefix("v")
 
 
-def keys_for(version):
-    """Return only notes authored for *version*; never use a fallback."""
+def exact_keys_for(version):
+    """Return notes authored specifically for *version*."""
     return RELEASE_NOTE_KEYS.get(normalize_version(version), ())
+
+
+def keys_for(version):
+    """Return exact notes, or the localized no-stale-notes release summary."""
+    return exact_keys_for(version) or FALLBACK_RELEASE_NOTE_KEYS

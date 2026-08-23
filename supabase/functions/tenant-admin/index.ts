@@ -377,15 +377,19 @@ Deno.serve(async (req: Request) => {
     if (["suspend", "reactivate", "force_signout", "recovery_email", "recovery_link"].includes(action)) {
       const userId = str(body.user_id, 80), { data: userData } = await admin.auth.admin.getUserById(userId), target = userData?.user as User | undefined;
       if (!target || (!isSuper && (orgOf(target) !== callerOrg || SUPER.has(roleOf(target))))) return out({ error: "That user is outside your administration scope." }, 403);
-      if (action === "force_signout") { const { error } = await admin.auth.admin.signOut(userId, "global"); if (error) return out({ error: error.message }, 500); await writeAudit(admin, orgOf(target), caller, "user.signed_out_globally", "user", userId); return out({ ok: true }); }
+      // GoTrueAdminApi.signOut() accepts a *session JWT*, not a user id. An
+      // administrator does not possess another user's session JWT, so passing
+      // `userId` here caused GoTrue to reject the UUID as a malformed JWT.
+      // Do not silently reset a password for this separate action: direct the
+      // administrator to the explicit recovery flow, which safely changes the
+      // password and consequently ends that user's active Supabase session.
+      if (action === "force_signout") {
+        return out({ error: "Use Send recovery credentials to end this user's sessions securely." }, 409);
+      }
       if (action === "recovery_email" || action === "recovery_link") {
-        // Mirror the invite flow: invalidate every existing session, set a
-        // one-time temporary password, and require the user to choose a new
-        // password after signing in through the desktop app. The password is
-        // returned only to the authenticated administrator's desktop client so
-        // it can send it through the organization's already-configured sender.
-        const { error: signOutError } = await admin.auth.admin.signOut(userId, "global");
-        if (signOutError) return out({ error: signOutError.message }, 500);
+        // Password changes terminate the target user's Supabase session. Do
+        // not call admin.signOut(userId): that API expects a session JWT and a
+        // UUID would be sent to GoTrue as a malformed token.
         const tempPassword = temporaryPassword();
         const metadata = { ...(target.app_metadata ?? {}), must_reset: true };
         const { error: resetError } = await admin.auth.admin.updateUserById(userId, {

@@ -20,15 +20,12 @@ import release_notes
 # paragraphs), and `points` (key bullets).
 FEATURES = [
     {"key": "whats_new", "nav_key": "help_whats_new_nav", "icon": ft.Icons.NEW_RELEASES, "title": "What's new",
-     "blurb": "The latest release improves update reliability and Setup scrolling.",
-     "details": [
-         "The updater now compares normalized dependency files, so Windows line endings no longer start an unnecessary dependency installation after an otherwise successful update.",
-         "Setup preserves its mounted scroll area during in-place refreshes and restores its header spacer correctly, keeping the first section reachable without a full-screen rebuild.",
-     ],
-     "points": [
-         "Updates skip dependency installation when requirements have not actually changed.",
-         "Setup keeps its scroll position and top content accessible after refreshes.",
-     ]},
+     # Content is resolved from release_notes at render time. Keeping a second
+     # version-specific copy here let this Help page become stale and, worse,
+     # made the release checker falsely report that a complete popup note was
+     # missing after release.bat had already stamped it.
+     "blurb": "Highlights for the version installed on this device.",
+     "details": [], "points": []},
     {"key": "setup", "icon": ft.Icons.TUNE, "title": "Setup",
      "blurb": "Connect your AI provider and Azure DevOps, then pick a project, "
               "test plan, and user stories. Everything else runs on this selection.",
@@ -379,6 +376,24 @@ FEATURES = [
          "An \"Official\" QA Studio link is pinned for everyone; only Admins can "
          "edit or delete it.",
      ]},
+    {"key": "organizations", "icon": ft.Icons.BUSINESS, "title": "Organizations",
+     "blurb": "Set up each organization’s identity, shared projects, teams, and access scope.",
+     "details": [
+         "Organizations is the workspace administration screen. Super Admins can "
+         "create and manage every organization; Organization Managers can manage "
+         "only the organization assigned to their own account.",
+         "For each organization, set its identity and defaults, then create manual "
+         "projects or import discovered projects from an allowed test-management "
+         "backend. Create teams to group people, and use the Users screen to assign "
+         "project and team membership. Those assignments determine which organization "
+         "projects are available to a user in Setup.",
+     ],
+     "points": [
+         "Set allowed email domains, locale, time zone, support email, retention, and a logo.",
+         "Add, edit, or remove organization projects; imported projects show their backend source.",
+         "Create and edit teams, then assign users to projects and teams on the Users screen.",
+         "Organization Managers are restricted to their assigned organization; Super Admins can manage all organizations.",
+     ]},
     {"key": "users", "icon": ft.Icons.PEOPLE_OUTLINE, "title": "Users",
      "blurb": "Admins manage who can access QA Studio and what each person can do.",
      "details": [
@@ -514,7 +529,7 @@ PLATFORM_OF = {
     "setup": "both", "run": "desktop", "report": "desktop",
     "remote_runs": "both", "regression": "both", "testplan": "both",
     "titles": "both", "task_manager": "both", "automation": "desktop",
-    "links": "both", "users": "both", "settings": "both", "providers": "both",
+    "links": "both", "organizations": "both", "users": "both", "settings": "both", "providers": "both",
 }
 
 PLATFORM_META = {
@@ -566,6 +581,23 @@ def _content(feat):
         ft.Text(strings.t("help_" + feat["key"] + "_blurb"), size=13.5, color=T.INK_2, weight=ft.FontWeight.W_500),
         ft.Container(height=14),
     ]
+    if feat["key"] == "whats_new":
+        note_keys = (release_notes.exact_keys_for(E.local_version())
+                     or release_notes.FALLBACK_RELEASE_NOTE_KEYS)
+        rows += [
+            ft.Text(strings.t("help_key_points"), size=10.5,
+                    weight=ft.FontWeight.W_800, color=T.INK_3),
+            ft.Container(height=8),
+        ]
+        for note_key in note_keys:
+            rows.append(ft.Row([
+                ft.Container(width=7, height=7, border_radius=4, bgcolor=T.VIOLET,
+                             margin=ft.Margin.only(top=6)),
+                ft.Text(strings.t(note_key), size=13, color=T.INK_2,
+                        weight=ft.FontWeight.W_500, expand=True),
+            ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.START))
+            rows.append(ft.Container(height=9))
+        return rows
     for _i, para in enumerate(feat.get("details", [])):
         rows.append(ft.Text(strings.t("help_" + feat["key"] + "_d" + str(_i)), size=13, color=T.INK_2, weight=ft.FontWeight.W_500))
         rows.append(ft.Container(height=10))

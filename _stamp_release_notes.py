@@ -29,7 +29,11 @@ def main(argv: list[str]) -> int:
     if not pending:
         print("[INFO] No prepared release-note draft to stamp.")
         return 0
-    if release_notes.keys_for(version):
+    # ``keys_for`` intentionally supplies a generic fallback so every update
+    # has something useful to show.  Only an exact entry means this version
+    # was already authored; treating the fallback as exact prevented every
+    # prepared draft from being stamped by release.bat.
+    if release_notes.exact_keys_for(version):
         print(f"[WARN] Release notes already exist for {version}; draft was not changed.")
         return 0
 

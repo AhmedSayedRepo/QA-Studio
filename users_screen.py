@@ -366,7 +366,7 @@ def screen(app):
     _cur_role = [None]
     _cur_caps = [None]
 
-    def _perm_panel(uid, role, caps, busy, org="", name="", status="active"):
+    def _perm_panel(uid, role, caps, busy, org="", name="", email="", status="active"):
         _cur_role[0] = role
         _cur_caps[0] = caps
         eff = auth.caps_for({"role": role, "caps": caps})
@@ -427,7 +427,11 @@ def screen(app):
                           on_click=(None if busy else (lambda e: _lifecycle(uid, name or uid, "force_signout"))),
                           tooltip=strings.t("users_tip_signout_all")),
                 ghost_btn(strings.t("users_recovery_email"), icon=ft.Icons.KEY,
-                          on_click=(None if busy else (lambda e: _recovery(uid, name or uid))),
+                          # Recovery delivery must always use the authenticated
+                          # account address. ``name`` is only a display label;
+                          # passing it to SMTP made addresses such as
+                          # "Somiya Omar" fail recipient validation.
+                          on_click=(None if busy else (lambda e: _recovery(uid, email or ""))),
                           tooltip=strings.t("users_tip_recovery_email")),
             ], spacing=8, wrap=True),
             ft.Container(height=12),
@@ -637,6 +641,7 @@ def screen(app):
             children.append(_perm_panel(uid, role, caps, busy,
                                         org=u.get("org_id") or "",
                                         name=u.get("name") or u.get("email") or "",
+                                        email=u.get("email") or "",
                                         status=status))
         return ft.Container(
             ft.Column(children, spacing=0),
@@ -874,6 +879,12 @@ def screen(app):
         """Email the invitee their temp password via the org-shared Gmail sender
         (same pipeline as report emails). Returns (ok, error)."""
         try:
+            # SMTP recipients must always be an actual account email. Never
+            # accept a display name here: names belong only in the message
+            # content, not in the envelope recipient passed to Gmail.
+            to_email = (to_email or "").strip().lower()
+            if not _EMAIL_RE.fullmatch(to_email):
+                return False, "A valid recipient email address is required."
             import engine
             engine.ensure_sender_creds()
             prefix = "users_recovery" if recovery else "users_invite"
@@ -984,15 +995,19 @@ def screen(app):
                     app.ui_safe(lambda: app.render(preserve_rail=True))
                 return
             temp = (res or {}).get("temp_password") or ""
-            sent, send_err = _email_temp_password(email, temp)
+            # Use the address returned by the authorized invite operation,
+            # rather than the display name or an unverified UI value. The
+            # server normalizes this as ``invited`` before SMTP is invoked.
+            invitee_email = ((res or {}).get("email") or email or "").strip().lower()
+            sent, send_err = _email_temp_password(invitee_email, temp)
             app._users_invite_open = False
             app._users_invite_err = None
             app._users_invite_vals = {}
             if sent:
-                app.ui_safe(lambda: app._toast(strings.t("users_invite_sent", email=email)))
+                app.ui_safe(lambda: app._toast(strings.t("users_invite_sent", email=invitee_email)))
             else:
                 # Couldn't email → show the credentials to the admin to relay.
-                app.ui_safe(lambda: _show_temp_pw_dialog(email, temp, send_err))
+                app.ui_safe(lambda: _show_temp_pw_dialog(invitee_email, temp, send_err))
             ok2, res2 = auth.admin_list_users()
             if ok2:
                 app._users_list = res2

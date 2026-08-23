@@ -353,6 +353,10 @@ def login_gate(app):
                 pass
         return ft.Container(expand=True, bgcolor=_base)
 
+    # Keep every form control on the same fixed inner grid.  In particular,
+    # Saved accounts must line up exactly with the email and password fields.
+    _LOGIN_INPUT_WIDTH = 352
+
     def _field(cap, hint, icon, value="", password=False):
         tf = ft.TextField(
             hint_text=hint, value=value or "", password=password,
@@ -363,7 +367,7 @@ def login_gate(app):
             text_align=(ft.TextAlign.RIGHT if _login_rtl else ft.TextAlign.LEFT),
             hint_style=ft.TextStyle(size=14, color=FIELD_IC),
             content_padding=ft.Padding.symmetric(vertical=17, horizontal=14),
-            border_radius=12)
+            border_radius=12, width=_LOGIN_INPUT_WIDTH)
         field_ctl = tf
         # MOBILE keyboard-reopen fix. On Android, dismissing the soft keyboard
         # (back gesture / tapping away) hides it but leaves the TextField still
@@ -412,7 +416,7 @@ def login_gate(app):
                     style=ft.TextStyle(letter_spacing=1.8)),
             ft.Container(height=7),
             field_ctl,
-        ], spacing=0, width=352)
+        ], spacing=0, width=_LOGIN_INPUT_WIDTH)
         return tf, col
 
     name_tf, name_col = (_field(strings.t("login_full_name_label"), strings.t("login_full_name_hint"), ft.Icons.PERSON_OUTLINE,
@@ -859,9 +863,9 @@ def login_gate(app):
                 on_click=_open_saved_accounts, ink=True, border_radius=11,
                 padding=ft.Padding.symmetric(vertical=8, horizontal=10),
                 bgcolor=_op(accent, 0.08), border=ft.Border.all(1, _op(accent, 0.32)),
-                tooltip=strings.t("login_saved_picker_tip"), width=352),
+                tooltip=strings.t("login_saved_picker_tip"), width=_LOGIN_INPUT_WIDTH),
             ft.Container(height=8),
-        ], spacing=0, width=352)
+        ], spacing=0, width=_LOGIN_INPUT_WIDTH)
 
     _header_row = ft.Row([ft.Container(logo_img(48), width=48, height=48, border_radius=12,
                              bgcolor=None, alignment=ft.Alignment.CENTER),
@@ -923,7 +927,7 @@ def login_gate(app):
                                  size=12.5, color=INK2, weight=ft.FontWeight.W_600),
                          _link(strings.t("login_create_one") if not signup else strings.t("login_sign_in_link"), _switch)],
                         spacing=6, alignment=ft.MainAxisAlignment.CENTER, tight=True)]
-    form = ft.Column(rows, spacing=0, width=352, tight=True,
+    form = ft.Column(rows, spacing=0, width=_LOGIN_INPUT_WIDTH, tight=True,
                      horizontal_alignment=(ft.CrossAxisAlignment.END if _login_rtl
                                            else ft.CrossAxisAlignment.START))
 

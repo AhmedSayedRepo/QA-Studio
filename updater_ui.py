@@ -285,6 +285,7 @@ def _release_notes_card(version):
         "upd_note_380_setup": ft.Icons.VERTICAL_ALIGN_TOP,
         "upd_note_381_story_picker": ft.Icons.PENDING_OUTLINED,
         "upd_note_381_activity": ft.Icons.FORMAT_LIST_BULLETED,
+        "upd_note_release_general": ft.Icons.NEW_RELEASES,
     }
     note_rows = []
     for key in note_keys:
@@ -338,7 +339,9 @@ def show_restart_dialog(app, msg, version=""):
             width=480),
         actions=[
             ghost_btn(strings.t("upd_later"), on_click=lambda e: (
-                E.clear_pending_update_notice(), app._close_dialog())),
+                E.clear_pending_update_notice(),
+                E.mark_release_notice_seen(version or E.local_version()),
+                app._close_dialog())),
             green_btn(strings.t("upd_restart_now"), icon=ft.Icons.RESTART_ALT,
                       on_click=lambda e: app._restart_app(), height=46),
         ],
@@ -362,6 +365,7 @@ def show_post_update_dialog(app, version):
         content_controls.extend([ft.Container(height=8), release_card])
     def _continue(e):
         E.clear_pending_update_notice()
+        E.mark_release_notice_seen(version)
         app._release_notice_open = False
         app._close_dialog()
 
@@ -396,6 +400,7 @@ def restart_app(app):
     # The user has already seen the completion dialog and explicitly chose to
     # restart, so do not show the same notice again after the new process opens.
     E.clear_pending_update_notice()
+    E.mark_release_notice_seen(str((app._update_info or {}).get("remote") or E.local_version()))
     app._close_dialog()
     try:
         import sys, os, subprocess, tempfile

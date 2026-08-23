@@ -10702,6 +10702,20 @@ for _language, _values in _RELEASE_381_I18N.items():
     _values["help_whats_new_version"] = "3.8.2"
     _STRINGS[_language].update(_values)
 
+# Always available when a release is published without a detailed draft. This
+# ensures every completed update has a useful, localized acknowledgement card.
+_RELEASE_NOTE_FALLBACK_I18N = {
+    "en": {"upd_note_release_general": "This release includes reliability improvements, refinements, and fixes across QA Studio."},
+    "ar": {"upd_note_release_general": "يتضمن هذا الإصدار تحسينات للموثوقية وتحسينات عامة وإصلاحات عبر QA Studio."},
+    "fr": {"upd_note_release_general": "Cette version apporte des améliorations de fiabilité, des ajustements et des correctifs dans QA Studio."},
+    "tr": {"upd_note_release_general": "Bu sürüm QA Studio genelinde güvenilirlik iyileştirmeleri, geliştirmeler ve düzeltmeler içerir."},
+    "es": {"upd_note_release_general": "Esta versión incluye mejoras de fiabilidad, ajustes y correcciones en QA Studio."},
+    "de": {"upd_note_release_general": "Diese Version enthält Zuverlässigkeitsverbesserungen, Verfeinerungen und Fehlerbehebungen für QA Studio."},
+    "nl": {"upd_note_release_general": "Deze release bevat betrouwbaarheidsverbeteringen, verfijningen en oplossingen in QA Studio."},
+}
+for _language, _values in _RELEASE_NOTE_FALLBACK_I18N.items():
+    _STRINGS[_language].update(_values)
+
 _UPDATE_COMPLETION_I18N = {
     "en": {"upd_update_started": "Update started in the background.", "upd_updating_desc": "Keep QA Studio open — restart options appear when it is ready.", "upd_updated_version": "QA Studio is now on version {version}.", "upd_continue": "Continue"},
     "ar": {"upd_update_started": "بدأ التحديث في الخلفية.", "upd_updating_desc": "أبقِ QA Studio مفتوحاً — ستظهر خيارات إعادة التشغيل عندما يصبح جاهزاً.", "upd_updated_version": "QA Studio يعمل الآن بالإصدار {version}.", "upd_continue": "متابعة"},
@@ -11132,6 +11146,113 @@ _PERFORMANCE_ACTIVITY_I18N = {
     },
 }
 for _language, _values in _PERFORMANCE_ACTIVITY_I18N.items():
+    _STRINGS[_language].update(_values)
+
+
+# Organizations are an administrative workspace, so their guide explains both
+# the ownership boundary and where project/team access is assigned.  Keep this
+# content localized just like every other Help & guide topic.
+_ORGANIZATIONS_HELP_AND_RELEASE_I18N = {
+    "en": {
+        "help_organizations_title": "Organizations",
+        "help_organizations_blurb": "Set up each organization’s identity, shared projects, teams, and access scope.",
+        "help_organizations_d0": "Organizations is the workspace administration screen. Super Admins can create and manage every organization; Organization Managers can manage only the organization assigned to their own account.",
+        "help_organizations_d1": "For each organization, set its identity and defaults, then create manual projects or import discovered projects from an allowed test-management backend. Create teams to group people, and use the Users screen to assign project and team membership. Those assignments determine which organization projects are available to a user in Setup.",
+        "help_organizations_p0": "Set allowed email domains, locale, time zone, support email, retention, and a logo.",
+        "help_organizations_p1": "Add, edit, or remove organization projects; imported projects show their backend source.",
+        "help_organizations_p2": "Create and edit teams, then assign users to projects and teams on the Users screen.",
+        "help_organizations_p3": "Organization Managers are restricted to their assigned organization; Super Admins can manage all organizations.",
+        "upd_note_org_help": "Help & guide now explains organization identity, project and team scope, and administration boundaries.",
+        "upd_note_invite_email": "Invitation and recovery credentials now validate and use the recipient’s email address for Gmail delivery.",
+        "upd_note_saved_accounts": "The Saved accounts control now aligns exactly with the email and password fields on sign-in.",
+        "help_whats_new_blurb": "Highlights for the version installed on this device.",
+    },
+    "ar": {
+        "help_organizations_title": "المؤسسات",
+        "help_organizations_blurb": "إعداد هوية كل مؤسسة ومشاريعها المشتركة وفرقها ونطاق الوصول فيها.",
+        "help_organizations_d0": "المؤسسات هي شاشة إدارة مساحات العمل. يمكن للمدير العام إنشاء جميع المؤسسات وإدارتها؛ ويمكن لمدير المؤسسة إدارة المؤسسة المعينة لحسابه فقط.",
+        "help_organizations_d1": "لكل مؤسسة، اضبط هويتها وإعداداتها الافتراضية، ثم أنشئ مشاريع يدوية أو استورد مشاريع مكتشفة من نظام إدارة اختبارات مسموح. أنشئ فرقاً لتجميع الأشخاص، واستخدم شاشة المستخدمين لتعيين عضويات المشاريع والفرق. تحدد هذه التعيينات مشاريع المؤسسة المتاحة للمستخدم في الإعداد.",
+        "help_organizations_p0": "اضبط نطاقات البريد المسموحة واللغة والمنطقة الزمنية وبريد الدعم والاحتفاظ والشعار.",
+        "help_organizations_p1": "أضف مشاريع المؤسسة أو عدّلها أو أزلها؛ وتعرض المشاريع المستوردة مصدرها الخلفي.",
+        "help_organizations_p2": "أنشئ الفرق وعدّلها، ثم عيّن المستخدمين إلى المشاريع والفرق من شاشة المستخدمين.",
+        "help_organizations_p3": "يقتصر مديرو المؤسسات على مؤسستهم المعينة؛ ويمكن للمديرين العامين إدارة كل المؤسسات.",
+        "upd_note_org_help": "يشرح دليل المساعدة الآن هوية المؤسسة ونطاق المشاريع والفرق وحدود الإدارة.",
+        "upd_note_invite_email": "تتحقق بيانات الدعوة والاسترداد الآن من عنوان بريد المستلم وتستخدمه لإرسال Gmail.",
+        "upd_note_saved_accounts": "أصبح عنصر الحسابات المحفوظة بمحاذاة تامة مع حقلي البريد الإلكتروني وكلمة المرور عند تسجيل الدخول.",
+        "help_whats_new_blurb": "أهم التغييرات في الإصدار المثبت على هذا الجهاز.",
+    },
+    "fr": {
+        "help_organizations_title": "Organisations",
+        "help_organizations_blurb": "Configurez l’identité, les projets partagés, les équipes et le périmètre d’accès de chaque organisation.",
+        "help_organizations_d0": "Organisations est l’écran d’administration des espaces de travail. Les Super Admins peuvent créer et gérer toutes les organisations ; les Responsables d’organisation ne peuvent gérer que celle attribuée à leur compte.",
+        "help_organizations_d1": "Pour chaque organisation, définissez son identité et ses valeurs par défaut, puis créez des projets manuels ou importez des projets détectés depuis un backend de gestion des tests autorisé. Créez des équipes pour regrouper les personnes et utilisez l’écran Utilisateurs pour attribuer les membres aux projets et équipes. Ces attributions déterminent les projets d’organisation disponibles dans Configuration.",
+        "help_organizations_p0": "Définissez les domaines e-mail autorisés, les paramètres régionaux, le fuseau horaire, l’e-mail de support, la rétention et le logo.",
+        "help_organizations_p1": "Ajoutez, modifiez ou supprimez des projets d’organisation ; les projets importés affichent leur source backend.",
+        "help_organizations_p2": "Créez et modifiez des équipes, puis attribuez les utilisateurs aux projets et équipes depuis Utilisateurs.",
+        "help_organizations_p3": "Les Responsables d’organisation sont limités à leur organisation ; les Super Admins peuvent toutes les gérer.",
+        "upd_note_org_help": "Le guide explique désormais l’identité d’organisation, le périmètre projets/équipes et les limites d’administration.",
+        "upd_note_invite_email": "Les identifiants d’invitation et de récupération valident désormais l’adresse e-mail du destinataire et l’utilisent pour l’envoi Gmail.",
+        "upd_note_saved_accounts": "Le contrôle Comptes enregistrés s’aligne désormais exactement avec les champs e-mail et mot de passe à la connexion.",
+        "help_whats_new_blurb": "Points importants de la version installée sur cet appareil.",
+    },
+    "tr": {
+        "help_organizations_title": "Kuruluşlar",
+        "help_organizations_blurb": "Her kuruluşun kimliğini, paylaşılan projelerini, ekiplerini ve erişim kapsamını ayarlayın.",
+        "help_organizations_d0": "Kuruluşlar çalışma alanı yönetim ekranıdır. Süper Yöneticiler tüm kuruluşları oluşturabilir ve yönetebilir; Kuruluş Yöneticileri yalnızca kendi hesaplarına atanmış kuruluşu yönetebilir.",
+        "help_organizations_d1": "Her kuruluş için kimliği ve varsayılanları ayarlayın; ardından el ile projeler oluşturun veya izin verilen test yönetimi arka ucundan bulunan projeleri içe aktarın. Kişileri gruplamak için ekipler oluşturun ve proje ile ekip üyeliği atamak için Kullanıcılar ekranını kullanın. Bu atamalar Kurulumda kullanıcıya sunulan kuruluş projelerini belirler.",
+        "help_organizations_p0": "İzin verilen e-posta alan adlarını, yerel ayarı, saat dilimini, destek e-postasını, saklamayı ve logoyu ayarlayın.",
+        "help_organizations_p1": "Kuruluş projeleri ekleyin, düzenleyin veya kaldırın; içe aktarılan projeler arka uç kaynağını gösterir.",
+        "help_organizations_p2": "Ekipler oluşturun ve düzenleyin, ardından Kullanıcılar ekranından kullanıcıları proje ve ekiplere atayın.",
+        "help_organizations_p3": "Kuruluş Yöneticileri atanmış kuruluşlarıyla sınırlıdır; Süper Yöneticiler tüm kuruluşları yönetebilir.",
+        "upd_note_org_help": "Yardım ve rehber artık kuruluş kimliğini, proje ve ekip kapsamını ve yönetim sınırlarını açıklıyor.",
+        "upd_note_invite_email": "Davet ve kurtarma kimlik bilgileri artık alıcının e-posta adresini doğrular ve Gmail teslimi için kullanır.",
+        "upd_note_saved_accounts": "Kaydedilmiş hesaplar denetimi artık oturum açmada e-posta ve parola alanlarıyla tam hizalanır.",
+        "help_whats_new_blurb": "Bu cihazda yüklü sürümün öne çıkanları.",
+    },
+    "es": {
+        "help_organizations_title": "Organizaciones",
+        "help_organizations_blurb": "Configura la identidad, los proyectos compartidos, los equipos y el alcance de acceso de cada organización.",
+        "help_organizations_d0": "Organizaciones es la pantalla de administración de espacios de trabajo. Los Superadministradores pueden crear y gestionar todas las organizaciones; los Administradores de organización solo pueden gestionar la organización asignada a su cuenta.",
+        "help_organizations_d1": "Para cada organización, configura su identidad y valores predeterminados, luego crea proyectos manuales o importa proyectos detectados desde un backend de gestión de pruebas permitido. Crea equipos para agrupar personas y usa la pantalla Usuarios para asignar miembros a proyectos y equipos. Estas asignaciones determinan qué proyectos de organización están disponibles para un usuario en Configuración.",
+        "help_organizations_p0": "Configura dominios de correo permitidos, configuración regional, zona horaria, correo de soporte, retención y logotipo.",
+        "help_organizations_p1": "Agrega, edita o elimina proyectos de organización; los proyectos importados muestran su origen de backend.",
+        "help_organizations_p2": "Crea y edita equipos y luego asigna usuarios a proyectos y equipos desde Usuarios.",
+        "help_organizations_p3": "Los Administradores de organización están limitados a su organización asignada; los Superadministradores pueden gestionar todas las organizaciones.",
+        "upd_note_org_help": "Ayuda y guía ahora explica la identidad de organización, el alcance de proyectos y equipos, y los límites de administración.",
+        "upd_note_invite_email": "Las credenciales de invitación y recuperación ahora validan y usan el correo del destinatario para la entrega mediante Gmail.",
+        "upd_note_saved_accounts": "El control Cuentas guardadas ahora se alinea exactamente con los campos de correo y contraseña al iniciar sesión.",
+        "help_whats_new_blurb": "Aspectos destacados de la versión instalada en este dispositivo.",
+    },
+    "de": {
+        "help_organizations_title": "Organisationen",
+        "help_organizations_blurb": "Richten Sie Identität, gemeinsame Projekte, Teams und Zugriffsbereich jeder Organisation ein.",
+        "help_organizations_d0": "Organisationen ist der Verwaltungsbereich für Arbeitsbereiche. Super-Administratoren können alle Organisationen erstellen und verwalten; Organisationsmanager können nur die ihrem Konto zugewiesene Organisation verwalten.",
+        "help_organizations_d1": "Legen Sie für jede Organisation Identität und Standardwerte fest, erstellen Sie anschließend manuelle Projekte oder importieren Sie erkannte Projekte aus einem erlaubten Testmanagement-Backend. Erstellen Sie Teams, um Personen zu gruppieren, und weisen Sie im Bildschirm Benutzer Projekt- und Teammitgliedschaften zu. Diese Zuweisungen bestimmen, welche Organisationsprojekte einem Benutzer in Einrichten zur Verfügung stehen.",
+        "help_organizations_p0": "Legen Sie erlaubte E-Mail-Domains, Gebietsschema, Zeitzone, Support-E-Mail, Aufbewahrung und Logo fest.",
+        "help_organizations_p1": "Fügen Sie Organisationsprojekte hinzu, bearbeiten oder entfernen Sie sie; importierte Projekte zeigen ihre Backend-Quelle.",
+        "help_organizations_p2": "Erstellen und bearbeiten Sie Teams und weisen Sie Benutzer dann über Benutzer Projekten und Teams zu.",
+        "help_organizations_p3": "Organisationsmanager sind auf ihre zugewiesene Organisation beschränkt; Super-Administratoren können alle Organisationen verwalten.",
+        "upd_note_org_help": "Hilfe und Anleitung erklären jetzt Organisationsidentität, Projekt- und Teambereich sowie Verwaltungsgrenzen.",
+        "upd_note_invite_email": "Einladungs- und Wiederherstellungsdaten prüfen nun die Empfänger-E-Mail-Adresse und verwenden sie für die Gmail-Zustellung.",
+        "upd_note_saved_accounts": "Die Steuerung Gespeicherte Konten ist bei der Anmeldung jetzt exakt an E-Mail- und Passwortfeld ausgerichtet.",
+        "help_whats_new_blurb": "Highlights der auf diesem Gerät installierten Version.",
+    },
+    "nl": {
+        "help_organizations_title": "Organisaties",
+        "help_organizations_blurb": "Stel de identiteit, gedeelde projecten, teams en toegangsafbakening van elke organisatie in.",
+        "help_organizations_d0": "Organisaties is het beheerscherm voor werkruimten. Superbeheerders kunnen alle organisaties maken en beheren; organisatiemanagers kunnen alleen de organisatie beheren die aan hun eigen account is toegewezen.",
+        "help_organizations_d1": "Stel voor elke organisatie de identiteit en standaardwaarden in, maak vervolgens handmatige projecten of importeer ontdekte projecten vanuit een toegestaan testmanagement-backend. Maak teams om personen te groeperen en gebruik het scherm Gebruikers om project- en teamlidmaatschappen toe te wijzen. Deze toewijzingen bepalen welke organisatieprojecten voor een gebruiker beschikbaar zijn in Instellen.",
+        "help_organizations_p0": "Stel toegestane e-maildomeinen, landinstelling, tijdzone, support-e-mail, bewaartermijn en logo in.",
+        "help_organizations_p1": "Voeg organisatieprojecten toe, bewerk of verwijder ze; geïmporteerde projecten tonen hun back-endbron.",
+        "help_organizations_p2": "Maak en bewerk teams en wijs gebruikers vervolgens via Gebruikers toe aan projecten en teams.",
+        "help_organizations_p3": "Organisatiemanagers zijn beperkt tot hun toegewezen organisatie; superbeheerders kunnen alle organisaties beheren.",
+        "upd_note_org_help": "Help en gids leggen nu organisatie-identiteit, project- en teamafbakening en beheerdersgrenzen uit.",
+        "upd_note_invite_email": "Uitnodigings- en herstelgegevens valideren en gebruiken nu het e-mailadres van de ontvanger voor Gmail-bezorging.",
+        "upd_note_saved_accounts": "De bediening Opgeslagen accounts is bij het aanmelden nu exact uitgelijnd met de e-mail- en wachtwoordvelden.",
+        "help_whats_new_blurb": "Hoogtepunten van de versie die op dit apparaat is geïnstalleerd.",
+    },
+}
+for _language, _values in _ORGANIZATIONS_HELP_AND_RELEASE_I18N.items():
     _STRINGS[_language].update(_values)
 
 

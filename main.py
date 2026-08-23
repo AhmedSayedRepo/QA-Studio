@@ -4054,8 +4054,14 @@ class QAStudio:
         """
         notice = E.get_pending_update_notice() or {}
         pending_version = str(notice.get("version") or "")
+        # A completion dialog can legitimately have rendered before a release
+        # card existed (for example, a release published without exact notes).
+        # Once-per-version replay makes that recoverable after the app updates.
         if not pending_version:
-            return
+            pending_version = E.local_version()
+            if (not pending_version
+                    or E.get_seen_release_notice_version() == pending_version):
+                return
         if (getattr(self, "_release_notice_scheduled", False)
                 or getattr(self, "_release_notice_open", False)):
             return
@@ -6630,6 +6636,10 @@ class QAStudio:
             return f"Connection failed: {(msg or '')[:90]}"
 
         def work():
+            # The completed connection changes Setup's structure (credentials
+            # editor -> saved connection/task picker).  Keep that one rebuild,
+            # but do not rebuild for the intermediate status messages.
+            completed = False
             def alive():
                 # False once a newer connect started or the provider was switched.
                 return my_gen == self._connect_gen
@@ -6716,6 +6726,7 @@ class QAStudio:
                 if self._projects:
                     self.project = self._projects[0]
                     self._load_plans()
+                completed = True
             except Exception as ex:
                 if alive():
                     self._err(_friendly(str(ex)))
@@ -6725,7 +6736,23 @@ class QAStudio:
                 if alive():
                     self._connecting = False
                     self._connect_status = ""
-                    self._safe_render(preserve_rail=True, preserve_setup_scroll=True)
+                    if self.active == "setup":
+                        if completed:
+                            # One controlled, structural update after a
+                            # successful connection. setup.py reuses the
+                            # existing setup scroller, and render() preserves
+                            # the rail, so neither position should jump.
+                            self.ui_safe(lambda: (
+                                self.render(
+                                    preserve_rail=True,
+                                    preserve_setup_scroll=True,
+                                ) if self.active == "setup" else None
+                            ))
+                        else:
+                            # A failed/cancelled attempt only needs its mounted
+                            # progress controls restored. Rebuilding the screen
+                            # here was the second visible render/jump.
+                            self._set_connect_loading(False)
         self._bg(work)
 
     def _bg(self, fn):
@@ -7004,22 +7031,20 @@ class QAStudio:
         render() tears down and rebuilds the whole Setup screen just to swap
         one line of text, which is disproportionate for something this
         session's Task Manager work already established a lighter pattern
-        for (targeted control updates instead of full re-renders). Falls
-        back to _safe_render() only if the control ref is somehow missing —
-        shouldn't happen in practice, since render() always runs once with
-        _connecting=True (which is what creates this ref) before _connect()'s
-        background worker ever calls this."""
+        for targeted control updates instead of full re-renders. A missing or
+        stale reference means the user has navigated/re-rendered already; the
+        next mounted Setup view will read the current state, so forcing a
+        whole-shell fallback here is both unnecessary and disruptive."""
         self._connect_status = msg
         txt = getattr(self, "_connect_status_text", None)
         if txt is None:
-            self._safe_render(preserve_rail=True, preserve_setup_scroll=True)
             return
         def _upd():
             try:
                 txt.value = msg
                 txt.update()
             except Exception:
-                self._safe_render(preserve_rail=True, preserve_setup_scroll=True)
+                pass
         self.ui_safe(_upd)
 
     def _set_connect_loading(self, loading):
@@ -7029,7 +7054,6 @@ class QAStudio:
             button = getattr(self, "_connect_btn", None)
             text = getattr(self, "_connect_status_text", None)
             if status is None or button is None or text is None:
-                self._safe_render(preserve_rail=True, preserve_setup_scroll=True)
                 return
             try:
                 status.visible = bool(loading)
@@ -7039,7 +7063,7 @@ class QAStudio:
                 status.update()
                 button.update()
             except Exception:
-                self._safe_render(preserve_rail=True, preserve_setup_scroll=True)
+                pass
         self.ui_safe(_upd)
 
     def _safe_render(self, preserve_rail=False, preserve_setup_scroll=False):
