@@ -109,33 +109,23 @@ def screen(app):
         current_user = getattr(app, "user", None) or {}
         avatar_url = str((getattr(app, "_identity_visuals", {}) or {}).get("avatar_url") or "")
         initial = str(current_user.get("name") or current_user.get("email") or "?").strip()[:1].upper()
-        avatar_preview = (ft.Image(src=avatar_url, width=48, height=48,
-                                   fit=ft.BoxFit.COVER, border_radius=24)
+        avatar_preview = (ft.Image(src=avatar_url, width=64, height=64,
+                                   fit=ft.BoxFit.COVER, border_radius=32)
                           if avatar_url else ft.Container(
                               ft.Text(initial, size=17, weight=ft.FontWeight.BOLD, color="#FFFFFF"),
-                              width=48, height=48, alignment=ft.Alignment.CENTER,
-                              border_radius=24, gradient=ft.LinearGradient(
+                              width=64, height=64, alignment=ft.Alignment.CENTER,
+                              border_radius=32, gradient=ft.LinearGradient(
                                   begin=ft.Alignment.TOP_LEFT, end=ft.Alignment.BOTTOM_RIGHT,
                                   colors=[T.VIOLET, getattr(T, "VIOLET_H", T.VIOLET)])))
-        profile_actions = [
-            ghost_btn(strings.t("profile_choose"), icon=ft.Icons.UPLOAD,
-                      disabled=(ro or not bool(current_user)),
-                      on_click=(None if ro else lambda e: app._upload_profile_picture()),
-                      tooltip=strings.t("profile_tip_photo")),
-        ]
-        if avatar_url:
-            profile_actions.append(
-                danger_btn(strings.t("profile_remove"), icon=ft.Icons.DELETE_OUTLINE,
-                           disabled=ro,
-                           on_click=(None if ro else lambda e: app._remove_profile_picture()),
-                           tooltip=strings.t("profile_tip_remove")))
+        settings_avatar_holder = ft.Container(avatar_preview, width=64, height=64,
+                                              border_radius=32,
+                                              clip_behavior=ft.ClipBehavior.HARD_EDGE)
+        app._settings_avatar_holder = settings_avatar_holder
         profile = card(ft.Column([
             ft.Text(strings.t("profile_title"), size=11, weight=ft.FontWeight.BOLD, color=T.INK_3),
             ft.Container(height=4),
             srow(strings.t("profile_photo"), strings.t("profile_photo_desc"),
-                 ft.Row([ft.Container(avatar_preview, width=48, height=48,
-                                      border_radius=24, clip_behavior=ft.ClipBehavior.HARD_EDGE),
-                         *profile_actions], spacing=10,
+                 ft.Row([settings_avatar_holder], spacing=10,
                         vertical_alignment=ft.CrossAxisAlignment.CENTER)),
         ], spacing=0))
 

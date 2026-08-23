@@ -39,42 +39,94 @@ const canImportProjectSource = (u: User, source: string) => {
 const str = (v: unknown, max = 500) => typeof v === "string" ? v.trim().slice(0, max) : "";
 const obj = (v: unknown): Record<string, unknown> => v && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : {};
 
-function imageDimensions(bytes: Uint8Array, mime: string): { width: number; height: number } | null {
-  const u16 = (offset: number) => offset + 2 <= bytes.length ? (bytes[offset] << 8) | bytes[offset + 1] : 0;
-  const u24le = (offset: number) => offset + 3 <= bytes.length ? bytes[offset] | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16) : 0;
-  const u32le = (offset: number) => offset + 4 <= bytes.length
-    ? (bytes[offset] | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16) | (bytes[offset + 3] * 0x1000000)) : 0;
-  if (mime === "image/png") {
-    return bytes.length >= 24 ? { width: ((bytes[16] << 24) | (bytes[17] << 16) | (bytes[18] << 8) | bytes[19]) >>> 0,
-      height: ((bytes[20] << 24) | (bytes[21] << 16) | (bytes[22] << 8) | bytes[23]) >>> 0 } : null;
-  }
-  if (mime === "image/jpeg") {
-    for (let offset = 2; offset + 9 < bytes.length;) {
-      if (bytes[offset] !== 0xff) { offset += 1; continue; }
-      while (offset < bytes.length && bytes[offset] === 0xff) offset += 1;
-      const marker = bytes[offset++];
-      if (marker === 0xd8 || marker === 0xd9 || (marker >= 0xd0 && marker <= 0xd7)) continue;
-      const segment = u16(offset); if (segment < 2 || offset + segment > bytes.length) return null;
-      if ((marker >= 0xc0 && marker <= 0xc3) || (marker >= 0xc5 && marker <= 0xc7)
-          || (marker >= 0xc9 && marker <= 0xcb) || (marker >= 0xcd && marker <= 0xcf)) {
-        return { width: u16(offset + 5), height: u16(offset + 3) };
-      }
-      offset += segment;
+type ImageDimensions = { width: number; height: number };
+const u16be = (b: Uint8Array, o: number) => o + 2 <= b.length ? (b[o] << 8) | b[o + 1] : 0;
+const u16le = (b: Uint8Array, o: number) => o + 2 <= b.length ? b[o] | (b[o + 1] << 8) : 0;
+const u24le = (b: Uint8Array, o: number) => o + 3 <= b.length ? b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) : 0;
+const u32be = (b: Uint8Array, o: number) => o + 4 <= b.length
+  ? ((b[o] * 0x1000000) + (b[o + 1] << 16) + (b[o + 2] << 8) + b[o + 3]) : 0;
+const u32le = (b: Uint8Array, o: number) => o + 4 <= b.length
+  ? (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] * 0x1000000)) : 0;
+const ascii = (b: Uint8Array, o: number, n: number) => String.fromCharCode(...b.slice(o, o + n));
+
+function pngDimensions(bytes: Uint8Array): ImageDimensions | null {
+  const signature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  if (bytes.length < 45 || signature.some((value, index) => bytes[index] !== value)) return null;
+  let offset = 8, hasHeader = false, hasPixels = false, ended = false, dimensions: ImageDimensions | null = null;
+  while (offset + 12 <= bytes.length) {
+    const length = u32be(bytes, offset), type = ascii(bytes, offset + 4, 4), start = offset + 8, end = start + length;
+    if (end + 4 > bytes.length || !/^[A-Za-z]{4}$/.test(type)) return null;
+    if (!hasHeader) {
+      if (type !== "IHDR" || length !== 13) return null;
+      dimensions = { width: u32be(bytes, start), height: u32be(bytes, start + 4) };
+      const bitDepth = bytes[start + 8], colorType = bytes[start + 9];
+      if (![1, 2, 4, 8, 16].includes(bitDepth) || ![0, 2, 3, 4, 6].includes(colorType)
+          || bytes[start + 10] !== 0 || bytes[start + 11] !== 0 || bytes[start + 12] > 1) return null;
+      hasHeader = true;
+    } else if (type === "IDAT") {
+      hasPixels = true;
+    } else if (type === "IEND") {
+      if (length !== 0 || !hasPixels || end + 4 !== bytes.length) return null;
+      ended = true;
+      break;
     }
-    return null;
+    offset = end + 4;
   }
-  if (mime === "image/webp" && bytes.length >= 30) {
-    const chunk = String.fromCharCode(...bytes.slice(12, 16));
-    const chunkSize = u32le(16);
-    if (chunkSize <= 0 || 20 + chunkSize > bytes.length) return null;
-    if (chunk === "VP8X" && chunkSize >= 10) return { width: u24le(24) + 1, height: u24le(27) + 1 };
-    if (chunk === "VP8 " && chunkSize >= 10 && bytes[23] === 0x9d && bytes[24] === 0x01 && bytes[25] === 0x2a) {
-      return { width: u16(26) & 0x3fff, height: u16(28) & 0x3fff };
+  return ended ? dimensions : null;
+}
+
+function jpegDimensions(bytes: Uint8Array): ImageDimensions | null {
+  if (bytes.length < 16 || bytes[0] !== 0xff || bytes[1] !== 0xd8
+      || bytes[bytes.length - 2] !== 0xff || bytes[bytes.length - 1] !== 0xd9) return null;
+  let offset = 2, dimensions: ImageDimensions | null = null;
+  while (offset + 1 < bytes.length - 2) {
+    if (bytes[offset] !== 0xff) return dimensions; // entropy-coded scan; final EOI was checked above.
+    while (offset < bytes.length && bytes[offset] === 0xff) offset += 1;
+    const marker = bytes[offset++];
+    if (marker === 0xd9) return dimensions;
+    if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue;
+    const segment = u16be(bytes, offset);
+    if (segment < 2 || offset + segment > bytes.length) return null;
+    if ((marker >= 0xc0 && marker <= 0xc3) || (marker >= 0xc5 && marker <= 0xc7)
+        || (marker >= 0xc9 && marker <= 0xcb) || (marker >= 0xcd && marker <= 0xcf)) {
+      if (segment < 8) return null;
+      dimensions = { width: u16be(bytes, offset + 5), height: u16be(bytes, offset + 3) };
     }
-    if (chunk === "VP8L" && chunkSize >= 5 && bytes[20] === 0x2f) {
-      return { width: 1 + bytes[21] + ((bytes[22] & 0x3f) << 8), height: 1 + (bytes[22] >> 6) + (bytes[23] << 2) + ((bytes[24] & 0x0f) << 10) };
-    }
+    if (marker === 0xda) return dimensions; // start of scan; only entropy bytes remain until EOI.
+    offset += segment;
   }
+  return dimensions;
+}
+
+function webpDimensions(bytes: Uint8Array): ImageDimensions | null {
+  if (bytes.length < 30 || ascii(bytes, 0, 4) !== "RIFF" || ascii(bytes, 8, 4) !== "WEBP"
+      || u32le(bytes, 4) + 8 !== bytes.length) return null;
+  let offset = 12, imageChunks = 0, dimensions: ImageDimensions | null = null;
+  const allowed = new Set(["VP8X", "ICCP", "ALPH", "VP8 ", "VP8L"]);
+  while (offset + 8 <= bytes.length) {
+    const type = ascii(bytes, offset, 4), length = u32le(bytes, offset + 4), start = offset + 8, end = start + length;
+    if (!allowed.has(type) || end > bytes.length) return null;
+    if (type === "VP8X") {
+      if (length !== 10 || dimensions) return null;
+      dimensions = { width: u24le(bytes, start + 4) + 1, height: u24le(bytes, start + 7) + 1 };
+    } else if (type === "VP8 " && length >= 10) {
+      if (imageChunks++ || bytes[start + 3] !== 0x9d || bytes[start + 4] !== 0x01 || bytes[start + 5] !== 0x2a) return null;
+      // VP8 frame dimensions are little-endian 14-bit values. Pillow emits this
+      // form for the normalized WebP uploaded by the desktop client.
+      dimensions = dimensions ?? { width: u16le(bytes, start + 6) & 0x3fff, height: u16le(bytes, start + 8) & 0x3fff };
+    } else if (type === "VP8L" && length >= 5) {
+      if (imageChunks++ || bytes[start] !== 0x2f) return null;
+      dimensions = dimensions ?? { width: 1 + bytes[start + 1] + ((bytes[start + 2] & 0x3f) << 8), height: 1 + (bytes[start + 2] >> 6) + (bytes[start + 3] << 2) + ((bytes[start + 4] & 0x0f) << 10) };
+    } else if (type !== "ICCP" && type !== "ALPH") return null;
+    offset = end + (length % 2);
+  }
+  return offset === bytes.length && imageChunks === 1 ? dimensions : null;
+}
+
+function imageDimensions(bytes: Uint8Array, mime: string): ImageDimensions | null {
+  if (mime === "image/png") return pngDimensions(bytes);
+  if (mime === "image/jpeg") return jpegDimensions(bytes);
+  if (mime === "image/webp") return webpDimensions(bytes);
   return null;
 }
 
@@ -88,11 +140,6 @@ function imagePayload(body: Body): { bytes: Uint8Array; mime: string; extension:
     const raw = atob(encoded);
     if (raw.length === 0 || raw.length > 2 * 1024 * 1024) return null;
     const bytes = Uint8Array.from(raw, (c) => c.charCodeAt(0));
-    const png = bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47;
-    const jpeg = bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
-    const webp = bytes.length >= 12 && String.fromCharCode(...bytes.slice(0, 4)) === "RIFF"
-      && String.fromCharCode(...bytes.slice(8, 12)) === "WEBP";
-    if (!((mime === "image/png" && png) || (mime === "image/jpeg" && jpeg) || (mime === "image/webp" && webp))) return null;
     const dimensions = imageDimensions(bytes, mime);
     // The desktop normalizes every accepted image to a square at most 2048px.
     // Recheck a bounded source envelope here because clients can call the Edge

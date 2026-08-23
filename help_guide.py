@@ -384,15 +384,20 @@ FEATURES = [
          "only the organization assigned to their own account.",
          "For each organization, set its identity and defaults, then create manual "
          "projects or import discovered projects from an allowed test-management "
-         "backend. Create teams to group people, and use the Users screen to assign "
-         "project and team membership. Those assignments determine which organization "
-         "projects are available to a user in Setup.",
+          "backend. Create teams to group people, and use the Users screen to assign "
+          "project and team membership. Those assignments determine which organization "
+          "projects are available to a user in Setup.",
+         "To frame identity images, click your desktop-header profile picture, or open "
+         "Organizations and click its logo (or Upload logo). Choose an image, zoom or "
+         "rotate it, then drag after zooming to place the visible area before saving. "
+         "QA Studio reprocesses the edited image before upload.",
      ],
      "points": [
          "Set allowed email domains, locale, time zone, support email, retention, and a logo.",
          "Add, edit, or remove organization projects; imported projects show their backend source.",
-         "Create and edit teams, then assign users to projects and teams on the Users screen.",
-         "Organization Managers are restricted to their assigned organization; Super Admins can manage all organizations.",
+          "Create and edit teams, then assign users to projects and teams on the Users screen.",
+          "Organization Managers are restricted to their assigned organization; Super Admins can manage all organizations.",
+         "Profile pictures and organization logos use the same zoom, rotate, and drag-to-position editor.",
      ]},
     {"key": "users", "icon": ft.Icons.PEOPLE_OUTLINE, "title": "Users",
      "blurb": "Admins manage who can access QA Studio and what each person can do.",

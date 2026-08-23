@@ -35,6 +35,7 @@ import json
 import time
 import threading
 import hashlib
+import base64
 from urllib.parse import urlencode
 
 import requests
@@ -88,6 +89,115 @@ def _cache_dir():
 
 def _cache_file():
     return os.path.join(_cache_dir(), "supabase_session.bin")
+
+
+# ── Encrypted identity-image cache ──────────────────────────────────────────
+# Private Storage URLs intentionally expire, so keeping their URL would not
+# speed up the next launch.  Instead we retain only the already-downloaded,
+# validated display bytes, protected by the same local encryption used for the
+# session.  This lets the shell paint the user's avatar and organization logo
+# immediately while a fresh signed URL is obtained in the background.
+_IDENTITY_IMAGE_CACHE_MAX_BYTES = 2 * 1024 * 1024
+
+
+def _identity_image_cache_file(user_id):
+    digest = hashlib.sha256(str(user_id or "").encode("utf-8")).hexdigest()[:32]
+    return os.path.join(_cache_dir(), f"identity_images_{digest}.bin")
+
+
+def _data_image_source(mime_type, raw):
+    """Return a Flet-supported data URL for a small trusted image payload."""
+    mime = str(mime_type or "").split(";", 1)[0].strip().lower()
+    if mime not in ("image/jpeg", "image/png", "image/webp"):
+        return ""
+    if not raw or len(raw) > _IDENTITY_IMAGE_CACHE_MAX_BYTES:
+        return ""
+    return "data:{mime};base64,{body}".format(
+        mime=mime, body=base64.b64encode(raw).decode("ascii"))
+
+
+def load_identity_image_cache(user_id):
+    """Return encrypted cached avatar/logo sources for one signed-in user."""
+    if not user_id:
+        return {"avatar_url": "", "organization_logo_url": ""}
+    try:
+        import store
+        with open(_identity_image_cache_file(user_id), "rb") as f:
+            raw = store._decrypt(f.read())
+        data = json.loads(raw.decode("utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("bad identity image cache")
+        avatar = str(data.get("avatar_url") or "")
+        logo = str(data.get("organization_logo_url") or "")
+        return {
+            "avatar_url": avatar if avatar.startswith("data:image/") else "",
+            "organization_logo_url": logo if logo.startswith("data:image/") else "",
+        }
+    except FileNotFoundError:
+        pass
+    except Exception as ex:
+        if _diag:
+            try:
+                _diag.log("auth_supabase.load_identity_image_cache", ex)
+            except Exception:
+                pass
+    return {"avatar_url": "", "organization_logo_url": ""}
+
+
+def refresh_identity_image_cache(user_id, avatar_url="", organization_logo_url=""):
+    """Download fresh private images and persist display copies encrypted.
+
+    This is always called on a background worker.  A download failure falls back
+    to the previous encrypted cache (or the newly issued signed URL), so an
+    image refresh can never block sign-in or replace a good local image with an
+    empty placeholder.
+    """
+    cached = load_identity_image_cache(user_id)
+    sources = dict(cached)
+    requested = {
+        "avatar_url": str(avatar_url or ""),
+        "organization_logo_url": str(organization_logo_url or ""),
+    }
+    changed = False
+    for key, url in requested.items():
+        if not url:
+            if sources.get(key):
+                sources[key] = ""
+                changed = True
+            continue
+        try:
+            response = _client().get(url, timeout=12)
+            response.raise_for_status()
+            data_source = _data_image_source(response.headers.get("Content-Type"), response.content)
+            if not data_source:
+                raise ValueError("identity image was not a supported small image")
+            if sources.get(key) != data_source:
+                sources[key] = data_source
+                changed = True
+        except Exception as ex:
+            # The signed URL is still usable by Flet if there is no prior
+            # encrypted image.  Do not record the expiring URL on disk.
+            if not sources.get(key):
+                sources[key] = url
+            if _diag:
+                try:
+                    _diag.log("auth_supabase.refresh_identity_image_cache", ex)
+                except Exception:
+                    pass
+    if changed:
+        try:
+            import store
+            os.makedirs(_cache_dir(), exist_ok=True)
+            blob = store._encrypt(json.dumps(sources, separators=(",", ":")).encode("utf-8"))
+            with open(_identity_image_cache_file(user_id), "wb") as f:
+                f.write(blob)
+        except Exception as ex:
+            if _diag:
+                try:
+                    _diag.log("auth_supabase.refresh_identity_image_cache.save", ex)
+                except Exception:
+                    pass
+    return sources
 
 # ── Permission model (granular, per-user) ────────────────────────────────────
 # Each user carries a set of capability KEYS. "nav.*" keys gate opening a screen;

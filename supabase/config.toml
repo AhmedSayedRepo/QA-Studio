@@ -1,7 +1,10 @@
 
 [functions.tenant-admin]
 enabled = true
-verify_jwt = false
+# The function also validates the token in its handler before using the service
+# role, but retain Supabase's platform gate so malformed or unsigned requests
+# never reach privileged image-upload code.
+verify_jwt = true
 import_map = "./functions/tenant-admin/deno.json"
 # Uncomment to specify a custom file path to the entrypoint.
 # Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx

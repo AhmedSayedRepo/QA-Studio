@@ -19,6 +19,7 @@ import theme as T
 import auth_supabase as auth
 import backend_setup
 import image_assets
+import identity_editor
 import strings
 from ui import hover_field, field_label
 
@@ -973,7 +974,7 @@ def screen(app):
                      # stores only non-secret configuration intent.
                      sso_provider=profile.get("sso_provider") or "none", scim_enabled=bool(profile.get("scim_enabled")))
 
-    def _upload_logo(e=None):
+    def _open_logo_editor(e=None):
         selected_org = str(getattr(tenant_pick, "value", None) or app._tenant_org_id or "")
         if not selected_org:
             app._err(strings.t("tenant_select_org"))
@@ -985,37 +986,48 @@ def screen(app):
         def rejected(reason):
             app._err(strings.t(messages.get(reason, "profile_image_picker")))
 
-        def ready(payload):
-            app._toast(strings.t("profile_uploading"))
+        def save(payload):
+            ok, result = auth.upload_organization_logo(selected_org, **payload)
+            if not ok:
+                return False, strings.t("image_upload_failed", error=str(result)[:160])
+            app._tenant_overview = None
+            app._users_tenant_overviews = {}
+            _load_tenant_overview(app, selected_org, force=True)
+            if str(auth.org_id_of(getattr(app, "user", None)) or "") == selected_org:
+                app._identity_visuals["organization_logo_url"] = "data:{mime};base64,{body}".format(
+                    mime=payload["mime_type"], body=payload["image_base64"])
+                app.ui_safe(lambda: (app._refresh_rail_logo(), app.render(preserve_rail=True)))
+                app._refresh_identity_visuals()
+            app.ui_safe(lambda: app._toast(strings.t("org_logo_saved")))
+            return True, result
 
-            def _work():
-                try:
-                    ok, result = auth.upload_organization_logo(selected_org, **payload)
-                except Exception as ex:
-                    ok, result = False, str(ex)
-                if not ok:
-                    app.ui_safe(lambda: app._err(strings.t("image_upload_failed", error=str(result)[:160])))
-                    return
-                app._tenant_overview = None
-                app._users_tenant_overviews = {}
-                _load_tenant_overview(app, selected_org, force=True)
-                # Apply the signed URL returned by the successful upload
-                # immediately.  Previously the rail waited for a second
-                # background GET, so an otherwise successful logo upload could
-                # appear to have done nothing until a later screen rebuild.
-                # Refresh afterwards as well, so a future session receives a
-                # newly signed URL rather than retaining this one-hour URL.
-                if str(auth.org_id_of(getattr(app, "user", None)) or "") == selected_org:
-                    app._identity_visuals["organization_logo_url"] = str(
-                        (result or {}).get("logo_url") or "")
-                    app.ui_safe(lambda: (app._refresh_rail_logo(),
-                                         app.render(preserve_rail=True)))
-                    app._refresh_identity_visuals()
-                app.ui_safe(lambda: app._toast(strings.t("org_logo_saved")))
+        def remove():
+            ok, result = auth.remove_organization_logo(selected_org)
+            if not ok:
+                return False, strings.t("image_remove_failed", error=str(result)[:160])
+            app._tenant_overview = None
+            app._users_tenant_overviews = {}
+            _load_tenant_overview(app, selected_org, force=True)
+            if str(auth.org_id_of(getattr(app, "user", None)) or "") == selected_org:
+                app._identity_visuals["organization_logo_url"] = ""
+                app.ui_safe(lambda: (app._refresh_rail_logo(), app.render(preserve_rail=True)))
+                app._refresh_identity_visuals()
+            app.ui_safe(lambda: app._toast(strings.t("org_logo_removed")))
+            return True, result
 
-            threading.Thread(target=_work, daemon=True).start()
-
-        image_assets.choose_square_image(app, strings.t("org_logo_upload"), ready, rejected)
+        latest = app._tenant_overview if app._tenant_org_id == selected_org else {}
+        latest_profile = latest.get("profile") if isinstance(latest, dict) and isinstance(latest.get("profile"), dict) else {}
+        identity_editor.open_editor(
+            app, source=str(latest_profile.get("logo_url") or ""), title=strings.t("org_logo"),
+            choose_label=strings.t("org_logo_upload"), save_label=strings.t("avatar_edit_save"),
+            close_label=strings.t("avatar_preview_close"), reset_label=strings.t("avatar_edit_reset"),
+            remove_tooltip=strings.t("org_logo_tip_remove"), loading_label=strings.t("avatar_edit_loading"),
+            failed_label=strings.t("avatar_edit_failed"), drag_hint=strings.t("identity_editor_drag"),
+            zoom_label=strings.t("avatar_edit_zoom"), rotate_label=strings.t("avatar_edit_rotate"),
+            uploading_label=strings.t("profile_uploading"), on_choose_error=rejected,
+            on_save=save, on_remove=(remove if latest_profile.get("logo_url") else None),
+            positioned_label=strings.t("identity_editor_positioned"),
+            load_failed_label=strings.t("identity_editor_source_unavailable"))
 
     def _remove_logo(e=None):
         selected_org = str(getattr(tenant_pick, "value", None) or app._tenant_org_id or "")
@@ -1044,6 +1056,9 @@ def screen(app):
         threading.Thread(target=_work, daemon=True).start()
 
     logo_remove_btn.on_click = _remove_logo
+    logo_holder.on_click = _open_logo_editor
+    logo_holder.ink = True
+    logo_holder.tooltip = strings.t("org_logo_tip")
 
     def _project_action_controls():
         if getattr(app, "_tenant_edit_project_id", ""):
@@ -1276,7 +1291,7 @@ def screen(app):
         ft.Row([sec_head("T", strings.t("tenant_head")), ft.Container(expand=True),
                 logo_action,
                 ghost_btn(strings.t("org_logo_upload"), icon=ft.Icons.UPLOAD,
-                          on_click=_upload_logo, tooltip=strings.t("org_logo_tip")),
+                          on_click=_open_logo_editor, tooltip=strings.t("org_logo_tip")),
                 tenant_pick], vertical_alignment=ft.CrossAxisAlignment.CENTER),
         ft.Container(height=8),
         ft.Text(strings.t("tenant_desc"), size=11.5, color=T.INK_3, no_wrap=False),

@@ -94,6 +94,7 @@ import login
 import modals
 import idle_watch
 import backend_setup
+import identity_editor
 
 # ── Flet version-compatibility shim ───────────────────────────────────────────
 # Flet renamed ft.icons→ft.Icons and ft.colors→ft.Colors around 0.25+. Support both.
@@ -484,6 +485,28 @@ class QAStudio:
                 _u0 = auth.acquire_silent()
                 if _u0:
                     self.user = _u0
+                    # Desktop credentials are partitioned per signed-in user.
+                    # ``self.creds`` above was necessarily read from the shared
+                    # pre-login file, so its theme cannot be used for the first
+                    # authenticated shell. Prime the palette from the restored
+                    # user's real credential slot before ``_build()`` mounts any
+                    # controls. The normal background restore still loads the
+                    # rest of that user's state without blocking startup.
+                    try:
+                        store.set_user(_u0.get("id"))
+                        _restored_theme = store.load().get("theme")
+                        if _restored_theme in ("dark", "light"):
+                            T.apply_theme(_restored_theme)
+                            self.page.theme_mode = (
+                                ft.ThemeMode.DARK if _restored_theme == "dark"
+                                else ft.ThemeMode.LIGHT)
+                            self.page.bgcolor = T.RAIL
+                    except Exception:
+                        pass
+                    # A private, encrypted display cache avoids waiting for
+                    # the Edge Function to mint fresh signed image URLs before
+                    # the first authenticated shell can paint.
+                    self._identity_visuals = auth.load_identity_image_cache(_u0.get("id"))
         except Exception:
             pass
 
@@ -1340,14 +1363,13 @@ class QAStudio:
             _sp = self.creds.get("provider")
             self._provider_choice = (_sp if _sp in E.AI_CONFIG
                                      else (E.active_providers()[:1] or ["anthropic"])[0])
-            # Theme is a device display preference, not a per-account
-            # credential — don't let switching to this account's own creds
-            # slot (which may have no "theme" key, or a stale one from a
-            # much older session) silently diverge from what's already on
-            # screen. Doesn't call T.apply_theme: this path never changes
-            # the rendered theme, only keeps self.creds in sync so a later
-            # unrelated store.save(self.creds) can't drift it either.
-            self.creds["theme"] = T.MODE
+            # A signed-in user can have a saved display preference. Keep it
+            # intact: replacing it with the pre-login/shared palette here made
+            # a light shell inherit stale dark tokens (or the reverse) during
+            # session restoration. New users with no preference inherit the
+            # theme already visible on this device.
+            if self.creds.get("theme") not in ("dark", "light"):
+                self.creds["theme"] = T.MODE
         except Exception:
             return
         self.connected = False        # re-connect with THIS user's own creds
@@ -1494,6 +1516,11 @@ class QAStudio:
         except Exception:
             pass
         try:
+            uid = str((getattr(self, "user", None) or {}).get("id") or "")
+            self._identity_visuals = auth.load_identity_image_cache(uid)
+        except Exception:
+            pass
+        try:
             self._refresh_identity_visuals()
         except Exception:
             pass
@@ -1516,17 +1543,19 @@ class QAStudio:
             current = str((getattr(self, "user", None) or {}).get("id") or "")
             if not ok or current != uid or not isinstance(data, dict):
                 return
-            self._identity_visuals = {
-                "avatar_url": str(data.get("avatar_url") or ""),
-                "organization_logo_url": str(data.get("organization_logo_url") or ""),
-            }
+            # Persist image bytes, not signed URLs. Signed URLs expire and are
+            # deliberately never written to disk; the cache itself is DPAPI/
+            # Fernet protected by auth_supabase.
+            self._identity_visuals = auth.refresh_identity_image_cache(
+                uid, data.get("avatar_url"), data.get("organization_logo_url"))
             if getattr(self, "user", None):
                 def _apply():
-                    # Desktop navigation deliberately preserves its existing
-                    # rail to retain scroll position. Patch its pinned logo
-                    # independently before the normal content refresh.
+                    # Signed URLs arrive after the first shell render. Replacing
+                    # the whole shell here recreated every Image widget and
+                    # caused avatar/logo flashes on every app launch. Patch the
+                    # mounted identity holders only instead.
                     self._refresh_rail_logo()
-                    self.render(preserve_rail=True)
+                    self._refresh_account_avatar()
                 self.ui_safe(_apply)
 
         self._bg(work)
@@ -1804,6 +1833,33 @@ class QAStudio:
         except Exception:
             pass
 
+    def _refresh_account_avatar(self):
+        """Patch mounted profile-photo holders without rebuilding the shell."""
+        user = getattr(self, "user", None) or {}
+        source = str((getattr(self, "_identity_visuals", {}) or {}).get("avatar_url") or "")
+        initial = str(user.get("name") or user.get("email") or "?").strip()[:1].upper()
+
+        def _apply(holder, size, radius):
+            if holder is None:
+                return
+            if source:
+                holder.content = ft.Image(src=source, width=size, height=size,
+                                          fit=ft.BoxFit.COVER, border_radius=radius)
+                holder.gradient = None
+            else:
+                holder.content = ft.Text(initial, size=max(14, int(size * 0.35)),
+                                         weight=ft.FontWeight.W_800, color="#FFFFFF")
+                holder.gradient = ft.LinearGradient(
+                    begin=ft.Alignment.TOP_LEFT, end=ft.Alignment.BOTTOM_RIGHT,
+                    colors=[T.VIOLET, getattr(T, "VIOLET_H", T.VIOLET)])
+            try:
+                holder.update()
+            except Exception:
+                pass
+
+        _apply(getattr(self, "_header_avatar_holder", None), 46, 23)
+        _apply(getattr(self, "_settings_avatar_holder", None), 64, 32)
+
     def rail(self):
         # Show each tab only if the user is permitted to open it (per-user nav
         # capabilities). When auth is off, can() is True so every tab shows.
@@ -2071,51 +2127,73 @@ class QAStudio:
         # space used by the initials fallback, so it cannot disturb the header.
         initial_text = ft.Text(initial, size=14, weight=ft.FontWeight.W_800, color="#FFFFFF")
         avatar_url = str((getattr(self, "_identity_visuals", {}) or {}).get("avatar_url") or "")
-        avatar_content = (ft.Image(src=avatar_url, width=34, height=34,
-                                   fit=ft.BoxFit.COVER, border_radius=17)
+        avatar_size = 46
+        avatar_radius = avatar_size // 2
+        avatar_content = (ft.Image(src=avatar_url, width=avatar_size, height=avatar_size,
+                                   fit=ft.BoxFit.COVER, border_radius=avatar_radius)
                           if avatar_url else initial_text)
         avatar = ft.Container(
             avatar_content,
-            width=34, height=34, border_radius=17, alignment=ft.Alignment.CENTER,
+            width=avatar_size, height=avatar_size, border_radius=avatar_radius, alignment=ft.Alignment.CENTER,
             clip_behavior=ft.ClipBehavior.HARD_EDGE,
             gradient=(None if avatar_url else ft.LinearGradient(
                 begin=ft.Alignment.TOP_LEFT, end=ft.Alignment.BOTTOM_RIGHT,
                 colors=[T.VIOLET, getattr(T, "VIOLET_H", T.VIOLET)])),
             shadow=ft.BoxShadow(blur_radius=10, spread_radius=-2, offset=ft.Offset(0, 2),
                                 color=_op(T.VIOLET, 0.5)))
+        # Keep a direct reference so the asynchronous signed-image refresh can
+        # replace just this content rather than rebuilding the entire header.
+        self._header_avatar_holder = avatar
         avatar_wrap = ft.Stack([
             avatar,
-            ft.Container(width=11, height=11, border_radius=6, bgcolor="#22C55E",
+            ft.Container(width=13, height=13, border_radius=7, bgcolor="#22C55E",
                          border=ft.Border.all(2, T.CARD), right=-1, bottom=-1),
-        ], width=34, height=34, clip_behavior=ft.ClipBehavior.NONE)
+        ], width=avatar_size, height=avatar_size, clip_behavior=ft.ClipBehavior.NONE)
         avatar_display = avatar_wrap
-        if avatar_url:
-            # Flet 0.85's native tooltip accepts text only and header parents
-            # clip an out-of-bounds hover card. A click-to-expand dialog is
-            # therefore the reliable full-resolution preview on Windows;
-            # hover keeps the discovery hint without destabilizing the header.
-            def _open_avatar_preview(e=None):
-                dialog = ft.AlertDialog(
-                    modal=False,
-                    title=ft.Text(strings.t("avatar_preview_title"), size=15,
-                                  weight=ft.FontWeight.W_800, color=T.INK),
-                    content=ft.Container(
-                        ft.Image(src=avatar_url, width=300, height=300,
-                                 fit=ft.BoxFit.COVER, border_radius=150),
-                        width=308, height=308, padding=4, border_radius=154,
-                        bgcolor=T.CARD_2, clip_behavior=ft.ClipBehavior.HARD_EDGE),
-                    actions=[ft.TextButton(strings.t("avatar_preview_close"),
-                                           on_click=lambda e: self._close_all_dialogs())],
-                    bgcolor=T.CARD)
-                self._show_dialog(dialog)
+        if not compact:
+            def _open_avatar_editor(e=None):
+                messages = {"size": "profile_image_size", "dimensions": "profile_image_dimensions",
+                            "format": "profile_image_format", "empty": "profile_image_picker"}
 
-            if not compact:
-                # Stack itself does not reliably dispatch a pointer click on
-                # Flet 0.85. Wrap it in an ink-enabled Container instead.
-                avatar_display = ft.Container(
-                    avatar_wrap, on_click=_open_avatar_preview, ink=True,
-                    border_radius=20, padding=3,
-                    tooltip=strings.t("avatar_tip_preview"))
+                def rejected(reason):
+                    self._err(strings.t(messages.get(reason, "profile_image_picker")))
+
+                def save(payload):
+                    ok, data = auth.upload_profile_picture(**payload)
+                    if not ok:
+                        return False, strings.t("image_upload_failed", error=str(data)[:160])
+                    self._identity_visuals["avatar_url"] = "data:{mime};base64,{body}".format(
+                        mime=payload["mime_type"], body=payload["image_base64"])
+                    self.ui_safe(lambda: (self._close_all_dialogs(),
+                                          self._toast(strings.t("profile_photo_saved")),
+                                          self.render(preserve_rail=True)))
+                    return True, data
+
+                def remove():
+                    ok, data = auth.remove_profile_picture()
+                    if not ok:
+                        return False, strings.t("image_remove_failed", error=str(data)[:160])
+                    self._identity_visuals["avatar_url"] = ""
+                    self.ui_safe(lambda: (self._close_all_dialogs(),
+                                          self._toast(strings.t("profile_photo_removed")),
+                                          self.render(preserve_rail=True)))
+                    return True, data
+
+                identity_editor.open_editor(
+                    self, source=avatar_url, title=strings.t("avatar_preview_title"),
+                    choose_label=strings.t("profile_choose"), save_label=strings.t("avatar_edit_save"),
+                    close_label=strings.t("avatar_preview_close"), reset_label=strings.t("avatar_edit_reset"),
+                    remove_tooltip=strings.t("profile_tip_remove"), loading_label=strings.t("avatar_edit_loading"),
+                    failed_label=strings.t("avatar_edit_failed"), drag_hint=strings.t("identity_editor_drag"),
+                    zoom_label=strings.t("avatar_edit_zoom"), rotate_label=strings.t("avatar_edit_rotate"),
+                    uploading_label=strings.t("profile_uploading"), on_choose_error=rejected,
+                    on_save=save, on_remove=remove, positioned_label=strings.t("identity_editor_positioned"),
+                    load_failed_label=strings.t("identity_editor_source_unavailable"))
+
+            avatar_display = ft.Container(
+                avatar_wrap, on_click=_open_avatar_editor, ink=True,
+                border_radius=23, padding=3,
+                tooltip=strings.t("avatar_tip_preview" if avatar_url else "profile_choose"))
 
         role_pill = ft.Container(
             ft.Text(strings.t("role_" + str(role).lower()).upper(), size=8.5, weight=ft.FontWeight.W_800, color=role_col,
@@ -2776,6 +2854,19 @@ class QAStudio:
                 and getattr(self, "_desktop_shell", None) is not None
                 and getattr(self, "_desktop_content_host", None) is not None):
             self.rail()  # refresh active nav styling without replacing its Column
+            # The mounted desktop shell is intentionally reused so navigation and
+            # in-place updates do not reset the rail's native scroll position.
+            # Its page-wash gradient, however, was created with the PREVIOUS
+            # palette.  Theme changes therefore rebuilt dark/light cards inside a
+            # stale light/dark background. Refresh the host's gradient before
+            # replacing the content stack; this keeps the scroll-preserving path
+            # while making an in-app theme switch equivalent to a fresh login.
+            try:
+                self._desktop_content_host.gradient = ft.LinearGradient(
+                    begin=ft.Alignment.TOP_CENTER, end=ft.Alignment.BOTTOM_CENTER,
+                    colors=list(T.GRAD_PAGE))
+            except Exception:
+                pass
             self._desktop_content_host.content = content_stack
             self._desktop_shell_reused = True
             return self._desktop_shell

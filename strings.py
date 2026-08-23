@@ -10495,13 +10495,13 @@ for _language, _values in _PASSWORD_POLICY_I18N.items():
     _STRINGS[_language].update(_values)
 
 _AVATAR_PREVIEW_I18N = {
-    "en": {"avatar_tip_preview": "Click to expand your profile picture", "avatar_preview_title": "Profile picture", "avatar_preview_close": "Close"},
-    "ar": {"avatar_tip_preview": "انقر لتكبير صورة ملفك الشخصي", "avatar_preview_title": "صورة الملف الشخصي", "avatar_preview_close": "إغلاق"},
-    "fr": {"avatar_tip_preview": "Cliquez pour agrandir votre photo de profil", "avatar_preview_title": "Photo de profil", "avatar_preview_close": "Fermer"},
-    "tr": {"avatar_tip_preview": "Profil fotoğrafınızı büyütmek için tıklayın", "avatar_preview_title": "Profil fotoğrafı", "avatar_preview_close": "Kapat"},
-    "es": {"avatar_tip_preview": "Haz clic para ampliar tu foto de perfil", "avatar_preview_title": "Foto de perfil", "avatar_preview_close": "Cerrar"},
-    "de": {"avatar_tip_preview": "Klicken Sie, um Ihr Profilbild zu vergrößern", "avatar_preview_title": "Profilbild", "avatar_preview_close": "Schließen"},
-    "nl": {"avatar_tip_preview": "Klik om je profielfoto te vergroten", "avatar_preview_title": "Profielfoto", "avatar_preview_close": "Sluiten"},
+    "en": {"avatar_tip_preview": "Click to edit your profile picture", "avatar_preview_title": "Profile picture", "avatar_preview_close": "Close", "avatar_edit_loading": "Preparing photo editor…", "avatar_edit_failed": "Could not prepare this profile picture for editing.", "avatar_edit_zoom": "Zoom", "avatar_edit_rotate": "Rotate", "avatar_edit_reset": "Reset", "avatar_edit_save": "Save changes"},
+    "ar": {"avatar_tip_preview": "انقر لتحرير صورة ملفك الشخصي", "avatar_preview_title": "صورة الملف الشخصي", "avatar_preview_close": "إغلاق", "avatar_edit_loading": "جارٍ تجهيز محرر الصورة…", "avatar_edit_failed": "تعذر تجهيز صورة الملف الشخصي للتحرير.", "avatar_edit_zoom": "تكبير", "avatar_edit_rotate": "تدوير", "avatar_edit_reset": "إعادة تعيين", "avatar_edit_save": "حفظ التغييرات"},
+    "fr": {"avatar_tip_preview": "Cliquez pour modifier votre photo de profil", "avatar_preview_title": "Photo de profil", "avatar_preview_close": "Fermer", "avatar_edit_loading": "Préparation de l’éditeur photo…", "avatar_edit_failed": "Impossible de préparer cette photo de profil pour la modification.", "avatar_edit_zoom": "Zoom", "avatar_edit_rotate": "Pivoter", "avatar_edit_reset": "Réinitialiser", "avatar_edit_save": "Enregistrer les modifications"},
+    "tr": {"avatar_tip_preview": "Profil fotoğrafınızı düzenlemek için tıklayın", "avatar_preview_title": "Profil fotoğrafı", "avatar_preview_close": "Kapat", "avatar_edit_loading": "Fotoğraf düzenleyici hazırlanıyor…", "avatar_edit_failed": "Bu profil fotoğrafı düzenlenmek için hazırlanamadı.", "avatar_edit_zoom": "Yakınlaştır", "avatar_edit_rotate": "Döndür", "avatar_edit_reset": "Sıfırla", "avatar_edit_save": "Değişiklikleri kaydet"},
+    "es": {"avatar_tip_preview": "Haz clic para editar tu foto de perfil", "avatar_preview_title": "Foto de perfil", "avatar_preview_close": "Cerrar", "avatar_edit_loading": "Preparando el editor de fotos…", "avatar_edit_failed": "No se pudo preparar esta foto de perfil para editarla.", "avatar_edit_zoom": "Zoom", "avatar_edit_rotate": "Girar", "avatar_edit_reset": "Restablecer", "avatar_edit_save": "Guardar cambios"},
+    "de": {"avatar_tip_preview": "Klicken Sie, um Ihr Profilbild zu bearbeiten", "avatar_preview_title": "Profilbild", "avatar_preview_close": "Schließen", "avatar_edit_loading": "Fotoeditor wird vorbereitet…", "avatar_edit_failed": "Dieses Profilbild konnte nicht zur Bearbeitung vorbereitet werden.", "avatar_edit_zoom": "Zoom", "avatar_edit_rotate": "Drehen", "avatar_edit_reset": "Zurücksetzen", "avatar_edit_save": "Änderungen speichern"},
+    "nl": {"avatar_tip_preview": "Klik om je profielfoto te bewerken", "avatar_preview_title": "Profielfoto", "avatar_preview_close": "Sluiten", "avatar_edit_loading": "Foto-editor wordt voorbereid…", "avatar_edit_failed": "Deze profielfoto kon niet worden voorbereid voor bewerking.", "avatar_edit_zoom": "Inzoomen", "avatar_edit_rotate": "Draaien", "avatar_edit_reset": "Herstellen", "avatar_edit_save": "Wijzigingen opslaan"},
 }
 for _language, _values in _AVATAR_PREVIEW_I18N.items():
     _STRINGS[_language].update(_values)
@@ -11253,6 +11253,74 @@ _ORGANIZATIONS_HELP_AND_RELEASE_I18N = {
     },
 }
 for _language, _values in _ORGANIZATIONS_HELP_AND_RELEASE_I18N.items():
+    _STRINGS[_language].update(_values)
+
+_IDENTITY_EDITOR_AND_RELEASE_I18N = {
+    "en": {
+        "identity_editor_drag": "Zoom in, then drag the image to position it.",
+        "identity_editor_positioned": "Positioned",
+        "identity_editor_source_unavailable": "The current image is no longer available. Choose an image to continue.",
+        "help_organizations_d2": "To frame identity images, click your desktop-header profile picture, or open Organizations and click its logo (or Upload logo). Choose an image, zoom or rotate it, then drag after zooming to place the visible area before saving. QA Studio reprocesses the edited image before upload.",
+        "help_organizations_p4": "Profile pictures and organization logos use the same zoom, rotate, and drag-to-position editor.",
+        "upd_note_385_identity_editor": "Profile pictures and organization logos now use the same editor: zoom, rotate, and drag a photo to frame it before saving.",
+        "upd_note_385_identity_help": "Help & guide now documents the identity-image editing workflow.",
+    },
+    "ar": {
+        "identity_editor_drag": "قرّب الصورة، ثم اسحبها لتحديد موضعها.",
+        "identity_editor_positioned": "تم تحديد الموضع",
+        "identity_editor_source_unavailable": "لم تعد الصورة الحالية متاحة. اختر صورة للمتابعة.",
+        "help_organizations_d2": "لتأطير صور الهوية، انقر على صورة ملفك الشخصي في رأس سطح المكتب، أو افتح المؤسسات وانقر على شعارها (أو تحميل الشعار). اختر صورة، ثم كبّرها أو دوّرها، واسحبها بعد التكبير لوضع الجزء الظاهر قبل الحفظ. يعيد QA Studio معالجة الصورة المعدلة قبل الرفع.",
+        "help_organizations_p4": "تستخدم صور الملف الشخصي وشعارات المؤسسات محرر التكبير والتدوير والسحب لتحديد الموضع نفسه.",
+        "upd_note_385_identity_editor": "تستخدم صور الملف الشخصي وشعارات المؤسسات الآن المحرر نفسه: كبّر الصورة أو دوّرها واسحبها لتأطيرها قبل الحفظ.",
+        "upd_note_385_identity_help": "يوثق دليل المساعدة الآن سير عمل تحرير صور الهوية.",
+    },
+    "fr": {
+        "identity_editor_drag": "Zoomez, puis faites glisser l’image pour la positionner.",
+        "identity_editor_positioned": "Positionnée",
+        "identity_editor_source_unavailable": "L’image actuelle n’est plus disponible. Choisissez une image pour continuer.",
+        "help_organizations_d2": "Pour cadrer les images d’identité, cliquez sur votre photo de profil dans l’en-tête de bureau, ou ouvrez Organisations et cliquez sur son logo (ou sur Téléverser le logo). Choisissez une image, zoomez ou faites-la pivoter, puis faites-la glisser après le zoom pour placer la zone visible avant d’enregistrer. QA Studio retraitera l’image modifiée avant le téléversement.",
+        "help_organizations_p4": "Les photos de profil et logos d’organisation utilisent le même éditeur de zoom, rotation et déplacement par glisser-déposer.",
+        "upd_note_385_identity_editor": "Les photos de profil et logos d’organisation utilisent désormais le même éditeur : zoomez, faites pivoter et glissez une photo pour la cadrer avant l’enregistrement.",
+        "upd_note_385_identity_help": "Le guide documente désormais le flux de modification des images d’identité.",
+    },
+    "tr": {
+        "identity_editor_drag": "Yakınlaştırın, ardından görüntüyü konumlandırmak için sürükleyin.",
+        "identity_editor_positioned": "Konumlandırıldı",
+        "identity_editor_source_unavailable": "Mevcut görsel artık kullanılamıyor. Devam etmek için bir görsel seçin.",
+        "help_organizations_d2": "Kimlik görsellerini kadrajlamak için masaüstü başlığındaki profil resminize tıklayın ya da Kuruluşlar’ı açıp logoya (veya Logo yükle’ye) tıklayın. Bir görsel seçin, yakınlaştırın veya döndürün; ardından kaydetmeden önce görünür alanı yerleştirmek için yakınlaştırdıktan sonra sürükleyin. QA Studio düzenlenen görseli yüklemeden önce yeniden işler.",
+        "help_organizations_p4": "Profil fotoğrafları ve kuruluş logoları aynı yakınlaştırma, döndürme ve sürükleyerek konumlandırma düzenleyicisini kullanır.",
+        "upd_note_385_identity_editor": "Profil fotoğrafları ve kuruluş logoları artık aynı düzenleyiciyi kullanır: kaydetmeden önce fotoğrafı kadrajlamak için yakınlaştırın, döndürün ve sürükleyin.",
+        "upd_note_385_identity_help": "Yardım ve rehber artık kimlik görseli düzenleme akışını belgeliyor.",
+    },
+    "es": {
+        "identity_editor_drag": "Acerca la imagen y luego arrástrala para colocarla.",
+        "identity_editor_positioned": "Colocada",
+        "identity_editor_source_unavailable": "La imagen actual ya no está disponible. Elige una imagen para continuar.",
+        "help_organizations_d2": "Para encuadrar imágenes de identidad, haz clic en tu foto de perfil en el encabezado de escritorio o abre Organizaciones y haz clic en su logotipo (o en Subir logotipo). Elige una imagen, acércala o gírala y, después de acercarla, arrástrala para colocar el área visible antes de guardar. QA Studio vuelve a procesar la imagen editada antes de subirla.",
+        "help_organizations_p4": "Las fotos de perfil y los logotipos de organización usan el mismo editor para acercar, girar y colocar arrastrando.",
+        "upd_note_385_identity_editor": "Las fotos de perfil y los logotipos de organización ahora usan el mismo editor: acerca, gira y arrastra una foto para encuadrarla antes de guardar.",
+        "upd_note_385_identity_help": "Ayuda y guía ahora documenta el flujo de edición de imágenes de identidad.",
+    },
+    "de": {
+        "identity_editor_drag": "Vergrößern Sie das Bild und ziehen Sie es dann an die gewünschte Position.",
+        "identity_editor_positioned": "Positioniert",
+        "identity_editor_source_unavailable": "Das aktuelle Bild ist nicht mehr verfügbar. Wählen Sie ein Bild aus, um fortzufahren.",
+        "help_organizations_d2": "Um Identitätsbilder auszurichten, klicken Sie auf Ihr Profilbild in der Desktop-Kopfzeile oder öffnen Sie Organisationen und klicken Sie auf dessen Logo (oder Logo hochladen). Wählen Sie ein Bild, vergrößern oder drehen Sie es und ziehen Sie es nach dem Vergrößern, um den sichtbaren Bereich vor dem Speichern zu platzieren. QA Studio verarbeitet das bearbeitete Bild vor dem Upload erneut.",
+        "help_organizations_p4": "Profilbilder und Organisationslogos verwenden denselben Editor zum Vergrößern, Drehen und Positionieren per Ziehen.",
+        "upd_note_385_identity_editor": "Profilbilder und Organisationslogos verwenden jetzt denselben Editor: Vergrößern, drehen und ziehen Sie ein Foto zum Ausrichten vor dem Speichern.",
+        "upd_note_385_identity_help": "Hilfe und Anleitung dokumentieren jetzt den Bearbeitungsablauf für Identitätsbilder.",
+    },
+    "nl": {
+        "identity_editor_drag": "Zoom in en sleep de afbeelding vervolgens naar de juiste positie.",
+        "identity_editor_positioned": "Geplaatst",
+        "identity_editor_source_unavailable": "De huidige afbeelding is niet meer beschikbaar. Kies een afbeelding om door te gaan.",
+        "help_organizations_d2": "Om identiteitsafbeeldingen te kadreren, klikt u op uw profielfoto in de desktopkop of opent u Organisaties en klikt u op het logo (of Logo uploaden). Kies een afbeelding, zoom in of roteer deze en sleep na het inzoomen om het zichtbare gebied te plaatsen voordat u opslaat. QA Studio verwerkt de bewerkte afbeelding opnieuw vóór het uploaden.",
+        "help_organizations_p4": "Profielfoto’s en organisatielogo’s gebruiken dezelfde editor voor zoomen, roteren en slepen om te positioneren.",
+        "upd_note_385_identity_editor": "Profielfoto’s en organisatielogo’s gebruiken nu dezelfde editor: zoom in, roteer en sleep een foto om deze te kadreren voordat u opslaat.",
+        "upd_note_385_identity_help": "Help en gids documenteren nu de bewerkingsworkflow voor identiteitsafbeeldingen.",
+    },
+}
+for _language, _values in _IDENTITY_EDITOR_AND_RELEASE_I18N.items():
     _STRINGS[_language].update(_values)
 
 
