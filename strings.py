@@ -11462,6 +11462,35 @@ for _language, _values in _AUDIT_FILTERS_I18N.items():
     _STRINGS[_language].update(_values)
 
 
+# Draft highlight for the next release. ``release.bat`` associates this with
+# the version entered at release time; do not hard-code a version here.
+_MOBILE_FOLLOWUPS_RELEASE_I18N = {
+    "en": {
+        "upd_note_3810_mobile_followups": "Mobile release notes now appear once after an APK update, and responsive layouts keep sign-in, help, photo editing, and audit details readable on phones.",
+    },
+    "ar": {
+        "upd_note_3810_mobile_followups": "تظهر ملاحظات الإصدار على الهاتف مرة واحدة بعد تحديث ملف APK، وتحافظ الواجهات المتجاوبة على وضوح تسجيل الدخول والمساعدة وتحرير الصور وتفاصيل التدقيق.",
+    },
+    "fr": {
+        "upd_note_3810_mobile_followups": "Les notes de version mobiles s'affichent désormais une fois après une mise à jour APK, et les interfaces adaptées gardent la connexion, l'aide, l'édition d'image et l'audit lisibles sur téléphone.",
+    },
+    "tr": {
+        "upd_note_3810_mobile_followups": "Mobil sürüm notları artık APK güncellemesinden sonra bir kez görünür; uyarlanabilir düzenler giriş, yardım, fotoğraf düzenleme ve denetim ayrıntılarını telefonda okunabilir tutar.",
+    },
+    "es": {
+        "upd_note_3810_mobile_followups": "Las notas de versión móviles ahora se muestran una vez tras actualizar el APK, y los diseños adaptables mantienen legibles el inicio de sesión, la ayuda, la edición de fotos y la auditoría en el teléfono.",
+    },
+    "de": {
+        "upd_note_3810_mobile_followups": "Mobile Versionshinweise erscheinen nach einem APK-Update nun einmal; responsive Layouts halten Anmeldung, Hilfe, Bildbearbeitung und Auditdetails auf dem Telefon lesbar.",
+    },
+    "nl": {
+        "upd_note_3810_mobile_followups": "Mobiele releasenotities verschijnen nu één keer na een APK-update; responsieve lay-outs houden aanmelden, hulp, fotobewerking en auditdetails leesbaar op de telefoon.",
+    },
+}
+for _language, _values in _MOBILE_FOLLOWUPS_RELEASE_I18N.items():
+    _STRINGS[_language].update(_values)
+
+
 # Draft highlights for the next release. ``release.bat`` associates these with
 # the version entered at release time; do not hard-code a version here.
 _NEXT_RELEASE_NOTES_I18N = {

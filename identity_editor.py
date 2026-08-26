@@ -54,7 +54,11 @@ def open_editor(app, *, source, title, choose_label, save_label, close_label,
     # chrome, while retaining the larger desktop workspace.
     editor_width = (max(232, min(300, viewport_width - 84))
                     if mobile_editor and viewport_width else (280 if mobile_editor else 322))
-    preview_size = max(216, min(300, editor_width - 14))
+    # A 286px crop preview consumed most of a phone dialog, forcing its primary
+    # action below the viewport.  A 180–220px preview remains useful for crop
+    # positioning while keeping the controls and Save action visible together.
+    preview_size = (max(180, min(220, editor_width - 36))
+                    if mobile_editor else max(216, min(300, editor_width - 14)))
     spinner = ft.ProgressRing(width=28, height=28, stroke_width=3, color=T.VIOLET)
     loading = ft.Container(
         ft.Column([spinner, ft.Text(loading_label, color=T.INK_2)],
@@ -276,19 +280,22 @@ def open_editor(app, *, source, title, choose_label, save_label, close_label,
         action_bar = ft.Row([
             ft.TextButton(choose_label, icon=ft.Icons.UPLOAD, on_click=choose_image),
             reset_button,
-            ft.TextButton(close_label, on_click=lambda e: app._close_all_dialogs()),
-            save_button,
         ], spacing=6, run_spacing=6, wrap=True, alignment=ft.MainAxisAlignment.CENTER)
-        editor = ft.Column([preview_frame, controls, action_bar], spacing=14,
+        editor = ft.Column([preview_frame, controls, action_bar],
+                           spacing=(10 if mobile_editor else 14),
                            horizontal_alignment=ft.CrossAxisAlignment.CENTER, tight=True)
 
         def apply_editor():
             dialog.content = ft.Container(editor, width=editor_width)
-            # Keep responsive editor actions in the content's wrapping row;
-            # AlertDialog's desktop action bar otherwise forces four controls
-            # into one narrow mobile line and clips them.
-            dialog.actions = []
-            dialog.scrollable = True
+            # Keep the two editing choices near the preview, then reserve the
+            # dialog footer for Close and the primary Save action.  The footer
+            # stays visible on a phone instead of falling below a long editor.
+            dialog.actions = [
+                ft.TextButton(close_label, on_click=lambda e: app._close_all_dialogs()),
+                save_button,
+            ]
+            dialog.actions_alignment = ft.MainAxisAlignment.END
+            dialog.scrollable = False
             dialog.update()
         app.ui_safe(apply_editor)
 

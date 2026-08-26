@@ -378,6 +378,37 @@ def show_post_update_dialog(app, version):
     )
     app._show_dialog(dlg)
 
+
+def show_mobile_release_notes_dialog(app, version):
+    """Show an installed APK's exact notes once, after sign-in."""
+    release_card = _release_notes_card(version)
+
+    def _continue(e):
+        E.mark_release_notice_seen(version)
+        app._release_notice_open = False
+        app._close_dialog()
+
+    content_controls = [
+        ft.Text(strings.t("upd_whats_new_version", version=version), size=13,
+                color=T.INK, weight=ft.FontWeight.W_700),
+    ]
+    if release_card is not None:
+        content_controls.extend([ft.Container(height=8), release_card])
+    dlg = ft.AlertDialog(
+        modal=True,
+        title=ft.Row([
+            ft.Container(ft.Icon(ft.Icons.NEW_RELEASES, size=18, color=T.VIOLET),
+                         width=34, height=34, bgcolor=T.VIOLET_SOFT, border_radius=9,
+                         alignment=ft.Alignment.CENTER),
+            ft.Text(strings.t("upd_whats_new"), size=16,
+                    weight=ft.FontWeight.W_800, color=T.INK),
+        ], spacing=10, tight=True),
+        content=ft.Container(ft.Column(content_controls, spacing=2, tight=True), width=480),
+        actions=[green_btn(strings.t("upd_continue"), on_click=_continue, height=46)],
+        actions_alignment=ft.MainAxisAlignment.END,
+    )
+    app._show_dialog(dlg)
+
 def quit_after_update(app):
     """Simply close the app cleanly so the user can reopen the updated version.
     No auto-relaunch (that proved unreliable across Flet/Windows builds)."""

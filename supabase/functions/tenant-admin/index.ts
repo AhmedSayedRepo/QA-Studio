@@ -168,7 +168,10 @@ function temporaryPassword() {
 }
 
 async function writeAudit(admin: any, orgId: string, actor: User, action: string, type: string, id: string, before: unknown = {}, after: unknown = {}, details: unknown = {}) {
-  await admin.rpc("record_admin_audit", { p_org_id: orgId || null, p_actor_id: actor.id, p_target_user_id: null, p_action: action, p_entity_type: type, p_entity_id: id || null, p_before: obj(before), p_after: obj(after), p_details: obj(details) });
+  // User-scoped actions have an affected account as well as an actor.  Persist
+  // that relationship so audit readers can name the user after the fact.
+  const targetUserId = type === "user" ? id : "";
+  await admin.rpc("record_admin_audit", { p_org_id: orgId || null, p_actor_id: actor.id, p_target_user_id: targetUserId || null, p_action: action, p_entity_type: type, p_entity_id: id || null, p_before: obj(before), p_after: obj(after), p_details: obj(details) });
 }
 async function active(admin: any, user: User): Promise<Response | null> {
   const { data } = await admin.from("user_lifecycle").select("status,access_expires_at").eq("user_id", user.id).maybeSingle();
@@ -252,7 +255,12 @@ Deno.serve(async (req: Request) => {
         }
         return out({ rows: rows.map((row) => {
           const actorId = typeof row.actor_id === "string" ? row.actor_id : "";
-          const targetId = typeof row.target_user_id === "string" ? row.target_user_id : "";
+          // Older profile-picture events kept the user only as entity_id.
+          // Treat that immutable user entity as the target while returning the
+          // feed, so existing history is as understandable as new events.
+          const targetId = typeof row.target_user_id === "string" && row.target_user_id
+            ? row.target_user_id
+            : (row.entity_type === "user" && typeof row.entity_id === "string" ? row.entity_id : "");
           const orgId = typeof row.org_id === "string" ? row.org_id : "";
           return {
             ...row,

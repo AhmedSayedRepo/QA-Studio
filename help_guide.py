@@ -571,20 +571,41 @@ def _platform_badge(plat, compact=False):
 
 def _content(feat):
     """Right-pane controls for one feature: title, blurb, bullet points."""
-    rows = [
-        ft.Row([
+    mobile = platform_caps.is_mobile()
+    title = ft.Text(
+        strings.t("help_" + feat["key"] + "_title",
+                  **({"version": E.local_version()} if feat["key"] == "whats_new" else {})),
+        size=(17 if mobile else 19), weight=ft.FontWeight.BOLD, color=T.INK,
+        expand=True, no_wrap=False)
+    heading = (
+        # A versioned title plus a platform badge cannot share one narrow phone
+        # row.  Keep the title readable and put the supporting badge below it.
+        ft.Column([
+            ft.Row([
+                ft.Container(ft.Icon(feat["icon"], size=20, color=T.VIOLET_INK),
+                             width=40, height=40, bgcolor=T.VIOLET_SOFT, border_radius=10,
+                             alignment=ft.Alignment.CENTER),
+                title,
+            ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            ft.Container(_platform_badge(_platform_of(feat), compact=True),
+                         alignment=ft.Alignment.CENTER_LEFT,
+                         margin=ft.Margin.only(left=50, top=4)),
+        ], spacing=0)
+        if mobile else ft.Row([
             ft.Container(ft.Icon(feat["icon"], size=20, color=T.VIOLET_INK),
                          width=40, height=40, bgcolor=T.VIOLET_SOFT, border_radius=10,
                          alignment=ft.Alignment.CENTER),
-            ft.Text(strings.t("help_" + feat["key"] + "_title",
-                              **({"version": E.local_version()} if feat["key"] == "whats_new" else {})),
-                    size=19, weight=ft.FontWeight.BOLD, color=T.INK),
+            title,
             ft.Container(expand=True),
             _platform_badge(_platform_of(feat)),
-        ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+    )
+    rows = [
+        heading,
         ft.Container(height=10),
-        ft.Text(strings.t("help_" + feat["key"] + "_blurb"), size=13.5, color=T.INK_2, weight=ft.FontWeight.W_500),
-        ft.Container(height=14),
+        ft.Text(strings.t("help_" + feat["key"] + "_blurb"), size=(12.5 if mobile else 13.5),
+                color=T.INK_2, weight=ft.FontWeight.W_500),
+        ft.Container(height=(10 if mobile else 14)),
     ]
     if feat["key"] == "whats_new":
         note_keys = (release_notes.exact_keys_for(E.local_version())
@@ -728,7 +749,9 @@ def show(app, initial=None):
     if _mobile:
         # Single pane sized to the (narrow) viewport — width=None lets the
         # dialog fit the phone instead of a fixed 880px that ran off-screen.
-        body = ft.Container(mobile_holder, width=None, height=520)
+        # The old 520px body left a large blank panel below short release notes.
+        # Longer topic lists remain usable through mobile_holder's own scroll.
+        body = ft.Container(mobile_holder, width=None, height=440)
     else:
         left = ft.Container(
             ft.Column([

@@ -1265,6 +1265,10 @@ class QAStudio:
                         # pending update instead of it popping behind the login
                         # gate at build time (self-guarded / once-per-session).
                         try:
+                            self._show_mobile_release_notes()
+                        except Exception:
+                            pass
+                        try:
                             self._check_mobile_update(force=True)
                         except Exception:
                             pass
@@ -3325,6 +3329,10 @@ class QAStudio:
         # On desktop the shell keeps its rail mounted and swaps only the body,
         # so choosing a navigation item cannot reset the user's rail scroll.
         self.render(preserve_rail=True)
+        try:
+            self._show_mobile_release_notes()
+        except Exception:
+            pass
         # Retry a durable post-update notice after navigation if startup was
         # too early for Flet to mount its completion dialog.
         self._show_pending_update_notice()
@@ -3771,6 +3779,13 @@ class QAStudio:
         # one-time confirmation now that the updated process is alive.
         try:
             self._show_pending_update_notice()
+        except Exception:
+            pass
+        # Android/iOS installs bypass the desktop updater and therefore do not
+        # create its pending-update marker. Compare the installed version with
+        # the durable acknowledgement instead.
+        try:
+            self._show_mobile_release_notes()
         except Exception:
             pass
         # Mobile update NOTICE. Self-guards: no-op on desktop, and skips while
@@ -4230,6 +4245,45 @@ class QAStudio:
         except Exception:
             # Fallback for older Flet page implementations. It remains
             # deliberately non-blocking and retries on the next navigation.
+            self._release_notice_scheduled = False
+            self.ui_safe(_present)
+
+    def _show_mobile_release_notes(self):
+        """Show exact release notes once after an Android/iOS APK upgrade."""
+        if not platform_caps.is_mobile():
+            return
+        if auth.configured() and getattr(self, "user", None) is None:
+            return
+        version = str(E.local_version() or "")
+        if (not version or E.get_seen_release_notice_version() == version or
+                getattr(self, "_release_notice_scheduled", False) or
+                getattr(self, "_release_notice_open", False)):
+            return
+
+        def _present():
+            self._release_notice_scheduled = False
+            if getattr(self, "_dialog_depth", 0):
+                return
+            try:
+                updater_ui.show_mobile_release_notes_dialog(self, version)
+            except Exception as ex:
+                try:
+                    import diag_log
+                    diag_log.log("mobile_release_notice", ex)
+                except Exception:
+                    pass
+                return
+            self._release_notice_open = True
+
+        async def _after_first_frame():
+            import asyncio
+            await asyncio.sleep(0.25)
+            _present()
+
+        self._release_notice_scheduled = True
+        try:
+            self.page.run_task(_after_first_frame)
+        except Exception:
             self._release_notice_scheduled = False
             self.ui_safe(_present)
 
@@ -9281,6 +9335,11 @@ class QAStudio:
         switch. The guards below make that safe — it never pops over the login
         screen and never shows more than once per session."""
         if not platform_caps.is_mobile():
+            return
+        # Exact release notes take priority over an update prompt. A later
+        # navigation after Continue will retry this check.
+        if (getattr(self, "_release_notice_scheduled", False) or
+                getattr(self, "_release_notice_open", False)):
             return
         # (1) Never surface an update over the LOGIN screen. With biometrics ON,
         # __init__/_build run BEFORE sign-in, so the old single build-time call
