@@ -437,9 +437,14 @@ def screen(app):
                 ft.Container(height=12),
                 _labeled(f_cname, strings.t("orgs_f_cname")),
                 ft.Container(height=12),
-                ft.Row([ft.Container(_labeled(f_cemail, strings.t("orgs_f_cemail")), expand=True),
-                        ft.Container(_labeled(f_cphone, strings.t("orgs_f_cphone")), expand=True)],
-                       spacing=10, vertical_alignment=ft.CrossAxisAlignment.START),
+                (ft.Column([
+                    _labeled(f_cemail, strings.t("orgs_f_cemail")),
+                    ft.Container(height=10),
+                    _labeled(f_cphone, strings.t("orgs_f_cphone")),
+                ], spacing=0) if _mobile else ft.Row([
+                    ft.Container(_labeled(f_cemail, strings.t("orgs_f_cemail")), expand=True),
+                    ft.Container(_labeled(f_cphone, strings.t("orgs_f_cphone")), expand=True),
+                ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.START)),
                 ft.Container(height=14),
                 ft.Row([ft.Container(expand=True),
                         ghost_btn(strings.t("orgs_cancel"), on_click=_close_form),
@@ -507,19 +512,27 @@ def screen(app):
                                       weight=ft.FontWeight.BOLD, color="#FFFFFF"),
                               width=34, height=34, bgcolor=T.VIOLET, border_radius=9,
                               alignment=ft.Alignment.CENTER)
-        identity = ft.Column([
+        identity_meta = [
+            ft.Container(ft.Text(strings.t("orgs_id_label") + ": " + oid, size=10,
+                                 weight=ft.FontWeight.BOLD, color=T.INK_3),
+                         padding=ft.Padding.symmetric(vertical=1, horizontal=7),
+                         bgcolor=T.CARD_2, border_radius=999),
+            *([health_badge] if health_badge is not None else []),
+            *([sender_badge] if sender_badge is not None else []),
+        ]
+        identity = (ft.Column([
+            ft.Text(name, size=13.5, weight=ft.FontWeight.W_700, color=T.INK,
+                    no_wrap=False),
+            ft.Row(identity_meta, spacing=6, run_spacing=4, wrap=True),
+            ft.Text(contact, size=11, color=T.INK_3, weight=ft.FontWeight.W_500,
+                    no_wrap=False),
+        ], spacing=4, expand=True) if _mobile else ft.Column([
             ft.Row([ft.Text(name, size=13.5, weight=ft.FontWeight.W_700, color=T.INK,
-                            no_wrap=False, expand=True),
-                    ft.Container(ft.Text(strings.t("orgs_id_label") + ": " + oid, size=10,
-                                         weight=ft.FontWeight.BOLD, color=T.INK_3),
-                                 padding=ft.Padding.symmetric(vertical=1, horizontal=7),
-                                 bgcolor=T.CARD_2, border_radius=999),
-                    *([health_badge] if health_badge is not None else []),
-                    *([sender_badge] if sender_badge is not None else [])],
+                            no_wrap=False, expand=True), *identity_meta],
                    spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
             ft.Text(contact, size=11, color=T.INK_3, weight=ft.FontWeight.W_500,
                     no_wrap=False, expand=True),
-        ], spacing=3, expand=True)
+        ], spacing=3, expand=True))
         actions = []
         if _is_super:
             actions = [
@@ -533,9 +546,15 @@ def screen(app):
                     on_click=(None if row_busy else (lambda e, x=oid, n=name: _delete_org(x, n))),
                     ink=True, border_radius=8, padding=8, tooltip=strings.t("orgs_delete")),
             ]
+        row_content = (ft.Column([
+            ft.Row([avatar, identity], spacing=12,
+                   vertical_alignment=ft.CrossAxisAlignment.START),
+            ft.Row(actions, spacing=2, alignment=ft.MainAxisAlignment.END),
+        ], spacing=6) if (_mobile and actions) else ft.Row(
+            [avatar, identity, *actions], spacing=12,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER))
         return ft.Container(
-            ft.Row([avatar, identity, *actions], spacing=12,
-                   vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            row_content,
             padding=ft.Padding.symmetric(vertical=12, horizontal=14),
             border=ft.Border.all(1, T.BORDER), border_radius=T.R, bgcolor=T.CARD)
 
@@ -1427,10 +1446,15 @@ def screen(app):
 
     app._orgs_refresh_parts = _refresh_parts
 
+    directory_header = (ft.Column([
+        sec_head("Or", strings.t("orgs_sec_head")),
+        ft.Container(height=8),
+        add_org_btn,
+    ], spacing=0) if _mobile else ft.Row([
+        sec_head("Or", strings.t("orgs_sec_head")), ft.Container(expand=True), add_org_btn,
+    ], vertical_alignment=ft.CrossAxisAlignment.CENTER))
     body = ft.Column([card(ft.Column([
-        ft.Row([sec_head("Or", strings.t("orgs_sec_head")), ft.Container(expand=True),
-                add_org_btn],
-               vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        directory_header,
         ft.Container(height=6),
         ft.Text(strings.t("orgs_help_line"), size=12, color=T.INK_3,
                 weight=ft.FontWeight.BOLD, no_wrap=False),

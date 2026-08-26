@@ -1074,8 +1074,19 @@ def login_gate(app):
                               alignment=ft.MainAxisAlignment.CENTER,
                               horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                               expand=True)
-    if width and width < 900:
-        content = ft.Container(centered_card, expand=True, padding=(16 if _mobile_login else 24))
+    if _mobile_login:
+        # The footer is fixed to the bottom of the Stack.  Centering a tall
+        # sign-in card behind it made the footer sit over "Create one" and the
+        # last form action.  A dedicated mobile scroller reserves its space and
+        # also makes landscape phones use the phone composition instead of the
+        # desktop hero/card split.
+        content = ft.Container(
+            ft.Column([_card_shown], scroll=ft.ScrollMode.AUTO, expand=True,
+                      horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+            expand=True,
+            padding=ft.Padding.only(left=16, right=16, top=20, bottom=76))
+    elif width and width < 900:
+        content = ft.Container(centered_card, expand=True, padding=24)
     else:
         content = ft.Row([
             ft.Container(ft.Column([value_prop], alignment=ft.MainAxisAlignment.CENTER,

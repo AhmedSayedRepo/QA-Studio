@@ -11,6 +11,7 @@ import flet as ft
 import requests
 
 import image_assets
+import platform_caps
 import theme as T
 
 
@@ -42,12 +43,24 @@ def open_editor(app, *, source, title, choose_label, save_label, close_label,
     """
     state = {"source": None, "zoom": 1.0, "rotation": 0, "x": 0.0, "y": 0.0,
              "drag_start": None, "drag_xy": (0.0, 0.0), "last_draw": 0.0}
+    mobile_editor = platform_caps.is_mobile()
+    try:
+        viewport_width = int(getattr(getattr(app, "page", None), "width", 0) or 0)
+    except (TypeError, ValueError):
+        viewport_width = 0
+    # AlertDialog itself adds horizontal inset/content padding.  The previous
+    # 322px editor frame therefore exceeded the usable width on a phone and
+    # clipped the crop circle and rotate actions.  Keep enough room for that
+    # chrome, while retaining the larger desktop workspace.
+    editor_width = (max(232, min(300, viewport_width - 84))
+                    if mobile_editor and viewport_width else (280 if mobile_editor else 322))
+    preview_size = max(216, min(300, editor_width - 14))
     spinner = ft.ProgressRing(width=28, height=28, stroke_width=3, color=T.VIOLET)
     loading = ft.Container(
         ft.Column([spinner, ft.Text(loading_label, color=T.INK_2)],
                   horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                   alignment=ft.MainAxisAlignment.CENTER, spacing=14),
-        width=360, height=360, alignment=ft.Alignment.CENTER)
+        width=editor_width, height=editor_width, alignment=ft.Alignment.CENTER)
     dialog = ft.AlertDialog(
         modal=False, title=ft.Text(title, size=15, weight=ft.FontWeight.W_800, color=T.INK),
         content=loading, actions=[ft.TextButton(close_label, on_click=lambda e: app._close_all_dialogs())],
@@ -77,16 +90,17 @@ def open_editor(app, *, source, title, choose_label, save_label, close_label,
                 state["x"], state["y"], preview_max_pixels=max_pixels)
 
         initial, _reason = preview_payload()
-        preview_image = ft.Image(src=_payload_source(initial), width=300, height=300,
-                                 fit=ft.BoxFit.COVER, border_radius=150) if initial else None
+        preview_image = ft.Image(src=_payload_source(initial), width=preview_size, height=preview_size,
+                                 fit=ft.BoxFit.COVER, border_radius=preview_size // 2) if initial else None
         preview_holder = ft.Container(
             preview_image if preview_image else ft.Icon(ft.Icons.ADD_A_PHOTO_OUTLINED, size=48, color=T.VIOLET_INK),
-            width=300, height=300, alignment=ft.Alignment.CENTER)
+            width=preview_size, height=preview_size, alignment=ft.Alignment.CENTER)
         zoom_text = ft.Text("100%", size=12, color=T.INK_2, width=48, text_align=ft.TextAlign.CENTER)
         rotation_text = ft.Text("0°", size=12, color=T.INK_2, width=48, text_align=ft.TextAlign.CENTER)
         position_text = ft.Text((load_failed_label if state.get("source_error") else drag_hint),
-                                size=10.5, color=T.INK_3, width=284,
+                                size=10.5, color=T.INK_3, width=editor_width,
                                 text_align=ft.TextAlign.CENTER, no_wrap=False)
+        action_buttons = {}
 
         def refresh_preview(max_pixels=512):
             payload, reason = preview_payload(max_pixels)
@@ -98,8 +112,9 @@ def open_editor(app, *, source, title, choose_label, save_label, close_label,
                 preview_holder.content.src = _payload_source(payload)
                 preview_holder.content.update()
             else:
-                preview_holder.content = ft.Image(src=_payload_source(payload), width=300, height=300,
-                                                  fit=ft.BoxFit.COVER, border_radius=150)
+                preview_holder.content = ft.Image(src=_payload_source(payload), width=preview_size,
+                                                  height=preview_size, fit=ft.BoxFit.COVER,
+                                                  border_radius=preview_size // 2)
                 preview_holder.update()
             zoom_text.value = "{value:.0f}%".format(value=state["zoom"] * 100)
             rotation_text.value = "{value}°".format(value=state["rotation"])
@@ -160,6 +175,8 @@ def open_editor(app, *, source, title, choose_label, save_label, close_label,
             refresh_preview()
 
         def reset_edit(e=None):
+            if not state["source"]:
+                return
             state.update({"zoom": 1.0, "rotation": 0, "x": 0.0, "y": 0.0})
             rotation_slider.value = 0
             rotation_slider.update()
@@ -173,10 +190,18 @@ def open_editor(app, *, source, title, choose_label, save_label, close_label,
                 rotation_slider.update()
                 remove_button.visible = callable(on_remove)
                 remove_button.update()
+                for key in ("reset", "save"):
+                    control = action_buttons.get(key)
+                    if control is not None:
+                        control.disabled = False
+                        control.update()
                 refresh_preview()
             image_assets.choose_square_image(app, choose_label, selected, on_choose_error)
 
         def save_edit(e=None):
+            if not state["source"]:
+                app._err(failed_label)
+                return
             payload, reason = image_assets.transform_validated_square_image(
                 state["source"], state["zoom"], state["rotation"], state["x"], state["y"])
             if payload is None:
@@ -205,7 +230,7 @@ def open_editor(app, *, source, title, choose_label, save_label, close_label,
                     app.ui_safe(lambda: app._err(str(result)[:160]))
             app._bg(work)
 
-        rotation_slider = ft.Slider(min=-180, max=180, divisions=360, value=0, width=250,
+        rotation_slider = ft.Slider(min=-180, max=180, divisions=360, value=0, width=editor_width - 24,
                                     label="{value}°", active_color=T.VIOLET,
                                     inactive_color=T.BORDER, thumb_color=T.VIOLET,
                                     on_change=preview_rotation, on_change_end=commit_rotation)
@@ -213,20 +238,24 @@ def open_editor(app, *, source, title, choose_label, save_label, close_label,
             ft.GestureDetector(content=preview_holder, on_pan_start=pan_start,
                                on_pan_update=pan_update, on_pan_end=pan_end,
                                drag_interval=120, mouse_cursor=ft.MouseCursor.MOVE),
-            width=308, height=308, padding=4, border_radius=154, bgcolor=T.CARD_2,
+            width=preview_size + 8, height=preview_size + 8, padding=4,
+            border_radius=(preview_size + 8) // 2, bgcolor=T.CARD_2,
             clip_behavior=ft.ClipBehavior.HARD_EDGE)
         remove_button = ft.Container(
             ft.Icon(ft.Icons.CLOSE, size=15, color="#FFFFFF"), width=28, height=28,
             border_radius=14, bgcolor=T.RED, alignment=ft.Alignment.CENTER,
             on_click=remove_image, ink=True, tooltip=remove_tooltip,
-            visible=(bool(state["source"]) or state.get("source_error")) and callable(on_remove), right=0, top=0)
+            visible=bool(state["source"]) and callable(on_remove), right=0, top=0)
         preview_frame = ft.Stack([
             ft.Container(preview_circle, left=6, top=6),
             remove_button,
-        ], width=322, height=322, clip_behavior=ft.ClipBehavior.NONE)
+        ], width=preview_size + 22, height=preview_size + 22, clip_behavior=ft.ClipBehavior.NONE)
 
-        def button(label, icon, handler):
-            return ft.TextButton(label, icon=icon, on_click=handler)
+        def button(_label, icon, handler):
+            # TextButton rendered both its label and icon; on mobile the two
+            # rotation buttons alone consumed most of the dialog width.
+            return ft.IconButton(icon=icon, icon_size=20, icon_color=T.VIOLET_INK,
+                                 on_click=handler, tooltip=_label)
 
         controls = ft.Column([
             ft.Row([ft.Text(zoom_label, weight=ft.FontWeight.W_700, color=T.INK),
@@ -237,20 +266,29 @@ def open_editor(app, *, source, title, choose_label, save_label, close_label,
                     button("−90°", ft.Icons.ROTATE_LEFT, lambda e: change_rotation(-90)), rotation_text,
                     button("+90°", ft.Icons.ROTATE_RIGHT, lambda e: change_rotation(90))],
                    alignment=ft.MainAxisAlignment.CENTER, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-            ft.Container(rotation_slider, padding=ft.Padding.symmetric(horizontal=8), width=284),
+            ft.Container(rotation_slider, padding=ft.Padding.symmetric(horizontal=8), width=editor_width),
             position_text,
         ], spacing=2, horizontal_alignment=ft.CrossAxisAlignment.CENTER)
-        editor = ft.Column([preview_frame, controls], spacing=14,
+        reset_button = ft.TextButton(reset_label, on_click=reset_edit, disabled=not bool(state["source"]))
+        save_button = ft.FilledButton(save_label, icon=ft.Icons.SAVE, on_click=save_edit,
+                                      disabled=not bool(state["source"]))
+        action_buttons.update({"reset": reset_button, "save": save_button})
+        action_bar = ft.Row([
+            ft.TextButton(choose_label, icon=ft.Icons.UPLOAD, on_click=choose_image),
+            reset_button,
+            ft.TextButton(close_label, on_click=lambda e: app._close_all_dialogs()),
+            save_button,
+        ], spacing=6, run_spacing=6, wrap=True, alignment=ft.MainAxisAlignment.CENTER)
+        editor = ft.Column([preview_frame, controls, action_bar], spacing=14,
                            horizontal_alignment=ft.CrossAxisAlignment.CENTER, tight=True)
 
         def apply_editor():
-            dialog.content = editor
-            dialog.actions = [
-                ft.TextButton(choose_label, icon=ft.Icons.UPLOAD, on_click=choose_image),
-                ft.TextButton(reset_label, on_click=reset_edit),
-                ft.TextButton(close_label, on_click=lambda e: app._close_all_dialogs()),
-                ft.FilledButton(save_label, icon=ft.Icons.SAVE, on_click=save_edit),
-            ]
+            dialog.content = ft.Container(editor, width=editor_width)
+            # Keep responsive editor actions in the content's wrapping row;
+            # AlertDialog's desktop action bar otherwise forces four controls
+            # into one narrow mobile line and clips them.
+            dialog.actions = []
+            dialog.scrollable = True
             dialog.update()
         app.ui_safe(apply_editor)
 

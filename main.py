@@ -2239,34 +2239,29 @@ class QAStudio:
         logout.on_hover = _lo_hover
 
         if compact:
-            def _open_account_popup(e):
-                def _edit_photo(_e=None):
-                    self._close_all_dialogs()
-                    self._open_profile_picture_editor()
-
-                edit_photo = ft.Container(
-                    ft.Icon(ft.Icons.EDIT_OUTLINED, size=16, color=T.INK_2),
-                    on_click=_edit_photo, ink=True, border_radius=10, padding=9,
-                    tooltip=strings.t("avatar_tip_preview" if avatar_url else "profile_choose"))
-                dlg = ft.AlertDialog(
-                    modal=False,
-                    content=ft.Container(
-                        ft.Row([
-                            avatar_wrap,
-                            ft.Column([
-                                ft.Text(name, size=14, weight=ft.FontWeight.W_800,
-                                        color=T.INK, max_lines=1,
-                                        overflow=ft.TextOverflow.ELLIPSIS),
-                                ft.Container(role_pill, margin=ft.Margin.only(top=4)),
-                            ], spacing=0, tight=True, expand=True),
-                            edit_photo,
-                            logout,
-                        ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                        width=280, padding=ft.Padding.symmetric(vertical=4)))
-                self._show_dialog(dlg)
-            return ft.Container(
-                avatar_wrap, on_click=_open_account_popup, ink=True,
-                border_radius=20, padding=3, tooltip=name)
+            # An AlertDialog is always centred, so the former compact-account
+            # popup covered the setup form (including its primary action) on a
+            # phone.  Keep this attached to the avatar instead: PopupMenuButton
+            # positions the short menu under its invoking control and dismisses
+            # itself after either action.
+            account_summary = ft.Column([
+                ft.Text(name, size=13, weight=ft.FontWeight.W_800, color=T.INK,
+                        max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                ft.Container(role_pill, margin=ft.Margin.only(top=3)),
+            ], spacing=0, tight=True)
+            menu_items = [
+                ft.PopupMenuItem(content=account_summary, disabled=True, height=48),
+                ft.PopupMenuItem(content=strings.t("avatar_tip_preview" if avatar_url else "profile_choose"),
+                                 icon=ft.Icons.EDIT_OUTLINED,
+                                 on_click=lambda _e: self._open_profile_picture_editor()),
+                ft.PopupMenuItem(content=strings.t("main_sign_out"), icon=ft.Icons.LOGOUT,
+                                 on_click=self._sign_out),
+            ]
+            return ft.PopupMenuButton(
+                content=ft.Container(avatar_wrap, border_radius=20, padding=3, tooltip=name),
+                items=menu_items, menu_position=ft.PopupMenuPosition.UNDER,
+                bgcolor=T.CARD, elevation=4, padding=0,
+            )
 
         name_text = ft.Text(name, size=12.5, weight=ft.FontWeight.W_800, color=T.INK,
                             max_lines=1, overflow=ft.TextOverflow.ELLIPSIS)
@@ -4178,6 +4173,24 @@ class QAStudio:
         notice = E.get_pending_update_notice() or {}
         pending_version = str(notice.get("version") or "")
         if not pending_version:
+            return
+        # The process that *downloads* an update is still running the previous
+        # release.  It must never consume the hand-off marker for the newly
+        # downloaded version: doing so acknowledges the notice before the new
+        # process (and its exact stamped notes) exists.  Leave the durable
+        # marker untouched until the local VERSION belongs to the release it
+        # describes.
+        local_version = str(E.local_version() or "")
+        if local_version != pending_version:
+            try:
+                import diag_log
+                diag_log.log(
+                    "release_notice",
+                    "deferred: pending version %s, current process %s"
+                    % (pending_version, local_version),
+                )
+            except Exception:
+                pass
             return
         if (getattr(self, "_release_notice_scheduled", False)
                 or getattr(self, "_release_notice_open", False)):

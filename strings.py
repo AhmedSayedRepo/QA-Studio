@@ -11331,6 +11331,33 @@ for _language, _values in _IDENTITY_EDITOR_AND_RELEASE_I18N.items():
     _STRINGS[_language].update(_values)
 
 
+_MOBILE_LAYOUT_RELEASE_I18N = {
+    "en": {
+        "upd_note_389_mobile_layout": "Mobile layouts now adapt cleanly in portrait and landscape, including sign-in, organizations, profile actions, and image editing.",
+    },
+    "ar": {
+        "upd_note_389_mobile_layout": "أصبحت واجهات الهاتف تتكيف بسلاسة في الوضعين العمودي والأفقي، بما في ذلك تسجيل الدخول والمؤسسات وإجراءات الملف الشخصي وتحرير الصور.",
+    },
+    "fr": {
+        "upd_note_389_mobile_layout": "Les interfaces mobiles s’adaptent désormais correctement en portrait et en paysage, y compris la connexion, les organisations, les actions de profil et la modification des images.",
+    },
+    "tr": {
+        "upd_note_389_mobile_layout": "Mobil düzenler artık oturum açma, kuruluşlar, profil işlemleri ve görsel düzenleme dahil olmak üzere dikey ve yatay kullanımda düzgün uyum sağlar.",
+    },
+    "es": {
+        "upd_note_389_mobile_layout": "Los diseños móviles ahora se adaptan correctamente en vertical y horizontal, incluidos el inicio de sesión, las organizaciones, las acciones de perfil y la edición de imágenes.",
+    },
+    "de": {
+        "upd_note_389_mobile_layout": "Mobile Layouts passen sich jetzt im Hoch- und Querformat sauber an, einschließlich Anmeldung, Organisationen, Profilaktionen und Bildbearbeitung.",
+    },
+    "nl": {
+        "upd_note_389_mobile_layout": "Mobiele lay-outs passen zich nu goed aan in staande en liggende stand, inclusief aanmelden, organisaties, profielacties en afbeeldingsbewerking.",
+    },
+}
+for _language, _values in _MOBILE_LAYOUT_RELEASE_I18N.items():
+    _STRINGS[_language].update(_values)
+
+
 _AUDIT_FILTERS_I18N = {
     "en": {
         "audit_all_events": "All events", "audit_all_people": "All people",
