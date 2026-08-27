@@ -329,14 +329,18 @@ jobs:
 
           path = Path(sys.argv[1])
           source = path.read_text(encoding="utf-8")
-          marker = "class MainActivity: FlutterFragmentActivity()"
-          replacement = """class MainActivity: FlutterFragmentActivity() {
+          import re
+
+          activity_pattern = re.compile(
+              r"class\\s+MainActivity\\s*:\\s*FlutterFragmentActivity\\s*\\(\\s*\\)"
+          )
+          replacement = """{activity} {
               override fun onCreate(savedInstanceState: Bundle?) {
                   super.onCreate(savedInstanceState)
                   requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
               }
           }"""
-          if marker not in source:
+          if not activity_pattern.search(source):
               raise SystemExit("Generated MainActivity.kt has an unsupported class shape")
           source = source.replace(
               "import io.flutter.embedding.android.FlutterFragmentActivity",
@@ -344,7 +348,10 @@ jobs:
               "import android.os.Bundle\\n"
               "import io.flutter.embedding.android.FlutterFragmentActivity",
               1,
-          ).replace(marker, replacement, 1)
+          )
+          source = activity_pattern.sub(
+              lambda match: replacement.replace("{activity}", match.group(0), 1), source, count=1
+          )
           path.write_text(source, encoding="utf-8")
           PY
           if ! grep -q 'requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR' "$MA"; then
