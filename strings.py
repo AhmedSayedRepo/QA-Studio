@@ -11491,6 +11491,35 @@ for _language, _values in _MOBILE_FOLLOWUPS_RELEASE_I18N.items():
     _STRINGS[_language].update(_values)
 
 
+# Draft highlight for the next release. ``release.bat`` associates this with
+# the version entered at release time; do not hard-code a version here.
+_LANDSCAPE_ORIENTATION_RELEASE_I18N = {
+    "en": {
+        "upd_note_391_landscape_orientation": "Android now reapplies the full-sensor orientation after the app host starts, so the sign-in screen can use the complete landscape display.",
+    },
+    "ar": {
+        "upd_note_391_landscape_orientation": "يعيد Android الآن تطبيق اتجاه المستشعر الكامل بعد بدء مضيف التطبيق، لتستخدم شاشة تسجيل الدخول العرض الأفقي بالكامل.",
+    },
+    "fr": {
+        "upd_note_391_landscape_orientation": "Android réapplique désormais l'orientation à capteurs complets après le démarrage de l'hôte, afin que l'écran de connexion utilise tout l'affichage paysage.",
+    },
+    "tr": {
+        "upd_note_391_landscape_orientation": "Android artık uygulama ana bilgisayarı başladıktan sonra tam sensör yönünü yeniden uygular; böylece giriş ekranı yatay ekranın tamamını kullanabilir.",
+    },
+    "es": {
+        "upd_note_391_landscape_orientation": "Android vuelve a aplicar la orientación de sensor completo después de iniciar el host de la aplicación, para que el inicio de sesión use toda la pantalla horizontal.",
+    },
+    "de": {
+        "upd_note_391_landscape_orientation": "Android wendet nach dem Start des App-Hosts erneut die vollständige Sensorausrichtung an, damit die Anmeldung die gesamte Querformatanzeige nutzen kann.",
+    },
+    "nl": {
+        "upd_note_391_landscape_orientation": "Android past na het starten van de app-host opnieuw de volledige sensororiëntatie toe, zodat het aanmeldscherm het hele liggende scherm kan gebruiken.",
+    },
+}
+for _language, _values in _LANDSCAPE_ORIENTATION_RELEASE_I18N.items():
+    _STRINGS[_language].update(_values)
+
+
 # Draft highlights for the next release. ``release.bat`` associates these with
 # the version entered at release time; do not hard-code a version here.
 _NEXT_RELEASE_NOTES_I18N = {
