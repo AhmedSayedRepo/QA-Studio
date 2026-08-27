@@ -332,7 +332,7 @@ jobs:
           import re
 
           activity_pattern = re.compile(
-              r"class\\s+MainActivity\\s*:\\s*FlutterFragmentActivity\\s*\\(\\s*\\)"
+              r"class\s+MainActivity\s*:\s*FlutterFragmentActivity\s*\(\s*\)"
           )
           replacement = """{activity} {
               override fun onCreate(savedInstanceState: Bundle?) {
