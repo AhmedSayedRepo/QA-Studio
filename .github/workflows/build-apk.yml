@@ -316,48 +316,6 @@ jobs:
             echo "::error::no longer matches the expected FlutterActivity pattern."
             exit 1
           fi
-          # The manifest policy below is present in the published 3.8.10 APK
-          # (verified by decoding its compiled AXML as FULL_SENSOR), yet the
-          # Flutter host still starts in a portrait-sized compatibility pane on
-          # a rotated phone.  Set the policy again *after* FlutterActivity's
-          # initialization: this wins over any orientation request made while
-          # the host engine is attaching and makes the live Activity re-evaluate
-          # its bounds for the current sensor orientation.
-          python - "$MA" <<'PY'
-          from pathlib import Path
-          import sys
-
-          path = Path(sys.argv[1])
-          source = path.read_text(encoding="utf-8")
-          import re
-
-          activity_pattern = re.compile(
-              r"class\s+MainActivity\s*:\s*FlutterFragmentActivity\s*\(\s*\)"
-          )
-          replacement = """{activity} {
-              override fun onCreate(savedInstanceState: Bundle?) {
-                  super.onCreate(savedInstanceState)
-                  requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
-              }
-          }"""
-          if not activity_pattern.search(source):
-              raise SystemExit("Generated MainActivity.kt has an unsupported class shape")
-          source = source.replace(
-              "import io.flutter.embedding.android.FlutterFragmentActivity",
-              "import android.content.pm.ActivityInfo\\n"
-              "import android.os.Bundle\\n"
-              "import io.flutter.embedding.android.FlutterFragmentActivity",
-              1,
-          )
-          source = activity_pattern.sub(
-              lambda match: replacement.replace("{activity}", match.group(0), 1), source, count=1
-          )
-          path.write_text(source, encoding="utf-8")
-          PY
-          if ! grep -q 'requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR' "$MA"; then
-            echo "::error::Runtime orientation override did not apply - MainActivity.kt"
-            exit 1
-          fi
           # Rebuild the (patched) APK from the APP's Flutter project. Derive its
           # root from the MainActivity path (everything before /android/) — NOT a
           # blind pubspec.yaml search: that also matched the bundled extension
@@ -368,28 +326,6 @@ jobs:
           if [ ! -f "$FLUTTER_DIR/lib/main.dart" ]; then
             echo "::error::Derived app Flutter dir '$FLUTTER_DIR' has no lib/main.dart -"
             echo "::error::Flet's generated layout changed; re-verify this patch step."
-            exit 1
-          fi
-          # A portrait-locked/letterboxed activity on a rotated phone leaves a
-          # narrow app pane beside a black unused area.  The UI is responsive
-          # in both orientations, so request Android's full sensor set instead
-          # of allowing a device/default orientation policy to freeze the app
-          # in portrait.  Patch the generated manifest here because Flet 0.85
-          # does not expose an equivalent project setting.
-          MANIFEST="$FLUTTER_DIR/android/app/src/main/AndroidManifest.xml"
-          if [ ! -f "$MANIFEST" ]; then
-            echo "::error::Generated AndroidManifest.xml not found at $MANIFEST"
-            exit 1
-          fi
-          sed -i -E '0,/<activity[[:space:]]/s//<activity android:screenOrientation="fullSensor" /' "$MANIFEST"
-          # Flutter's generated template currently puts `<activity` on a line
-          # of its own.  Keep a fallback for that form as well as a one-line
-          # declaration, so the patch remains valid across template variants.
-          if ! grep -q 'android:screenOrientation="fullSensor"' "$MANIFEST"; then
-            sed -i '/<activity[[:space:]]*$/a\        android:screenOrientation="fullSensor"' "$MANIFEST"
-          fi
-          if ! grep -q 'android:screenOrientation="fullSensor"' "$MANIFEST"; then
-            echo "::error::Orientation patch did not apply - generated manifest changed."
             exit 1
           fi
           # serious_python_android's build.gradle HARD-REQUIRES

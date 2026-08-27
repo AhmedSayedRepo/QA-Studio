@@ -126,6 +126,10 @@ from ui import (
 class QAStudio:
     def __init__(self, page: ft.Page):
         self.page = page
+        # Login dimensions are captured while its controls are built. Rebuild
+        # the signed-out gate when Android changes the viewport after a
+        # user-approved rotation; do not request or lock an OS orientation.
+        self._login_viewport_landscape = None
         # Serializes the actual page-mutation step (controls.clear/add/update)
         # across threads — see _render_body()'s critical section and
         # ui_safe()'s docstring. Deliberately does NOT wrap view construction
@@ -3773,6 +3777,15 @@ class QAStudio:
                 self.page.on_disconnect = self._on_web_disconnect
             except Exception:
                 pass
+        if platform_caps.is_mobile():
+            try:
+                _rw = int(getattr(self.page, "width", 0) or 0)
+                _rh = int(getattr(self.page, "height", 0) or 0)
+                if _rw > 0 and _rh > 0:
+                    self._login_viewport_landscape = _rw > _rh
+                self.page.on_resize = self._on_page_resize
+            except Exception:
+                pass
         self.render()
         # If an update completed after the previous window was closed, its UI
         # callback could not show the restart/release-notes dialog.  Replay the
@@ -4020,6 +4033,28 @@ class QAStudio:
                      danger_btn(strings.t("main_quit_btn"), icon=ft.Icons.CLOSE, on_click=do_quit)],
             actions_alignment=ft.MainAxisAlignment.END)
         self._show_dialog(dlg)
+
+    def _on_page_resize(self, e):
+        """Refresh the mobile login layout after an OS-approved rotation."""
+        if not platform_caps.is_mobile():
+            return
+        # Signed-in screens manage their own responsive content. Login needs
+        # a rebuild because its card and backdrop are dimension-derived.
+        user = getattr(self, "user", None)
+        if user and not (isinstance(user, dict) and user.get("must_reset")):
+            return
+        try:
+            width = int(getattr(e, "width", 0) or getattr(self.page, "width", 0) or 0)
+            height = int(getattr(e, "height", 0) or getattr(self.page, "height", 0) or 0)
+        except Exception:
+            return
+        if width <= 0 or height <= 0:
+            return
+        landscape = width > height
+        if landscape == getattr(self, "_login_viewport_landscape", None):
+            return
+        self._login_viewport_landscape = landscape
+        self.ui_safe(self.render)
 
     def _force_close(self):
         return window_chrome.force_close(self)
