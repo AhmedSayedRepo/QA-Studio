@@ -8,6 +8,7 @@ import flet as ft
 import theme as T
 import regression
 import strings
+import backend_setup
 from ui import card, empty_state, sec_head, _btn_shadow, primary_btn, green_btn, ghost_btn
 
 
@@ -121,10 +122,14 @@ def screen(app):
                 strings.t("auto_locked_msg"))
         regression._auto_init(app)
         # ── left: config form ──
-        ready = bool(app._auto_plans_selected and app._auto_selected)
+        file_source = getattr(app, "auto_source_mode", "backend") == "file"
+        ready = bool((app.auto_test_case_file or "").strip()) if file_source else bool(
+            app._auto_plans_selected and app._auto_selected)
 
         def _auto_refresh_gen_btn():
-            app._auto_buttons_ready = bool(app._auto_plans_selected and app._auto_selected)
+            app._auto_buttons_ready = (bool((app.auto_test_case_file or "").strip())
+                                        if getattr(app, "auto_source_mode", "backend") == "file"
+                                        else bool(app._auto_plans_selected and app._auto_selected))
             _refresh_auto_state(app)
         app._auto_refresh_gen_btn = _auto_refresh_gen_btn
 
@@ -132,7 +137,7 @@ def screen(app):
         if not ready:
             setup_hint = ft.Container(
                 ft.Row([ft.Icon(ft.Icons.INFO_OUTLINE, size=16, color=T.AMBER),
-                        ft.Text(strings.t("auto_setup_hint"),
+                        ft.Text(strings.t("auto_file_setup_hint") if file_source else strings.t("auto_setup_hint"),
                                 size=12, color=T.AMBER, weight=ft.FontWeight.W_500, expand=True)],
                        spacing=8),
                 padding=12, bgcolor=T.AMBER_SOFT, border_radius=T.R,
@@ -167,7 +172,60 @@ def screen(app):
                 cont.on_hover = _hover
             return cont
 
-        source_card = regression.automation_source_card(app)
+        def _source_option(key, title, desc, icon):
+            active = getattr(app, "auto_source_mode", "backend") == key
+            def _pick(e, value=key):
+                app.auto_source_mode = value
+                app._auto_invalid = set()
+                app._save_git_creds()
+                app.render()
+            return ft.Container(
+                ft.Row([ft.Icon(icon, size=19, color=T.VIOLET if active else T.INK_3),
+                        ft.Column([ft.Text(title, size=12.5, weight=ft.FontWeight.BOLD,
+                                           color=T.VIOLET_INK if active else T.INK_2),
+                                   ft.Text(desc, size=10.5, color=T.INK_3)],
+                                  spacing=2, expand=True)], spacing=8),
+                padding=ft.Padding.symmetric(horizontal=12, vertical=10), expand=True,
+                bgcolor=T.VIOLET_SOFT if active else T.CARD_2,
+                border=ft.Border.all(2 if active else 1, T.VIOLET if active else T.BORDER),
+                border_radius=T.R, on_click=_pick)
+
+        if file_source:
+            selected_file = (getattr(app, "auto_test_case_file", "") or "").strip()
+            file_name = os.path.basename(selected_file) if selected_file else strings.t("auto_file_none")
+            source_details = ft.Column([
+                ft.Text(strings.t("auto_file_label"), size=12.5, weight=ft.FontWeight.BOLD,
+                        color=T.INK),
+                ft.Container(height=5),
+                ft.Row([ft.Icon(ft.Icons.DESCRIPTION_OUTLINED, size=18, color=T.VIOLET),
+                        ft.Text(file_name, size=12, color=T.INK_2, expand=True,
+                                no_wrap=True)], spacing=8),
+                ft.Container(height=8),
+                ft.Row([ghost_btn(strings.t("auto_file_browse"), icon=ft.Icons.UPLOAD_FILE,
+                                  on_click=app._browse_auto_test_case_file)], spacing=8),
+                ft.Container(height=7),
+                ft.Text(strings.t("auto_file_hint"), size=10.5, color=T.INK_3,
+                        weight=ft.FontWeight.W_500),
+            ], spacing=0)
+        else:
+            # Reuse the established plan/story pickers without nesting its
+            # source card (and duplicate heading) inside this source switcher.
+            _azure_card = regression.automation_source_card(app)
+            source_details = ft.Column(list(_azure_card.content.controls[2:]), spacing=0)
+
+        source_card = card(ft.Column([
+            sec_head("A", strings.t("auto_sec_source")),
+            ft.Container(height=10),
+            ft.Row([
+                _source_option("backend",
+                               backend_setup.label_for(backend_setup.active(app.creds)),
+                               strings.t("auto_source_backend_desc"), ft.Icons.CLOUD_OUTLINED),
+                _source_option("file", strings.t("auto_source_file"),
+                               strings.t("auto_source_file_desc"), ft.Icons.UPLOAD_FILE),
+            ], spacing=10),
+            ft.Container(height=12),
+            source_details,
+        ], spacing=0))
 
         framework_card = card(ft.Column([
             sec_head("B", strings.t("auto_sec_framework")),
@@ -195,16 +253,75 @@ def screen(app):
                     size=11, color=T.INK_3, weight=ft.FontWeight.W_500),
         ], spacing=0))
 
+        def _flip_inspection(e):
+            app.auto_live_inspection = bool(e.control.value)
+            app._auto_live_confirm = False
+            app._auto_inspection_confirm_invalid = False
+            app.render()
+
+        confirm_error = ft.Text(
+            strings.t("auto_err_test_confirm"), size=11, color=T.RED,
+            weight=ft.FontWeight.W_500,
+            visible=bool(getattr(app, "_auto_inspection_confirm_invalid", False)))
+
+        def _confirm_inspection(e):
+            app._auto_live_confirm = bool(e.control.value)
+            if app._auto_live_confirm:
+                app._auto_inspection_confirm_invalid = False
+                confirm_error.visible = False
+                try:
+                    confirm_error.update()
+                except Exception:
+                    pass
+
+        inspection_enabled = bool(getattr(app, "auto_live_inspection", False))
+        inspection_controls = [
+            ft.Row([
+                ft.Switch(value=inspection_enabled, active_color=T.VIOLET, scale=0.8,
+                          on_change=_flip_inspection),
+                ft.Text(strings.t("auto_inspection_enable"), size=12.5,
+                        weight=ft.FontWeight.BOLD, color=T.INK, expand=True),
+            ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            ft.Container(height=4),
+            ft.Text(strings.t("auto_inspection_desc"), size=11, color=T.INK_3,
+                    weight=ft.FontWeight.W_500),
+        ]
+        if inspection_enabled:
+            inspection_controls.extend([
+                ft.Container(height=12),
+                app._auto_field(strings.t("auto_lbl_test_user"), "auto_login_user",
+                                "test.user@example.com", req=True),
+                ft.Container(height=10),
+                app._auto_field(strings.t("auto_lbl_test_pass"), "auto_login_pass",
+                                "", password=True, req=True),
+                ft.Container(height=10),
+                ft.Row([
+                    ft.Checkbox(value=bool(getattr(app, "_auto_live_confirm", False)),
+                                active_color=T.VIOLET, on_change=_confirm_inspection),
+                    ft.Text(strings.t("auto_inspection_confirm"), size=11.5,
+                            color=T.INK_2, expand=True),
+                ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.START),
+                ft.Container(confirm_error, padding=ft.Padding.only(top=3, left=2)),
+                ft.Container(height=4),
+                ft.Text(strings.t("auto_inspection_note"), size=11, color=T.INK_3,
+                        weight=ft.FontWeight.W_500),
+            ])
+        inspection_card = card(ft.Column([
+            sec_head("D", strings.t("auto_sec_inspection")),
+            ft.Container(height=10),
+            *inspection_controls,
+        ], spacing=0))
+
         git_card = card(ft.Column([
-            sec_head("D", strings.t("auto_sec_git")),
+            sec_head("E", strings.t("auto_sec_git_optional")),
             ft.Container(height=10),
             app._auto_field(strings.t("auto_lbl_repo_url"), "auto_git_url",
-                             "https://github.com/you/automation-tests.git", req=True),
+                             "https://github.com/you/automation-tests.git"),
             ft.Container(height=10),
             ft.Row([
                 ft.Container(app._auto_field(strings.t("auto_lbl_branch"), "auto_git_branch", "main"), expand=1),
                 ft.Container(app._auto_field(strings.t("auto_lbl_pat"), "auto_git_token",
-                                 "ghp_… or Azure PAT", password=True, req=True,
+                                 "ghp_… or Azure PAT", password=True,
                                  info=strings.t("auto_pat_info"),
                                  on_info=lambda e: app._show_help("git_pat")), expand=1),
             ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.START),
@@ -214,7 +331,7 @@ def screen(app):
         ], spacing=0))
 
         local_card = card(ft.Column([
-            sec_head("E", strings.t("auto_sec_folder")),
+            sec_head("F", strings.t("auto_sec_folder")),
             ft.Container(height=10),
             app._auto_field(strings.t("auto_lbl_save_folder"), "auto_local_path",
                              r"e.g. C:\Users\you\IdeaProjects\automation-tests"),
@@ -229,7 +346,7 @@ def screen(app):
         email_picker = regression.email_recipient_picker(
             app, "_auto_email_to", is_open_key="_auto_email_open", sync_key="auto_emails")
         email_card = card(ft.Column([
-            sec_head("F", strings.t("auto_sec_email")),
+            sec_head("G", strings.t("auto_sec_email")),
             ft.Container(height=10),
             email_picker,
             ft.Container(height=6),
@@ -248,6 +365,7 @@ def screen(app):
             *([setup_hint] if setup_hint else []),
             framework_card,
             site_card,
+            inspection_card,
             git_card,
             local_card,
             email_card,
@@ -435,8 +553,12 @@ def screen(app):
         body = ft.Row([ft.Container(left, expand=True),
                        ft.Container(right, width=384)], spacing=22,
                       vertical_alignment=ft.CrossAxisAlignment.STRETCH, expand=True)
-        sub = (strings.t("auto_stories_selected", n=len(app._auto_selected)) if app._auto_selected
-               else strings.t("auto_no_stories"))
+        if file_source:
+            sub = (strings.t("auto_file_selected", name=os.path.basename(app.auto_test_case_file))
+                   if (app.auto_test_case_file or "").strip() else strings.t("auto_file_none"))
+        else:
+            sub = (strings.t("auto_stories_selected", n=len(app._auto_selected)) if app._auto_selected
+                   else strings.t("auto_no_stories"))
         return app.shell(strings.t("auto_title"), sub, body)
 
     # ---- activity panel: live counters + clean, RTL-aware log lines ----

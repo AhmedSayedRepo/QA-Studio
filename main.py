@@ -84,6 +84,7 @@ import settings
 import run
 import report
 import automation
+import automation_file_source as auto_file_source
 import performance
 import setup
 import dialogs
@@ -367,6 +368,14 @@ class QAStudio:
         self.auto_login_url = self.creds.get("auto_login_url", "")
         self.auto_login_user = self.creds.get("auto_login_user", "")
         self.auto_login_pass = self.creds.get("auto_login_pass", "")
+        self.auto_live_inspection = bool(self.creds.get("auto_live_inspection", False))
+        # Older builds persisted "azure" for the connected tracker source.
+        # That source now follows whichever backend Setup selects.
+        self.auto_source_mode = ("file" if self.creds.get("auto_source_mode") == "file"
+                                 else "backend")
+        self.auto_test_case_file = self.creds.get("auto_test_case_file", "")
+        self._auto_live_confirm = False   # explicit confirmation required per run
+        self._auto_inspection_confirm_invalid = False
         self.auto_git_url = self.creds.get("git_url", "")
         self.auto_git_branch = self.creds.get("git_branch", "") or "main"
         self.auto_git_token = self.creds.get("git_token", "")
@@ -9069,6 +9078,9 @@ class QAStudio:
             self.creds["auto_login_url"] = self.auto_login_url
             self.creds["auto_login_user"] = self.auto_login_user
             self.creds["auto_login_pass"] = self.auto_login_pass
+            self.creds["auto_live_inspection"] = bool(self.auto_live_inspection)
+            self.creds["auto_source_mode"] = self.auto_source_mode
+            self.creds["auto_test_case_file"] = self.auto_test_case_file
             self.creds["auto_local_path"] = self.auto_local_path
             store.save(self.creds)
         except Exception:
@@ -9832,28 +9844,39 @@ class QAStudio:
                 or getattr(self, "_cp_stories_loading", False)):
             self._toast(strings.t("main_plan_generating"))
             return
-        if not (self._auto_selected and self.project):
-            self._toast(strings.t("au_msg_pick_plan_stories"))
-            return
         # Field-level validation: red borders + inline helpers on the required
         # fields, while keeping the toast (per the rest of the app's pattern).
         self._auto_invalid = set()
         self._auto_invalid_msgs = {}
+        self._auto_inspection_confirm_invalid = False
         def _mark(attr, msg):
             self._auto_invalid.add(attr)
             self._auto_invalid_msgs[attr] = msg
+        _auto_file_source = getattr(self, "auto_source_mode", "azure") == "file"
+        if _auto_file_source:
+            if not (self.auto_test_case_file or "").strip():
+                _mark("auto_test_case_file", strings.t("auto_file_required"))
+        elif not (self._auto_selected and self.project):
+            self._toast(strings.t("au_msg_pick_plan_stories"))
+            return
         if not self.auto_site_url.strip():
             _mark("auto_site_url", "Enter the target site URL.")
-        if not (self.auto_git_url or "").strip():
-            _mark("auto_git_url", "Enter the Git repository URL.")
-        if not (self.auto_git_token or "").strip():
-            _mark("auto_git_token", "A Git access token (PAT) is required to push.")
         if not self._auto_project_dir():
             _mark("auto_local_path",
                   "Set the project folder — it's the home we push from.")
-        if self._auto_invalid:
-            first = next(iter(self._auto_invalid))
-            self._toast(self._auto_invalid_msgs[first])
+        if self.auto_live_inspection:
+            if not (self.auto_login_user or "").strip():
+                _mark("auto_login_user", strings.t("auto_err_test_user"))
+            if not (self.auto_login_pass or "").strip():
+                _mark("auto_login_pass", strings.t("auto_err_test_pass"))
+            if not self._auto_live_confirm:
+                self._auto_inspection_confirm_invalid = True
+        if self._auto_invalid or self._auto_inspection_confirm_invalid:
+            if self._auto_invalid:
+                first = next(iter(self._auto_invalid))
+                self._toast(self._auto_invalid_msgs[first])
+            else:
+                self._toast(strings.t("auto_err_test_confirm"))
             self.render()
             return
         self._save_git_creds()
@@ -9946,17 +9969,52 @@ class QAStudio:
                 # connection (no AZURE_ORG via _require_org), which used to crash
                 # the whole automation run at step 1. The Azure path stays
                 # byte-for-byte what it was.
-                _ops = backend_setup.generation_ops(self)
-                if _ops is None:
-                    cb("Connecting to Azure DevOps...", "dim")
-                    E.connect_azure_sdk(self.project)
+                _source_label = backend_setup.story_store_label(self)
+                _file_mode = getattr(self, "auto_source_mode", "azure") == "file"
+                if _file_mode:
+                    cb("Loading test cases from the selected file…", "dim")
+                    _file_payload = auto_file_source.load_stories_payload(
+                        (self.auto_test_case_file or "").strip())
+                    _local_story = _file_payload[0]["story"]
+                    _local_cases = _file_payload[0]["test_cases"]
+                    _local_case_by_id = {str(case["id"]): case for case in _local_cases}
+
+                    class _LocalFileOps:
+                        def discover_suites(self, project, plan_id, story_ids, create_missing=False):
+                            return {sid: "local-file-suite" for sid in story_ids}
+
+                        def fetch_stories(self, story_ids):
+                            from types import SimpleNamespace
+                            return [SimpleNamespace(
+                                id=_local_story["id"],
+                                fields={"System.Title": _local_story["title"],
+                                        "Microsoft.VSTS.Common.AcceptanceCriteria":
+                                        _local_story.get("criteria", "")})]
+
+                        def cases_for_suite(self, project, plan_id, suite_id):
+                            return [{"workItem": {"id": case["id"], "name": case["title"]}}
+                                    for case in _local_cases]
+
+                        def case_detail(self, case_id):
+                            case = _local_case_by_id.get(str(case_id), {})
+                            return case.get("title", ""), case.get("steps", [])
+
+                    _ops = _LocalFileOps()
+                    _source_label = "the local test-case file"
+                    _auto_sel = [{"id": _local_story["id"], "title": _local_story["title"],
+                                  "plan_id": "local-file"}]
                 else:
-                    cb(f"Connecting to {backend_setup.story_store_label(self)}…", "dim")
-                # Automation's stories come from its own multi-plan "Source &
-                # stories" picker (app._auto_selected), each tagged with the
-                # plan_id it was picked from — unlike the old single self.plan_id
-                # flow, suites must be discovered PER PLAN and the maps merged.
-                _auto_sel = list(self._auto_selected)
+                    _ops = backend_setup.generation_ops(self)
+                    if _ops is None:
+                        cb("Connecting to Azure DevOps...", "dim")
+                        E.connect_azure_sdk(self.project)
+                    else:
+                        cb(f"Connecting to {_source_label}…", "dim")
+                    # Automation's stories come from its own multi-plan "Source &
+                    # stories" picker (app._auto_selected), each tagged with the
+                    # plan_id it was picked from — unlike the old single self.plan_id
+                    # flow, suites must be discovered PER PLAN and the maps merged.
+                    _auto_sel = list(self._auto_selected)
                 _story_ids = [s["id"] for s in _auto_sel]
                 _story_plan = {s["id"]: s.get("plan_id") for s in _auto_sel}
                 _by_plan = {}
@@ -10124,7 +10182,7 @@ class QAStudio:
                         "test_cases": final_tcs,
                     })
                 cb(f"Loaded {len(stories_payload)} story/stories - {total_tc} test case(s) - "
-                   f"{total_steps} step(s) from {backend_setup.story_store_label(self)}.", "ok")
+                   f"{total_steps} step(s) from {_source_label}.", "ok")
 
                 if self._auto_stop:
                     cb("Stopped before scraping.", "warn"); return
@@ -10176,16 +10234,48 @@ class QAStudio:
                     if sid in new_ids or sid in reeval or sid in grew_ids:
                         walk_payload.append(sp)
 
-                # 2) Generate a SELF-HEALING project from the stories — no browser.
-                #    Locators are seeded (stable where known, // TODO otherwise) and
-                #    resolved at RUNTIME by the generated framework via the Anthropic
-                #    API when a seed fails. Cases are validated + ordered into a
-                #    logical sequence (logged-out negatives/validation/login-page →
-                #    successful login → app cases) so we never log out to re-test.
-                # Login URL seeds the generated project's config so its login step
-                # targets the right page. Credentials are NOT collected here — the
-                # generated tests read APP_USER / APP_PASS from their env at run time.
+                # 2) Optionally inspect the confirmed test environment in a visible
+                # browser before generation. The explorer follows the selected test
+                # scenarios and records one execution plan containing only direct,
+                # live captures. Generation consumes that exact plan once, rather
+                # than compiling the spreadsheet a second time.
+                # The local screen JSON is diagnostic-only and git-ignored.
                 _login_url = self.auto_login_url.strip() or self.auto_site_url.strip()
+                if walk_payload and self.auto_live_inspection:
+                    cb(strings.t("auto_inspection_start"), "info")
+                    inspection = E.explore_and_map(
+                        walk_payload,
+                        {"url": _login_url, "user": self.auto_login_user,
+                         "password": self.auto_login_pass},
+                        self.auto_site_url.strip(), cb=cb,
+                        should_stop=lambda: self._auto_stop, headless=False)
+                    walk_payload = inspection.get("stories_payload") or walk_payload
+                    _inspection_report = E.write_inspection_screens(project_dir, inspection, cb=cb)
+                    # The local report is the durable hand-off between visible
+                    # browser inspection and framework generation. Rehydrate its
+                    # per-intent bindings rather than relying on an in-memory
+                    # row-level locator that can be overwritten by a second
+                    # action in the same spreadsheet step.
+                    E.apply_inspection_screens(walk_payload, _inspection_report)
+                    _stats = inspection.get("stats") or {}
+                    cb(strings.t("auto_inspection_done",
+                                 live=int(_stats.get("live") or 0),
+                                 pending=int(_stats.get("snapshot") or 0)
+                                 + int(_stats.get("guess") or 0)), "ok")
+                    if self._auto_stop:
+                        cb("Stopped after live inspection.", "warn")
+                        return
+
+                # 3) Generate a SELF-HEALING project from the stories. A live
+                #    inspection plan must have an exact capture for every executable
+                #    step (or a recorded start-state); otherwise generation stops.
+                #    The generated framework still uses runtime healing only after a
+                #    verified locator later becomes stale. Cases are kept in the
+                #    inspection's authored execution sequence.
+                # Login URL seeds the generated project's config so its login step
+                # targets the right page. Generated tests still read APP_USER /
+                # APP_PASS from their environment at run time; inspection-only
+                # credentials are never written into the generated project.
                 login = {"url": _login_url} if _login_url else None
                 # Generate ONLY what the keep/re-evaluate choice said to (walk_payload):
                 # brand-new stories, the new test cases of "grew" stories, and any the
@@ -10193,12 +10283,15 @@ class QAStudio:
                 # passing the full stories_payload, so the choice had no effect.)
                 if walk_payload:
                     cb(f"Generating self-healing automation for {len(walk_payload)} "
-                       f"story(ies) (no browser)…", "info")
-                    E.generate_and_push_selfhealing(
+                       f"story(ies)…", "info")
+                    generated = E.generate_and_push_selfhealing(
                         project_dir, walk_payload, self.auto_site_url.strip(),
                         login=login, cb=cb, should_stop=lambda: self._auto_stop,
                         on_error=self._auto_on_ai_error, gate=self._auto_gate,
                         target=getattr(self, "_auto_target", "selenium"))
+                    if generated is None:
+                        cb(strings.t("auto_generation_blocked_unverified"), "err")
+                        return
                 else:
                     cb("Nothing new to generate — existing tests are kept as-is.", "ok")
 
@@ -10254,6 +10347,27 @@ class QAStudio:
         except Exception:
             pass
         self.ui_safe(self.render)
+
+    def _set_auto_test_case_file(self, path):
+        """Remember a local Automation source selected through the native picker."""
+        if not path:
+            return
+        try:
+            auto_file_source.load_test_cases(path)
+        except ValueError as exc:
+            self._toast(str(exc))
+            return
+        self.auto_test_case_file = path
+        self._save_git_creds()
+        self.ui_safe(self.render)
+
+    def _browse_auto_test_case_file(self, e=None):
+        """Pick one reviewable CSV/XLSX test-case source for Automation."""
+        import image_assets
+        image_assets.choose_file(
+            self, "Select a CSV or Excel test-case file", ["csv", "xlsx"],
+            self._set_auto_test_case_file,
+            on_error=lambda: self._toast(strings.t("file_picker_unavailable")))
 
     def _browse_auto_folder(self, e=None):
         """Choose the automation project folder through Flet's shared picker."""

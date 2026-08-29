@@ -361,17 +361,8 @@ def login_gate(app):
                 pass
         return ft.Container(expand=True, bgcolor=_base)
 
-    # Keep every form control on the same inner grid. On desktop it is fixed
-    # for a stable composition; on Android it is calculated from the actual
-    # viewport so the card cannot extend past either edge.
-    try:
-        _login_viewport_width = int(app.page.width or 0)
-    except Exception:
-        _login_viewport_width = 0
-    _MOBILE_CARD_WIDTH = (max(280, min(400, _login_viewport_width - 32))
-                          if _mobile_login and _login_viewport_width else 340)
-    _LOGIN_INPUT_WIDTH = (max(240, _MOBILE_CARD_WIDTH - 40)
-                          if _mobile_login else 352)
+    # Restored to the pre-3.8.8 fixed grid at the user's request.
+    _LOGIN_INPUT_WIDTH = 352
 
     def _field(cap, hint, icon, value="", password=False):
         tf = ft.TextField(
@@ -974,7 +965,7 @@ def login_gate(app):
                                            else ft.CrossAxisAlignment.START))
 
     card = ft.Container(
-        form, width=(_MOBILE_CARD_WIDTH if _mobile_login else 440),
+        form, width=440,
         padding=ft.Padding.symmetric(horizontal=(16 if _mobile_login else 42),
                                      vertical=(18 if _mobile_login else 26)), border_radius=26,
         gradient=ft.LinearGradient(begin=ft.Alignment.TOP_LEFT,

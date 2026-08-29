@@ -100,8 +100,15 @@ def _merge_seed_locators(out_dir, seeds, cb):
         data = {}
     added = 0
     for key, seed in (seeds or {}).items():
-        if key not in data:
-            data[key] = {"by": seed["by"], "value": seed["value"], "source": "seed"}
+        source = seed.get("source", "seed")
+        existing = data.get(key)
+        # A fresh direct inspection supersedes an older generated seed *and*
+        # a previous inspection of the same key. Runtime-healed/manual entries
+        # remain authoritative and are never overwritten.
+        can_upgrade = (source == "inspection" and isinstance(existing, dict)
+                       and existing.get("source") in ("seed", "inspection"))
+        if not existing or can_upgrade:
+            data[key] = {"by": seed["by"], "value": seed["value"], "source": source}
             added += 1
     try:
         with open(path, "w", encoding="utf-8") as f:
@@ -222,6 +229,8 @@ playwright-report/
 .auth/
 # environment-specific config (URLs + secrets stay out of git):
 .env
+# local DOM snapshots from an opt-in live inspection:
+inspection-screens.json
 # locators.json is COMMITTED on purpose — the UI is identical across environments,
 # so healed locators are shared. Only URLs/creds differ, and those live in .env.
 """
@@ -400,12 +409,12 @@ function normText(s) {
 }
 
 class Healer {
-  constructor(page) { this.page = page; this.store = load(); }
+  constructor(page) { this.page = page; this.scope = page; this.store = load(); this.pendingPopup = null; }
 
-  _loc(spec) { return this.page.locator(toSelector(spec)).first(); }
+  _loc(spec) { return this.scope.locator(toSelector(spec)).first(); }
 
   async _ok(spec) {
-    try { return (await this.page.locator(toSelector(spec)).count()) > 0; }
+    try { return (await this.scope.locator(toSelector(spec)).count()) > 0; }
     catch (e) { return false; }
   }
 
@@ -416,7 +425,9 @@ class Healer {
     if (HEAL) {
       console.log('[heal] resolving ' + key + ' via AI (' + PROVIDER + ')');
       let dom = '[]';
-      try { dom = JSON.stringify(await this.page.evaluate(HARVEST_EXPR)); } catch (e) {}
+      // ``scope`` is a Page at top level and a FrameLocator after enterFrame.
+      // Both expose locator(), whereas FrameLocator has no page-level evaluate.
+      try { dom = JSON.stringify(await this.scope.locator('html').evaluate(HARVEST_EXPR)); } catch (e) {}
       const picked = await pickLocator(intent, dom);
       if (picked && await this._ok(picked)) {
         this.store[key] = { by: picked.by, value: picked.value, source: 'healed',
@@ -444,10 +455,38 @@ class Healer {
     switch (verb) {
       case 'type':   await el.fill(value == null ? '' : String(value)); break;
       case 'select':
-      case 'hover':
+        try { await el.selectOption({ label: String(value) }); break; }
+        catch (e) { await el.click(); break; } // custom dropdown trigger
+      case 'hover':  await el.hover(); break;
+      case 'upload': await el.setInputFiles(String(value)); break;
+      case 'key_press': await el.press(String(value || 'Enter')); break;
       case 'click':
       default:       await el.click(); break;
     }
+  }
+
+  async enterFrame(key, seed, intent) {
+    const frame = await (await this.resolve(key, seed, intent)).contentFrame();
+    if (!frame) throw new Error('Could not enter frame for ' + key);
+    this.scope = frame;
+  }
+
+  prepareDialog(action) {
+    this.page.once('dialog', async dialog => {
+      if (action === 'dismiss') await dialog.dismiss(); else await dialog.accept();
+    });
+  }
+
+  prepareWindow() { this.pendingPopup = this.page.context().waitForEvent('page'); }
+
+  async switchWindow() {
+    if (!this.pendingPopup) throw new Error('No popup was prepared before window switch');
+    this.page = await this.pendingPopup;
+    await this.page.waitForLoadState('domcontentloaded');
+    await this.page.waitForFunction(() =>
+      location.href !== 'about:blank' && !!(document.body && document.body.innerText.trim()));
+    this.scope = this.page;
+    this.pendingPopup = null;
   }
 
   async assertVisible(key, seed, intent) {
@@ -459,13 +498,39 @@ class Healer {
     catch (e) { console.log('[heal] assertVisible ' + key + ' failed: ' + e.message); return false; }
   }
 
+  async assertChecked(key, seed, intent) {
+    try { return await (await this.resolve(key, seed, intent)).isChecked(); }
+    catch (e) { console.log('[heal] assertChecked ' + key + ' failed: ' + e.message); return false; }
+  }
+
+  async assertEnabled(key, seed, intent, enabled) {
+    try { return (await (await this.resolve(key, seed, intent)).isEnabled()) === enabled; }
+    catch (e) { console.log('[heal] assertEnabled ' + key + ' failed: ' + e.message); return false; }
+  }
+
+  async assertSelected(key, seed, intent, expected) {
+    try {
+      const text = await (await this.resolve(key, seed, intent)).locator('option:checked').textContent();
+      return normText(text).includes(normText(expected));
+    } catch (e) { console.log('[heal] assertSelected ' + key + ' failed: ' + e.message); return false; }
+  }
+
+  async assertHidden(key, seed) {
+    // Absence is not a healing problem: retrying an AI locator search after a
+    // successful removal could bind a different, still-visible product. Test
+    // only the exact locator captured immediately before the removing action.
+    if (!seed || !seed.by || !seed.value) return false;
+    try { return !(await this._loc(seed).isVisible()); }
+    catch (e) { return true; }
+  }
+
   // Verify by PAGE TEXT (no locator, no AI): true if the page contains ANY
   // keyword — Arabic-normalized on both sides (see normText above).
   async assertText(keywords) {
     const end = Date.now() + 8000;
     do {
       let t = '';
-      try { t = normText(await this.page.locator('body').innerText()); }
+      try { t = normText(await this.scope.locator('body').innerText()); }
       catch (e) {}
       for (const k of keywords) {
         if (k && t.includes(normText(k))) return true;
@@ -568,6 +633,22 @@ def _spec_name(sid):
     return "story-%s.spec.js" % safe
 
 
+def _is_login_transition_action(intent):
+    """Whether an authored action is fulfilled by the shared login helper."""
+    if intent.get("role") != "action":
+        return False
+    text = " ".join([
+        str(intent.get("target") or "").lower(),
+        " ".join(str(k).lower() for k in (intent.get("keywords") or [])),
+    ])
+    verb = str(intent.get("verb") or "")
+    is_user = any(k in text for k in ("username", "user name", "email", "e-mail", "اسم المستخدم", "البريد"))
+    is_password = any(k in text for k in ("password", "passcode", "كلمة المرور", "كلمه المرور"))
+    is_submit = verb == "click" and any(k in text for k in ("login", "log in", "sign in", "signin", "تسجيل الدخول"))
+    is_login_page = verb == "navigate" and any(k in text for k in ("login", "log in", "sign in", "signin", "تسجيل الدخول"))
+    return is_user or is_password or is_submit or is_login_page
+
+
 def _emit_pw_intent(lines, key, intent, seed_fn, seeds, app_page=False):
     """Append the Playwright JS for one intent. Mirrors engine._emit_intent: keyed
     steps record a known seed into `seeds` for locators.json pre-seeding.
@@ -582,7 +663,8 @@ def _emit_pw_intent(lines, key, intent, seed_fn, seeds, app_page=False):
 
     def _record():
         if seed is not None:
-            seeds[key] = {"by": by, "value": val}
+            seeds[key] = {"by": by, "value": val,
+                          "source": "inspection" if intent.get("live_locator") else "seed"}
 
     if role == "precondition":
         lines.append("    // precondition (no UI action): %s" %
@@ -591,8 +673,36 @@ def _emit_pw_intent(lines, key, intent, seed_fn, seeds, app_page=False):
     if role == "assertion":
         kind = (intent.get("kind") or "").lower()
         kws = [k for k in (intent.get("keywords") or []) if k] or ([target] if target else [])
-        if seed is None and (kind in ("text", "message", "menu", "validation", "error")
-                             or not kind):
+        if intent.get("assert_before_action"):
+            lines.append("    expect(await heal.assertHidden(%s, %s)).toBeTruthy();"
+                         % (json.dumps(key), json.dumps(seed, ensure_ascii=False)))
+            _record()
+            return
+        check = (intent.get("check") or "").lower()
+        if check == "checked":
+            lines.append("    expect(await heal.assertChecked(%s, %s, %s)).toBeTruthy();"
+                         % (json.dumps(key), json.dumps(seed, ensure_ascii=False),
+                            json.dumps(ij, ensure_ascii=False)))
+            _record()
+            return
+        if check in ("enabled", "disabled"):
+            lines.append("    expect(await heal.assertEnabled(%s, %s, %s, %s)).toBeTruthy();"
+                         % (json.dumps(key), json.dumps(seed, ensure_ascii=False),
+                            json.dumps(ij, ensure_ascii=False),
+                            "true" if check == "enabled" else "false"))
+            _record()
+            return
+        if check in ("selected", "selected_value", "value_selected"):
+            expected = (intent.get("value") or (kws[0] if kws else "") or
+                        intent.get("expected") or target)
+            lines.append("    expect(await heal.assertSelected(%s, %s, %s, %s)).toBeTruthy();"
+                         % (json.dumps(key), json.dumps(seed, ensure_ascii=False),
+                            json.dumps(ij, ensure_ascii=False), json.dumps(expected, ensure_ascii=False)))
+            _record()
+            return
+        if (seed is None and not intent.get("inspection_unresolved") and
+                (kind in ("text", "message", "menu", "validation", "error")
+                 or not kind)):
             lines.append("    expect(await heal.assertText(%s)).toBeTruthy();"
                          % json.dumps(kws, ensure_ascii=False))
             return
@@ -604,6 +714,27 @@ def _emit_pw_intent(lines, key, intent, seed_fn, seeds, app_page=False):
         return
     verb = intent.get("verb") or "click"
     value = intent.get("value", "")
+    if verb == "dialog_accept" or verb == "dialog_dismiss":
+        # The listener is installed immediately before the authored click that
+        # opens the dialog; this intent documents the completed context change.
+        lines.append("    // browser dialog %s was handled by the preceding action" %
+                     ("dismiss" if verb == "dialog_dismiss" else "accept"))
+        return
+    if verb == "window_switch":
+        lines.append("    await heal.switchWindow();")
+        return
+    if verb == "navigate" and str(value).lower().startswith(("http://", "https://")):
+        # Navigation is a state transition captured from the source URL, not a
+        # locator for a link on whichever page happened to precede it.
+        lines.append("    await page.goto(%s);" % json.dumps(value, ensure_ascii=False))
+        return
+    if verb == "frame":
+        _todo = "  // TODO verify locator (resolved at runtime)" if seed is None else ""
+        lines.append("    await heal.enterFrame(%s, %s, %s);%s"
+                     % (json.dumps(key), json.dumps(seed, ensure_ascii=False),
+                        json.dumps(ij, ensure_ascii=False), _todo))
+        _record()
+        return
     _todo = "  // TODO verify locator (resolved at runtime)" if seed is None else ""
     lines.append("    await heal.act(%s, %s, %s, %s, %s);%s"
                  % (json.dumps(key), json.dumps(verb),
@@ -631,21 +762,39 @@ def _pw_spec(story, cases, seed_fn, seeds):
 
     def _one_case(L, ci, c, indent=""):
         bucket = c.get("bucket", 3)
+        explicit_login_flow = bool(c.get("explicit_login_flow"))
         L.append("")
         L.append(indent + "  test(%s, async ({ page, heal }) => {"
                  % json.dumps(c.get("title", "case %d" % ci)))
         body = []
-        if bucket < 2:
+        if explicit_login_flow:
+            body.append("    await performLogin(page);")
+        elif bucket < 2:
             body.append("    await openLoginPage(page);")
         elif bucket == 2:
             body.append("    await performLogin(page);")
         else:
             body.append("    await page.goto(process.env.APP_BASE_URL || '/');")
-        for ii, intent in enumerate(c.get("intents", [])):
-            if bucket == 2 and intent.get("role") == "action":
+        intents = c.get("intents", [])
+        for ii, intent in enumerate(intents):
+            if (bucket == 2 and intent.get("role") == "action") or (
+                    explicit_login_flow and _is_login_transition_action(intent)):
                 continue
+            # Browser dialogs and popups are delivered by Playwright as events.
+            # Register the listener before the preceding click, never after the
+            # event has already fired.  Context actions themselves are emitted
+            # as explicit no-locator transitions below.
+            next_intent = intents[ii + 1] if ii + 1 < len(intents) else {}
+            if intent.get("role") == "action" and next_intent.get("role") == "action":
+                next_verb = next_intent.get("verb")
+                if next_verb == "dialog_accept":
+                    body.append("    heal.prepareDialog('accept');")
+                elif next_verb == "dialog_dismiss":
+                    body.append("    heal.prepareDialog('dismiss');")
+                elif next_verb == "window_switch":
+                    body.append("    heal.prepareWindow();")
             _emit_pw_intent(body, "%s.%d.%d" % (sid, ci, ii), intent, seed_fn,
-                            seeds, app_page=(bucket == 3))
+                            seeds, app_page=(bucket == 3 or explicit_login_flow))
         L.extend(indent + ln for ln in body)
         L.append(indent + "  });")
 
@@ -655,8 +804,10 @@ def _pw_spec(story, cases, seed_fn, seeds):
     L.append("")
     L.append("test.describe(%s, () => {"
              % json.dumps("Story %s — %s" % (sid, story.get("title", ""))))
-    login_cases = [(ci, c) for ci, c in enumerate(cases) if c.get("bucket", 3) <= 2]
-    app_cases = [(ci, c) for ci, c in enumerate(cases) if c.get("bucket", 3) == 3]
+    login_cases = [(ci, c) for ci, c in enumerate(cases)
+                   if c.get("bucket", 3) <= 2 or c.get("explicit_login_flow")]
+    app_cases = [(ci, c) for ci, c in enumerate(cases)
+                 if c.get("bucket", 3) == 3 and not c.get("explicit_login_flow")]
     if login_cases:
         L.append("")
         L.append("  // These cases test the LOGIN PAGE itself — they opt out of the")
@@ -682,7 +833,8 @@ def build_playwright_project(out_dir, sequenced, cfg, seed_fn, harvest_js,
     orig_tcs = orig_tcs or {}
     tests_dir = os.path.join(out_dir, "tests")
     support_dir = os.path.join(out_dir, "support")
-    for d in (tests_dir, support_dir):
+    fixtures_dir = os.path.join(out_dir, "fixtures")
+    for d in (tests_dir, support_dir, fixtures_dir):
         os.makedirs(d, exist_ok=True)
     written = []
     m = _load_manifest(out_dir)
@@ -702,6 +854,8 @@ def build_playwright_project(out_dir, sequenced, cfg, seed_fn, harvest_js,
     _wif(os.path.join(out_dir, ".env.example"), _PW_ENV_EXAMPLE, written, out_dir)
     _wif(os.path.join(out_dir, "README.md"), _PW_README, written, out_dir)
     _wif(os.path.join(out_dir, "fixtures.js"), _PW_FIXTURES, written, out_dir)
+    _wif(os.path.join(fixtures_dir, "qastudio-upload.txt"),
+         "QA Studio generated automation fixture.\n", written, out_dir)
     _wif(os.path.join(support_dir, "locators.js"), _PW_LOCATORS_JS, written, out_dir)
     _wif(os.path.join(support_dir, "aiClient.js"),
          _PW_AICLIENT_JS.replace("__PROVIDER__", prov)
@@ -926,6 +1080,8 @@ cypress/videos/
 cypress/reports/
 # environment-specific config (URLs + secrets stay out of git):
 .env
+# local DOM snapshots from an opt-in live inspection:
+inspection-screens.json
 # locators.json is COMMITTED on purpose — healed locators are shared across
 # environments (identical UI). Only URLs/creds differ, and those live in .env.
 """
@@ -1034,6 +1190,11 @@ Cypress.Commands.add('healAct', (key, verb, seed, intent, value) => {
     if (verb === 'type') {
       cy.get(sel).first().clear();
       if (value) cy.get(sel).first().type(String(value));
+    } else if (verb === 'select') {
+      cy.get(sel).first().then(($el) => {
+        if ($el.is('select')) cy.wrap($el).select(String(value));
+        else cy.wrap($el).scrollIntoView().click({ force: true });
+      });
     } else {
       cy.get(sel).first().scrollIntoView().click({ force: true });
     }
@@ -1043,6 +1204,30 @@ Cypress.Commands.add('healAct', (key, verb, seed, intent, value) => {
 Cypress.Commands.add('healAssertVisible', (key, seed, intent) => {
   cy.healSelector(key, seed, intent).then((sel) => {
     cy.get(sel).first().should('be.visible');
+  });
+});
+
+Cypress.Commands.add('healAssertChecked', (key, seed, intent) => {
+  cy.healSelector(key, seed, intent).then((sel) => cy.get(sel).first().should('be.checked'));
+});
+
+Cypress.Commands.add('healAssertEnabled', (key, seed, intent, enabled) => {
+  cy.healSelector(key, seed, intent).then((sel) =>
+    cy.get(sel).first().should(enabled ? 'be.enabled' : 'be.disabled'));
+});
+
+Cypress.Commands.add('healAssertSelected', (key, seed, intent, expected) => {
+  cy.healSelector(key, seed, intent).then((sel) =>
+    cy.get(sel).first().find('option:selected').should('contain.text', expected));
+});
+
+Cypress.Commands.add('healAssertHidden', (seed) => {
+  // Do not self-heal a disappearance check: a replacement locator could match
+  // a different visible element after the target was correctly removed.
+  const sel = seed && _has(seed) ? toSelector(seed) : '';
+  if (!sel) throw new Error('Missing verified locator for hidden assertion.');
+  cy.get('body').then(($body) => {
+    expect($body.find(sel).filter(':visible').length, sel + ' is not visible').to.equal(0);
   });
 });
 
@@ -1104,7 +1289,8 @@ def _emit_cy_intent(lines, key, intent, seed_fn, seeds, app_page=False):
 
     def _record():
         if seed is not None:
-            seeds[key] = {"by": by, "value": val}
+            seeds[key] = {"by": by, "value": val,
+                          "source": "inspection" if intent.get("live_locator") else "seed"}
 
     if role == "precondition":
         lines.append("    // precondition (no UI action): %s" %
@@ -1113,8 +1299,35 @@ def _emit_cy_intent(lines, key, intent, seed_fn, seeds, app_page=False):
     if role == "assertion":
         kind = (intent.get("kind") or "").lower()
         kws = [k for k in (intent.get("keywords") or []) if k] or ([target] if target else [])
-        if seed is None and (kind in ("text", "message", "menu", "validation", "error")
-                             or not kind):
+        if intent.get("assert_before_action"):
+            lines.append("    cy.healAssertHidden(%s);" % json.dumps(seed, ensure_ascii=False))
+            _record()
+            return
+        check = (intent.get("check") or "").lower()
+        if check == "checked":
+            lines.append("    cy.healAssertChecked(%s, %s, %s);"
+                         % (json.dumps(key), json.dumps(seed, ensure_ascii=False),
+                            json.dumps(ij, ensure_ascii=False)))
+            _record()
+            return
+        if check in ("enabled", "disabled"):
+            lines.append("    cy.healAssertEnabled(%s, %s, %s, %s);"
+                         % (json.dumps(key), json.dumps(seed, ensure_ascii=False),
+                            json.dumps(ij, ensure_ascii=False),
+                            "true" if check == "enabled" else "false"))
+            _record()
+            return
+        if check in ("selected", "selected_value", "value_selected"):
+            expected = (intent.get("value") or (kws[0] if kws else "") or
+                        intent.get("expected") or target)
+            lines.append("    cy.healAssertSelected(%s, %s, %s, %s);"
+                         % (json.dumps(key), json.dumps(seed, ensure_ascii=False),
+                            json.dumps(ij, ensure_ascii=False), json.dumps(expected, ensure_ascii=False)))
+            _record()
+            return
+        if (seed is None and not intent.get("inspection_unresolved") and
+                (kind in ("text", "message", "menu", "validation", "error")
+                 or not kind)):
             lines.append("    cy.healAssertText(%s);" % json.dumps(kws, ensure_ascii=False))
             return
         _todo = "  // TODO verify locator (resolved at runtime)" if seed is None else ""
@@ -1125,6 +1338,9 @@ def _emit_cy_intent(lines, key, intent, seed_fn, seeds, app_page=False):
         return
     verb = intent.get("verb") or "click"
     value = intent.get("value", "")
+    if verb == "navigate" and str(value).lower().startswith(("http://", "https://")):
+        lines.append("    cy.visit(%s);" % json.dumps(value, ensure_ascii=False))
+        return
     _todo = "  // TODO verify locator (resolved at runtime)" if seed is None else ""
     lines.append("    cy.healAct(%s, %s, %s, %s, %s);%s"
                  % (json.dumps(key), json.dumps(verb),
@@ -1142,9 +1358,12 @@ def _cy_spec(story, cases, seed_fn, seeds):
              % json.dumps("Story %s — %s" % (sid, story.get("title", ""))))
     for ci, c in enumerate(cases):
         bucket = c.get("bucket", 3)
+        explicit_login_flow = bool(c.get("explicit_login_flow"))
         L.append("")
         L.append("  it(%s, () => {" % json.dumps(c.get("title", "case %d" % ci)))
-        if bucket < 2:
+        if explicit_login_flow:
+            L.append("    cy.performLogin();")
+        elif bucket < 2:
             L.append("    cy.openLoginPage();")
         elif bucket == 2:
             L.append("    cy.performLogin();")
@@ -1156,10 +1375,11 @@ def _cy_spec(story, cases, seed_fn, seeds):
             L.append("    cy.loginSession();")
             L.append("    cy.visit(Cypress.env('APP_BASE_URL') || '/');")
         for ii, intent in enumerate(c.get("intents", [])):
-            if bucket == 2 and intent.get("role") == "action":
+            if (bucket == 2 and intent.get("role") == "action") or (
+                    explicit_login_flow and _is_login_transition_action(intent)):
                 continue
             _emit_cy_intent(L, "%s.%d.%d" % (sid, ci, ii), intent, seed_fn, seeds,
-                            app_page=(bucket == 3))
+                            app_page=(bucket == 3 or explicit_login_flow))
         L.append("  });")
     L.append("});")
     return "\n".join(L) + "\n", "story-%s.cy.js" % ("".join(ch for ch in sid if ch.isalnum()) or "0")

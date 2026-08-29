@@ -7204,7 +7204,34 @@ function xpathOf(el){
   }
   return '/'+parts.join('/');
 }
-const sel='input,button,a,select,textarea,[role=button],[role=link],[role=tab],[role=menuitem],[role=option],[role=checkbox],[role=switch],[contenteditable=true]';
+function selectorCandidates(el){
+  const out=[];
+  const add=(s)=>{if(s&&!out.includes(s))out.push(s);};
+  const esc=(v)=>String(v||'').replace(/\\/g,'\\\\').replace(/"/g,'\\"');
+  const tag=el.tagName.toLowerCase();
+  const tid=el.getAttribute('data-testid')||el.getAttribute('data-test')||el.getAttribute('data-cy')||'';
+  if(tid) add('[data-testid="'+esc(tid)+'"]');
+  if(el.id) add('#'+CSS.escape(el.id));
+  if(el.getAttribute('name')) add(tag+'[name="'+esc(el.getAttribute('name'))+'"]');
+  if(el.getAttribute('aria-label')) add('[aria-label="'+esc(el.getAttribute('aria-label'))+'"]');
+  add(robustCss(el));
+  return out.slice(0,5);
+}
+const sel='input,button,a,select,textarea,iframe,frame,[role=button],[role=link],[role=tab],[role=menuitem],[role=option],[role=checkbox],[role=switch],[contenteditable=true]';
+const textSel='[role=heading],[role=status],[role=alert],h1,h2,h3,h4,h5,h6,.inventory_item_name,.cart_item,.shopping_cart_badge,.title,.flash,.figcaption,.subheader,#result,#uploaded-files,[data-testid]';
+function adjacentText(el){
+  // Some plain HTML forms put a checkbox's human label in an unwrapped text
+  // node immediately after the input (<input> checkbox 1), so no associated
+  // <label> exists.  Capture only nearby visible label text, never a value.
+  let out='', n=el.nextSibling;
+  while(n && out.length<80){
+    if(n.nodeType===3) out+=' '+(n.textContent||'');
+    else if(n.nodeType===1 && n.tagName!=='BR') out+=' '+(n.innerText||'');
+    if(n.nodeType===1 && n.tagName==='BR') break;
+    n=n.nextSibling;
+  }
+  return out.trim().replace(/\s+/g,' ').slice(0,80);
+}
 function anameOf(el){
   // best-effort accessible name: aria-label, associated <label>, title, alt, text
   let n = el.getAttribute('aria-label') || '';
@@ -7214,10 +7241,15 @@ function anameOf(el){
   }
   if(!n){ var pl=el.closest('label'); if(pl) n=(pl.innerText||'').trim(); }
   if(!n) n = el.getAttribute('title') || el.getAttribute('alt') || '';
+  if(!n) n = adjacentText(el);
   return (n||'').trim().slice(0,80);
 }
-const els=[...document.querySelectorAll(sel)];
-return els.slice(0,250).map((el,i)=>({
+const uniq=new Set();
+const els=[...document.querySelectorAll(sel),...document.querySelectorAll(textSel)].filter(el=>{
+  if(uniq.has(el)) return false; uniq.add(el);
+  return !!(el.offsetWidth||el.offsetHeight||el.getClientRects().length);
+});
+return els.slice(0,350).map((el,i)=>({
   idx: i,
   tag: el.tagName.toLowerCase(),
   type: el.getAttribute('type')||'',
@@ -7225,10 +7257,26 @@ return els.slice(0,250).map((el,i)=>({
   id: el.id||'',
   name: el.getAttribute('name')||'',
   testid: el.getAttribute('data-testid')||el.getAttribute('data-test')||el.getAttribute('data-cy')||'',
-  text: (el.innerText||el.value||'').trim().slice(0,60),
+   // Never harvest field values: a live inspection may have just typed test
+   // credentials or other test data. Labels, placeholders and accessible names
+   // remain available for deterministic locator matching.
+  text: ((el.matches && el.matches('input,textarea,select')) ? '' : (el.innerText||'')).trim().slice(0,60),
+  // Option captions describe a control's supported actions; unlike a selected
+  // field value, they are safe and necessary for matching "select Option 2".
+  // Keep this bounded so a huge country/product list cannot bloat the report.
+  options: (el.tagName.toLowerCase()==='select'
+            ? [...el.options].map(o=>(o.textContent||'').trim()).filter(Boolean).slice(0,30)
+            : []),
   placeholder: el.getAttribute('placeholder')||'',
   aria: el.getAttribute('aria-label')||'',
   aname: anameOf(el),
+  required: !!(el.required||el.getAttribute('aria-required')==='true'),
+  readonly: !!(el.readOnly||el.getAttribute('aria-readonly')==='true'),
+  checked: !!el.checked,
+  selectedOptionText: (el.tagName.toLowerCase()==='select' && el.selectedOptions && el.selectedOptions[0]
+                       ? (el.selectedOptions[0].textContent||'').trim().slice(0,80) : ''),
+  autocomplete: el.getAttribute('autocomplete')||'',
+  inputmode: el.getAttribute('inputmode')||'',
   cls: ((typeof el.className==='string'?el.className:'')+' '+
         (el.querySelector('i,svg,[class*=icon i]')?
           (el.querySelector('i,svg,[class*=icon i]').getAttribute('class')||''):'')).trim().slice(0,120),
@@ -7243,7 +7291,8 @@ return els.slice(0,250).map((el,i)=>({
   disabled: !!(el.disabled||el.getAttribute('aria-disabled')==='true'),
   visible: !!(el.offsetWidth||el.offsetHeight||el.getClientRects().length),
   css: robustCss(el),
-  xpath: xpathOf(el)
+  xpath: xpathOf(el),
+  selectorCandidates: selectorCandidates(el)
 }));
 """
 
@@ -7284,8 +7333,8 @@ function xpathOf(el){
 }
 const sel="[role=alert],[role=status],[aria-live],.alert,.alert-error,.alert-danger,"+
   ".error,.has-error,.invalid-feedback,.help-block,.field-error,.form-error,.toast,"+
-  ".kc-feedback-text,.pf-c-form__helper-text,#input-error,.message,.notification,"+
-  "[id*=error i],[class*=error i],[class*=invalid i],[class*=feedback i],[class*=danger i],[class*=toast i]";
+  ".kc-feedback-text,.pf-c-form__helper-text,#input-error,.message,.notification,.flash,.success,"+
+  "[id*=error i],[class*=error i],[class*=invalid i],[class*=feedback i],[class*=danger i],[class*=toast i],[class*=success i]";
 const out=[]; const seen=new Set();
 [...document.querySelectorAll(sel)].forEach(el=>{
   const txt=(el.innerText||el.textContent||'').trim();
@@ -7430,6 +7479,105 @@ def _infer_page_context(tc, case_type="interaction"):
     return "app"
 
 
+def _case_has_explicit_login_flow(intents):
+    """True when the authored scenario itself performs username/password login.
+
+    Such a case must start logged out even when its business goal is an
+    authenticated action afterwards (for example: sign in, then add to cart).
+    The former title-only page classifier treated that sequence as an app case,
+    which made the inspector replay login controls against an inventory page.
+    """
+    text = " ".join(" ".join([
+        str(intent.get("target") or ""),
+        " ".join(str(k) for k in (intent.get("keywords") or [])),
+    ]) for intent in intents if intent.get("role") == "action")
+    normalized = _norm(text)
+    has_user = any(key in normalized for key in
+                   ("username", "user name", "email", "e-mail", "اسم المستخدم", "البريد"))
+    has_password = any(key in normalized for key in ("password", "passcode", "كلمه المرور", "كلمة المرور"))
+    has_submit = any(key in normalized for key in
+                     ("login", "log in", "sign in", "signin", "تسجيل الدخول", "دخول"))
+    return has_user and has_password and has_submit
+
+
+def _is_login_flow_action(intent):
+    """Whether an action is performed by ``performLogin`` for a transition case."""
+    if intent.get("role") != "action":
+        return False
+    text = _norm(" ".join([
+        str(intent.get("target") or ""),
+        " ".join(str(k) for k in (intent.get("keywords") or [])),
+    ]))
+    verb = str(intent.get("verb") or "")
+    is_user_field = any(key in text for key in
+                        ("username", "user name", "email", "e-mail", "اسم المستخدم", "البريد"))
+    is_password_field = any(key in text for key in
+                            ("password", "passcode", "كلمه المرور", "كلمة المرور"))
+    is_login_submit = verb == "click" and any(key in text for key in
+                                                ("login", "log in", "sign in", "signin", "تسجيل الدخول"))
+    is_login_navigation = verb == "navigate" and any(key in text for key in
+                                                       ("login", "log in", "sign in", "signin", "تسجيل الدخول"))
+    return is_user_field or is_password_field or is_login_submit or is_login_navigation
+
+
+def _is_shopping_cart_navigation(intent):
+    if intent.get("role") != "action" or intent.get("verb") != "click":
+        return False
+    text = _norm(" ".join([
+        str(intent.get("target") or ""),
+        " ".join(str(k) for k in (intent.get("keywords") or [])),
+    ]))
+    return "shopping cart" in text
+
+
+def _intent_tokens(intent):
+    text = " ".join([
+        str(intent.get("target") or ""),
+        " ".join(str(k) for k in (intent.get("keywords") or [])),
+    ])
+    return {token for token in re.split(r"[^\w\u0600-\u06ff]+", _norm(text))
+            if len(token) >= 3}
+
+
+def _best_inspection_binding(intent, bindings):
+    """Return the most specific persisted binding for this compiled intent.
+
+    A spreadsheet row can contain two atomic actions (for example, type a
+    username *and* a password).  The original row-level ``locator`` field is
+    necessarily overwritten by the second action, so live inspection keeps an
+    intent-level binding list and generation re-associates it deterministically.
+    """
+    role = intent.get("role") or "action"
+    verb = intent.get("verb") or ""
+    target = _norm(intent.get("target") or "")
+    intent_tokens = _intent_tokens(intent)
+    ranked = []
+    for binding in bindings or []:
+        if not isinstance(binding, dict) or binding.get("role") != role:
+            continue
+        if role == "action" and binding.get("verb") and binding.get("verb") != verb:
+            continue
+        b_target = _norm(binding.get("target") or "")
+        score = 0
+        if target and b_target == target:
+            score += 100
+        if (intent.get("kind") or "any") == (binding.get("kind") or "any"):
+            score += 4
+        overlap = intent_tokens & _intent_tokens(binding)
+        score += len(overlap) * 8
+        # Field identities are more reliable than generic wording such as
+        # "enter credentials" when one source row holds two type actions.
+        for token in ("username", "email", "password", "backpack", "remove", "login"):
+            if token in intent_tokens and token in _intent_tokens(binding):
+                score += 12
+        if score:
+            ranked.append((score, binding))
+    if not ranked:
+        return None
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    return ranked[0][1]
+
+
 def _wants_empty_field(text):
     t = (text or "").lower()
     return any(k in t for k in _EMPTY_FIELD_KWS)
@@ -7453,7 +7601,281 @@ _VERB_SYNONYMS = {
 }
 _ASSERTION_VERB_WORDS = {"verify", "check", "assert", "expect", "confirm",
                          "تأكد", "تحقق", "يظهر", "تظهر"}
-_VALID_ACTION_VERBS = ("navigate", "click", "type", "select", "hover", "wait")
+_VALID_ACTION_VERBS = ("navigate", "click", "type", "select", "hover", "wait",
+                       "frame", "dialog_accept", "dialog_dismiss", "window_switch",
+                       "upload", "key_press")
+
+
+def _source_operation_contract(step):
+    """Return a deterministic browser-operation contract from reviewed file metadata.
+
+    Local spreadsheet metadata is an execution contract, not prose for the AI to
+    reinterpret.  These operations deliberately do not all have DOM locators:
+    accepting a JavaScript dialog and switching to a popup are browser-context
+    transitions.  Treating them as clicks was the direct cause of blocked runs.
+    """
+    element_type = _norm(step.get("element_type") or "")
+    action = str(step.get("action") or "")
+    note = _norm(step.get("automation_note") or "")
+    source = _norm(" ".join((action, note, element_type)))
+    preferred = str(step.get("preferred_locator") or "").strip()
+    frame_context = str(step.get("frame_context") or "").strip()
+    verb = ""
+    kind = "any"
+    value = ""
+    is_verify = bool(re.match(r"\s*(verify|assert|check)\b", action, flags=re.IGNORECASE))
+    if "browser dialog" in element_type or "javascript dialog" in element_type:
+        verb = "dialog_dismiss" if any(w in source for w in ("dismiss", "cancel")) else "dialog_accept"
+        kind = "context"
+    elif "window context" in element_type or "new window" in source or "switch window" in source:
+        verb, kind = "window_switch", "context"
+    elif "iframe" in element_type or element_type == "frame" or "switch to frame" in source:
+        verb, kind = "frame", "frame"
+    elif ("file input" in element_type or
+          (not element_type and "upload" in source and
+           not any(word in source for word in ("button", "link", "page")))):
+        verb, kind, value = "upload", "input", "fixtures/qastudio-upload.txt"
+    elif "keyboard" in element_type or re.search(r"\bpress\s+(?:the\s+)?(?:enter|escape|tab|arrow|space)", source):
+        verb, kind = "key_press", "input"
+        match = re.search(r"\b(enter|escape|tab|arrowup|arrowdown|arrowleft|arrowright|space)\b", source)
+        value = (match.group(1).upper() if match else "ENTER")
+    # Reviewed control types prevent the compiler from changing a real link
+    # into a guessed navigate intent or a submit input into a page/body click.
+    # Verification rows deliberately remain assertions rather than becoming
+    # duplicate actions just because they name a text input/control.
+    elif not is_verify:
+        if "native select" in element_type or element_type == "select":
+            verb, kind = "select", "select"
+            match = re.search(r"\b(option\s+[^\s,.]+)", action, flags=re.IGNORECASE)
+            value = match.group(1) if match else ""
+        elif "checkbox" in element_type:
+            verb, kind = "click", "checkbox"
+        elif "anchor" in element_type or "link" in element_type:
+            verb, kind = "click", "link"
+        elif "button" in element_type or "submit" in element_type:
+            verb, kind = "click", "button"
+        elif "contenteditable" in element_type or "text input" in element_type or "password input" in element_type:
+            verb, kind = "type", "input"
+        elif ("image" in element_type or "container" in element_type) and "hover" in source:
+            verb, kind = "hover", "any"
+    if not verb:
+        return None
+    return {"verb": verb, "kind": kind, "value": value,
+            "preferred_locator": preferred, "frame_context": frame_context}
+
+
+def _apply_source_operation_contracts(intents, raw_steps):
+    """Overlay reviewed local-file operation metadata onto compiler output.
+
+    The model still compiles ordinary steps.  For browser-context operations the
+    reviewed workbook is authoritative: update the corresponding source action,
+    or insert it if the model omitted it.  This keeps source order and prevents
+    an LLM from turning a frame/window/dialog transition into a locator guess.
+    """
+    out = [dict(intent) for intent in intents]
+    context_steps = []
+    for index, step in enumerate(raw_steps, start=1):
+        contract = _source_operation_contract(step or {})
+        if not contract:
+            continue
+        if contract["verb"] in ("dialog_accept", "dialog_dismiss", "window_switch"):
+            context_steps.append(index)
+        found = next((intent for intent in out
+                      if intent.get("role") == "action" and
+                      index in (intent.get("from_steps") or [])), None)
+        if found is None:
+            found = {"role": "action", "target": str(step.get("action") or "").strip(),
+                     "keywords": [], "check": "", "expected": "", "from_steps": [index]}
+            out.append(found)
+        found.update({key: value for key, value in contract.items()
+                      if key in ("verb", "kind", "value")})
+        if contract.get("preferred_locator"):
+            found["preferred_locator"] = contract["preferred_locator"]
+        if contract.get("frame_context"):
+            found["frame_context"] = contract["frame_context"]
+        found["source_operation"] = True
+    # An "alert/dialog/window opens" expectation is validated by the explicit
+    # context operation that follows it.  It cannot be a DOM assertion: while
+    # the browser prompt is open, Chrome correctly rejects DOM commands.  Drop
+    # only that redundant immediate expectation, never ordinary page checks.
+    for context_step in context_steps:
+        opener_step = context_step - 1
+        opener = raw_steps[opener_step - 1] if 1 <= opener_step <= len(raw_steps) else {}
+        opener_text = _norm(" ".join((str(opener.get("action") or ""),
+                                      str(opener.get("expected") or ""))))
+        if any(token in opener_text for token in ("alert", "dialog", "confirm", "window")):
+            out = [intent for intent in out if not (
+                intent.get("role") == "assertion" and
+                set(intent.get("from_steps") or []) == {opener_step})]
+        # The expected result on an accept/dismiss step is a post-dialog page
+        # feedback check.  Mark it explicitly so its capture does not depend
+        # on the model choosing the site's exact wording (for example, it may
+        # write "cancel confirmation result" while the page says "You clicked:
+        # Cancel").
+        for intent in out:
+            if intent.get("role") == "assertion" and context_step in (intent.get("from_steps") or []):
+                intent["context_result"] = True
+    return [intent for _, intent in sorted(
+        enumerate(out),
+        key=lambda pair: ((min(pair[1].get("from_steps") or [10 ** 6]) - 1)
+                          if (pair[1].get("role") == "action" and
+                              pair[1].get("verb") in ("dialog_accept", "dialog_dismiss", "window_switch"))
+                          else min(pair[1].get("from_steps") or [10 ** 6]),
+                          {"precondition": 0, "action": 1, "assertion": 2}.get(pair[1].get("role"), 3),
+                          pair[0]))]
+
+
+def _navigation_url_from_source(tc, intent):
+    """Return a safe, authored http(s) URL for one navigation intent.
+
+    Page navigation is state transition, not an element lookup.  The compiler
+    can describe a page as "checkboxes page" while losing the URL supplied in
+    a CSV/Excel action.  Recover that URL deterministically from the referenced
+    source step so a live walk and generated test visit the same page instead
+    of clicking a similarly named link from the previous page.
+    """
+    if intent.get("role") != "action" or intent.get("verb") != "navigate":
+        return ""
+    steps = tc.get("steps") or []
+    for n in intent.get("from_steps") or []:
+        if not isinstance(n, int) or not (1 <= n <= len(steps)):
+            continue
+        step = steps[n - 1] or {}
+        source = " ".join(str(step.get(k) or "") for k in ("action", "expected"))
+        match = re.search(r"https?://[^\s<>\"']+", source, flags=re.IGNORECASE)
+        if not match:
+            continue
+        url = match.group(0).rstrip(".,;:)]}")
+        try:
+            from urllib.parse import parse_qsl, urlsplit
+            parsed = urlsplit(url)
+            # Never copy URL credentials or access tokens from an authored
+            # spreadsheet into a generated project or inspection artifact.
+            secret_query_keys = {"access_token", "token", "apikey", "api_key", "password", "secret"}
+            if (parsed.scheme not in ("http", "https") or not parsed.netloc or
+                    parsed.username or parsed.password or
+                    any(k.lower() in secret_query_keys for k, _ in parse_qsl(parsed.query))):
+                return ""
+        except Exception:
+            return ""
+        return url
+    return ""
+
+
+def _display_navigation_url(url):
+    """A diagnostic-safe URL display without query or fragment values."""
+    try:
+        from urllib.parse import urlsplit
+        parsed = urlsplit(url)
+        return (parsed.netloc + parsed.path)[:100]
+    except Exception:
+        return "page"
+
+
+def _normalise_browser_http_url(value, label):
+    """Return one browser-safe http(s) URL from a URL field.
+
+    Selenium reports a generic ``invalid argument`` when a text field contains
+    a pasted Markdown link, an invisible zero-width character, or malformed
+    URL syntax. Validate this boundary before creating a browser walk, and keep
+    the error value-free because URLs may contain secrets.
+    """
+    from urllib.parse import quote, urlsplit, urlunsplit
+
+    raw = str(value or "")
+    # Copying from chat/mail can bring invisible format characters that Chrome
+    # does not treat as whitespace. They are never meaningful in a URL field.
+    raw = raw.replace("\ufeff", "").replace("\u200b", "").replace("\u200c", "")
+    raw = raw.replace("\u200d", "").replace("\u2060", "").strip()
+    markdown = re.fullmatch(r"\[[^\]]*\]\((https?://[^\s)]+)\)", raw,
+                            flags=re.IGNORECASE)
+    if markdown:
+        raw = markdown.group(1)
+    if not raw or any(ch.isspace() for ch in raw):
+        raise ValueError(f"{label} must be one http(s) URL without spaces or line breaks.")
+    try:
+        parts = urlsplit(raw)
+        # Accessing .port validates malformed host:port syntax too.
+        _ = parts.port
+    except Exception:
+        raise ValueError(f"{label} is not a valid http(s) URL.")
+    if (parts.scheme.lower() not in ("http", "https") or not parts.hostname or
+            parts.username is not None or parts.password is not None):
+        raise ValueError(f"{label} must be an http(s) URL without embedded credentials.")
+    # Quote only characters Chrome rejects while retaining already-escaped URL
+    # syntax. This also makes a valid non-ASCII path safe for WebDriver.
+    path = quote(parts.path or "/", safe="/%:@!$&'()*+,;=-._~")
+    query = quote(parts.query, safe="%/:?@!$&'()*+,;=-._~")
+    fragment = quote(parts.fragment, safe="%/:?@!$&'()*+,;=-._~")
+    return urlunsplit((parts.scheme.lower(), parts.netloc, path, query, fragment))
+
+
+def _is_negative_assertion(intent):
+    """Whether an assertion verifies that a previously visible element vanished."""
+    if intent.get("role") != "assertion":
+        return False
+    text = _norm(" ".join([
+        str(intent.get("check") or ""), str(intent.get("target") or ""),
+        str(intent.get("expected") or ""),
+    ]))
+    return ("not_visible" in text or "not visible" in text or
+            any(phrase in text for phrase in ("disappears", "disappear", "removed",
+                                               "no longer displayed", "no longer visible")))
+
+
+def _split_composite_negative_assertion(intent):
+    """Give independently-verifiable disappearance checks independent locators.
+
+    A spreadsheet often describes the outcome as one sentence such as
+    "Sauce Labs Backpack disappears and the cart badge is no longer displayed".
+    One selector cannot prove both conditions.  Preserve the authored step but
+    emit two atomic assertions so the inspector captures the product and badge
+    independently before the removing action runs.
+    """
+    if not _is_negative_assertion(intent):
+        return [intent]
+    expected = str(intent.get("expected") or "")
+    normalized = _norm(expected)
+    match = re.search(r"^\s*(.+?)\s+(?:disappears?|is removed|is no longer)",
+                      expected, flags=re.IGNORECASE)
+    if not (match and "cart badge" in normalized):
+        return [intent]
+    product = match.group(1).strip(" .:-")
+    if not product:
+        return [intent]
+    product_check = dict(intent)
+    product_check.update({"target": product, "keywords": [product], "kind": "text",
+                          "check": "not_visible", "assert_before_action": True})
+    badge_check = dict(intent)
+    badge_check.update({"target": "shopping cart badge",
+                        "keywords": ["shopping cart badge", "cart badge"],
+                        "kind": "text", "check": "not_visible",
+                        "assert_before_action": True})
+    return [product_check, badge_check]
+
+
+def _split_composite_positive_assertion(intent):
+    """Split an ``A and B are visible`` outcome into atomic exact checks.
+
+    A single DOM node cannot reliably prove a page heading *and* a transient
+    success message.  Keeping the outcome as one assertion forced the matcher
+    to seek an element containing every keyword, which is impossible on many
+    pages.  This preserves the authored outcome while capturing both real
+    locators independently.
+    """
+    if intent.get("role") != "assertion" or _is_negative_assertion(intent):
+        return [intent]
+    keywords = [str(k).strip() for k in (intent.get("keywords") or []) if str(k).strip()]
+    source = _norm(" ".join((str(intent.get("target") or ""),
+                              str(intent.get("expected") or ""))))
+    if len(keywords) < 2 or " and " not in source:
+        return [intent]
+    checks = []
+    for keyword in keywords:
+        atomic = dict(intent)
+        atomic.update({"target": keyword, "keywords": [keyword], "kind": "text"})
+        checks.append(atomic)
+    return checks
 
 
 def compile_test_case(tc, story=None, log=None, case_type="interaction",
@@ -7543,11 +7965,21 @@ def compile_test_case(tc, story=None, log=None, case_type="interaction",
         "is role=assertion with verb=\"\", NEVER an action. Verb synonyms for real "
         "actions: press/tap/اضغط/انقر → click; enter/write/fill/اكتب/أدخل → type; "
         "open page/انتقل → navigate; choose/اختر → select.\n"
-        "3) CUSTOM DROPDOWN (PrimeNG/Material, not a native <select>) = TWO actions: "
+        "3) EXECUTION ORDER AND COVERAGE — preserve the authored scenario's order. "
+        "Every real user action needed to reach the expected result must be represented, "
+        "including prerequisites such as navigate/sign in, open a menu before selecting an "
+        "option, open a dialog before filling it, and save/submit before asserting. Never "
+        "move a dependent action ahead of the action that exposes or enables its target. "
+        "Do not merge two different numbered source steps just because they mention the same "
+        "control; a repeated click/type/submit may be intentional. `from_steps` must contain "
+        "the exact original source step number(s) for every intent.\n"
+        "   • For a navigate action whose source step contains an http(s) URL, set value to "
+        "that exact URL. Navigation visits the URL; it never clicks a link on the previous page.\n"
+        "4) CUSTOM DROPDOWN (PrimeNG/Material, not a native <select>) = TWO actions: "
         "click the trigger to open it, then click the option. For the option set "
         'kind="menuitem" and value = its visible text (e.g. English / العربية).\n'
-        '4) EMPTY-FIELD validation (leave a field blank) = a type action with value="".\n'
-        '5) PAGE: also decide WHERE this case runs. "login" ONLY if it tests the '
+        '5) EMPTY-FIELD validation (leave a field blank) = a type action with value="".\n'
+        '6) PAGE: also decide WHERE this case runs. "login" ONLY if it tests the '
         'sign-in page itself (its own fields/buttons/language dropdown) while logged '
         'OUT. If a precondition says the user is already logged in, or the steps use '
         'in-app elements (profile avatar, header menus, edit/save icons), it is '
@@ -7651,24 +8083,122 @@ def compile_test_case(tc, story=None, log=None, case_type="interaction",
                 "expected": str(it.get("expected") or ""),
                 "from_steps": from_steps,
             })
-        # Safety net: collapse consecutive actions that repeat the SAME verb
-        # + target (the LLM sometimes still emits a restated step as its own
-        # action despite the prompt's example demonstrating this exact
-        # collapse), and consecutive assertions that check the same thing.
-        # Merge their from_steps so each original step still receives an
-        # assert_locator / the right action mapping.
+        # The authored Azure test-step numbers are the source of truth for
+        # execution order.  A model can return a structurally valid list in a
+        # different order (for example, selecting a menu option before opening
+        # its menu), which produces a test that cannot complete the scenario.
+        # Keep its relative order only for intents that map to the same source
+        # step; otherwise execute in the exact authored order.  For an action
+        # and an expected result captured under one source step, action always
+        # precedes assertion.
+        def _intent_order(item):
+            index, intent = item
+            source_steps = intent.get("from_steps") or []
+            first_step = min(source_steps) if source_steps else (_n_steps + index + 1)
+            role_order = {"precondition": 0, "action": 1, "assertion": 2}.get(
+                intent.get("role"), 3)
+            return first_step, role_order, index
+
+        clean = [intent for _, intent in sorted(enumerate(clean), key=_intent_order)]
+        # Preserve an explicit source URL even when the model only returned a
+        # prose target such as "Dropdown page".  A navigate action must be a
+        # real page visit; it is never a locator for a link on the current page.
+        for intent in clean:
+            source_url = _navigation_url_from_source(tc, intent)
+            if source_url:
+                intent["value"] = source_url
+        clean = [expanded for intent in clean
+                 for expanded in _split_composite_negative_assertion(intent)]
+        clean = [expanded for intent in clean
+                 for expanded in _split_composite_positive_assertion(intent)]
+
+        # A local-file workbook can provide reviewed execution metadata for
+        # context changes (frame/window/dialog) and non-text controls (upload
+        # / keyboard).  Apply that deterministic contract after the model has
+        # normalized ordinary prose, before any locator binding is considered.
+        raw_steps = tc.get("steps") or []
+        clean = _apply_source_operation_contracts(clean, raw_steps)
+        # Preferred locators from a reviewed local file are verification aids
+        # for *both* actions and assertions.  They are used only when Selenium
+        # proves the selector exists in the current document/frame; unlike a
+        # generated seed they never bypass the live-inspection evidence gate.
+        for intent in clean:
+            for step_no in intent.get("from_steps") or []:
+                if 1 <= step_no <= len(raw_steps):
+                    source_step = raw_steps[step_no - 1] or {}
+                    preferred = str(source_step.get("preferred_locator") or "").strip()
+                    if preferred and not intent.get("preferred_locator"):
+                        intent["preferred_locator"] = preferred
+                    frame_context = str(source_step.get("frame_context") or "").strip()
+                    if frame_context and not intent.get("frame_context"):
+                        intent["frame_context"] = frame_context
+
+        # The optional live inspector records exact element locators on the
+        # authored raw steps. Carry only direct, live captures into the compiled
+        # intent that will be emitted. Snapshot/guess matches remain runtime
+        # TODOs: treating either as a verified locator would make a generated
+        # project confidently use an element from the wrong page/state.
+        for intent in clean:
+            locator_key = "assert_locator" if intent.get("role") == "assertion" else "locator"
+            source_key = "assert_locator_src" if locator_key == "assert_locator" else "locator_src"
+            bindings_key = "assert_locator_bindings" if locator_key == "assert_locator" else "locator_bindings"
+            unresolved_sources = []
+            for n in intent.get("from_steps") or []:
+                if not (1 <= n <= len(raw_steps)):
+                    continue
+                raw_step = raw_steps[n - 1] or {}
+                bindings = raw_step.get(bindings_key)
+                binding = _best_inspection_binding(intent, bindings)
+                # New inspections retain every atomic action/assertion from a
+                # multi-action source row.  Fall back to the legacy single
+                # field only for payloads captured before binding lists existed.
+                if isinstance(bindings, list):
+                    if binding is None:
+                        continue
+                    locator = binding.get("locator")
+                    source = binding.get("source")
+                else:
+                    locator = raw_step.get(locator_key)
+                    source = raw_step.get(source_key)
+                if (source == "live" and isinstance(locator, dict)
+                        and str(locator.get("by") or "").strip()
+                        and str(locator.get("value") or "").strip()):
+                    intent["live_locator"] = {
+                        "by": str(locator["by"]).strip(),
+                        "value": str(locator["value"]).strip(),
+                    }
+                    break
+                if source in ("snapshot", "guess"):
+                    unresolved_sources.append(source)
+            # An earlier-page snapshot or a failed match is diagnostic evidence,
+            # not a selector verified on this step's current page.  Prevent a
+            # generic generated seed from masking that uncertainty.
+            if "live_locator" not in intent and unresolved_sources:
+                intent["inspection_unresolved"] = unresolved_sources[0]
+
+        # Only collapse duplicate model output for the SAME authored step(s).
+        # Repeating "click Next", typing a replacement value, or submitting a
+        # second time can be a deliberate part of a scenario; merging merely
+        # because target text/verb match used to remove those required actions.
+        # Each distinct source step must remain a distinct executable intent.
         collapsed = []
         for it in clean:
+            prior_steps = set((collapsed[-1].get("from_steps") or [])) if collapsed else set()
+            same_source = bool(prior_steps & set(it.get("from_steps") or []))
             if (it["role"] == "assertion" and collapsed and
+                    same_source and
                     collapsed[-1]["role"] == "assertion" and
                     _norm(collapsed[-1]["target"]) == _norm(it["target"]) and
                     _norm(collapsed[-1]["expected"]) == _norm(it["expected"])):
                 collapsed[-1]["from_steps"] = sorted(set(collapsed[-1]["from_steps"] + it["from_steps"]))
                 continue
             if (it["role"] == "action" and collapsed and
+                    same_source and
                     collapsed[-1]["role"] == "action" and
                     collapsed[-1]["verb"] == it["verb"] and
-                    _norm(collapsed[-1]["target"]) == _norm(it["target"])):
+                    _norm(collapsed[-1]["target"]) == _norm(it["target"]) and
+                    collapsed[-1]["kind"] == it["kind"] and
+                    collapsed[-1]["value"] == it["value"]):
                 collapsed[-1]["from_steps"] = sorted(set(collapsed[-1]["from_steps"] + it["from_steps"]))
                 continue
             collapsed.append(it)
@@ -7690,7 +8220,8 @@ def _intents_from_raw_steps(tc):
     """Fallback when the compiler is unavailable: derive simple intents from the
     raw steps so the walk never regresses below the old behavior."""
     intents = []
-    for i, s in enumerate(tc.get("steps") or [], 1):
+    raw_steps = tc.get("steps") or []
+    for i, s in enumerate(raw_steps, 1):
         action = (s.get("action", "") or "").strip()
         exp = (s.get("expected", "") or "").strip()
         disp = action
@@ -7717,13 +8248,20 @@ def _intents_from_raw_steps(tc):
                             "keywords": [w for w in re.split(r"[\s,.:؛،]+", exp) if len(w) > 2][:6],
                             "kind": "any", "value": "", "check": "visible",
                             "expected": "", "from_steps": [i]})
-    return intents
+    # Even if the AI compiler is unavailable, reviewed local-file metadata
+    # remains authoritative for browser context operations.
+    return _apply_source_operation_contracts(intents, raw_steps)
 
 
 def _el_haystack(el):
-    return _norm(" ".join(str(el.get(k, "")) for k in
-                          ("text", "aname", "aria", "placeholder", "name", "id",
-                           "role", "testid", "type", "cls", "svgicon")))
+    parts = [str(el.get(k, "")) for k in
+             ("tag", "text", "aname", "aria", "placeholder", "name", "id",
+              "role", "testid", "type", "cls", "svgicon")]
+    # A native select's option captions are public UI labels, not typed values.
+    # They are therefore safe to retain in a local inspection snapshot and are
+    # essential to bind an action such as "select Option 2" to its <select>.
+    parts.extend(str(option) for option in (el.get("options") or []) if str(option).strip())
+    return _norm(" ".join(parts))
 
 
 def _kind_matches(kind, el):
@@ -7738,13 +8276,51 @@ def _kind_matches(kind, el):
          "input": tag in ("input", "textarea") and typ not in ("button", "submit", "checkbox"),
          "select": tag == "select" or role in ("combobox", "listbox"),
          "checkbox": typ == "checkbox" or role in ("checkbox", "switch"),
+         "frame": tag in ("iframe", "frame"),
          "menuitem": role in ("menuitem", "option", "tab") or menu_cls}
     return bool(m.get(kind, False))
 
 
-def _rank_candidates(intent, elements):
+def _intent_kind_matches(intent, el):
+    """Strict element-type contract for executable intents.
+
+    Text harvests intentionally include headings/messages for assertions, but
+    an action with an explicit kind must never click one of those text nodes
+    merely because it shares a word with the requested control.  A compiler may
+    call a checkbox an ``input``; permit that only for a click action.
+    """
+    kind = (intent.get("kind") or "any").lower()
+    if kind in ("", "any", "text"):
+        return True
+    if (kind == "input" and (el.get("type") or "").lower() == "checkbox" and
+            ((intent.get("role") == "action" and intent.get("verb") == "click") or
+             (intent.get("role") == "assertion" and
+              (intent.get("check") or "").lower() in ("checked", "unchecked")))):
+        return True
+    return _kind_matches(kind, el)
+
+
+def _is_clickable_control(el):
+    """Whether an element is a safe fallback target for a click intent.
+
+    The compiler's control ``kind`` is a useful hint, but it is inferred from
+    prose. Real applications often implement a navigation affordance as an
+    anchor where the prose calls it a button (or vice versa). A fallback may
+    cross that button/link boundary only; it must never degrade into clicking a
+    heading, container, or other display-only node.
+    """
+    return any(_kind_matches(kind, el)
+               for kind in ("button", "link", "menuitem", "checkbox"))
+
+
+def _rank_candidates_by_contract(intent, elements, compatible_click_control=False):
     """STAGE 2 — deterministic scoring of live elements against an intent.
-    Returns a list of (score, element) sorted high→low. No LLM involved."""
+    Returns a list of (score, element) sorted high→low. No LLM involved.
+
+    ``compatible_click_control`` is used only after strict matching found no
+    candidate. It preserves the DOM-control boundary while tolerating an LLM
+    label mismatch between semantically equivalent button and link controls.
+    """
     kws = [_norm(k) for k in (intent.get("keywords") or []) if _norm(k)]
     tgt = _norm(intent.get("target", ""))
     kind = intent.get("kind", "any")
@@ -7753,6 +8329,31 @@ def _rank_candidates(intent, elements):
     for el in elements:
         if not el.get("visible", True):
             continue
+        # Native select actions have a non-negotiable target type.  Without
+        # this guard, page text such as "Dropdown List" can outrank the actual
+        # <select>, turning an option selection into a click on <body>/heading.
+        if verb == "select" and not _kind_matches("select", el):
+            continue
+        if intent.get("role") in ("action", "assertion"):
+            if compatible_click_control:
+                if not _is_clickable_control(el):
+                    continue
+            elif not _intent_kind_matches(intent, el):
+                continue
+        check = (intent.get("check") or "").lower()
+        if check == "checked" and not el.get("checked", False):
+            continue
+        if check == "unchecked" and el.get("checked", False):
+            continue
+        if check == "enabled" and el.get("disabled", False):
+            continue
+        if check == "disabled" and not el.get("disabled", False):
+            continue
+        if check in ("selected", "selected_value", "value_selected"):
+            selected = _norm(el.get("selectedOptionText", ""))
+            expected_options = [_norm(k) for k in (intent.get("keywords") or []) if _norm(k)]
+            if expected_options and not any(k in selected for k in expected_options):
+                continue
         hay = _el_haystack(el)
         score = 0.0
         for k in kws:
@@ -7764,14 +8365,112 @@ def _rank_candidates(intent, elements):
         for tok in (t for t in tgt.split(" ") if len(t) > 2):
             if tok in hay:
                 score += 0.5
-        if _kind_matches(kind, el):
+        # Feedback components are intentionally classified by role rather than
+        # their English copy: a successful login may render "You logged into a
+        # secure area" while the reviewed result says "success message".  The
+        # dedicated error harvest marks these elements without exposing field
+        # values, allowing a live #flash/#result capture instead of a body guess.
+        if (intent.get("role") == "assertion" and el.get("is_error") and
+                any(word in _norm(" ".join([str(intent.get("target") or ""),
+                                             *[str(k) for k in (intent.get("keywords") or [])]]))
+                    for word in ("success", "message", "flash", "confirmation", "result"))):
+            score += 2.0
+        if _kind_matches(kind, el) or (compatible_click_control and
+                                       _is_clickable_control(el)):
             score += 1.0
+            # A control-state assertion (enabled/checked/selected) may have
+            # no matching visible text. Its already-enforced explicit type is
+            # enough to make one matching control a deterministic capture.
+            if intent.get("role") == "assertion" and kind not in ("", "any", "text"):
+                score += 1.0
         if verb == "type" and el.get("tag") in ("input", "textarea"):
             score += 0.5
         if score > 0:
             ranked.append((score, el))
     ranked.sort(key=lambda t: t[0], reverse=True)
-    return ranked
+    # A partial match is not a verified match.  For example, both Sauce Demo
+    # product buttons contain "add", "cart", "Sauce", and "Labs", but only
+    # one contains the requested product token "Backpack".  If the page does
+    # expose a distinctive target token, reject every candidate that omits it
+    # rather than accepting a plausible-looking wrong control.
+    semantic = [(score, el) for score, el in ranked
+                if _semantic_target_matches(intent, el, elements)]
+    return semantic if semantic else []
+
+
+def _rank_candidates(intent, elements):
+    """Resolve an intent through an explicit two-level control contract.
+
+    First honor the compiler's exact element kind. If that finds nothing, a
+    click/hover action may try only semantically matched interactive controls.
+    This makes model terminology non-fatal ("button" vs an actual ``<a>``)
+    without ever allowing a fallback to arbitrary page text.
+    """
+    strict = _rank_candidates_by_contract(intent, elements)
+    if strict:
+        return strict
+    if (intent.get("role") == "action" and
+            (intent.get("verb") or "click") in ("click", "hover")):
+        return _rank_candidates_by_contract(intent, elements,
+                                            compatible_click_control=True)
+    return []
+
+
+_LOCATOR_GENERIC_TOKENS = {
+    "click", "press", "tap", "open", "select", "choose", "enter", "type",
+    "button", "field", "input", "link", "page", "screen", "menu", "item",
+    "cart", "verify", "check", "visible", "enabled", "disabled", "checked",
+    "selected", "hidden", "removed",
+    "show", "shows", "display", "displays", "the", "and", "for", "with",
+    "from", "that", "this", "then", "result", "expected", "sauce", "labs",
+}
+
+
+def _semantic_target_matches(intent, element, pool):
+    """Require page-supported, distinctive intent tokens on a live candidate.
+
+    This is a deterministic backstop after ranking.  It only enforces a token
+    when that token is visible in at least one element on the *current* page,
+    so generic descriptions such as "Products page" do not become impossible
+    requirements while a requested named target (for example, Backpack) cannot
+    silently bind to a different named target (for example, Bike Light).
+    """
+    # Assertions commonly name a page context in ``target`` (for example,
+    # "Products inventory page") while their exact visible token is supplied
+    # in ``keywords`` ("Products").  Requiring every contextual target word
+    # rejects the real page heading whenever another element happens to contain
+    # "inventory".  For assertions, the authored visible keywords are the
+    # semantic contract; actions retain their full target wording.
+    if intent.get("role") == "assertion" and intent.get("keywords"):
+        text = " ".join(str(k) for k in intent.get("keywords") or [])
+    else:
+        text = " ".join([str(intent.get("target") or ""),
+                         *[str(k) for k in (intent.get("keywords") or [])]])
+    tokens = []
+    for token in re.split(r"[^\w\u0600-\u06ff]+", _norm(text)):
+        if len(token) >= 4 and token not in _LOCATOR_GENERIC_TOKENS and token not in tokens:
+            tokens.append(token)
+    if not tokens:
+        return True
+    element_haystack = _el_haystack(element)
+    supported = [token for token in tokens
+                 if any(token in _el_haystack(candidate) for candidate in pool)]
+    if not all(token in element_haystack for token in supported):
+        return False
+    # A product can legitimately be represented by either its title or its
+    # button, but opposite action labels must never be interchangeable.  This
+    # prevents an "Add to cart" step from binding the existing "Remove"
+    # button when a preceding case leaked cart state into the next walk.
+    action_words = ({
+        word for word in ("add", "remove", "delete", "save", "cancel", "submit")
+        if re.search(r"(?:^|[^a-z])" + word + r"(?:$|[^a-z])", _norm(
+            " ".join([str(intent.get("target") or ""),
+                      *[str(k) for k in (intent.get("keywords") or [])]])))
+    } if intent.get("role") == "action" else set())
+    for word in action_words:
+        if not re.search(r"(?:^|[^a-z])" + word + r"(?:$|[^a-z])", element_haystack):
+            return False
+    return True
 
 
 def _tiebreak_with_ai(intent, shortlist, cb):
@@ -7780,7 +8479,8 @@ def _tiebreak_with_ai(intent, shortlist, cb):
     _rank_candidates. Returns the chosen element or None."""
     brief = [{"idx": e["idx"], "tag": e.get("tag"), "type": e.get("type"),
               "text": e.get("text"), "aname": e.get("aname"), "aria": e.get("aria"),
-              "placeholder": e.get("placeholder"), "id": e.get("id")}
+              "placeholder": e.get("placeholder"), "id": e.get("id"),
+              "options": e.get("options", [])[:12]}
              for e in shortlist]
     prompt = (
         "Pick the ONE element that best matches the intent. Reply ONLY JSON.\n"
@@ -7841,9 +8541,12 @@ def _to_locator(el):
     nm = (el.get("name") or "").strip()
     if nm:
         return {"by": "name", "value": nm}
-    al = (el.get("aria") or el.get("aname") or "").strip()
-    if al:
-        return {"by": "xpath", "value": "//*[@aria-label=%s]" % _xq(al)}
+    # ``aname`` can be derived from a nearby text node or an associated label;
+    # it is useful for matching, but it is NOT necessarily an aria-label
+    # attribute.  Only emit an aria locator when that attribute exists.
+    aria = (el.get("aria") or "").strip()
+    if aria:
+        return {"by": "xpath", "value": "//*[@aria-label=%s]" % _xq(aria)}
     txt = (el.get("text") or "").strip()
     if txt and len(txt) <= 40:
         return {"by": "xpath",
@@ -8035,6 +8738,19 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
     from selenium.webdriver.support import expected_conditions as EC
     import time as _t
 
+    # Validate before launching Chrome. A malformed pasted URL otherwise
+    # reaches WebDriver as an opaque "invalid argument" that looks like a
+    # locator failure even though no inspection has started.
+    try:
+        site_url = _normalise_browser_http_url(site_url, "Target site URL")
+        login_url = _normalise_browser_http_url(
+            (login or {}).get("url") or site_url, "Login URL")
+    except ValueError as exc:
+        cb(f"Automation configuration error: {exc}", "err")
+        return {"stories_payload": stories_payload, "dom_snapshot": [],
+                "screen_captures": [],
+                "stats": {"live": 0, "snapshot": 0, "guess": 0}}
+
     opts = Options()
     if headless:
         opts.add_argument("--headless=new")
@@ -8042,12 +8758,39 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
     opts.add_argument("--disable-dev-shm-usage")
     opts.add_argument("--window-size=1440,900")
     opts.add_argument("--disable-gpu")
+    # Inspection uses a dedicated Chrome session with test credentials. Chrome's
+    # password-save/breach UI is browser chrome, not page DOM, so Selenium cannot
+    # see or dismiss it and it can intercept a perfectly valid page click.
+    opts.add_experimental_option("prefs", {
+        "credentials_enable_service": False,
+        "profile.password_manager_enabled": False,
+        "profile.password_manager_leak_detection": False,
+        "profile.default_content_setting_values.notifications": 2,
+    })
+    opts.add_argument("--disable-features=PasswordLeakDetection,PasswordManagerOnboarding")
+    # Chrome's default prompt behavior can dismiss a JavaScript alert as a side
+    # effect of Selenium's next command. Keep it open until its authored
+    # accept/dismiss operation handles it explicitly.
+    opts.set_capability("unhandledPromptBehavior", "ignore")
 
     cb("Launching Chrome…", "dim")
     driver = webdriver.Chrome(options=opts)
     driver.set_page_load_timeout(45)
     wait = WebDriverWait(driver, 20)
     all_snapshots = []   # union of every element seen (for fallback)
+    screen_captures = [] # full per-screen inventories, local diagnostic only
+    active_capture = {"story": "", "test_case": "", "step": None, "phase": ""}
+    # Upload inspection needs a real, non-sensitive path.  The browser never
+    # receives prose such as "test file" (which Selenium rejects as a path),
+    # and this temporary fixture is not included in the screen JSON/report.
+    import tempfile
+    inspection_upload_path = os.path.join(tempfile.gettempdir(), "qastudio-upload.txt")
+    try:
+        if not os.path.isfile(inspection_upload_path):
+            with open(inspection_upload_path, "w", encoding="utf-8") as upload_fixture:
+                upload_fixture.write("QA Studio live-inspection fixture.\n")
+    except Exception:
+        inspection_upload_path = ""
 
     def wait_dom_ready():
         """Wait until document.readyState is complete (page loaded)."""
@@ -8087,6 +8830,16 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                 cb(f"  + {len(errs)} message/error element(s)", "dim")
         all_snapshots.extend(els)
         if tag:
+            screen_captures.append({
+                "story": active_capture.get("story", ""),
+                "test_case": active_capture.get("test_case", ""),
+                "step": active_capture.get("step"),
+                "phase": active_capture.get("phase", ""),
+                "label": tag,
+                "url": (driver.current_url or ""),
+                "title": (driver.title or "")[:160],
+                "elements": els,
+            })
             cb(f"  captured {len(els)} elements ({tag})", "dim")
         return els
 
@@ -8236,15 +8989,48 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
             pass
         _settle(timeout=4)
         # type / select don't need topmost; clicks do
+        if verb == "frame":
+            try:
+                driver.switch_to.frame(live)
+                return live
+            except Exception as e:
+                cb(f"      frame switch failed: {str(e)[:50]}", "warn")
+                return None
+        if verb == "upload":
+            try:
+                if not inspection_upload_path:
+                    raise RuntimeError("temporary inspection fixture is unavailable")
+                live.send_keys(inspection_upload_path)
+                return live
+            except Exception as e:
+                cb(f"      upload failed: {str(e)[:50]}", "warn"); return None
+        if verb == "key_press":
+            try:
+                from selenium.webdriver.common.keys import Keys
+                key = getattr(Keys, str(value or "ENTER").upper(), Keys.ENTER)
+                live.send_keys(key)
+                return live
+            except Exception as e:
+                cb(f"      key press failed: {str(e)[:50]}", "warn"); return None
         if verb == "type":
             try:
                 if empty_ok:
                     live.clear()
                 else:
-                    live.clear(); live.send_keys(value or "test")
+                    if ((live.get_attribute("contenteditable") or "").lower() == "true" or
+                            (live.tag_name or "").lower() == "body"):
+                        from selenium.webdriver.common.keys import Keys
+                        from selenium.webdriver.common.action_chains import ActionChains
+                        ActionChains(driver).move_to_element(live).click().key_down(Keys.CONTROL) \
+                            .send_keys("a").key_up(Keys.CONTROL).send_keys(Keys.BACKSPACE) \
+                            .send_keys(value or "test").perform()
+                        return live
+                    else:
+                        live.clear()
+                    live.send_keys(value or "test")
                 return live
             except Exception as e:
-                cb(f"      type failed: {str(e)[:50]}", "warn"); return live
+                cb(f"      type failed: {str(e)[:50]}", "warn"); return None
         if verb == "select":
             from selenium.webdriver.support.ui import Select
             # native <select>
@@ -8285,8 +9071,15 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                             pass
                     return lo
             cb(f"      select: option '{value[:24]}' not found after opening", "warn")
-            return self_open or live
-        # click / hover / navigate(default) — make it interception-proof
+            return None
+        if verb == "hover":
+            try:
+                from selenium.webdriver.common.action_chains import ActionChains
+                ActionChains(driver).move_to_element(live).perform()
+                return live
+            except Exception as e:
+                cb(f"      hover failed: {str(e)[:50]}", "warn"); return None
+        # click / navigate(default) — make it interception-proof
         if not _topmost_ok(live):
             if _dismiss_overlays():
                 live = find_live(el_dict) or live
@@ -8314,7 +9107,6 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
 
     try:
         # ── login + verify ──
-        login_url = (login or {}).get("url") or site_url
         # Keycloak (and similar) login URLs often carry one-time session params
         # (execution, tab_id, session_code, code, client_data). Hitting that exact
         # URL later yields "Cookie not found" because the session is gone. Strip
@@ -8447,6 +9239,13 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                 chosen = _credit_guard(_tiebreak_with_ai, intent, [e for _, e in ranked[:5]], cb)
                 if chosen is not None:
                     return chosen, "live"
+            # An explicit interactive kind is a safety contract. Do not let a
+            # cross-page snapshot downgrade it into a same-word heading (for
+            # example, "Add button" → the "Remove/add" section heading).
+            if (intent.get("role") == "action" and
+                    (intent.get("kind") or "any").lower() in
+                    ("button", "link", "input", "select", "checkbox", "menuitem")):
+                return None, "guess"
             # nothing solid on this page → try the union of everything seen so far
             union = _dedup_reindex(all_snapshots)
             if union:
@@ -8456,21 +9255,80 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                     return r[0], "snapshot"
             return None, "guess"
 
-        def assign(step_idxs, locator, src, as_assert=False):
+        def preferred_capture(intent, pool):
+            """Verify a reviewed CSS locator on the CURRENT browser context.
+
+            This is not a blind seed: Selenium must find a displayed element in
+            the active document/frame.  It lets a local workbook name a frame
+            or file control precisely while retaining live verification.
+            """
+            raw = str(intent.get("preferred_locator") or "").strip()
+            if not raw:
+                return None
+            for selector in (part.strip() for part in raw.split(" or ")):
+                if (not selector or len(selector) > 300 or
+                        any(token in selector.lower() for token in ("javascript:", "page.", "driver."))):
+                    continue
+                try:
+                    matches = driver.find_elements(By.CSS_SELECTOR, selector)
+                    live = next((item for item in matches if item.is_displayed()), None)
+                    if live is None:
+                        continue
+                    # Prefer harvested metadata (it has testid/name/type), but
+                    # retain the verified selector when the element is not in
+                    # the generic harvest set.
+                    element_id = live.get_attribute("id") or ""
+                    known = next((item for item in pool if element_id and
+                                  item.get("id") == element_id), None)
+                    if known:
+                        return known, "live"
+                    return ({"idx": -1, "tag": (live.tag_name or "").lower(),
+                             "id": element_id, "name": live.get_attribute("name") or "",
+                             "css": selector, "xpath": "", "visible": True}, "live")
+                except Exception:
+                    continue
+            return None
+
+        def context_result_capture(pool):
+            """Find the page feedback produced after a browser-context action."""
+            for element in pool:
+                hay = _norm(" ".join(str(element.get(key) or "")
+                                     for key in ("id", "role", "cls", "text")))
+                if (element.get("visible", True) and
+                        (element.get("id") == "result" or
+                         element.get("role") in ("status", "alert") or
+                         any(token in hay for token in ("result", "feedback", "success", "message")))):
+                    return element, "live"
+            return None
+
+        def assign(step_idxs, locator, src, as_assert=False, intent=None):
             """Write a captured locator back onto the ORIGINAL step(s) the intent
-            came from, so the generated Java still mirrors the authored test case."""
+            came from.  Keep one binding per atomic intent: a spreadsheet row
+            may legitimately contain more than one interaction."""
             nonlocal live_count, snap_count, guess_count
             for n in step_idxs:
                 if 1 <= n <= len(steps):
                     if as_assert:
                         steps[n - 1]["assert_locator"] = locator
+                        steps[n - 1]["assert_locator_src"] = src
+                        bindings_key = "assert_locator_bindings"
                     else:
                         steps[n - 1]["locator"] = locator
                         steps[n - 1]["locator_src"] = src
-            if not as_assert:
-                if src == "live":      live_count += 1
-                elif src == "snapshot": snap_count += 1
-                elif src == "guess":    guess_count += 1
+                        bindings_key = "locator_bindings"
+                    if intent is not None:
+                        steps[n - 1].setdefault(bindings_key, []).append({
+                            "role": intent.get("role") or ("assertion" if as_assert else "action"),
+                            "verb": intent.get("verb") or "",
+                            "target": intent.get("target") or "",
+                            "keywords": list(intent.get("keywords") or []),
+                            "kind": intent.get("kind") or "any",
+                            "locator": locator,
+                            "source": src,
+                        })
+            if src == "live":      live_count += 1
+            elif src == "snapshot": snap_count += 1
+            elif src == "guess":    guess_count += 1
 
         def _todo(story, tc, idxs, target, kind):
             for n in idxs:
@@ -8487,6 +9345,12 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                 if should_stop() or abort_credit:
                     break
                 steps = tc.get("steps", []) or []
+                # A preceding case may have entered an iframe.  Every test case
+                # starts from its declared page, never the last frame context.
+                try:
+                    driver.switch_to.default_content()
+                except Exception:
+                    pass
                 ctype = _classify_case(tc)
                 is_neg = (ctype == "negative_login")
                 pctx = _infer_page_context(tc, ctype)
@@ -8506,12 +9370,26 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                 # start page — login-page cases (incl. negative-login) walk on a
                 # FRESH logged-out login page, where the language dropdown exists;
                 # app cases walk on the authenticated page (single toggle).
-                if pctx == "login":
+                explicit_login = _case_has_explicit_login_flow(intents)
+                starts_logged_out = pctx == "login" or explicit_login
+                active_capture.update({"story": story.get("id", ""),
+                                       "test_case": tc.get("title", ""),
+                                       "step": None,
+                                       "phase": "logged-out" if starts_logged_out else "authenticated"})
+                if starts_logged_out:
                     cb(f"    \u21b3 {ctype} \u2014 walking on a fresh logged-out login "
                        f"page (where the language dropdown lives)", "info")
                     if have_creds:
                         try:
                             driver.delete_all_cookies()
+                            # Cookies alone do not reset modern web apps. Sauce
+                            # Demo, for example, retains its cart in origin
+                            # storage, so a later independent case saw Remove
+                            # where its authored first action required Add.
+                            # Clear only the confirmed test browser's storage
+                            # before loading the next fresh login start-state.
+                            driver.execute_script(
+                                "window.localStorage.clear(); window.sessionStorage.clear();")
                         except Exception:
                             pass
                     try:
@@ -8521,17 +9399,25 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                 else:
                     try:
                         cb("    loading start page (authenticated app)\u2026", "dim")
+                        if have_creds:
+                            cb("    establishing a fresh authenticated session…", "dim")
+                            ok_case, reason_case = do_login(fresh=True)
+                            if not ok_case:
+                                raise RuntimeError("login could not be verified: " + reason_case)
                         driver.get(site_url); _t.sleep(wait_secs)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        cb(f"    could not establish case start state: {str(e)[:90]}", "warn")
+                        continue
 
                 last_before = None   # snapshot keys just before the latest action
+                last_before_elements = None
                 for it in intents:
                     if should_stop() or abort_credit:
                         break
                     role = it["role"]; fs = it.get("from_steps") or []
 
                     if role == "precondition":
+                        it["inspection_source"] = "precondition"
                         cb(f"    \u2022 precondition (no UI action): "
                            f"{(it.get('target') or '')[:40]}", "dim")
                         for n in fs:
@@ -8546,49 +9432,228 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                         # opened, the error that showed). Same mechanism powers
                         # negative-login error capture.
                         _settle(timeout=4)
-                        after = snapshot(with_errors=True)
+                        active_capture.update({"step": min(fs) if fs else None,
+                                               "phase": "assertion"})
+                        after = snapshot(tag="assertion", with_errors=True)
+                        is_negative = _is_negative_assertion(it)
                         new_pool = ([e for e in after if _el_key(e) not in last_before]
                                     if last_before is not None else after)
-                        el, src = bind_target(it, new_pool or after)
-                        assign(fs, to_locator(el) if el else None, src, as_assert=True)
+                        # A disappeared target is intentionally absent AFTER the
+                        # action. Bind its exact locator from the immediately
+                        # preceding screen, then assert that same locator is
+                        # hidden. Binding from the after-screen used to select
+                        # an unrelated cart link as proof of removal.
+                        assertion_pool = (last_before_elements if is_negative
+                                          and last_before_elements else (new_pool or after))
+                        preferred = preferred_capture(it, assertion_pool)
+                        context_result = context_result_capture(assertion_pool) if it.get("context_result") else None
+                        el, src = (preferred if preferred else context_result) or bind_target(it, assertion_pool)
+                        captured = to_locator(el) if el else None
+                        it["inspection_source"] = src
+                        if is_negative and captured:
+                            it["assert_before_action"] = True
+                        if src == "live" and captured:
+                            it["live_locator"] = captured
+                        elif src in ("snapshot", "guess"):
+                            it["inspection_unresolved"] = src
+                        assign(fs, captured, src, as_assert=True, intent=it)
                         if el:
                             tag = " (new)" if (last_before is not None and
                                                _el_key(el) not in last_before) else ""
                             cb(f"    \u2713 assertion \u2192 {_describe(el)}{tag}", "ok")
                         else:
                             cb("    ? assertion target not found on page", "warn")
+                            _todo(story, tc, fs, it.get("target"), "assertion")
                         continue
 
                     # role == 'action'
                     verb = it.get("verb") or "click"
                     cb(f"    \u2192 {verb}: {(it.get('target') or '')[:40]}", "dim")
-                    cur = snapshot(with_errors=is_neg)
+                    # The inspector already loaded the login URL for a case
+                    # that starts with an explicit "navigate to login" step.
+                    # That is start-state setup, not a page element, so it must
+                    # not become a guessed locator or a false TODO.
+                    if (verb == "navigate" and starts_logged_out and
+                            _is_login_flow_action(it)):
+                        it["inspection_source"] = "start_state"
+                        assign(fs, None, "precondition")
+                        cb("      (navigate) — login start page is already open", "dim")
+                        continue
+                    if verb == "navigate":
+                        nav_url = str(it.get("value") or "").strip()
+                        if not nav_url.lower().startswith(("http://", "https://")):
+                            # A vague page name is not evidence for a link on
+                            # the current page. Block instead of clicking a
+                            # similarly named navigation item from that page.
+                            it["inspection_source"] = "guess"
+                            it["inspection_unresolved"] = "navigation"
+                            assign(fs, None, "guess", intent=it)
+                            cb("      navigate needs a full http(s) URL — locator is not verified", "warn")
+                            _todo(story, tc, fs, it.get("target"), "navigation")
+                            continue
+                        try:
+                            driver.get(nav_url)
+                            wait_dom_ready()
+                            _settle(timeout=5)
+                        except Exception as e:
+                            it["inspection_source"] = "guess"
+                            it["inspection_unresolved"] = "navigation"
+                            assign(fs, None, "guess", intent=it)
+                            cb(f"      could not open target page: {str(e)[:70]}", "warn")
+                            _todo(story, tc, fs, it.get("target"), "navigation")
+                            continue
+                        # A direct URL is a verified state transition, not a
+                        # DOM locator. Generated targets visit it directly.
+                        it["inspection_source"] = "start_state"
+                        assign(fs, None, "precondition")
+                        last_before = None
+                        last_before_elements = None
+                        cb(f"      (navigate) → {_display_navigation_url(nav_url)}", "ok")
+                        continue
+                    # Browser dialogs and popup tabs are context operations,
+                    # not DOM elements.  Mark them as verified only after the
+                    # browser state transition succeeds; do not manufacture a
+                    # body locator that would later click the wrong thing.
+                    if verb in ("dialog_accept", "dialog_dismiss"):
+                        try:
+                            alert = WebDriverWait(driver, 8).until(EC.alert_is_present())
+                            (alert.dismiss() if verb == "dialog_dismiss" else alert.accept())
+                            it["inspection_source"] = "context"
+                            assign(fs, None, "context", intent=it)
+                            cb(f"      {verb.replace('_', ' ')} — browser dialog handled", "ok")
+                        except Exception as e:
+                            it["inspection_source"] = "guess"
+                            it["inspection_unresolved"] = "context"
+                            assign(fs, None, "guess", intent=it)
+                            cb(f"      {verb.replace('_', ' ')} failed: {str(e)[:50]}", "warn")
+                            _todo(story, tc, fs, it.get("target"), "context")
+                        continue
+                    if verb == "window_switch":
+                        old_handle = driver.current_window_handle
+                        try:
+                            WebDriverWait(driver, 8).until(lambda d: len(d.window_handles) > 1)
+                            candidates = [handle for handle in driver.window_handles
+                                          if handle != old_handle]
+                            target_handle = None
+                            # A popup handle can exist before its document has
+                            # navigated from about:blank.  Only activate a page
+                            # once it has a loaded, non-empty body; otherwise a
+                            # later assertion would fail and end the whole walk.
+                            for handle in candidates:
+                                driver.switch_to.window(handle)
+                                try:
+                                    WebDriverWait(driver, 10).until(
+                                        lambda d: ((d.current_url or "") not in ("", "about:blank") and
+                                                   bool((d.execute_script(
+                                                       "return document.body && document.body.innerText") or "").strip())))
+                                    target_handle = handle
+                                    break
+                                except Exception:
+                                    continue
+                            if not target_handle:
+                                driver.switch_to.window(old_handle)
+                                raise RuntimeError("new window did not load page content")
+                            it["inspection_source"] = "context"
+                            assign(fs, None, "context", intent=it)
+                            cb("      window switch — new browser window active", "ok")
+                        except Exception as e:
+                            it["inspection_source"] = "guess"
+                            it["inspection_unresolved"] = "context"
+                            assign(fs, None, "guess", intent=it)
+                            cb(f"      window switch failed: {str(e)[:50]}", "warn")
+                            _todo(story, tc, fs, it.get("target"), "context")
+                        continue
+                    active_capture.update({"step": min(fs) if fs else None,
+                                           "phase": "before-action"})
+                    cur = snapshot(tag="before action", with_errors=is_neg)
                     last_before = set(_el_key(e) for e in cur)
-                    el, src = bind_target(it, cur)
+                    last_before_elements = cur
+                    preferred = preferred_capture(it, cur)
+                    el, src = preferred if preferred else bind_target(it, cur)
                     if abort_credit:
                         break
                     if el is None:
-                        assign(fs, None, "guess")
+                        it["inspection_source"] = "guess"
+                        it["inspection_unresolved"] = "guess"
+                        assign(fs, None, "guess", intent=it)
                         cb("      GUESS: no element matched \u2014 // TODO verify locator", "warn")
                         _todo(story, tc, fs, it.get("target"), "guess")
                         continue
-                    assign(fs, to_locator(el), src)
+                    captured = to_locator(el)
+                    it["inspection_source"] = src
+                    if src == "live" and captured:
+                        it["live_locator"] = captured
+                    elif src in ("snapshot", "guess"):
+                        it["inspection_unresolved"] = src
                     if src == "snapshot":
+                        assign(fs, captured, src, intent=it)
                         cb(f"      SNAPSHOT: using {_describe(el)} from an earlier page "
                            f"\u2014 // TODO verify (from snapshot)", "warn")
                         _todo(story, tc, fs, it.get("target"), "snapshot")
-                        continue
-                    if verb == "navigate":
-                        cb("      (navigate) \u2014 already on the target page", "dim")
                         continue
                     # STAGE 3 — interception-proof action
                     empty_ok = (verb == "type" and not (it.get("value") or "").strip()
                                 and _wants_empty_field((it.get("target", "") + " " +
                                                         " ".join(it.get("keywords") or []))))
-                    _act(el, verb, it.get("value", ""), empty_ok=empty_ok)
+                    typed_value = it.get("value", "")
+                    if verb == "type" and not typed_value and starts_logged_out and have_creds and not is_neg:
+                        field_hint = _norm((it.get("target", "") + " " +
+                                            " ".join(it.get("keywords") or [])))
+                        if any(token in field_hint for token in ("username", "user name", "email", "البريد", "اسم المستخدم")):
+                            typed_value = login.get("user", "")
+                        elif any(token in field_hint for token in ("password", "passcode", "كلمه المرور", "كلمة المرور")):
+                            typed_value = login.get("password", "")
+                    acted = _act(el, verb, typed_value, empty_ok=empty_ok)
+                    if acted is None:
+                        # A selector is not verified merely because it was
+                        # present: uploads, frame changes and keyboard actions
+                        # must complete successfully before they may seed a
+                        # generated test.
+                        it["inspection_source"] = "guess"
+                        it["inspection_unresolved"] = "action_failed"
+                        it.pop("live_locator", None)
+                        assign(fs, None, "guess", intent=it)
+                        cb("      action did not complete — locator is not verified", "warn")
+                        _todo(story, tc, fs, it.get("target"), "action")
+                        continue
+                    assign(fs, captured, src, intent=it)
+                    if _is_shopping_cart_navigation(it):
+                        try:
+                            WebDriverWait(driver, 8).until(
+                                lambda d: "/cart" in (d.current_url or "").lower())
+                        except Exception:
+                            # A browser-level dialog can make Selenium report a
+                            # click while the page has not changed. Never carry
+                            # that selector forward as a verified transition.
+                            it["inspection_source"] = "guess"
+                            it["inspection_unresolved"] = "navigation"
+                            it.pop("live_locator", None)
+                            cb("      shopping cart did not open after click — locator is not verified", "warn")
+                            _todo(story, tc, fs, it.get("target"), "navigation")
+                            continue
                     cb(f"      {verb} {_describe(el)}"
                        f"{' (left empty)' if empty_ok else ''}", "ok")
                     _settle(timeout=4); _t.sleep(0.6)
+
+                # This is the single authoritative plan for a live-inspected
+                # case. Generation consumes these exact, already-executed
+                # intents instead of compiling the spreadsheet prose again.
+                # The plan is an inspection artifact, so never persist a
+                # credential that may have been used to walk an explicit login
+                # flow. Login actions are emitted through the generated
+                # runtime helper and obtain APP_USER/APP_PASS from .env.
+                plan_intents = json.loads(json.dumps(intents, ensure_ascii=False))
+                for plan_intent in plan_intents:
+                    if (plan_intent.get("verb") == "type" and
+                            _is_login_flow_action(plan_intent)):
+                        plan_intent["value"] = ""
+                tc["inspection_plan"] = {
+                    "schema_version": 1,
+                    "case_type": ctype,
+                    "page_context": pctx,
+                    "explicit_login_flow": explicit_login,
+                    "intents": plan_intents,
+                }
 
                 # restore the authenticated session after a login-page case so
                 # later app cases don't capture locators from the login page
@@ -8623,6 +9688,7 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                 continue
             seen.add(key); uniq.append(e)
         return {"stories_payload": stories_payload, "dom_snapshot": uniq[:300],
+                "screen_captures": screen_captures,
                 "stats": {"live": live_count, "snapshot": snap_count,
                           "guess": guess_count}}
     finally:
@@ -8630,6 +9696,147 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
             driver.quit()
         except Exception:
             pass
+
+
+def _inspection_step_bindings(stories_payload):
+    """Return value-free, per-intent locator bindings for the inspection report."""
+    records = []
+    for story_pack in stories_payload or []:
+        story_id = str((story_pack.get("story") or {}).get("id") or "")
+        for tc in story_pack.get("test_cases") or []:
+            for index, step in enumerate(tc.get("steps") or [], start=1):
+                record = {
+                    "story_id": story_id,
+                    "test_case_id": str(tc.get("id") or ""),
+                    "test_case_title": str(tc.get("title") or ""),
+                    "step": index,
+                }
+                present = False
+                for key in ("locator_bindings", "assert_locator_bindings"):
+                    bindings = step.get(key)
+                    if isinstance(bindings, list) and bindings:
+                        # Bindings contain only intent metadata and selectors;
+                        # _HARVEST_JS deliberately omits typed field values.
+                        record[key] = bindings
+                        present = True
+                if present:
+                    records.append(record)
+    return records
+
+
+def _inspection_execution_plans(stories_payload):
+    """Return the one-pass compiled-and-walked plans for durable generation."""
+    plans = []
+    for story_pack in stories_payload or []:
+        story_id = str((story_pack.get("story") or {}).get("id") or "")
+        for tc in story_pack.get("test_cases") or []:
+            plan = tc.get("inspection_plan")
+            if isinstance(plan, dict) and isinstance(plan.get("intents"), list):
+                plans.append({"story_id": story_id,
+                              "test_case_id": str(tc.get("id") or ""),
+                              "test_case_title": str(tc.get("title") or ""),
+                              "plan": plan})
+    return plans
+
+
+def apply_inspection_screens(stories_payload, path):
+    """Rehydrate inspected intent bindings from the local screen JSON.
+
+    Generation normally follows inspection in the same process, but treating the
+    report as the hand-off source prevents future refactors or resumed flows from
+    silently losing the exact bindings captured by Chrome.  It merges only by the
+    stable story/case/step identity and never inserts duplicates.
+    """
+    if not path or not os.path.isfile(path):
+        return 0
+    try:
+        with open(path, encoding="utf-8") as f:
+            json_data = json.load(f) or {}
+            records = json_data.get("step_bindings") or []
+    except Exception:
+        return 0
+    stories = {str((pack.get("story") or {}).get("id") or ""): pack
+               for pack in stories_payload or []}
+    applied = 0
+    for record in records:
+        pack = stories.get(str(record.get("story_id") or ""))
+        if not pack:
+            continue
+        case_id = str(record.get("test_case_id") or "")
+        case_title = str(record.get("test_case_title") or "")
+        tc = next((item for item in pack.get("test_cases") or []
+                   if str(item.get("id") or "") == case_id), None)
+        if tc is None and case_title:
+            tc = next((item for item in pack.get("test_cases") or []
+                       if str(item.get("title") or "") == case_title), None)
+        step_no = record.get("step")
+        if tc is None or not isinstance(step_no, int) or not (1 <= step_no <= len(tc.get("steps") or [])):
+            continue
+        step = tc["steps"][step_no - 1]
+        for key in ("locator_bindings", "assert_locator_bindings"):
+            incoming = record.get(key)
+            if not isinstance(incoming, list):
+                continue
+            existing = step.setdefault(key, [])
+            known = {json.dumps(item, ensure_ascii=False, sort_keys=True)
+                     for item in existing if isinstance(item, dict)}
+            for binding in incoming:
+                if not isinstance(binding, dict):
+                    continue
+                signature = json.dumps(binding, ensure_ascii=False, sort_keys=True)
+                if signature not in known:
+                    existing.append(binding)
+                    known.add(signature)
+                    applied += 1
+    for record in (json_data.get("execution_plans") or []):
+        pack = stories.get(str(record.get("story_id") or ""))
+        if not pack:
+            continue
+        case_id = str(record.get("test_case_id") or "")
+        case_title = str(record.get("test_case_title") or "")
+        tc = next((item for item in pack.get("test_cases") or []
+                   if str(item.get("id") or "") == case_id), None)
+        if tc is None and case_title:
+            tc = next((item for item in pack.get("test_cases") or []
+                       if str(item.get("title") or "") == case_title), None)
+        plan = record.get("plan")
+        if tc is not None and isinstance(plan, dict) and isinstance(plan.get("intents"), list):
+            if tc.get("inspection_plan") != plan:
+                tc["inspection_plan"] = plan
+                applied += 1
+    return applied
+
+
+def write_inspection_screens(out_dir, result, cb=None):
+    """Persist the compact, value-free DOM snapshots from a live inspection.
+
+    This is deliberately separate from ``locators.json``: the latter is the
+    stable, committed input for generated tests, while this local diagnostic
+    artifact lets a QA engineer review what the browser saw at inspection time.
+    ``_HARVEST_JS`` excludes input/select/textarea values so test credentials
+    and typed test data are not written into the report.
+    """
+    cb = cb or (lambda *a, **k: None)
+    if not out_dir or not isinstance(result, dict):
+        return ""
+    report = {
+        "schema_version": 4,
+        "captured_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "stats": dict(result.get("stats") or {}),
+        "screens": list(result.get("dom_snapshot") or []),
+        "screen_captures": list(result.get("screen_captures") or []),
+        "step_bindings": _inspection_step_bindings(result.get("stories_payload") or []),
+        "execution_plans": _inspection_execution_plans(result.get("stories_payload") or []),
+    }
+    path = os.path.join(out_dir, "inspection-screens.json")
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(report, f, ensure_ascii=False, indent=2)
+        cb("Saved local inspection screen JSON (not committed to Git).", "dim")
+        return path
+    except Exception as ex:
+        cb("Could not save inspection screen JSON: %s" % str(ex)[:120], "warn")
+        return ""
 
 
 def _driver_factory(pkg):
@@ -9945,6 +11152,12 @@ def validate_and_sequence_suite(stories_payload, log=None, want_ai=True,
                                         "login button", "login field", "login submit")):
                 bucket = 0
                 pctx = "login"
+        # A scenario can intentionally log in and continue with app actions.
+        # It is neither a pure logged-out case nor an already-authenticated
+        # app case: generated tests must establish the login transition first,
+        # then emit only the post-login authored actions.
+        explicit_login_flow = (ctype != "negative_login" and
+                               _case_has_explicit_login_flow(intents))
         has_app = (bucket == 3)
         n_act = sum(1 for i in intents if i["role"] == "action")
         has_assert = any(i["role"] == "assertion" for i in intents)
@@ -9978,10 +11191,11 @@ def validate_and_sequence_suite(stories_payload, log=None, want_ai=True,
                 log("    %s\x1f%s" % (_rev_meta, title[:40]), "review")
         case_dict = {"tc": tc, "title": tc.get("title", ""), "ctype": ctype,
                     "page_context": pctx, "bucket": bucket, "intents": intents,
-                    "needs_review": needs_review}
+                    "needs_review": needs_review,
+                    "explicit_login_flow": explicit_login_flow}
         return {"case": case_dict, "case_no": case_no,
                 "has_app": has_app, "has_positive_login": positive_login,
-                "todo_delta": _count_null_seeds(bucket, intents)}
+                "todo_delta": _count_null_seeds(bucket, intents, explicit_login_flow)}
 
     for sp in stories_payload:
         if should_stop():
@@ -10086,6 +11300,76 @@ def validate_and_sequence_suite(stories_payload, log=None, want_ai=True,
     return out
 
 
+def sequence_verified_inspection_plans(stories_payload, log=None):
+    """Build generation IR directly from the one-pass live inspection plans.
+
+    No model is invoked here.  A plan is accepted only when every executable
+    intent was bound on the page where it ran; this makes the live browser's
+    exact selector the authority and blocks a weak partial suite.
+    Returns ``None`` when coverage is incomplete.
+    """
+    log = log or (lambda *a, **k: None)
+    incomplete = []
+    out = []
+    for pack in stories_payload or []:
+        story = pack.get("story") or {}
+        cases = []
+        for tc in pack.get("test_cases") or []:
+            plan = tc.get("inspection_plan") or {}
+            intents = plan.get("intents") if isinstance(plan, dict) else None
+            if not isinstance(intents, list):
+                incomplete.append((story.get("id"), tc.get("title"), "no verified inspection plan"))
+                continue
+            for intent in intents:
+                role = intent.get("role")
+                source = intent.get("inspection_source")
+                if role == "precondition":
+                    continue
+                locator = intent.get("live_locator") or {}
+                has_exact_locator = (isinstance(locator, dict) and
+                                     str(locator.get("by") or "").strip() and
+                                     str(locator.get("value") or "").strip())
+                # Page navigation plus browser-context transitions are verified
+                # state changes, not elements.  A dialog accept/dismiss or popup
+                # switch must therefore be accepted without a fake locator.
+                allowed = (source in ("start_state", "context") or
+                           (source == "live" and has_exact_locator))
+                if not allowed:
+                    incomplete.append((story.get("id"), tc.get("title"),
+                                       (intent.get("target") or "unidentified step")[:70]))
+            ctype = plan.get("case_type") or _classify_case(tc)
+            pctx = plan.get("page_context") or _infer_page_context(tc, ctype)
+            explicit_login = bool(plan.get("explicit_login_flow")) or _case_has_explicit_login_flow(intents)
+            low = _norm(tc.get("title", ""))
+            positive_login = (explicit_login and ctype != "negative_login" and
+                              any(k in low for k in ("نجاح", "صحيح", "الصحيحة", "valid",
+                                                     "success", "successful")))
+            if ctype == "negative_login" and pctx == "login":
+                bucket = 0
+            elif positive_login:
+                bucket = 2
+            elif pctx == "login":
+                bucket = 1
+            else:
+                bucket = 3
+            cases.append({"tc": tc, "title": tc.get("title", ""), "ctype": ctype,
+                          "page_context": pctx, "bucket": bucket,
+                          "intents": intents, "needs_review": False,
+                          "explicit_login_flow": explicit_login})
+        if cases:
+            cases.sort(key=lambda case: case["bucket"])
+            for index, case in enumerate(cases):
+                case["priority"] = case["bucket"] * 100 + index
+            out.append({"story": story, "cases": cases})
+    if incomplete:
+        log("Verified inspection coverage is incomplete — generation was blocked.", "err")
+        for sid, title, target in incomplete:
+            log("  - story %s / %s / %s" % (sid, (title or "")[:42], target), "warn")
+        return None
+    log("Generating directly from the verified live inspection plan (no second AI compile).", "ok")
+    return out
+
+
 def _seed_locator_for_intent(intent, app_page=False):
     """Best-effort seed Selenium By for an intent, BEFORE any runtime healing.
     'Stable where known, // TODO only where unknown.' Returns (by, value, known).
@@ -10098,6 +11382,21 @@ def _seed_locator_for_intent(intent, app_page=False):
     so the healer trusts it, types into the wrong field, and the test fails
     with no healing ever attempted. Confirmed live in a generated Playwright
     project (story 101049's profile email cases)."""
+    # A direct capture from the opt-in live browser inspector is stronger than
+    # every heuristic below. Selenium calls its CSS strategy "cssSelector";
+    # normalize the inspector's concise "css" label once at the boundary so
+    # all generated targets can consume the same locator object.
+    live = intent.get("live_locator") or {}
+    live_by = str(live.get("by") or "").strip()
+    live_value = str(live.get("value") or "").strip()
+    if live_by and live_value:
+        return ("cssSelector" if live_by == "css" else live_by, live_value, True)
+
+    # A snapshot or guess was not verified against the correct page state.
+    # Do not let a broad heuristic silently bind a different element instead.
+    if intent.get("inspection_unresolved"):
+        return ("cssSelector", "TODO_RESOLVE_AT_RUNTIME", False)
+
     kws = [k for k in (intent.get("keywords") or []) if str(k).strip()]
     kind = intent.get("kind", "any")
     low = _norm(" ".join(kws) + " " + (intent.get("target", "") or ""))
@@ -10125,7 +11424,7 @@ def _seed_locator_for_intent(intent, app_page=False):
     return ("cssSelector", "TODO_RESOLVE_AT_RUNTIME", False)
 
 
-def _count_null_seeds(bucket, intents):
+def _count_null_seeds(bucket, intents, explicit_login_flow=False):
     """How many of a case's intents become RUNTIME-resolved locators (no stable
     seed) — i.e. the TODO tally. Mirrors _emit_intent's filtering so the live count
     matches what the specs actually emit (precondition = no locator; a null-seed
@@ -10138,8 +11437,13 @@ def _count_null_seeds(bucket, intents):
             continue
         if bucket == 2 and role == "action":
             continue
+        if explicit_login_flow and _is_login_flow_action(intent):
+            continue
         _, val, _ = _seed_locator_for_intent(intent, app_page=(bucket == 3))
         if val != "TODO_RESOLVE_AT_RUNTIME":
+            continue
+        if intent.get("inspection_unresolved"):
+            n += 1
             continue
         if role == "assertion":
             kind = (intent.get("kind") or "").lower()
@@ -10453,6 +11757,7 @@ def _sh_healer(pkg):
 
 import org.openqa.selenium.*;
 import org.openqa.selenium.support.ui.ExpectedConditions;
+import org.openqa.selenium.support.ui.Select;
 import org.openqa.selenium.support.ui.WebDriverWait;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -10511,7 +11816,9 @@ public final class Healer {
             case "type":
                 el.clear(); if (value != null && !value.isEmpty()) el.sendKeys(value); break;
             case "select":
-                el.click(); break;   // custom dropdowns: open; the next intent picks the option
+                try { new Select(el).selectByVisibleText(value); }
+                catch (Exception ignored) { el.click(); } // custom dropdown trigger
+                break;
             case "hover":
                 el.click(); break;
             default:
@@ -10525,6 +11832,35 @@ public final class Healer {
     public boolean assertVisible(String key, By seed, String intentJson) {
         try { return find(key, seed, intentJson).isDisplayed(); }
         catch (Exception e) { return false; }
+    }
+
+    public boolean assertChecked(String key, By seed, String intentJson) {
+        try { return find(key, seed, intentJson).isSelected(); }
+        catch (Exception e) { return false; }
+    }
+
+    public boolean assertEnabled(String key, By seed, String intentJson, boolean enabled) {
+        try { return find(key, seed, intentJson).isEnabled() == enabled; }
+        catch (Exception e) { return false; }
+    }
+
+    public boolean assertSelected(String key, By seed, String intentJson, String expected) {
+        try {
+            String selected = new Select(find(key, seed, intentJson)).getFirstSelectedOption().getText();
+            return normText(selected).contains(normText(expected));
+        } catch (Exception e) { return false; }
+    }
+
+    public boolean assertHidden(By seed) {
+        // A removal assertion must keep its pre-action selector. Asking the
+        // AI healer after removal risks proving absence with a different item.
+        if (seed == null) return false;
+        try {
+            for (WebElement el : driver.findElements(seed)) {
+                if (el.isDisplayed()) return false;
+            }
+            return true;
+        } catch (Exception e) { return true; }
     }
 
     /** Verify by PAGE TEXT — true if the rendered page contains ANY of the given
@@ -10690,7 +12026,9 @@ def _sh_gitignore():
     # env-only). config.properties.example is committed as a template.
     return ("target/\n*.iml\n.idea/\n"
             "# environment-specific config (URLs stay out of git):\n"
-            "config.properties\n")
+            "config.properties\n"
+            "# local DOM snapshots from an opt-in live inspection:\n"
+            "inspection-screens.json\n")
 
 
 def _sh_readme(base_url, login_url):
@@ -10771,17 +12109,47 @@ def _emit_intent(lines, key, intent, seed_sink=None, app_page=False):
 
     def _seed(k):
         if seed_sink is not None and val != "TODO_RESOLVE_AT_RUNTIME":
-            seed_sink[k] = {"by": by, "value": val}
+            seed_sink[k] = {"by": by, "value": val,
+                            "source": "inspection" if intent.get("live_locator") else "seed"}
     if role == "precondition":
         lines.append('        // precondition (no UI action): %s' % _java_str(target)[:70])
         return
     if role == "assertion":
         kind = (intent.get("kind") or "").lower()
         kws = [k for k in (intent.get("keywords") or []) if k] or ([target] if target else [])
+        if intent.get("assert_before_action"):
+            lines.append('        org.testng.Assert.assertTrue(heal.assertHidden(%s),'
+                         % seed)
+            lines.append('            "expected hidden: %s");' % _java_str(target)[:60])
+            _seed(key)
+            return
+        check = (intent.get("check") or "").lower()
+        if check == "checked":
+            lines.append('        org.testng.Assert.assertTrue(heal.assertChecked("%s", %s, "%s"),'
+                         % (_java_str(key), seed, _java_str(ij)))
+            lines.append('            "expected checked: %s");' % _java_str(target)[:60])
+            _seed(key)
+            return
+        if check in ("enabled", "disabled"):
+            lines.append('        org.testng.Assert.assertTrue(heal.assertEnabled("%s", %s, "%s", %s),'
+                         % (_java_str(key), seed, _java_str(ij),
+                            "true" if check == "enabled" else "false"))
+            lines.append('            "expected %s: %s");' % (check, _java_str(target)[:60]))
+            _seed(key)
+            return
+        if check in ("selected", "selected_value", "value_selected"):
+            expected = (intent.get("value") or (kws[0] if kws else "") or
+                        intent.get("expected") or target)
+            lines.append('        org.testng.Assert.assertTrue(heal.assertSelected("%s", %s, "%s", "%s"),'
+                         % (_java_str(key), seed, _java_str(ij), _java_str(expected)))
+            lines.append('            "expected selected: %s");' % _java_str(target)[:60])
+            _seed(key)
+            return
         # Text/message/menu checks with no locatable element → verify by PAGE TEXT
         # (no AI heal): faster, cheaper, and robust to where the message renders.
-        if seed == "null" and (kind in ("text", "message", "menu", "validation", "error")
-                               or not kind):
+        if (seed == "null" and not intent.get("inspection_unresolved") and
+                (kind in ("text", "message", "menu", "validation", "error")
+                 or not kind)):
             arr = ", ".join('"%s"' % _java_str(k) for k in kws)
             lines.append('        org.testng.Assert.assertTrue('
                          'heal.assertTextPresent(new String[]{%s}),' % arr)
@@ -10794,6 +12162,9 @@ def _emit_intent(lines, key, intent, seed_sink=None, app_page=False):
         return
     verb = intent.get("verb") or "click"
     value = _java_str(intent.get("value", ""))
+    if verb == "navigate" and str(intent.get("value") or "").lower().startswith(("http://", "https://")):
+        lines.append('        driver.get("%s");' % value)
+        return
     lines.append('        heal.act("%s", "%s", %s, "%s", "%s");%s'
                  % (_java_str(key), verb, seed, _java_str(ij), value, todo))
     _seed(key)
@@ -10815,17 +12186,23 @@ def generate_selfhealing_test_class(story, cases, pkg, seed_sink=None):
     L.append("public class %s extends BaseTest {" % cls)
     for ci, c in enumerate(cases):
         bucket = c["bucket"]; pr = c.get("priority", bucket * 100 + ci)
+        explicit_login_flow = bool(c.get("explicit_login_flow"))
         mname = "tc_%d_%s" % (pr, _java_ident(c.get("title", ""), "case%d" % ci))
         L.append("")
         L.append('    @Test(priority = %d, description = "%s")'
                  % (pr, _java_str(c.get("title", ""))))
         L.append("    public void %s() {" % mname)
-        L.append('        // [%s · %s-page]' % (c["ctype"], c["page_context"]))
+        L.append('        // [%s · %s-page%s]' % (
+            c["ctype"], c["page_context"],
+            " · explicit login transition" if explicit_login_flow else ""))
         if c.get("needs_review"):
             L.append('        // NEEDS REVIEW: AI compile was unavailable for this case '
                      '(e.g. provider rate limit) — this is a placeholder visibility '
                      'check only, verify the real steps manually.')
-        if bucket < 2:
+        if explicit_login_flow:
+            L.append("        openLoginPage();")
+            L.append("        performLogin();")
+        elif bucket < 2:
             L.append("        openLoginPage();")
         elif bucket == 2:
             L.append("        openLoginPage();")
@@ -10835,10 +12212,11 @@ def generate_selfhealing_test_class(story, cases, pkg, seed_sink=None):
         # emit intents (for the login-transition case, skip its action intents —
         # performLogin() already did the real login — but keep its assertions)
         for ii, intent in enumerate(c.get("intents", [])):
-            if bucket == 2 and intent.get("role") == "action":
+            if (bucket == 2 and intent.get("role") == "action") or (
+                    explicit_login_flow and _is_login_flow_action(intent)):
                 continue
             _emit_intent(L, "%s.%d.%d" % (sid, ci, ii), intent, seed_sink=seed_sink,
-                         app_page=(bucket == 3))
+                         app_page=(bucket == 3 or explicit_login_flow))
         L.append("    }")
     L.append("}")
     return "\n".join(L) + "\n", cls
@@ -10861,7 +12239,8 @@ def _sh_write_testng(out_dir, pkg, m):
 def _write_seed_locators(out_dir, seeds, cb=None):
     """Merge generation-time seed locators into the COMMITTED locators.json
     without clobbering any entry already resolved/healed at runtime (or hand-
-    edited). New keys are added with source='seed'; existing keys are left as-is."""
+    edited). A direct inspection capture may upgrade a heuristic seed, but it
+    never replaces a runtime-healed or manually maintained entry."""
     cb = cb or (lambda *a, **k: None)
     path = os.path.join(out_dir, "locators.json")
     data = {}
@@ -10873,8 +12252,14 @@ def _write_seed_locators(out_dir, seeds, cb=None):
         data = {}
     added = 0
     for key, seed in (seeds or {}).items():
-        if key not in data:            # never overwrite a healed / edited locator
-            data[key] = {"by": seed["by"], "value": seed["value"], "source": "seed"}
+        source = seed.get("source", "seed")
+        existing = data.get(key)
+        # A newer direct inspection may correct an older inspection.  Never
+        # replace a runtime-healed or manually maintained locator.
+        can_upgrade = (source == "inspection" and isinstance(existing, dict)
+                       and existing.get("source") in ("seed", "inspection"))
+        if not existing or can_upgrade:
+            data[key] = {"by": seed["by"], "value": seed["value"], "source": source}
             added += 1
     try:
         with open(path, "w", encoding="utf-8") as f:
@@ -11079,10 +12464,20 @@ def generate_and_push_selfhealing(out_dir, stories_payload, base_url, login=None
     on_error/gate enable pause-on-error and manual pause (see
     validate_and_sequence_suite)."""
     cb = cb or (lambda *a, **k: None)
-    cb("Validating and sequencing test cases (no browser)\u2026", "info")
-    sequenced = validate_and_sequence_suite(stories_payload, log=cb, want_ai=want_ai,
-                                            should_stop=should_stop, on_error=on_error,
-                                            gate=gate)
+    has_inspection_plan = any(
+        isinstance(tc.get("inspection_plan"), dict)
+        for pack in (stories_payload or [])
+        for tc in (pack.get("test_cases") or [])
+    )
+    if has_inspection_plan:
+        sequenced = sequence_verified_inspection_plans(stories_payload, log=cb)
+        if sequenced is None:
+            return None
+    else:
+        cb("Validating and sequencing test cases (no browser)\u2026", "info")
+        sequenced = validate_and_sequence_suite(stories_payload, log=cb, want_ai=want_ai,
+                                                should_stop=should_stop, on_error=on_error,
+                                                gate=gate)
     if should_stop():
         return []
     # Original test cases per story → recorded in the manifest for resume support.
