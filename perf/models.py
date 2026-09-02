@@ -13,7 +13,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from failure_analysis.models import FailureAnalysis
 
 
 WORKLOAD_PRESETS = {
@@ -169,6 +172,8 @@ class PerfResult:
     failures: List[FailureGroup] = field(default_factory=list)
     threshold_pass: Optional[bool] = None
     raw_report_dir: str = ""
+    # Optional diagnostics; old constructors/history and all metrics remain valid.
+    failure_analysis: tuple[FailureAnalysis, ...] = ()
 
     @property
     def error_rate(self) -> float:

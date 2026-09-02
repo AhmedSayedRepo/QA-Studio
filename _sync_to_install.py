@@ -54,7 +54,7 @@ for pat in patterns:
 # be absent from the installed copy and fail at import time. Running `python
 # main.py` from this dev folder hides that problem because the packages are here.
 # Sync each package dir recursively. Add any future package here.
-PACKAGE_DIRS = ["tracker", "perf"]
+PACKAGE_DIRS = ["tracker", "perf", "failure_analysis"]
 for pkg in PACKAGE_DIRS:
     src_dir = os.path.join(SRC, pkg)
     if not os.path.isdir(src_dir):
