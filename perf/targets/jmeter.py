@@ -274,8 +274,9 @@ def parse_jtl(jtl_path: str, scenario_id: str = "", report_dir: str = "") -> Per
     ts_max = None
     per: dict = {}
     failmap: dict = {}          # (label, code, message) -> count
+    failure_details: dict = {}  # first existing CSV row per group; no payload copy
     with open(jtl_path, "r", encoding="utf-8", newline="") as f:
-        for row in csv.DictReader(f):
+        for row_number, row in enumerate(csv.DictReader(f), start=2):
             try:
                 e = float(row.get("elapsed", 0) or 0)
             except ValueError:
@@ -298,6 +299,11 @@ def parse_jtl(jtl_path: str, scenario_id: str = "", report_dir: str = "") -> Per
                        or (row.get("responseMessage", "") or "").strip())
                 fkey = (label, code, msg)
                 failmap[fkey] = failmap.get(fkey, 0) + 1
+                failure_details.setdefault(fkey, {
+                    "row": row_number, "timestamp": row.get("timeStamp"), "elapsed": e,
+                    "url": row.get("URL"),
+                    "message_source": "failureMessage" if row.get("failureMessage") else "responseMessage",
+                })
             b = per.setdefault(label, {"e": [], "err": 0})
             b["e"].append(e)
             if not ok:
@@ -315,13 +321,25 @@ def parse_jtl(jtl_path: str, scenario_id: str = "", report_dir: str = "") -> Per
     failures = [FailureGroup(label=lbl, code=code, message=msg, count=cnt)
                 for (lbl, code, msg), cnt in
                 sorted(failmap.items(), key=lambda kv: kv[1], reverse=True)][:30]
-    return PerfResult(
+    result = PerfResult(
         scenario_id=scenario_id, target="jmeter", samples=n, errors=errors,
         duration_s=duration_s,
         p50_ms=_pct(sv, 50), p90_ms=_pct(sv, 90), p95_ms=_pct(sv, 95), p99_ms=_pct(sv, 99),
         avg_ms=(sum(sv) / n) if n else 0.0,
         throughput_rps=(n / duration_s) if duration_s else 0.0,
         per_request=per_request, failures=failures, raw_report_dir=report_dir)
+    if errors:
+        try:
+            from failure_analysis.integration import diagnose_jmeter
+            result = diagnose_jmeter(result, jtl_path, failure_details)
+        except Exception:
+            # Even an import/plugin failure must leave the original result usable.
+            try:
+                from diag_log import log
+                log("failure_analysis jmeter_integration_error")
+            except Exception:
+                pass
+    return result
 
 
 # ---- the target -------------------------------------------------------------
