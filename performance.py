@@ -604,6 +604,13 @@ def _run_worker(app):
                         "rps": res.throughput_rps,
                         "users": profile.users, "duration": profile.duration_s,
                         "report": getattr(res, "raw_report_dir", "")})
+        if getattr(res, "failure_analysis", ()):
+            try:
+                from failure_analysis.integration import optional_analysis_fields
+                hist[0].update(optional_analysis_fields(res.failure_analysis))
+            except Exception:
+                # Diagnostic serialization must never prevent history persistence.
+                pass
         app._perf_history = hist[:_PERF_HISTORY_LIMIT]
         _persist_perf_history(app)
     except PerfRunCancelled:

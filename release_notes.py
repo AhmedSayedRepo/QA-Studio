@@ -11,7 +11,7 @@ RELEASE_NOTE_KEYS = {'3.7.1': ('upd_note_tenants', 'upd_note_access', 'upd_note_
 # Add the keys for the next release here while implementing its features.
 # release.bat stamps this draft with the version entered at its prompt, so
 # release-note text never has to guess a version number in advance.
-PENDING_RELEASE_NOTE_KEYS = ()
+PENDING_RELEASE_NOTE_KEYS = ("upd_note_failure_analysis",)
 
 FALLBACK_RELEASE_NOTE_KEYS = ("upd_note_release_general",)
 

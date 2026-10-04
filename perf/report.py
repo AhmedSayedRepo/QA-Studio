@@ -32,19 +32,7 @@ UI = '"Segoe UI",Roboto,Helvetica,Arial,sans-serif'
 MONO = '"SFMono-Regular",Consolas,Menlo,monospace'
 
 
-import re as _re
-
-# Redact secret-looking query-string values (a token in a URL) so an exported or
-# emailed report never carries them in plaintext. Matches key=value where key is
-# a common secret name.
-_SECRET_PARAM = _re.compile(
-    r"((?:access_token|refresh_token|id_token|token|api[_-]?key|apikey|key|"
-    r"password|passwd|pwd|secret|client_secret|sig|signature|auth|session|sid)=)"
-    r"[^&\s]+", _re.I)
-
-
-def _mask_secrets(s) -> str:
-    return _SECRET_PARAM.sub(r"\1[REDACTED]", str(s or ""))
+from diagnostic_safety import mask_query_secrets as _mask_secrets
 
 
 def _esc(s) -> str:

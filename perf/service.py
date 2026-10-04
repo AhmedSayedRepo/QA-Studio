@@ -205,7 +205,18 @@ def run(target: PerfTarget, paths: ProjectPaths, profile: LoadProfile,
     if "cancel_check" in params:
         kwargs["cancel_check"] = cancel_check
     result = target.run(paths, **kwargs)
-    return apply_thresholds(result, profile)
+    result = apply_thresholds(result, profile)
+    if result.errors or result.threshold_pass is False:
+        try:
+            from failure_analysis.integration import diagnose_performance
+            result = diagnose_performance(result, profile)
+        except Exception:
+            try:
+                from diag_log import log
+                log("failure_analysis performance_integration_error")
+            except Exception:
+                pass
+    return result
 
 
 __all__ = ["scenarios_from_cases", "build_and_emit", "emit_scenarios",

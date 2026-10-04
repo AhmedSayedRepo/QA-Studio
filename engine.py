@@ -8779,6 +8779,9 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
     wait = WebDriverWait(driver, 20)
     all_snapshots = []   # union of every element seen (for fallback)
     screen_captures = [] # full per-screen inventories, local diagnostic only
+    failure_records = []  # optional diagnostics, never consulted by execution
+    import uuid as _failure_uuid
+    failure_run_id = _failure_uuid.uuid4().hex
     active_capture = {"story": "", "test_case": "", "step": None, "phase": ""}
     # Upload inspection needs a real, non-sensitive path.  The browser never
     # receives prose such as "test file" (which Selenium rejects as a path),
@@ -8974,11 +8977,14 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
         except Exception:
             return True
 
+    failure_action_error = None  # terminal action error only; never a retry signal
+
     def _act(el_dict, verb, value, empty_ok=False):
         """STAGE 3 — perform an action so it survives overlays and timing.
         Re-finds the element, scrolls to center, waits to settle, clears overlays
         if it's covered, then runs a retry ladder (native → JS → ActionChains).
         Returns the live element acted on (or None)."""
+        nonlocal failure_action_error
         live = find_live(el_dict)
         if live is None:
             return None
@@ -8994,6 +9000,7 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                 driver.switch_to.frame(live)
                 return live
             except Exception as e:
+                failure_action_error = e
                 cb(f"      frame switch failed: {str(e)[:50]}", "warn")
                 return None
         if verb == "upload":
@@ -9003,6 +9010,7 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                 live.send_keys(inspection_upload_path)
                 return live
             except Exception as e:
+                failure_action_error = e
                 cb(f"      upload failed: {str(e)[:50]}", "warn"); return None
         if verb == "key_press":
             try:
@@ -9011,6 +9019,7 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                 live.send_keys(key)
                 return live
             except Exception as e:
+                failure_action_error = e
                 cb(f"      key press failed: {str(e)[:50]}", "warn"); return None
         if verb == "type":
             try:
@@ -9030,6 +9039,7 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                     live.send_keys(value or "test")
                 return live
             except Exception as e:
+                failure_action_error = e
                 cb(f"      type failed: {str(e)[:50]}", "warn"); return None
         if verb == "select":
             from selenium.webdriver.support.ui import Select
@@ -9078,6 +9088,7 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                 ActionChains(driver).move_to_element(live).perform()
                 return live
             except Exception as e:
+                failure_action_error = e
                 cb(f"      hover failed: {str(e)[:50]}", "warn"); return None
         # click / navigate(default) — make it interception-proof
         if not _topmost_ok(live):
@@ -9330,10 +9341,24 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
             elif src == "snapshot": snap_count += 1
             elif src == "guess":    guess_count += 1
 
-        def _todo(story, tc, idxs, target, kind):
+        def _todo(story, tc, idxs, target, kind, exception=None, attempted_locator=None):
             for n in idxs:
                 todos.append({"s": story.get("id"), "tc": tc.get("title", ""),
                               "n": n, "a": (target or "")[:32], "kind": kind})
+            # Existing failure bookkeeping above always happens first. Collect
+            # only facts/references; no new screenshots, DOM harvests or retries.
+            try:
+                from failure_analysis.integration import record_inspection_failure
+                record_inspection_failure(
+                    failure_records, run_id=failure_run_id, execution_id=failure_execution_id,
+                    story=story, case=tc, intent=it, step_ids=idxs, kind=kind,
+                    driver=driver, captures=screen_captures, exception=exception,
+                    attempted_locator=attempted_locator,
+                    duration_ms=(_t.perf_counter() - failure_step_started) * 1000,
+                    secrets=tuple((login or {}).get(k, "") for k in ("user", "password")) +
+                            tuple(i.get("value", "") for i in intents if i.get("verb") == "type"))
+            except Exception:
+                pass  # Diagnostics must not interrupt inspection or its report.
 
         # walk each test case (intent-driven)
         for sp in stories_payload:
@@ -9344,6 +9369,7 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
             for tc in sp.get("test_cases", []):
                 if should_stop() or abort_credit:
                     break
+                failure_execution_id = _failure_uuid.uuid4().hex
                 steps = tc.get("steps", []) or []
                 # A preceding case may have entered an iframe.  Every test case
                 # starts from its declared page, never the last frame context.
@@ -9414,6 +9440,7 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                 for it in intents:
                     if should_stop() or abort_credit:
                         break
+                    failure_step_started = _t.perf_counter()
                     role = it["role"]; fs = it.get("from_steps") or []
 
                     if role == "precondition":
@@ -9500,7 +9527,7 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                             it["inspection_unresolved"] = "navigation"
                             assign(fs, None, "guess", intent=it)
                             cb(f"      could not open target page: {str(e)[:70]}", "warn")
-                            _todo(story, tc, fs, it.get("target"), "navigation")
+                            _todo(story, tc, fs, it.get("target"), "navigation", exception=e)
                             continue
                         # A direct URL is a verified state transition, not a
                         # DOM locator. Generated targets visit it directly.
@@ -9526,7 +9553,7 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                             it["inspection_unresolved"] = "context"
                             assign(fs, None, "guess", intent=it)
                             cb(f"      {verb.replace('_', ' ')} failed: {str(e)[:50]}", "warn")
-                            _todo(story, tc, fs, it.get("target"), "context")
+                            _todo(story, tc, fs, it.get("target"), "context", exception=e)
                         continue
                     if verb == "window_switch":
                         old_handle = driver.current_window_handle
@@ -9561,7 +9588,7 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                             it["inspection_unresolved"] = "context"
                             assign(fs, None, "guess", intent=it)
                             cb(f"      window switch failed: {str(e)[:50]}", "warn")
-                            _todo(story, tc, fs, it.get("target"), "context")
+                            _todo(story, tc, fs, it.get("target"), "context", exception=e)
                         continue
                     active_capture.update({"step": min(fs) if fs else None,
                                            "phase": "before-action"})
@@ -9603,6 +9630,7 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                             typed_value = login.get("user", "")
                         elif any(token in field_hint for token in ("password", "passcode", "كلمه المرور", "كلمة المرور")):
                             typed_value = login.get("password", "")
+                    failure_action_error = None
                     acted = _act(el, verb, typed_value, empty_ok=empty_ok)
                     if acted is None:
                         # A selector is not verified merely because it was
@@ -9614,14 +9642,16 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                         it.pop("live_locator", None)
                         assign(fs, None, "guess", intent=it)
                         cb("      action did not complete — locator is not verified", "warn")
-                        _todo(story, tc, fs, it.get("target"), "action")
+                        _todo(story, tc, fs, it.get("target"), "action",
+                              exception=failure_action_error, attempted_locator=captured)
+                        failure_action_error = None
                         continue
                     assign(fs, captured, src, intent=it)
                     if _is_shopping_cart_navigation(it):
                         try:
                             WebDriverWait(driver, 8).until(
                                 lambda d: "/cart" in (d.current_url or "").lower())
-                        except Exception:
+                        except Exception as navigation_error:
                             # A browser-level dialog can make Selenium report a
                             # click while the page has not changed. Never carry
                             # that selector forward as a verified transition.
@@ -9629,7 +9659,8 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                             it["inspection_unresolved"] = "navigation"
                             it.pop("live_locator", None)
                             cb("      shopping cart did not open after click — locator is not verified", "warn")
-                            _todo(story, tc, fs, it.get("target"), "navigation")
+                            _todo(story, tc, fs, it.get("target"), "navigation",
+                                  exception=navigation_error, attempted_locator=captured)
                             continue
                     cb(f"      {verb} {_describe(el)}"
                        f"{' (left empty)' if empty_ok else ''}", "ok")
@@ -9687,10 +9718,13 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
             if key in seen:
                 continue
             seen.add(key); uniq.append(e)
-        return {"stories_payload": stories_payload, "dom_snapshot": uniq[:300],
+        result = {"stories_payload": stories_payload, "dom_snapshot": uniq[:300],
                 "screen_captures": screen_captures,
                 "stats": {"live": live_count, "snapshot": snap_count,
                           "guess": guess_count}}
+        if failure_records:
+            result["failure_analysis"] = tuple(failure_records)
+        return result
     finally:
         try:
             driver.quit()
@@ -9829,6 +9863,12 @@ def write_inspection_screens(out_dir, result, cb=None):
         "execution_plans": _inspection_execution_plans(result.get("stories_payload") or []),
     }
     path = os.path.join(out_dir, "inspection-screens.json")
+    if result.get("failure_analysis"):
+        try:
+            from failure_analysis.integration import optional_analysis_fields
+            report.update(optional_analysis_fields(result["failure_analysis"]))
+        except Exception:
+            pass  # Preserve the original report even when diagnostics are broken.
     try:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(report, f, ensure_ascii=False, indent=2)

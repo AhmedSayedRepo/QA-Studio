@@ -11759,6 +11759,19 @@ for _language, _values in _NEXT_RELEASE_NOTES_I18N.items():
     _STRINGS[_language].update(_values)
 
 
+_FAILURE_ANALYSIS_RELEASE_I18N = {
+    "en": "Browser inspection and performance failures now include structured diagnostics, with deterministic timeout classification and protected evidence references.",
+    "ar": "تتضمن إخفاقات فحص المتصفح واختبارات الأداء الآن بيانات تشخيص منظمة، مع تصنيف حتمي لانتهاء المهلة ومراجع أدلة محمية.",
+    "fr": "Les échecs d'inspection du navigateur et des tests de performance incluent des diagnostics structurés, une classification déterministe des délais dépassés et des références de preuves protégées.",
+    "tr": "Tarayıcı incelemesi ve performans hataları artık yapılandırılmış tanılama, belirlenimci zaman aşımı sınıflandırması ve korunan kanıt referansları içerir.",
+    "es": "Los fallos de inspección del navegador y de rendimiento incluyen diagnósticos estructurados, clasificación determinista de tiempos de espera y referencias de evidencia protegidas.",
+    "de": "Fehler bei Browserprüfungen und Leistungstests enthalten jetzt strukturierte Diagnosen, eine deterministische Zeitüberschreitungsklassifikation und geschützte Belegverweise.",
+    "nl": "Fouten bij browserinspecties en prestatietests bevatten nu gestructureerde diagnostiek, deterministische classificatie van time-outs en beschermde bewijsverwijzingen.",
+}
+for _language, _note in _FAILURE_ANALYSIS_RELEASE_I18N.items():
+    _STRINGS[_language]["upd_note_failure_analysis"] = _note
+
+
 def t(key, **kw):
     """Look up a UI string by key in the current UI language, falling back to
     English, then to the key itself. Optional kwargs are applied via str.format."""

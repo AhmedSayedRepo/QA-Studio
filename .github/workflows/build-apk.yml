@@ -120,6 +120,8 @@ jobs:
           # startup, so omitting this package prevents the Android app from
           # launching with "ModuleNotFoundError: No module named 'perf'".
           cp -r perf /tmp/mobile/ 2>/dev/null || true
+          # Optional structured diagnostics shared by browser/performance runs.
+          cp -r failure_analysis /tmp/mobile/
           # VERSION must ship in the bundle: the mobile update NOTICE compares
           # engine.local_version() (reads this file) against the repo's copy —
           # without it local_version() returns 0.0.0 and every launch nags.
