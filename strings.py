@@ -11785,6 +11785,19 @@ for _language, _note in _AUTOMATION_WAITS_RELEASE_I18N.items():
     _STRINGS[_language]["upd_note_automation_waits"] = _note
 
 
+_AI_MODEL_REFRESH_RELEASE_I18N = {
+    "en": "DeepSeek and Gemini now default to current models (DeepSeek Flash, Gemini 3.8 Flash). If you had picked a model the provider has retired, QA Studio switches to its replacement automatically.",
+    "ar": "أصبح DeepSeek وGemini يستخدمان افتراضيًا النماذج الحالية (DeepSeek Flash وGemini 3.8 Flash). وإذا كنت قد اخترت نموذجًا أوقفه المزوّد، يتحوّل QA Studio تلقائيًا إلى النموذج البديل.",
+    "fr": "DeepSeek et Gemini utilisent désormais par défaut des modèles actuels (DeepSeek Flash, Gemini 3.8 Flash). Si vous aviez choisi un modèle retiré par le fournisseur, QA Studio passe automatiquement à son remplaçant.",
+    "tr": "DeepSeek ve Gemini artık varsayılan olarak güncel modelleri (DeepSeek Flash, Gemini 3.8 Flash) kullanır. Sağlayıcının kullanımdan kaldırdığı bir modeli seçtiyseniz QA Studio otomatik olarak yerine geçen modele geçer.",
+    "es": "DeepSeek y Gemini ahora usan por defecto modelos actuales (DeepSeek Flash, Gemini 3.8 Flash). Si habías elegido un modelo que el proveedor retiró, QA Studio cambia automáticamente a su reemplazo.",
+    "de": "DeepSeek und Gemini verwenden jetzt standardmäßig aktuelle Modelle (DeepSeek Flash, Gemini 3.8 Flash). Wenn Sie ein vom Anbieter eingestelltes Modell gewählt hatten, wechselt QA Studio automatisch zum Nachfolger.",
+    "nl": "DeepSeek en Gemini gebruiken nu standaard actuele modellen (DeepSeek Flash, Gemini 3.8 Flash). Had u een model gekozen dat de aanbieder heeft uitgefaseerd, dan schakelt QA Studio automatisch over naar de vervanger.",
+}
+for _language, _note in _AI_MODEL_REFRESH_RELEASE_I18N.items():
+    _STRINGS[_language]["upd_note_ai_model_refresh"] = _note
+
+
 def t(key, **kw):
     """Look up a UI string by key in the current UI language, falling back to
     English, then to the key itself. Optional kwargs are applied via str.format."""

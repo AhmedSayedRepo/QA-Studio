@@ -98,8 +98,22 @@ echo   Latest release    %LAST%
 echo -----------------------------------------------------------------------
 echo.
 
+rem Suggest the next patch after the latest PUBLISHED release (not VERSION:
+rem an aborted run leaves VERSION already bumped, and bumping it again skips a
+rem number - that is how v3.9.3 never existed). _suggest_version.py also
+rem ignores a "latest release" above VERSION (stray old tags). Without Python,
+rem fall back to the old VERSION-based :next_patch.
 set "SUGGEST="
-call :next_patch "%CUR%" SUGGEST
+where py >nul 2>&1
+if errorlevel 1 goto suggest_with_python
+for /f "usebackq delims=" %%S in (`py -3 "%~dp0_suggest_version.py" "%CUR%" "%LAST%" 2^>nul`) do set "SUGGEST=%%S"
+goto suggest_done
+:suggest_with_python
+where python >nul 2>&1
+if errorlevel 1 goto suggest_done
+for /f "usebackq delims=" %%S in (`python "%~dp0_suggest_version.py" "%CUR%" "%LAST%" 2^>nul`) do set "SUGGEST=%%S"
+:suggest_done
+if not defined SUGGEST call :next_patch "%CUR%" SUGGEST
 if not defined SUGGEST goto ask_plain
 set /p VER=New version [%SUGGEST%]:
 if "%VER%"=="" set "VER=%SUGGEST%"

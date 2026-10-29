@@ -63,7 +63,9 @@ def out_is_rtl():
 AI_CONFIG = {
     "anthropic":    {"api_key": "your-anthropic-key-here", "model": "claude-sonnet-4-6", "vision": True},
     "openai":       {"api_key": "your-openai-key-here", "model": "gpt-4o", "vision": True},
-    "gemini":       {"api_key": "your-gemini-key-here", "model": "gemini-1.5-pro", "vision": True},
+    # Gemini: 1.5 / 2.0 are shut down; 2.5 is limited to existing users.
+    # Google recommends gemini-3.8-flash (or 3.5-flash-lite) for new projects.
+    "gemini":       {"api_key": "your-gemini-key-here", "model": "gemini-3.8-flash", "vision": True},
     "azure_openai": {"api_key": "your-azure-openai-key-here", "endpoint": "https://YOUR-RESOURCE.openai.azure.com",
                      "deployment": "gpt-4o", "api_version": "2024-06-01", "vision": True},
     "ollama":       {"api_key": "", "base_url": "http://localhost:11434", "model": "llama3.1", "vision": False},
@@ -71,12 +73,11 @@ AI_CONFIG = {
                      "model": "meta/llama-3.1-70b-instruct", "vision": False},
     # DeepSeek — OpenAI-compatible API (base_url https://api.deepseek.com).
     # New accounts get a one-time free token grant, then cheap pay-as-you-go.
-    # "deepseek-chat" is the current alias for V4-Flash (non-thinking). NOTE: the
-    # deepseek-chat / deepseek-reasoner aliases are scheduled for deprecation on
-    # 2026-07-24 — after that switch model to "deepseek-v4-flash" (fast/cheap) or
-    # "deepseek-v4-pro" (stronger reasoning). deepseek-chat is text-only.
+    # The deepseek-chat / deepseek-reasoner aliases were deprecated 2026-07-24.
+    # Current ids: "deepseek-flash" (fast/cheap) and "deepseek-v4-pro" (stronger
+    # reasoning); "deepseek-v4-flash" is a legacy name DeepSeek still accepts.
     "deepseek":     {"api_key": "your-deepseek-key-here", "base_url": "https://api.deepseek.com",
-                     "model": "deepseek-chat", "vision": False},
+                     "model": "deepseek-flash", "vision": False},
     # Qwen (Alibaba DashScope / Model Studio) — OpenAI-compatible. Default base_url
     # is the INTERNATIONAL (Singapore) endpoint, correct for accounts outside
     # mainland China (e.g. Egypt). For a Beijing-region key use
@@ -196,6 +197,12 @@ PRICING = {
         # Gemini Pro has a higher long-context rate. Usage events do not retain
         # the original prompt length, so this is the published standard <=200K
         # tier only; calls using a larger context can cost more.
+        # 3.8/3.6 Flash: Google's published rate through 2026-12-31; it doubles
+        # to in 1.50 / out 7.50 from 2027-01-01 — update these then.
+        "gemini-3.8-flash":       {"in": 0.75, "out": 3.75},
+        "gemini-3.6-flash":       {"in": 0.75, "out": 3.75},
+        "gemini-3.5-flash-lite":  {"in": 0.3,  "out": 2.5},
+        "gemini-3.1-pro-preview": {"in": 2.0,  "out": 12.0},
         "gemini-2.5-pro":        {"in": 1.25, "out": 10.0},
         "gemini-2.5-flash":      {"in": 0.3,  "out": 2.5},
         "gemini-2.5-flash-lite": {"in": 0.1,  "out": 0.4},
@@ -423,6 +430,35 @@ GMAIL_APP_PASS = ""
 # Runtime credentials (set by the UI)
 AZURE_PAT = ""
 
+# Model ids the provider has shut down / deprecated → the provider's documented
+# replacement. Applied when a saved model is loaded, so users who picked one of
+# these before it was retired don't hit errors on every AI call.
+RETIRED_MODEL_REPLACEMENTS = {
+    "deepseek": {"deepseek-chat": "deepseek-flash",
+                 "deepseek-reasoner": "deepseek-v4-pro"},
+    "gemini":   {"gemini-1.5-pro": "gemini-3.8-flash",
+                 "gemini-1.5-flash": "gemini-3.5-flash-lite",
+                 "gemini-2.0-flash": "gemini-3.6-flash",
+                 "gemini-2.0-flash-lite": "gemini-3.5-flash-lite",
+                 "gemini-3-pro-preview": "gemini-3.1-pro-preview"},
+}
+
+
+def upgrade_retired_model(provider, model):
+    """Return the replacement for a retired model id, else the id unchanged."""
+    mid = str(model or "").strip()
+    new = RETIRED_MODEL_REPLACEMENTS.get(provider, {}).get(mid)
+    if new:
+        try:
+            import diag_log
+            diag_log.log_warn("engine.upgrade_retired_model",
+                              f"saved model {mid!r} for {provider} is retired -> using {new!r}")
+        except Exception:
+            pass
+        return new
+    return mid
+
+
 def set_credentials(provider=None, api_key=None, pat=None, gmail=None,
                     org=None, gmail_sender=None, model=None, gmail_sender_name=None):
     global AI_PROVIDER, AZURE_PAT, GMAIL_APP_PASS, AZURE_ORG, GMAIL_SENDER, GMAIL_SENDER_NAME
@@ -433,7 +469,7 @@ def set_credentials(provider=None, api_key=None, pat=None, gmail=None,
     if model and AI_PROVIDER in AI_CONFIG:
         # Azure routes by "deployment"; every other provider uses "model".
         key = "deployment" if AI_PROVIDER == "azure_openai" else "model"
-        AI_CONFIG[AI_PROVIDER][key] = model.strip()
+        AI_CONFIG[AI_PROVIDER][key] = upgrade_retired_model(AI_PROVIDER, model.strip())
     if pat is not None:
         AZURE_PAT = pat
     if gmail is not None:
@@ -1547,12 +1583,13 @@ STATIC_MODELS = {
     "anthropic": ["claude-sonnet-4-6", "claude-opus-4-7", "claude-haiku-4-5",
                   "claude-3-7-sonnet-latest", "claude-3-5-sonnet-latest"],
     "openai":    ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "o4-mini"],
-    "gemini":    ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-1.5-pro", "gemini-1.5-flash"],
+    "gemini":    ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite",
+                  "gemini-3.1-pro-preview", "gemini-2.5-pro", "gemini-2.5-flash"],
     "nvidia":    ["meta/llama-3.1-70b-instruct", "meta/llama-3.1-8b-instruct",
                   "meta/llama-3.1-405b-instruct", "qwen/qwen2.5-72b-instruct",
                   "qwen/qwen3-235b-a22b", "deepseek-ai/deepseek-r1",
                   "nvidia/llama-3.1-nemotron-70b-instruct"],
-    "deepseek":  ["deepseek-chat", "deepseek-reasoner"],
+    "deepseek":  ["deepseek-flash", "deepseek-v4-pro"],
     "qwen":      ["qwen-plus", "qwen-max", "qwen-turbo", "qwen-vl-max", "qwen-vl-plus"],
     "azure_openai": ["gpt-4o", "gpt-4o-mini", "gpt-4.1"],
     "ollama":    ["llama3.1", "llama3.2", "qwen2.5", "mistral", "gemma2"],

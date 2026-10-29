@@ -100,8 +100,18 @@ Other:
 
 ## Deploy ritual
 
-Replace files → bump `VERSION` → clean build (only if cutting a new installer:
-delete `build/` and `dist/` first) → commit on a branch → merge/push to `main`.
+Releases go through `release.bat` **on `main`** (it refuses other branches).
+It: checks `gh` → suggests the next patch after the latest PUBLISHED release
+(`_suggest_version.py`) → stamps pending notes and carries notes of unpublished
+versions forward (`_stamp_release_notes.py`) → writes VERSION → `push.ps1`
+(lists new untracked files and asks before `git add -A`; commits, pushes `main`,
+tags) → creates the GitHub release with `install.bat` → verifies it is live.
+Then run `build-apk.bat` for the Android build (manual workflow). Changes that
+need no new version (tooling, notes for an already-published version) are a
+plain `git commit` + `git push origin main` — the in-app updater pulls `main`
+but only offers an update when VERSION changes. Queue user-facing notes in
+`release_notes.PENDING_RELEASE_NOTE_KEYS` + all 7 languages in `strings.py`.
+For a new installer build, delete `build/` and `dist/` first.
 
 VERSION encoding gotcha (cost real debugging time):
 - cmd.exe: `echo 3.9.3> VERSION` — **no space before `>`** (a space writes a
@@ -124,9 +134,12 @@ anthropic, openai, gemini, azure_openai, ollama, nvidia, deepseek, qwen, manus,
 groq, cerebras, openrouter, mistral, minimax, glm). Check `AI_CONFIG` for
 default models rather than trusting this file.
 
-- Known stale defaults to watch: DeepSeek `deepseek-chat`/`deepseek-reasoner`
-  aliases were scheduled to deprecate 2026-07-24 (→ `deepseek-v4-flash` /
-  `deepseek-v4-pro`); Gemini `gemini-1.5-pro` is a retired generation.
+- Retired model ids are upgraded on load via `RETIRED_MODEL_REPLACEMENTS` /
+  `upgrade_retired_model()` in engine.py (applied in `set_credentials`). When a
+  provider retires a model: add it there, fix the `AI_CONFIG` default and
+  `STATIC_MODELS`, and add prices only from the provider's published page
+  (`price_for` never guesses). Defaults: DeepSeek `deepseek-flash`, Gemini
+  `gemini-3.8-flash` (its price doubles 2027-01-01 — update `PRICING`).
 - Qwen: international endpoint
   `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` (correct for Egypt).
 - The `vision` flag in `AI_CONFIG` is metadata only.
