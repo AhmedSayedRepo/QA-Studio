@@ -11796,6 +11796,7 @@ def _sh_healer(pkg):
     return ("""package __PKG__.core;
 
 import org.openqa.selenium.*;
+import org.openqa.selenium.interactions.Actions;
 import org.openqa.selenium.support.ui.ExpectedConditions;
 import org.openqa.selenium.support.ui.Select;
 import org.openqa.selenium.support.ui.WebDriverWait;
@@ -11806,26 +11807,33 @@ import java.util.Map;
 /** Finds elements with runtime self-healing. Order per step key:
  *  1) locator saved in locators.json  2) the generated seed locator
  *  3) ask the configured AI provider to pick one from the live DOM, then save it
- *     back into locators.json so it is reused on every later run. */
+ *     back into locators.json so it is reused on every later run.
+ *  Waits: the page is settled once (document.readyState), then a saved
+ *  locator gets a short probe when a seed can still back it up; the seed and an
+ *  AI-healed locator keep the full wait. BaseTest keeps the implicit wait at 0 so
+ *  these explicit waits are the only ones in play. */
 public final class Healer {
     private final WebDriver driver;
     private final WebDriverWait wait;
+    private final WebDriverWait probe;
     private final LocatorStore store = new LocatorStore();
     private static String HARVEST_JS;
 
     public Healer(WebDriver driver) {
         this.driver = driver;
         this.wait = new WebDriverWait(driver, Duration.ofSeconds(12));
+        this.probe = new WebDriverWait(driver, Duration.ofSeconds(2));
     }
 
     public WebElement find(String key, By seed, String intentJson) {
+        settle();
         By cached = store.get(key);
         if (cached != null) {
-            WebElement e = tryFind(cached);
+            WebElement e = tryFind(cached, seed != null ? probe : wait);
             if (e != null) return e;
         }
         if (seed != null) {
-            WebElement e = tryFind(seed);
+            WebElement e = tryFind(seed, wait);
             if (e != null) return e;
         }
         if (Config.HEAL) {
@@ -11834,7 +11842,7 @@ public final class Healer {
             Map<String, String> picked = AiClient.pickLocator(intentJson, dom);
             if (picked != null) {
                 By by = toBy(picked.get("by"), picked.get("value"));
-                WebElement e = tryFind(by);
+                WebElement e = tryFind(by, wait);
                 if (e != null) {
                     store.put(key, picked.get("by"), picked.get("value"));
                     System.out.println("[heal] '" + key + "' -> " + picked.get("by")
@@ -11860,7 +11868,7 @@ public final class Healer {
                 catch (Exception ignored) { el.click(); } // custom dropdown trigger
                 break;
             case "hover":
-                el.click(); break;
+                new Actions(driver).moveToElement(el).perform(); break;
             default:
                 try { el.click(); }
                 catch (Exception e) {
@@ -11937,9 +11945,20 @@ public final class Healer {
         return false;
     }
 
-    private WebElement tryFind(By by) {
-        try { return wait.until(ExpectedConditions.visibilityOfElementLocated(by)); }
+    private WebElement tryFind(By by, WebDriverWait w) {
+        try { return w.until(ExpectedConditions.visibilityOfElementLocated(by)); }
         catch (Exception e) { return null; }
+    }
+
+    /** Wait (up to the full timeout) for the document to finish loading, so the
+     *  short probe isn't spent on a page that is still loading. Only readyState
+     *  is awaited — not aria-busy, which some apps leave set permanently. Never
+     *  throws: a page that never settles still gets the normal lookups. */
+    private void settle() {
+        try {
+            wait.until(d -> Boolean.TRUE.equals(((JavascriptExecutor) d).executeScript(
+                "return document.readyState === 'complete';")));
+        } catch (Exception ignored) {}
     }
 
     private String harvest() {
@@ -11987,7 +12006,9 @@ public abstract class BaseTest {
     @BeforeClass
     public void setUp() {
         driver = DriverFactory.create();
-        driver.manage().timeouts().implicitlyWait(Duration.ofSeconds(6));
+        // Implicit wait stays 0: Healer's explicit waits own all element timing
+        // (mixing the two multiplies wait time on every miss).
+        driver.manage().timeouts().implicitlyWait(Duration.ZERO);
         heal = new Healer(driver);
         openLoginPage();
     }

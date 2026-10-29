@@ -11772,6 +11772,19 @@ for _language, _note in _FAILURE_ANALYSIS_RELEASE_I18N.items():
     _STRINGS[_language]["upd_note_failure_analysis"] = _note
 
 
+_AUTOMATION_WAITS_RELEASE_I18N = {
+    "en": "Generated Selenium tests recover faster from outdated locators: they wait for the page to finish loading, check a saved locator briefly before falling back, and hover steps now move the pointer instead of clicking.",
+    "ar": "تتعافى اختبارات Selenium المُولَّدة أسرع من المحددات القديمة: تنتظر اكتمال تحميل الصفحة، وتتحقق من المحدد المحفوظ لفترة قصيرة قبل الانتقال إلى البديل، وخطوات التمرير تحرّك المؤشر الآن بدلًا من النقر.",
+    "fr": "Les tests Selenium générés récupèrent plus vite des localisateurs obsolètes : ils attendent la fin du chargement de la page, vérifient brièvement un localisateur enregistré avant de passer au suivant, et les étapes de survol déplacent désormais le pointeur au lieu de cliquer.",
+    "tr": "Oluşturulan Selenium testleri eski konum belirleyicilerden daha hızlı toparlanır: sayfanın yüklenmesini bekler, yedeğe geçmeden önce kayıtlı konum belirleyiciyi kısa süre dener ve üzerine gelme adımları artık tıklamak yerine imleci taşır.",
+    "es": "Las pruebas de Selenium generadas se recuperan más rápido de localizadores obsoletos: esperan a que la página termine de cargar, comprueban brevemente un localizador guardado antes de pasar al alternativo y los pasos de pasar el cursor ahora mueven el puntero en lugar de hacer clic.",
+    "de": "Generierte Selenium-Tests erholen sich schneller von veralteten Locatoren: Sie warten, bis die Seite geladen ist, prüfen einen gespeicherten Locator nur kurz, bevor sie auf die Alternative ausweichen, und Hover-Schritte bewegen jetzt den Mauszeiger, statt zu klicken.",
+    "nl": "Gegenereerde Selenium-tests herstellen sneller van verouderde locators: ze wachten tot de pagina geladen is, controleren een opgeslagen locator kort voordat ze terugvallen op het alternatief, en hover-stappen bewegen nu de muisaanwijzer in plaats van te klikken.",
+}
+for _language, _note in _AUTOMATION_WAITS_RELEASE_I18N.items():
+    _STRINGS[_language]["upd_note_automation_waits"] = _note
+
+
 def t(key, **kw):
     """Look up a UI string by key in the current UI language, falling back to
     English, then to the key itself. Optional kwargs are applied via str.format."""

@@ -59,6 +59,22 @@ if errorlevel 1 (
 echo [OK] GitHub CLI is installed and authenticated.
 echo.
 
+rem --- must release from main, BEFORE anything is bumped or stamped ----------
+rem push.ps1 always pushes `main`. Run from another branch, the release commit
+rem would land on that branch while the tag/release were cut without it.
+rem goto-style on purpose: no parenthesized block around %var% expansion.
+set "CURBR="
+for /f "usebackq delims=" %%B in (`git rev-parse --abbrev-ref HEAD 2^>nul`) do set "CURBR=%%B"
+if /i "%CURBR%"=="main" goto branch_ok
+echo [ABORT] You are on branch "%CURBR%" - releases must run from main.
+echo         Nothing has been changed yet. Run:  git switch main
+echo         then re-run this script.
+pause
+exit /b 1
+:branch_ok
+echo [OK] On branch main.
+echo.
+
 rem --- show what's already published before asking for a number -------------
 rem Without this you're picking the next version from memory, which is how the
 rem original incident (VERSION climbing 2.1.1 -> 3.0.5 with nothing released)

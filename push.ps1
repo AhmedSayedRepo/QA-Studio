@@ -42,10 +42,30 @@ if ([string]::IsNullOrWhiteSpace($ver)) { Fail "VERSION file is empty or invalid
 $tag = "v$ver"
 Write-Host "Version: $ver  ->  tag $tag" -ForegroundColor Cyan
 
+# --- guard: must be ON the branch we push ---
+# Otherwise the commit below lands on the current branch while `git push origin
+# $Branch` pushes the OTHER (stale) branch, and the tag is cut from a commit
+# that never reaches $Branch: a release without its changes.
+$current = (git rev-parse --abbrev-ref HEAD).Trim()
+if ($current -ne $Branch) {
+  Fail "You are on branch '$current' but releases push '$Branch'. Run: git switch $Branch  (bring your changes with you), then re-run with the same version."
+}
+
 # --- commit any pending changes (unless -NoCommit) ---
 if (-not $NoCommit) {
   $dirty = git status --porcelain
   if ($dirty) {
+    # `git add -A` also sweeps in NEW files (leftovers from other branches,
+    # scratch files). List them and require an explicit yes.
+    $untracked = @(git ls-files --others --exclude-standard)
+    if ($untracked.Count -gt 0) {
+      Write-Host "These NEW (untracked) files will be included in the release commit:" -ForegroundColor Yellow
+      $untracked | ForEach-Object { Write-Host "  + $_" }
+      $ans = Read-Host "Include them? (y/N)"
+      if ($ans -notmatch '^(y|yes)$') {
+        Fail "Aborted before committing. Delete the unwanted files (or list them in .git\info\exclude), then re-run with the same version."
+      }
+    }
     if ([string]::IsNullOrWhiteSpace($Message)) { $Message = "Release $tag" }
     Write-Host "Committing changes: $Message" -ForegroundColor Yellow
     git add -A
