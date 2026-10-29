@@ -61,7 +61,7 @@ if (-not $NoCommit) {
     if ($untracked.Count -gt 0) {
       Write-Host "These NEW (untracked) files will be included in the release commit:" -ForegroundColor Yellow
       $untracked | ForEach-Object { Write-Host "  + $_" }
-      $ans = Read-Host "Include them? (y/N)"
+      $ans = ([string](Read-Host "Include them? (y/N)")).Trim()
       if ($ans -notmatch '^(y|yes)$') {
         Fail "Aborted before committing. Delete the unwanted files (or list them in .git\info\exclude), then re-run with the same version."
       }
