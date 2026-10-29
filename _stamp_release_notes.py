@@ -80,6 +80,26 @@ def published_versions():
     return found
 
 
+def _drop_stale_bytecode():
+    """Delete release_notes' cached .pyc after rewriting the source.
+
+    This script imported release_notes (writing a .pyc) moments before the
+    rewrite. Python trusts a .pyc whose recorded whole-second mtime and size
+    match the source, so a same-size rewrite in the same second (e.g. moving
+    '3.9.3' to '3.9.4') would keep serving the OLD registry to the next step
+    and to the app."""
+    import importlib.util
+    for cached in SOURCE.parent.glob("__pycache__/release_notes.*.pyc"):
+        try:
+            cached.unlink()
+        except OSError:
+            pass
+    try:
+        Path(importlib.util.cache_from_source(str(SOURCE))).unlink()
+    except (OSError, NotImplementedError):
+        pass
+
+
 def _parse_args(argv):
     args = [a.strip() for a in argv[1:]]
     published = None
@@ -145,6 +165,7 @@ def main(argv: list[str]) -> int:
         flags=re.DOTALL,
     )
     SOURCE.write_text(source, encoding="utf-8")
+    _drop_stale_bytecode()
     if pending:
         print(f"[OK] Stamped {stamped} release-note item(s) for {version}.")
     return 0

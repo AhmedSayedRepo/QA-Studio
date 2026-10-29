@@ -135,6 +135,19 @@ class ReleaseBatPythonStepsTests(unittest.TestCase):
         self.assertEqual(registry["3.9.4"], ("upd_note_failure_analysis",
                                              "upd_note_automation_waits"))
 
+    def test_stamp_leaves_no_stale_bytecode_for_the_rewritten_registry(self):
+        # A same-size rewrite in the same second as the import (3.9.3 -> 3.9.4)
+        # keeps the old .pyc "valid" (it checks whole-second mtime + size), so
+        # the next step / the app would read the OLD registry. Seen on Windows.
+        with tempfile.TemporaryDirectory() as tmp:
+            self._workspace(tmp, {"3.9.3": ("upd_note_automation_waits",)}, ())
+            stamp = _run(tmp, "_stamp_release_notes.py", "3.9.4", "--published", "3.9.2")
+            self.assertEqual(stamp.returncode, 0, stamp.stdout + stamp.stderr)
+            cache = os.path.join(tmp, "__pycache__")
+            stale = [f for f in (os.listdir(cache) if os.path.isdir(cache) else [])
+                     if f.startswith("release_notes.")]
+        self.assertEqual(stale, [])
+
 
 if __name__ == "__main__":
     unittest.main()
