@@ -63,7 +63,9 @@ class StringsTests(unittest.TestCase):
         self.assertIn("{n}", strings._STRINGS["en"]["auto_regen_log"])
 
     def test_release_note_pending(self):
-        self.assertIn("upd_note_regenerate", release_notes.PENDING_RELEASE_NOTE_KEYS)
+        # Pending until release.bat stamps it onto a version, then registered.
+        shipped = {k for keys in release_notes.RELEASE_NOTE_KEYS.values() for k in keys}
+        self.assertIn("upd_note_regenerate", set(release_notes.PENDING_RELEASE_NOTE_KEYS) | shipped)
 
 
 if __name__ == "__main__":

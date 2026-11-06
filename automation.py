@@ -272,7 +272,10 @@ def screen(app):
                                 no_wrap=True)], spacing=8),
                 ft.Container(height=8),
                 ft.Row([ghost_btn(strings.t("auto_file_browse"), icon=ft.Icons.UPLOAD_FILE,
-                                  on_click=app._browse_auto_test_case_file)], spacing=8),
+                                  on_click=app._browse_auto_test_case_file),
+                        ghost_btn(strings.t("auto_copy_prompt"), icon=ft.Icons.CONTENT_COPY,
+                                  on_click=app._copy_external_case_prompt)],
+                       spacing=8, wrap=True),
                 ft.Container(height=7),
                 ft.Text(strings.t("auto_file_hint"), size=10.5, color=T.INK_3,
                         weight=ft.FontWeight.W_500),
@@ -404,7 +407,16 @@ def screen(app):
             except Exception:
                 pass
 
-        inspection_enabled = bool(getattr(app, "auto_live_inspection", False))
+        def _flip_reinspect_all(e):
+            app.auto_reinspect_all = bool(e.control.value)
+            try:
+                app.creds["auto_reinspect_all"] = app.auto_reinspect_all
+                import store
+                store.save(app.creds)
+            except Exception:
+                pass
+
+        inspection_enabled = bool(getattr(app, "auto_live_inspection", True))
         inspection_controls = [
             ft.Row([
                 ft.Switch(value=inspection_enabled, active_color=T.VIOLET, scale=0.8,
@@ -422,10 +434,13 @@ def screen(app):
         inspection_details = ft.Column([
                 ft.Container(height=12),
                 app._auto_field(strings.t("auto_lbl_test_user"), "auto_login_user",
-                                "test.user@example.com", req=True),
+                                "test.user@example.com"),
                 ft.Container(height=10),
                 app._auto_field(strings.t("auto_lbl_test_pass"), "auto_login_pass",
-                                "", password=True, req=True),
+                                "", password=True),
+                ft.Container(height=4),
+                ft.Text(strings.t("auto_creds_optional"), size=11, color=T.INK_3,
+                        weight=ft.FontWeight.W_500),
                 ft.Container(height=10),
                 ft.Row([
                     confirm_box,
@@ -449,6 +464,17 @@ def screen(app):
                                 active_color=T.VIOLET, on_change=_flip_env_creds),
                     ft.Text(strings.t("auto_env_creds"), size=11.5,
                             color=T.INK_2, expand=True),
+                ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.START),
+                ft.Container(height=6),
+                ft.Row([
+                    ft.Checkbox(value=bool(getattr(app, "auto_reinspect_all", False)),
+                                active_color=T.VIOLET, on_change=_flip_reinspect_all),
+                    ft.Column([
+                        ft.Text(strings.t("auto_reinspect_all"), size=11.5,
+                                color=T.INK_2),
+                        ft.Text(strings.t("auto_reinspect_hint"), size=11, color=T.INK_3,
+                                weight=ft.FontWeight.W_500),
+                    ], spacing=2, expand=True),
                 ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.START),
             ], spacing=0, visible=inspection_enabled)
         inspection_controls.append(inspection_details)

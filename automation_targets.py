@@ -149,11 +149,13 @@ _PKG_JSON = """{
     "pretest": "playwright install chromium",
     "test": "playwright test",
     "test:headed": "playwright test --headed",
-    "report": "playwright show-report"
+    "test:headless": "cross-env HEADLESS=true playwright test",
+    "report": "node support/report-mailer.js --open playwright-report/qa-studio-report.html",
+    "report:detail": "playwright show-report"
   },
   "engines": { "node": ">=18" },
-  "devDependencies": { "@playwright/test": "^1.48.0" },
-  "dependencies": { "dotenv": "^16.4.5" }
+  "devDependencies": { "@playwright/test": "^1.48.0", "cross-env": "^7.0.3" },
+  "dependencies": { "dotenv": "^16.4.5", "nodemailer": "^6.9.14" }
 }
 """
 
@@ -178,11 +180,14 @@ module.exports = defineConfig({
   // A rich HTML report is written to ./playwright-report on EVERY run (pass or
   // fail), listing every test with status, steps, screenshots and traces. Open it
   // with `npx playwright show-report` (or `npm run report`).
-  reporter: [['list'], ['html', { open: 'never', outputFolder: 'playwright-report' }]],
+  // After the html report is written, support/after-run.js opens it and emails it.
+  reporter: [['list'], ['html', { open: 'never', outputFolder: 'playwright-report' }],
+             ['./support/after-run.js']],
   use: {
     baseURL: process.env.APP_BASE_URL || '',
     storageState: '.auth/state.json',   // every test starts logged in (see global-setup.js)
-    headless: true,
+    // The browser is visible while tests run; HEADLESS=true (or CI) hides it.
+    headless: !!process.env.CI || String(process.env.HEADLESS).toLowerCase() === 'true',
     screenshot: 'on',              // capture a screenshot for EVERY test (not only failures)
     video: 'retain-on-failure',    // keep a video when a test fails
     trace: 'retain-on-failure',
@@ -233,6 +238,8 @@ playwright-report/
 .env
 # local DOM snapshots from an opt-in live inspection:
 inspection-screens.json
+# QA Studio's local record of verified cases (reused on regenerate):
+.qastudio/verified-cases.json
 # locators.json is COMMITTED on purpose — the UI is identical across environments,
 # so healed locators are shared. Only URLs/creds differ, and those live in .env.
 """
@@ -253,6 +260,16 @@ QA_AI_API_KEY=
 QA_AI_PROVIDER=anthropic
 QA_AI_BASE_URL=https://api.anthropic.com
 QA_AI_MODEL=claude-sonnet-4-6
+# Run settings: the browser is visible unless HEADLESS=true; the HTML report
+# opens after every run unless OPEN_REPORT=false (both are off when CI is set).
+HEADLESS=false
+OPEN_REPORT=true
+# Report email after every run (Gmail: SMTP_PASS = an App Password).
+REPORT_EMAIL_TO=
+SMTP_USER=
+SMTP_PASS=
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=465
 """
 
 _PW_FIXTURES = """// Extends Playwright's test with a `heal` fixture — a self-healing locator
@@ -410,6 +427,16 @@ function normText(s) {
     .replace(/ى/g, 'ي');
 }
 
+// QA Studio key names (ENTER, ARROWUP…) → Playwright key names (Enter, ArrowUp…).
+const _PW_KEYS = { ENTER: 'Enter', ESCAPE: 'Escape', ESC: 'Escape', TAB: 'Tab', SPACE: 'Space',
+  BACKSPACE: 'Backspace', DELETE: 'Delete', ARROWUP: 'ArrowUp', ARROWDOWN: 'ArrowDown',
+  ARROWLEFT: 'ArrowLeft', ARROWRIGHT: 'ArrowRight', HOME: 'Home', END: 'End',
+  PAGEUP: 'PageUp', PAGEDOWN: 'PageDown' };
+function pwKey(value) {
+  const v = String(value || 'Enter');
+  return _PW_KEYS[v.toUpperCase().replace(/[_\\s]/g, '')] || v;
+}
+
 class Healer {
   constructor(page) { this.page = page; this.scope = page; this.store = load(); this.pendingPopup = null; }
 
@@ -467,12 +494,39 @@ class Healer {
     try { await el.scrollIntoViewIfNeeded(); } catch (e) {}
     switch (verb) {
       case 'type':   await el.fill(value == null ? '' : String(value)); break;
-      case 'select':
-        try { await el.selectOption({ label: String(value) }); break; }
+      case 'select': {
+        const opts = String(value == null ? '' : value).split(';').map((o) => o.trim()).filter(Boolean);
+        try { await el.selectOption(opts.length > 1 ? opts.map((label) => ({ label })) : { label: String(value) }); break; }
         catch (e) { await el.click(); break; } // custom dropdown trigger
+      }
       case 'hover':  await el.hover(); break;
+      case 'double_click': await el.dblclick(); break;
+      case 'right_click':
+        // Fire the page's right-click handlers without the browser's native menu
+        // (it cannot be closed from a test and stays open over the page in a
+        // headed run). setTimeout lets evaluate return before an alert() opens.
+        await el.hover();
+        await el.evaluate((n) => {
+          const r = n.getBoundingClientRect();
+          const o = { bubbles: true, cancelable: true, composed: true, view: window, button: 2,
+            buttons: 2, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
+          setTimeout(() => { n.dispatchEvent(new MouseEvent('mousedown', o));
+            n.dispatchEvent(new MouseEvent('mouseup', o));
+            n.dispatchEvent(new MouseEvent('contextmenu', o)); }, 0);
+        });
+        await this.page.waitForTimeout(200);
+        break;
+      case 'set_value':
+        // date/time/range/color: set the value and fire input + change
+        await el.evaluate((node, v) => {
+          const d = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(node), 'value');
+          if (d && d.set) d.set.call(node, v); else node.value = v;
+          node.dispatchEvent(new Event('input', { bubbles: true }));
+          node.dispatchEvent(new Event('change', { bubbles: true }));
+        }, String(value == null ? '' : value));
+        break;
       case 'upload': await el.setInputFiles(String(value)); break;
-      case 'key_press': await el.press(String(value || 'Enter')); break;
+      case 'key_press': await el.press(pwKey(value)); break;
       case 'click':
       default:       await el.click(); break;
     }
@@ -484,13 +538,34 @@ class Healer {
     this.scope = frame;
   }
 
-  prepareDialog(action) {
+  prepareDialog(action, text) {
     this.page.once('dialog', async dialog => {
-      if (action === 'dismiss') await dialog.dismiss(); else await dialog.accept();
+      if (action === 'dismiss') await dialog.dismiss();
+      else await dialog.accept(text == null ? undefined : String(text));   // prompt answer
     });
   }
 
-  prepareWindow() { this.pendingPopup = this.page.context().waitForEvent('page'); }
+  exitFrame() { this.scope = this.page; }
+
+  prepareWindow() {
+    this.opener = this.page;
+    this.pendingPopup = this.page.context().waitForEvent('page');
+  }
+
+  async backToOriginalWindow(closeCurrent) {
+    const opener = this.opener || this.page.context().pages()[0];
+    if (closeCurrent && this.page !== opener) await this.page.close();
+    this.page = opener;
+    this.scope = opener;
+    await opener.bringToFront();
+  }
+
+  async assertInvalid(key, seed, intent) {
+    try {
+      return await (await this.resolve(key, seed, intent))
+        .evaluate((node) => (node.checkValidity ? !node.checkValidity() : false));
+    } catch (e) { console.log('[heal] assertInvalid ' + key + ' failed: ' + e.message); return false; }
+  }
 
   async switchWindow() {
     if (!this.pendingPopup) throw new Error('No popup was prepared before window switch');
@@ -502,7 +577,17 @@ class Healer {
     this.pendingPopup = null;
   }
 
+  // Late content ('Hello World!' after a loading bar): wait up to 10 s for
+  // the element to become visible instead of reading its state once.
   async assertVisible(key, seed, intent) {
+    try {
+      const el = await this.resolve(key, seed, intent);
+      await el.waitFor({ state: 'visible', timeout: 10000 });
+      return true;
+    } catch (e) { console.log('[heal] assertVisible ' + key + ' failed: ' + e.message); return false; }
+  }
+
+  async assertVisibleNow(key, seed, intent) {
     // The failure reason is LOGGED, not swallowed: without this, a step that
     // couldn't resolve at all surfaced in the report as a bare
     // "expect(received).toBeTruthy() — received false" with zero hint that
@@ -523,8 +608,9 @@ class Healer {
 
   async assertSelected(key, seed, intent, expected) {
     try {
-      const text = await (await this.resolve(key, seed, intent)).locator('option:checked').textContent();
-      return normText(text).includes(normText(expected));
+      // A multi-select can have several checked options; read them all.
+      const texts = await (await this.resolve(key, seed, intent)).locator('option:checked').allTextContents();
+      return texts.some((t) => normText(t).includes(normText(expected)));
     } catch (e) { console.log('[heal] assertSelected ' + key + ' failed: ' + e.message); return false; }
   }
 
@@ -598,7 +684,10 @@ async function openAppHome(page) {
   let loginForm = false;
   try {
     await page.locator('input[type=password]').first().waitFor({ state: 'visible', timeout: 2000 });
-    loginForm = true;
+    // A real login form also has a username/email field; a page with only a
+    // password input (a form under test) is not a login.
+    loginForm = (await page.locator('#username, #user-name, input[type=email], input[name=email], '
+      + 'input[name=username], input[name*=user i], input[id*=user i]').count()) > 0;
   } catch (e) {}
   if (loginForm) await performLogin(page);
 }
@@ -631,6 +720,11 @@ when Node was available (that also downloads the Chromium browser).
 `.env` already holds the app URLs (and the test account, if you chose to save it
 in QA Studio). Otherwise set `APP_USER` / `APP_PASS` there or as environment
 variables. `QA_AI_API_KEY` is only needed for runtime self-healing.
+
+The browser is visible while tests run (`HEADLESS=true` or `npm run test:headless`
+hides it). After every run the HTML report opens (`OPEN_REPORT=false` turns that
+off) and is emailed when `REPORT_EMAIL_TO`, `SMTP_USER` and `SMTP_PASS` (a Gmail
+App Password) are set in `.env`.
 
 ## Self-healing
 Watch stdout for `[heal] resolving ...` and `[heal] <step> -> by=value`. Each
@@ -767,6 +861,12 @@ def _emit_pw_intent(lines, key, intent, seed_fn, seeds, app_page=False):
                             "true" if check == "enabled" else "false"))
             _record()
             return
+        if check == "invalid":
+            lines.append("    expect(await heal.assertInvalid(%s, %s, %s)).toBeTruthy();"
+                         % (json.dumps(key), json.dumps(seed, ensure_ascii=False),
+                            json.dumps(ij, ensure_ascii=False)))
+            _record()
+            return
         if check in ("selected", "selected_value", "value_selected"):
             expected = (intent.get("value") or (kws[0] if kws else "") or
                         intent.get("expected") or target)
@@ -797,6 +897,13 @@ def _emit_pw_intent(lines, key, intent, seed_fn, seeds, app_page=False):
         return
     if verb == "window_switch":
         lines.append("    await heal.switchWindow();")
+        return
+    if verb == "frame_exit":
+        lines.append("    heal.exitFrame();")
+        return
+    if verb in ("window_back", "window_close"):
+        lines.append("    await heal.backToOriginalWindow(%s);"
+                     % ("true" if verb == "window_close" else "false"))
         return
     if verb == "navigate" and str(value).lower().startswith(("http://", "https://")):
         # Navigation is a state transition captured from the source URL, not a
@@ -862,7 +969,10 @@ def _pw_spec(story, cases, seed_fn, seeds):
             next_intent = intents[ii + 1] if ii + 1 < len(intents) else {}
             if intent.get("role") == "action" and next_intent.get("role") == "action":
                 next_verb = next_intent.get("verb")
-                if next_verb == "dialog_accept":
+                if next_verb == "dialog_accept" and next_intent.get("value"):
+                    body.append("    heal.prepareDialog('accept', %s);"
+                                % json.dumps(str(next_intent.get("value")), ensure_ascii=False))
+                elif next_verb == "dialog_accept":
                     body.append("    heal.prepareDialog('accept');")
                 elif next_verb == "dialog_dismiss":
                     body.append("    heal.prepareDialog('dismiss');")
@@ -930,6 +1040,366 @@ _VSCODE_EXT = {
     "playwright": '{ "recommendations": ["ms-playwright.playwright"] }\n',
     "cypress": '{ "recommendations": [] }\n',
 }
+
+
+_REPORT_MAILER_JS = """// QA Studio — after every run (pass or fail): writes the branded summary report
+// (qa-studio-report.html: results per story, failures with screenshots, run
+// environment), opens it, and emails it with the detailed framework report.
+// Settings come from .env:
+//   OPEN_REPORT=false            don't open the report (always off when CI is set)
+//   REPORT_EMAIL_TO=a@x.com,b@y.com
+//   SMTP_USER=sender@gmail.com   SMTP_PASS=<Gmail App Password>
+//   SMTP_HOST=smtp.gmail.com     SMTP_PORT=465
+require('dotenv').config();
+const fs = require('fs');
+const path = require('path');
+const { spawn } = require('child_process');
+
+const QA_VERSION = '__QA_VERSION__';
+const LOGO = path.join(__dirname, 'qa-logo.png');
+const C = { paper: '#EEF0F4', card: '#FFFFFF', tint: '#F7F8FA', ink: '#1B1A22', ink2: '#5F5D6B',
+  ink3: '#9C9AA6', line: '#E6E7EC', brand: '#0E9CC0', brandInk: '#0B6E86', brandSoft: '#D6F4FB',
+  green: '#1F8A52', greenSoft: '#E7F4ED', red: '#D6414A', redSoft: '#FBEAEC',
+  amber: '#AB780C', amberSoft: '#F7EFD8', grey: '#6B6975', greySoft: '#EFEFF3' };
+const FONT = "'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
+const MONO = 'Consolas,Menlo,monospace';
+const MAX_SHOTS = 6;
+
+function openFile(file) {
+  if (process.env.CI || String(process.env.OPEN_REPORT).toLowerCase() === 'false') return;
+  if (!file || !fs.existsSync(file)) return;
+  try {
+    if (process.platform === 'win32') {
+      spawn('cmd', ['/c', 'start', '""', '"' + file + '"'],
+        { detached: true, stdio: 'ignore', windowsVerbatimArguments: true }).unref();
+    } else {
+      spawn(process.platform === 'darwin' ? 'open' : 'xdg-open', [file],
+        { detached: true, stdio: 'ignore' }).unref();
+    }
+  } catch (e) { console.log('[report] could not open the report: ' + e.message); }
+}
+
+function esc(v) {
+  return String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+function stripAnsi(s) { return String(s || '').replace(/\\u001b\\[[0-9;]*m/g, ''); }
+function secs(ms) {
+  const s = Math.round((ms || 0) / 1000);
+  return s >= 60 ? Math.floor(s / 60) + 'm ' + (s % 60) + 's' : s + 's';
+}
+function exists(p) { try { return !!p && fs.statSync(p).isFile(); } catch (e) { return false; } }
+function dataUri(p) {
+  try { return 'data:image/png;base64,' + fs.readFileSync(p).toString('base64'); } catch (e) { return ''; }
+}
+
+// The first absolute URL a spec opens = the site that story tests.
+function siteOf(specFile) {
+  try {
+    const m = fs.readFileSync(specFile, 'utf8').match(/(?:goto|visit)\\(\\s*["'`](https?:\\/\\/[^"'`/]+)/);
+    if (m) return m[1];
+  } catch (e) { /* fall back */ }
+  return process.env.APP_BASE_URL || '';
+}
+
+function totals(run) {
+  const t = { passed: 0, failed: 0, skipped: 0, flaky: 0, total: 0 };
+  for (const s of run.stories) {
+    s.counts = { passed: 0, failed: 0, skipped: 0, flaky: 0, duration: 0 };
+    for (const x of s.tests) {
+      const k = x.status === 'flaky' ? 'flaky' : x.status;
+      s.counts[k] = (s.counts[k] || 0) + 1;
+      if (x.status === 'flaky') s.counts.passed++;
+      s.counts.duration += x.duration || 0;
+    }
+    t.passed += s.counts.passed; t.failed += s.counts.failed;
+    t.skipped += s.counts.skipped; t.flaky += s.counts.flaky;
+    t.total += s.tests.length;
+  }
+  return t;
+}
+
+// ---- HTML (table + inline styles: renders the same in Gmail/Outlook/browser) ----
+function pill(status) {
+  const m = { passed: [C.green, C.greenSoft, 'Passed'], failed: [C.red, C.redSoft, 'Failed'],
+    skipped: [C.grey, C.greySoft, 'Skipped'], flaky: [C.amber, C.amberSoft, 'Flaky'] }[status]
+    || [C.grey, C.greySoft, status];
+  return '<span style="display:inline-block;padding:2px 9px;border-radius:10px;font-size:11px;'
+    + 'font-weight:700;color:' + m[0] + ';background:' + m[1] + '">' + m[2] + '</span>';
+}
+function kpi(label, value, color) {
+  return '<td width="20%" style="padding:12px 6px;text-align:center;border-right:1px solid ' + C.line + '">'
+    + '<div style="font-size:22px;font-weight:800;color:' + (color || C.ink) + '">' + esc(value) + '</div>'
+    + '<div style="font-size:11px;color:' + C.ink3 + ';text-transform:uppercase;letter-spacing:.4px">'
+    + label + '</div></td>';
+}
+function section(title, inner) {
+  return '<tr><td style="padding:22px 28px 0">'
+    + '<div style="font-size:13px;font-weight:800;color:' + C.brandInk + ';text-transform:uppercase;'
+    + 'letter-spacing:.6px;margin-bottom:10px">' + title + '</div>' + inner + '</td></tr>';
+}
+const TH = 'style="padding:8px 10px;text-align:left;font-size:11px;color:' + C.ink3
+  + ';text-transform:uppercase;letter-spacing:.4px;border-bottom:1px solid ' + C.line + '"';
+const TD = 'style="padding:9px 10px;font-size:13px;color:' + C.ink + ';border-bottom:1px solid ' + C.line + ';vertical-align:top"';
+
+// mode 'email': images by cid:; mode 'file': images inlined (self-contained page).
+function buildHtml(run, mode, detailName) {
+  const t = totals(run);
+  const ok = !t.failed;
+  const rate = t.total ? Math.round(((t.passed) / t.total) * 100) : 0;
+  const logo = mode === 'email' ? (exists(LOGO) ? 'cid:qa-logo' : '') : (exists(LOGO) ? dataUri(LOGO) : '');
+  const when = new Date(run.startedAt || Date.now());
+  const stamp = when.toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' });
+  const head = '<tr><td style="padding:22px 28px;border-bottom:1px solid ' + C.line + '">'
+    + '<table width="100%" cellpadding="0" cellspacing="0"><tr>'
+    + (logo ? '<td width="46" valign="middle"><img src="' + logo + '" width="38" height="38" alt="QA Studio" style="display:block;border:0"></td>' : '')
+    + '<td valign="middle"><div style="font-size:17px;font-weight:800;color:' + C.ink + '">QA Studio</div>'
+    + '<div style="font-size:12px;color:' + C.ink2 + '">' + esc(run.framework) + ' automation run</div></td>'
+    + '<td valign="middle" align="right" style="font-size:12px;color:' + C.ink2 + '">' + esc(stamp) + '</td>'
+    + '</tr></table></td></tr>';
+  const banner = '<tr><td style="padding:22px 28px 6px">'
+    + '<div style="font-size:24px;font-weight:800;color:' + (ok ? C.green : C.red) + '">'
+    + (ok ? 'All ' + t.total + ' tests passed' : t.failed + ' of ' + t.total + ' tests failed') + '</div>'
+    + '<div style="font-size:13px;color:' + C.ink2 + ';margin-top:4px">Pass rate ' + rate + '% · '
+    + run.stories.length + ' stor' + (run.stories.length === 1 ? 'y' : 'ies') + ' · ' + secs(run.duration) + '</div>'
+    + '<table width="100%" cellpadding="0" cellspacing="0" style="margin-top:12px;border-radius:5px;overflow:hidden"><tr>'
+    + (t.passed ? '<td height="8" width="' + Math.max(1, Math.round(t.passed / t.total * 100)) + '%" style="background:' + C.green + ';font-size:0;line-height:0">&nbsp;</td>' : '')
+    + (t.failed ? '<td height="8" width="' + Math.max(1, Math.round(t.failed / t.total * 100)) + '%" style="background:' + C.red + ';font-size:0;line-height:0">&nbsp;</td>' : '')
+    + (t.skipped ? '<td height="8" width="' + Math.max(1, Math.round(t.skipped / t.total * 100)) + '%" style="background:' + C.ink3 + ';font-size:0;line-height:0">&nbsp;</td>' : '')
+    + '</tr></table></td></tr>';
+  const kpis = '<tr><td style="padding:14px 28px 0"><table width="100%" cellpadding="0" cellspacing="0" '
+    + 'style="border:1px solid ' + C.line + ';border-radius:8px;background:' + C.tint + '"><tr>'
+    + kpi('Passed', t.passed, C.green) + kpi('Failed', t.failed, t.failed ? C.red : C.ink)
+    + kpi('Skipped', t.skipped) + kpi('Flaky', t.flaky, t.flaky ? C.amber : C.ink)
+    + kpi('Duration', secs(run.duration)) + '</tr></table></td></tr>';
+
+  const storyRows = run.stories.map((s) => '<tr><td ' + TD + '><b>' + esc(s.name) + '</b>'
+    + '<div style="font-size:11px;color:' + C.ink3 + '">' + esc(s.file) + (s.site ? ' · ' + esc(s.site) : '') + '</div></td>'
+    + '<td ' + TD + ' align="center" style="color:' + C.green + '">' + s.counts.passed + '</td>'
+    + '<td ' + TD + ' align="center">' + (s.counts.failed ? '<b style="color:' + C.red + '">' + s.counts.failed + '</b>' : '0') + '</td>'
+    + '<td ' + TD + ' align="center">' + s.counts.skipped + '</td>'
+    + '<td ' + TD + ' align="right" nowrap>' + secs(s.counts.duration) + '</td></tr>').join('');
+  const stories = section('Results by story', '<table width="100%" cellpadding="0" cellspacing="0">'
+    + '<tr><th ' + TH + '>Story</th><th ' + TH + '>Passed</th><th ' + TH + '>Failed</th><th ' + TH + '>Skipped</th>'
+    + '<th ' + TH + ' style="text-align:right">Time</th></tr>' + storyRows + '</table>');
+
+  let shots = 0;
+  const failedTests = [];
+  run.stories.forEach((s) => s.tests.forEach((x) => { if (x.status === 'failed') failedTests.push([s, x]); }));
+  const failures = failedTests.length ? section('Failures', failedTests.map(([s, x], i) => {
+    let img = '';
+    if (x.screenshot && exists(x.screenshot) && shots < MAX_SHOTS) {
+      const src = mode === 'email' ? 'cid:shot' + i : dataUri(x.screenshot);
+      if (src) { img = '<img src="' + src + '" alt="Screenshot" style="display:block;max-width:100%;width:560px;margin-top:10px;border:1px solid ' + C.line + ';border-radius:6px">'; shots++; x._cid = 'shot' + i; }
+    }
+    return '<div style="border:1px solid ' + C.line + ';border-left:4px solid ' + C.red + ';border-radius:6px;padding:12px 14px;margin-bottom:12px;background:' + C.card + '">'
+      + '<div style="font-size:14px;font-weight:700;color:' + C.ink + '">' + esc(x.title) + '</div>'
+      + '<div style="font-size:11px;color:' + C.ink3 + ';margin-top:2px">' + esc(s.name) + '</div>'
+      + (x.step ? '<div style="font-size:12px;color:' + C.ink2 + ';margin-top:8px"><b>Failing step:</b> ' + esc(x.step) + '</div>' : '')
+      + (x.error ? '<pre style="white-space:pre-wrap;word-break:break-word;font-family:' + MONO + ';font-size:12px;color:' + C.red + ';background:' + C.redSoft + ';padding:8px 10px;border-radius:5px;margin:8px 0 0">' + esc(x.error) + '</pre>' : '')
+      + img + '</div>';
+  }).join('')) : '';
+
+  const allTests = mode === 'file' ? section('All tests', run.stories.map((s) =>
+    '<div style="font-size:13px;font-weight:700;color:' + C.ink + ';margin:8px 0 4px">' + esc(s.name) + '</div>'
+    + '<table width="100%" cellpadding="0" cellspacing="0">' + s.tests.map((x) =>
+      '<tr><td ' + TD + '>' + esc(x.title) + '</td><td ' + TD + ' width="80">' + pill(x.status) + '</td>'
+      + '<td ' + TD + ' width="60" align="right" nowrap>' + secs(x.duration) + '</td></tr>').join('') + '</table>').join('')) : '';
+
+  const e = run.env || {};
+  const sites = Array.from(new Set(run.stories.map((s) => s.site).filter(Boolean)));
+  const envRows = [['Framework', run.framework + (e.frameworkVersion ? ' ' + e.frameworkVersion : '')],
+    ['Browser', (e.browser || '') + (e.browserVersion ? ' ' + e.browserVersion : '')],
+    ['Mode', e.headless == null ? '' : (e.headless ? 'Headless' : 'Headed (browser visible)')],
+    ['Sites', sites.join(', ')], ['OS', e.os], ['Machine', e.host], ['Runtime', e.runtime]]
+    .filter((r) => r[1]).map((r) => '<tr><td ' + TD + ' width="110" style="color:' + C.ink2 + '">' + r[0]
+      + '</td><td ' + TD + '>' + esc(r[1]) + '</td></tr>').join('');
+  const env = section('Environment', '<table width="100%" cellpadding="0" cellspacing="0">' + envRows + '</table>');
+
+  const detail = mode === 'file' && detailName
+    ? '<a href="' + esc(detailName) + '" style="color:' + C.brand + ';font-weight:700">Open the detailed ' + esc(run.framework) + ' report</a> (every step, trace and video).'
+    : 'Attached: <b>qa-studio-report.html</b> (this summary with screenshots) and the detailed ' + esc(run.framework) + ' report.';
+  const foot = '<tr><td style="padding:22px 28px 24px"><div style="font-size:12px;color:' + C.ink2 + ';margin-bottom:12px">' + detail + '</div>'
+    + '<div style="font-size:11.5px;font-weight:600;color:' + C.ink3 + ';border-top:1px solid ' + C.line + ';padding-top:12px">'
+    + 'Generated by QA Studio' + (QA_VERSION.indexOf('__') === -1 ? ' v' + QA_VERSION : '') + ' · ' + esc(run.framework) + '</div></td></tr>';
+
+  const body = '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:' + C.paper + ';padding:24px 0">'
+    + '<tr><td align="center"><table role="presentation" width="680" cellpadding="0" cellspacing="0" '
+    + 'style="max-width:680px;width:100%;background:' + C.card + ';border-radius:12px;font-family:' + FONT + ';border:1px solid ' + C.line + '">'
+    + head + banner + kpis + failures + stories + allTests + env + foot + '</table></td></tr></table>';
+  if (mode !== 'file') return body;
+  return '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+    + '<title>QA Studio — ' + esc(run.framework) + ' report</title></head><body style="margin:0;background:' + C.paper + '">'
+    + body + '</body></html>';
+}
+
+// Writes the self-contained summary next to the framework report; returns its path.
+function writeReport(run, dir, detailName) {
+  const file = path.join(dir, 'qa-studio-report.html');
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(file, buildHtml(run, 'file', detailName), 'utf8');
+    return file;
+  } catch (e) { console.log('[report] could not write the summary: ' + e.message); return ''; }
+}
+
+async function mailReport(run, summaryFile, detailFile) {
+  const to = (process.env.REPORT_EMAIL_TO || '').split(/[,;\\s]+/).filter(Boolean);
+  const user = process.env.SMTP_USER || '';
+  const pass = process.env.SMTP_PASS || '';
+  if (!to.length || !user || !pass) {
+    console.log('[report] email skipped — set REPORT_EMAIL_TO, SMTP_USER and SMTP_PASS in .env');
+    return;
+  }
+  let nodemailer;
+  try { nodemailer = require('nodemailer'); }
+  catch (e) { console.log('[report] email skipped — run npm install (nodemailer missing)'); return; }
+  const t = totals(run);
+  const html = buildHtml(run, 'email');
+  const subject = (t.failed ? '✗ ' : '✓ ') + 'QA Studio — ' + run.framework + ' run: ' + t.passed + '/' + t.total
+    + ' passed' + (t.failed ? ', ' + t.failed + ' failed' : '') + (t.skipped ? ', ' + t.skipped + ' skipped' : '');
+  const attachments = [];
+  if (exists(LOGO)) attachments.push({ filename: 'qa-logo.png', path: LOGO, cid: 'qa-logo' });
+  run.stories.forEach((s) => s.tests.forEach((x) => {
+    if (x._cid) attachments.push({ filename: x._cid + '.png', path: x.screenshot, cid: x._cid });
+  }));
+  let budget = 20 * 1024 * 1024;
+  for (const [f, name] of [[summaryFile, 'qa-studio-report.html'],
+                           [detailFile, run.framework.toLowerCase() + '-report.html']]) {
+    try {
+      const size = exists(f) ? fs.statSync(f).size : 0;
+      if (size && size < budget) { attachments.push({ filename: name, path: f }); budget -= size; }
+    } catch (e) { /* attach is best effort */ }
+  }
+  try {
+    const port = Number(process.env.SMTP_PORT || 465);
+    const tr = nodemailer.createTransport({ host: process.env.SMTP_HOST || 'smtp.gmail.com', port,
+      secure: port === 465, auth: { user, pass } });
+    await tr.sendMail({ from: '"QA Studio" <' + user + '>', to: to.join(', '), subject, html, attachments });
+    console.log('[report] emailed to ' + to.join(', '));
+  } catch (e) { console.log('[report] email failed: ' + e.message); }
+}
+
+module.exports = { openFile, mailReport, writeReport, buildHtml, siteOf, stripAnsi };
+
+// `node report-mailer.js --open <file>` opens a report on demand (npm run report).
+if (require.main === module) {
+  const i = process.argv.indexOf('--open');
+  if (i > -1 && process.argv[i + 1]) {
+    process.env.OPEN_REPORT = 'true';
+    openFile(path.resolve(process.argv[i + 1]));
+  }
+}
+"""
+
+_PW_AFTER_RUN_JS = """// Playwright reporter that runs AFTER the HTML report is written (it is listed
+// after 'html' in playwright.config.js): writes QA Studio's summary report
+// (playwright-report/qa-studio-report.html), opens it and emails both reports.
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { openFile, mailReport, writeReport, siteOf, stripAnsi } = require('./report-mailer');
+
+function storyOf(test) {
+  let s = test.parent;
+  while (s && s.parent && s.parent.type !== 'file') s = s.parent;
+  return s && s.type !== 'file' && s.title ? s.title : path.basename(test.location.file);
+}
+
+// "heal.assertSelected(..., {"target": "Ham selection", ...})" -> "assertSelected · Ham selection"
+function stepOf(err) {
+  const line = (stripAnsi(err && err.snippet).split('\\n').find((l) => /^\\s*>/.test(l)) || '')
+    .replace(/^\\s*>\\s*\\d*\\s*\\|?\\s*/, '');
+  const m = line.match(/heal\\.(\\w+)\\([\\s\\S]*?"target":\\s*"([^"]+)"/);
+  if (m) return m[1] + ' · ' + m[2];
+  const loc = err && err.location;
+  return loc ? path.basename(loc.file) + ':' + loc.line : '';
+}
+
+class AfterRun {
+  onBegin(config, suite) {
+    this.config = config; this.suite = suite; this.ran = 0;
+    this.startedAt = Date.now(); this.last = new Map();
+  }
+
+  onTestEnd(test, result) { this.ran++; this.last.set(test, result); }
+
+  async onEnd(result) {
+    // `--list` (or a run that executed nothing) has no report to open or mail.
+    if (process.argv.includes('--list') || !this.ran) return;
+    const stories = new Map();
+    for (const t of this.suite.allTests()) {
+      const r = this.last.get(t) || {};
+      const o = t.outcome();
+      const status = o === 'expected' ? 'passed' : o === 'flaky' ? 'flaky'
+        : o === 'skipped' ? 'skipped' : 'failed';
+      const name = storyOf(t);
+      if (!stories.has(name)) {
+        stories.set(name, { name, file: path.basename(t.location.file),
+          site: siteOf(t.location.file), tests: [] });
+      }
+      const shot = (r.attachments || []).find((a) => a.name === 'screenshot' && a.path);
+      const err = r.error || (r.errors || [])[0];
+      stories.get(name).tests.push({ title: t.title, status, duration: r.duration || 0,
+        error: err ? stripAnsi(err.message).split('\\n').filter(Boolean).slice(0, 6).join('\\n').slice(0, 900) : '',
+        step: status === 'failed' ? stepOf(err) : '',
+        screenshot: shot ? shot.path : '' });
+    }
+    const use = ((this.config.projects || [])[0] || {}).use || {};
+    let pwVersion = '';
+    try { pwVersion = require('@playwright/test/package.json').version; } catch (e) { /* optional */ }
+    const run = { framework: 'Playwright', startedAt: this.startedAt, duration: result.duration,
+      stories: Array.from(stories.values()),
+      env: { frameworkVersion: pwVersion, browser: use.channel || use.browserName || 'chromium',
+        headless: use.headless, os: os.type() + ' ' + os.release(), host: os.hostname(),
+        runtime: 'Node ' + process.version } };
+    const dir = path.resolve('playwright-report');
+    const summary = writeReport(run, dir, 'index.html');
+    openFile(summary || path.join(dir, 'index.html'));
+    await mailReport(run, summary, path.join(dir, 'index.html'));
+  }
+}
+module.exports = AfterRun;
+"""
+
+
+def _qa_version():
+    """QA Studio's version (VERSION next to this file), for report footers."""
+    try:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION"),
+                  encoding="utf-8-sig") as f:
+            return f.read().strip()
+    except Exception:
+        return ""
+
+
+def _report_mailer_js():
+    ver = _qa_version()
+    return _REPORT_MAILER_JS.replace("__QA_VERSION__", ver) if ver else _REPORT_MAILER_JS
+
+
+def _copy_logo(dest, written, out_dir):
+    """Copy QA Studio's email logo next to the report mailer (header of the
+    summary report and the emailed run summary). Skipped when unchanged."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    for name in ("qa-logo-email.png", "qa-logo.png", "app.png"):
+        src = os.path.join(here, name)
+        if not os.path.isfile(src):
+            continue
+        try:
+            with open(src, "rb") as f:
+                data = f.read()
+            if os.path.isfile(dest):
+                with open(dest, "rb") as f:
+                    if f.read() == data:
+                        return
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            with open(dest, "wb") as f:
+                f.write(data)
+            written.append(os.path.relpath(dest, out_dir))
+        except Exception:
+            pass
+        return
 
 
 def _idea_npm_config(name, command, script=None, install_first=False):
@@ -1004,6 +1474,23 @@ def _env_fill(path, values):
     return filled
 
 
+def _env_fill_keys(path, keys):
+    """Add `KEY=` lines for keys missing from .env (values untouched)."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            text = f.read()
+    except Exception:
+        return
+    have = {ln.split("=", 1)[0].strip() for ln in text.splitlines() if "=" in ln}
+    missing = [k for k in keys if k not in have]
+    if missing:
+        with open(path, "a", encoding="utf-8") as f:
+            if text and not text.endswith("\n"):
+                f.write("\n")
+            f.write("# Report email after every run (Gmail: SMTP_PASS = an App Password)\n")
+            f.write("".join("%s=\n" % k for k in missing))
+
+
 def _prepare_env(out_dir, cfg, written):
     """Create .env once, then fill any empty URL/account values from cfg."""
     envp = os.path.join(out_dir, ".env")
@@ -1014,7 +1501,13 @@ def _prepare_env(out_dir, cfg, written):
     _env_fill(envp, {"APP_BASE_URL": cfg.get("base_url", ""),
                      "APP_LOGIN_URL": cfg.get("login_url", ""),
                      "APP_USER": cfg.get("app_user", ""),
-                     "APP_PASS": cfg.get("app_pass", "")})
+                     "APP_PASS": cfg.get("app_pass", ""),
+                     # Report email after every run (recipients = QA Studio's).
+                     "REPORT_EMAIL_TO": cfg.get("report_email_to", ""),
+                     "SMTP_USER": cfg.get("smtp_user", ""),
+                     "SMTP_PASS": cfg.get("smtp_pass", "")})
+    # Keys the user may fill later stay visible (empty) in .env.
+    _env_fill_keys(envp, ("REPORT_EMAIL_TO", "SMTP_USER", "SMTP_PASS"))
 
 
 def _deps_up_to_date(out_dir):
@@ -1111,6 +1604,9 @@ def build_playwright_project(out_dir, sequenced, cfg, seed_fn, harvest_js,
     _wif(os.path.join(support_dir, "harvest.js"),
          _PW_HARVEST_HEAD + (harvest_js or "return [];") + _PW_HARVEST_TAIL, written, out_dir)
     _wif(os.path.join(support_dir, "healer.js"), _PW_HEALER_JS, written, out_dir)
+    _wif(os.path.join(support_dir, "report-mailer.js"), _report_mailer_js(), written, out_dir)
+    _copy_logo(os.path.join(support_dir, "qa-logo.png"), written, out_dir)
+    _wif(os.path.join(support_dir, "after-run.js"), _PW_AFTER_RUN_JS, written, out_dir)
     _wif(os.path.join(support_dir, "auth.js"),
          _PW_AUTH_JS.replace("__UI_LOCALE__", cfg.get("ui_locale", "ar")),
          written, out_dir)
@@ -1178,16 +1674,18 @@ _CY_PKG_JSON = """{
   "description": "Self-healing Cypress tests generated by QA Studio.",
   "scripts": {
     "pretest": "cypress verify",
-    "test": "cypress run",
+    "test": "cypress run --headed",
+    "test:headless": "cypress run",
     "open": "cypress open",
-    "report": "echo Open cypress/reports/index.html for the HTML report"
+    "report": "node cypress/report-mailer.js --open cypress/reports/qa-studio-report.html",
+    "report:detail": "node cypress/report-mailer.js --open cypress/reports/index.html"
   },
   "engines": { "node": ">=18" },
   "devDependencies": {
     "cypress": "^13.15.0",
     "cypress-mochawesome-reporter": "^3.8.2"
   },
-  "dependencies": { "dotenv": "^16.4.5" }
+  "dependencies": { "dotenv": "^16.4.5", "nodemailer": "^6.9.14" }
 }
 """
 
@@ -1220,7 +1718,55 @@ module.exports = defineConfig({
     screenshotOnRunFailure: true,
     video: true,
     setupNodeEvents(on, config) {
-      require('cypress-mochawesome-reporter/plugin')(on);   // merges + builds the HTML report
+      // Build the mochawesome HTML report, then open it and email it. (Calling the
+      // reporter hooks here, instead of its plugin, lets one after:run do both.)
+      const { beforeRunHook, afterRunHook } = require('cypress-mochawesome-reporter/lib');
+      let browserInfo = {};
+      on('before:run', async (details) => {
+        browserInfo = (details && details.browser) || {};
+        await beforeRunHook(details);
+      });
+      on('after:run', async (results) => {
+        await afterRunHook();
+        if (!config.isTextTerminal || !results || !results.runs) return;   // only for 'cypress run'
+        const path = require('path');
+        const os = require('os');
+        const { openFile, mailReport, writeReport, siteOf, stripAnsi } = require('./cypress/report-mailer');
+        const stories = new Map();
+        for (const r of results.runs) {
+          const spec = (r.spec && (r.spec.absolute || r.spec.relative)) || '';
+          const shots = (r.screenshots || []).filter((s) => s && s.path);
+          for (const t of r.tests || []) {
+            const titles = t.title || [];
+            const title = titles[titles.length - 1] || '';
+            const name = titles.length > 1 ? titles[0] : path.basename(spec);
+            if (!stories.has(name)) {
+              stories.set(name, { name, file: path.basename(spec), site: siteOf(spec), tests: [] });
+            }
+            const status = t.state === 'passed' ? 'passed' : t.state === 'failed' ? 'failed' : 'skipped';
+            const shot = status !== 'failed' ? null
+              : shots.find((s) => s.path.includes(title) && /failed/i.test(s.path))
+                || (shots.filter((s) => /failed/i.test(s.path)).length === 1
+                  ? shots.find((s) => /failed/i.test(s.path)) : null);
+            const duration = t.duration != null ? t.duration
+              : (t.attempts || []).reduce((a, x) => a + (x.duration || 0), 0);
+            stories.get(name).tests.push({ title, status, duration, step: '',
+              error: status === 'failed'
+                ? stripAnsi(t.displayError).split('\\n').filter(Boolean).slice(0, 6).join('\\n').slice(0, 900) : '',
+              screenshot: shot ? shot.path : '' });
+          }
+        }
+        const run = { framework: 'Cypress', startedAt: Date.parse(results.startedTestsAt) || Date.now(),
+          duration: results.totalDuration || 0, stories: Array.from(stories.values()),
+          env: { frameworkVersion: results.cypressVersion, browser: results.browserName,
+            browserVersion: results.browserVersion, headless: browserInfo.isHeadless,
+            os: (results.osName || os.type()) + ' ' + (results.osVersion || os.release()),
+            host: os.hostname(), runtime: 'Node ' + process.version } };
+        const dir = path.resolve('cypress/reports');
+        const summary = writeReport(run, dir, 'index.html');
+        openFile(summary || path.join(dir, 'index.html'));
+        await mailReport(run, summary, path.join(dir, 'index.html'));
+      });
       on('task', {
         loadLocators: tasks.loadLocators,
         saveLocator: tasks.saveLocator,
@@ -1331,6 +1877,8 @@ cypress/reports/
 .env
 # local DOM snapshots from an opt-in live inspection:
 inspection-screens.json
+# QA Studio's local record of verified cases (reused on regenerate):
+.qastudio/verified-cases.json
 # locators.json is COMMITTED on purpose — healed locators are shared across
 # environments (identical UI). Only URLs/creds differ, and those live in .env.
 """
@@ -1354,6 +1902,32 @@ _CY_HEALER_JS = """// Self-healing Cypress commands. Resolution per step key:
 //   1) locator saved in locators.json (via cy.task)  2) the generated seed
 //   3) ask the AI (cy.task -> Node) to pick one from the live DOM, then save it.
 const { harvest } = require('./harvest');
+
+// Frame scope: healEnterFrame points every later heal command inside that
+// (same-origin) iframe; each test starts back on the main page.
+let __frame = null;
+beforeEach(() => { __frame = null; });
+function _jq(sel) {
+  if (!__frame) return Cypress.$(sel);
+  const f = Cypress.$(__frame).get(0);
+  const doc = f && f.contentDocument;
+  return doc ? Cypress.$(doc).find(sel) : Cypress.$();
+}
+function _q(sel) {
+  if (!__frame) return _q(sel);
+  return cy.get(__frame, { log: false }).its('0.contentDocument.body')
+    .should('not.be.empty').then((body) => cy.wrap(body).find(sel));
+}
+function _scopeDoc() {
+  if (!__frame) return cy.document({ log: false });
+  return cy.get(__frame, { log: false }).its('0.contentDocument');
+}
+function _scopeBody(opts) {
+  if (!__frame) return cy.get('body', opts);
+  return cy.get(__frame, { log: false }).its('0.contentDocument.body').then(cy.wrap);
+}
+const _CY_KEYS = { ENTER: '{enter}', ESCAPE: '{esc}', SPACE: ' ', ARROWUP: '{uparrow}',
+  ARROWDOWN: '{downarrow}', ARROWLEFT: '{leftarrow}', ARROWRIGHT: '{rightarrow}' };
 
 function toSelector(spec) {
   const by = (spec && spec.by) || 'css';
@@ -1382,7 +1956,7 @@ function _poll(spec, tries) {
 function _has(spec) {
   const sel = toSelector(spec);
   if (!sel) return false;
-  try { return Cypress.$(sel).length > 0; } catch (e) { return false; }
+  try { return _jq(sel).length > 0; } catch (e) { return false; }
 }
 
 // Login-page language — must match the generated tests' expected-message
@@ -1421,7 +1995,13 @@ Cypress.Commands.add('performLogin', () => {
 Cypress.Commands.add('openAppHome', () => {
   cy.visit(Cypress.env('APP_BASE_URL') || '/');
   cy.get('body', { log: false }).then(($body) => {
-    if ($body.find('input[type=password]:visible').length) cy.performLogin();
+    // A real login form also has a username/email field (a page with only a
+    // password input, e.g. a form under test, is not a login).
+    if ($body.find('input[type=password]:visible').length
+        && $body.find('#username, #user-name, input[type=email], input[name=email], '
+                      + 'input[name=username], input[name*=user], input[id*=user]').length) {
+      cy.performLogin();
+    }
   });
 });
 
@@ -1449,7 +2029,7 @@ Cypress.Commands.add('healSelector', (key, seed, intent) => {
 });
 
 function _healWithAI(key, intent) {
-    return cy.document({ log: false }).then((doc) => {
+    return _scopeDoc().then((doc) => {
       let dom = '[]';
       try { dom = JSON.stringify(harvest(doc)); } catch (e) {}
       return cy.task('pickLocator', { intent: intent, dom: dom }, { log: false }).then((picked) => {
@@ -1469,40 +2049,60 @@ Cypress.Commands.add('healAct', (key, verb, seed, intent, value) => {
   if (verb === 'navigate' || verb === 'wait') return;
   cy.healSelector(key, seed, intent).then((sel) => {
     if (verb === 'type') {
-      cy.get(sel).first().clear();
-      if (value) cy.get(sel).first().type(String(value));
+      _q(sel).first().clear();
+      if (value) _q(sel).first().type(String(value));
     } else if (verb === 'select') {
-      cy.get(sel).first().then(($el) => {
-        if ($el.is('select')) cy.wrap($el).select(String(value));
+      _q(sel).first().then(($el) => {
+        const opts = String(value == null ? '' : value).split(';').map((o) => o.trim()).filter(Boolean);
+        if ($el.is('select') && opts.length > 1) cy.wrap($el).select(opts);   // multi-select
+        else if ($el.is('select')) cy.wrap($el).select(String(value));
         else cy.wrap($el).scrollIntoView().click({ force: true });
       });
+    } else if (verb === 'double_click') {
+      _q(sel).first().dblclick({ force: true });
+    } else if (verb === 'right_click') {
+      _q(sel).first().rightclick({ force: true });
+    } else if (verb === 'set_value') {
+      _q(sel).first().then(($el) => {
+        const node = $el.get(0);
+        const d = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(node), 'value');
+        if (d && d.set) d.set.call(node, String(value)); else node.value = String(value);
+        node.dispatchEvent(new Event('input', { bubbles: true }));
+        node.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+    } else if (verb === 'upload') {
+      _q(sel).first().selectFile(String(value), { force: true });
+    } else if (verb === 'key_press') {
+      const k = String(value || 'ENTER').toUpperCase();
+      if (_CY_KEYS[k]) _q(sel).first().type(_CY_KEYS[k], { force: true });
+      else _q(sel).first().trigger('keydown', { key: k.charAt(0) + k.slice(1).toLowerCase() });
     } else if (verb === 'hover') {
       // Cypress has no native hover: fire the events a pointer would.
-      cy.get(sel).first().scrollIntoView().trigger('mouseover').trigger('mouseenter');
+      _q(sel).first().scrollIntoView().trigger('mouseover').trigger('mouseenter');
     } else {
-      cy.get(sel).first().scrollIntoView().click({ force: true });
+      _q(sel).first().scrollIntoView().click({ force: true });
     }
   });
 });
 
 Cypress.Commands.add('healAssertVisible', (key, seed, intent) => {
   cy.healSelector(key, seed, intent).then((sel) => {
-    cy.get(sel).first().should('be.visible');
+    _q(sel).first().should('be.visible');
   });
 });
 
 Cypress.Commands.add('healAssertChecked', (key, seed, intent) => {
-  cy.healSelector(key, seed, intent).then((sel) => cy.get(sel).first().should('be.checked'));
+  cy.healSelector(key, seed, intent).then((sel) => _q(sel).first().should('be.checked'));
 });
 
 Cypress.Commands.add('healAssertEnabled', (key, seed, intent, enabled) => {
   cy.healSelector(key, seed, intent).then((sel) =>
-    cy.get(sel).first().should(enabled ? 'be.enabled' : 'be.disabled'));
+    _q(sel).first().should(enabled ? 'be.enabled' : 'be.disabled'));
 });
 
 Cypress.Commands.add('healAssertSelected', (key, seed, intent, expected) => {
   cy.healSelector(key, seed, intent).then((sel) =>
-    cy.get(sel).first().find('option:selected').should('contain.text', expected));
+    _q(sel).first().find('option:selected').should('contain.text', expected));
 });
 
 Cypress.Commands.add('healAssertHidden', (seed) => {
@@ -1510,7 +2110,7 @@ Cypress.Commands.add('healAssertHidden', (seed) => {
   // a different visible element after the target was correctly removed.
   const sel = seed && _has(seed) ? toSelector(seed) : '';
   if (!sel) throw new Error('Missing verified locator for hidden assertion.');
-  cy.get('body').then(($body) => {
+  _scopeBody().then(($body) => {
     expect($body.find(sel).filter(':visible').length, sel + ' is not visible').to.equal(0);
   });
 });
@@ -1528,10 +2128,44 @@ function _cyNormText(s) {
 }
 
 Cypress.Commands.add('healAssertText', (keywords) => {
-  cy.get('body', { timeout: 8000 }).should(($b) => {
+  _scopeBody({ timeout: 8000 }).should(($b) => {
     const t = _cyNormText($b.text());
     const ok = keywords.some((k) => k && t.indexOf(_cyNormText(k)) !== -1);
     expect(ok, 'page contains one of: ' + keywords.join(', ')).to.equal(true);
+  });
+});
+
+// ── browser-context steps ──
+Cypress.Commands.add('healEnterFrame', (key, seed, intent) => {
+  __frame = null;   // resolve the iframe on the main page
+  cy.healSelector(key, seed, intent).then((sel) => { __frame = sel; });
+});
+// Cypress answers alerts itself; a confirm's OK/Cancel is set before the click.
+Cypress.Commands.add('prepareDialog', (accept, text) => {
+  cy.once('window:confirm', () => accept);
+  if (text != null) {
+    // A JavaScript prompt: answer it (Cypress has no native prompt handling).
+    cy.window({ log: false }).then((w) => { cy.stub(w, 'prompt').returns(accept ? String(text) : null); });
+  }
+});
+// Leave every iframe: later steps run on the main page again.
+Cypress.Commands.add('exitFrame', () => { __frame = null; });
+// Cypress keeps one tab, so "back to the original window" = previous page.
+Cypress.Commands.add('backToOriginalWindow', () => { __frame = null; cy.go('back'); });
+Cypress.Commands.add('healAssertInvalid', (key, seed, intent) => {
+  cy.healSelector(key, seed, intent).then((sel) => _q(sel).first().should(($el) => {
+    const node = $el.get(0);
+    expect(node.checkValidity ? node.checkValidity() : true, 'browser validation').to.eq(false);
+  }));
+});
+// Cypress drives one tab: a link or window.open that would open a new tab
+// opens in the same tab instead, and the test continues there.
+Cypress.Commands.add('prepareSameTabWindow', () => {
+  cy.window({ log: false }).then((w) => {
+    cy.stub(w, 'open').callsFake((url) => { w.location.href = url; return w; });
+  });
+  cy.document({ log: false }).then((d) => {
+    d.querySelectorAll('a[target]').forEach((a) => a.removeAttribute('target'));
   });
 });
 """
@@ -1561,6 +2195,11 @@ when Node was available (that also downloads the Cypress app).
 `.env` already holds the app URLs (and the test account, if you chose to save it
 in QA Studio). Otherwise set `APP_USER` / `APP_PASS` there or as environment
 variables. `QA_AI_API_KEY` is only needed for runtime self-healing.
+
+The browser is visible while tests run (`HEADLESS=true` or `npm run test:headless`
+hides it). After every run the HTML report opens (`OPEN_REPORT=false` turns that
+off) and is emailed when `REPORT_EMAIL_TO`, `SMTP_USER` and `SMTP_PASS` (a Gmail
+App Password) are set in `.env`.
 
 ## Note on locators
 `xpath` seeds fall through to AI healing (Cypress has no native XPath). Most seeds
@@ -1608,6 +2247,12 @@ def _emit_cy_intent(lines, key, intent, seed_fn, seeds, app_page=False):
                             "true" if check == "enabled" else "false"))
             _record()
             return
+        if check == "invalid":
+            lines.append("    cy.healAssertInvalid(%s, %s, %s);"
+                         % (json.dumps(key), json.dumps(seed, ensure_ascii=False),
+                            json.dumps(ij, ensure_ascii=False)))
+            _record()
+            return
         if check in ("selected", "selected_value", "value_selected"):
             expected = (intent.get("value") or (kws[0] if kws else "") or
                         intent.get("expected") or target)
@@ -1631,6 +2276,26 @@ def _emit_cy_intent(lines, key, intent, seed_fn, seeds, app_page=False):
     value = intent.get("value", "")
     if verb == "navigate" and str(value).lower().startswith(("http://", "https://")):
         lines.append("    cy.visit(%s);" % json.dumps(value, ensure_ascii=False))
+        return
+    if verb in ("dialog_accept", "dialog_dismiss"):
+        lines.append("    // browser dialog %s was answered by prepareDialog before the click"
+                     % ("dismiss" if verb == "dialog_dismiss" else "accept"))
+        return
+    if verb == "window_switch":
+        lines.append("    // new window opened in this tab (Cypress drives a single tab)")
+        return
+    if verb == "frame_exit":
+        lines.append("    cy.exitFrame();")
+        return
+    if verb in ("window_back", "window_close"):
+        lines.append("    cy.backToOriginalWindow();")
+        return
+    if verb == "frame":
+        _todo = "  // TODO verify locator (resolved at runtime)" if seed is None else ""
+        lines.append("    cy.healEnterFrame(%s, %s, %s);%s"
+                     % (json.dumps(key), json.dumps(seed, ensure_ascii=False),
+                        json.dumps(ij, ensure_ascii=False), _todo))
+        _record()
         return
     _todo = "  // TODO verify locator (resolved at runtime)" if seed is None else ""
     lines.append("    cy.healAct(%s, %s, %s, %s, %s);%s"
@@ -1665,10 +2330,24 @@ def _cy_spec(story, cases, seed_fn, seeds):
             # elements exist; see the identical Playwright fix in _pw_spec).
             L.append("    cy.loginSession();")
             L.append("    cy.openAppHome();")
-        for ii, intent in enumerate(c.get("intents", [])):
+        intents = c.get("intents", [])
+        for ii, intent in enumerate(intents):
             if (bucket == 2 and intent.get("role") == "action") or (
                     explicit_login_flow and _is_login_transition_action(intent)):
                 continue
+            # Dialog answers and same-tab windows must be set up BEFORE the
+            # click that triggers them (same rule as the Playwright output).
+            _next = intents[ii + 1] if ii + 1 < len(intents) else {}
+            if intent.get("role") == "action" and _next.get("role") == "action":
+                if _next.get("verb") == "dialog_accept" and _next.get("value"):
+                    L.append("    cy.prepareDialog(true, %s);"
+                             % json.dumps(str(_next.get("value")), ensure_ascii=False))
+                elif _next.get("verb") == "dialog_accept":
+                    L.append("    cy.prepareDialog(true);")
+                elif _next.get("verb") == "dialog_dismiss":
+                    L.append("    cy.prepareDialog(false);")
+                elif _next.get("verb") == "window_switch":
+                    L.append("    cy.prepareSameTabWindow();")
             _emit_cy_intent(L, "%s.%d.%d" % (sid, ci, ii), intent, seed_fn, seeds,
                             app_page=(bucket == 3 or explicit_login_flow))
         L.append("  });")
@@ -1715,6 +2394,12 @@ def build_cypress_project(out_dir, sequenced, cfg, seed_fn, harvest_js,
 
     _prepare_env(out_dir, cfg, written)
     _write_ide_files(out_dir, "cypress", written)
+    _wif(os.path.join(out_dir, "cypress", "report-mailer.js"), _report_mailer_js(), written, out_dir)
+    _copy_logo(os.path.join(out_dir, "cypress", "qa-logo.png"), written, out_dir)
+    # Upload steps send this file (path relative to the project root).
+    os.makedirs(os.path.join(out_dir, "fixtures"), exist_ok=True)
+    _wif(os.path.join(out_dir, "fixtures", "qastudio-upload.txt"),
+         "QA Studio generated automation fixture.\n", written, out_dir)
 
     seeds = {}
     specs_owned = set()

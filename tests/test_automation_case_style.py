@@ -186,7 +186,9 @@ class WiringTests(unittest.TestCase):
                         "s_style_hint_manual", "s_style_hint_automation",
                         "upd_note_automation_cases"):
                 self.assertIn(key, strings._STRINGS[lang], (lang, key))
-        self.assertIn("upd_note_automation_cases", release_notes.PENDING_RELEASE_NOTE_KEYS)
+        # Pending until release.bat stamps it onto a version, then registered.
+        shipped = {k for keys in release_notes.RELEASE_NOTE_KEYS.values() for k in keys}
+        self.assertIn("upd_note_automation_cases", set(release_notes.PENDING_RELEASE_NOTE_KEYS) | shipped)
 
 
 class LabelFilterTests(unittest.TestCase):

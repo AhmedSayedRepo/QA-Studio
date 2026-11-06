@@ -369,9 +369,10 @@ class QAStudio:
         self.auto_login_url = self.creds.get("auto_login_url", "")
         self.auto_login_user = self.creds.get("auto_login_user", "")
         self.auto_login_pass = self.creds.get("auto_login_pass", "")
-        self.auto_live_inspection = bool(self.creds.get("auto_live_inspection", False))
+        self.auto_live_inspection = bool(self.creds.get("auto_live_inspection", True))   # on unless turned off
         self.auto_allow_unverified = bool(self.creds.get("auto_allow_unverified", False))
         self.auto_regenerate = bool(self.creds.get("auto_regenerate", False))
+        self.auto_reinspect_all = bool(self.creds.get("auto_reinspect_all", False))
         self.auto_only_automation = bool(self.creds.get("auto_only_automation", False))
         self.auto_env_creds = bool(self.creds.get("auto_env_creds", False))
         # Email footers name the ACTIVE backend (read live, so a backend switch
@@ -9238,6 +9239,13 @@ class QAStudio:
         self._copy_text_to_clipboard(
             "\n".join(lines), f"Log copied to clipboard ({n} line{'s' if n != 1 else ''}).")
 
+    def _copy_external_case_prompt(self, e=None):
+        """Copy a prompt an external LLM can use to write QA Studio-ready
+        automation test cases (CSV) for one user story."""
+        text = E.external_case_prompt(site_url=(self.auto_site_url or ""),
+                                      login_url=(getattr(self, "auto_login_url", "") or ""))
+        self._copy_text_to_clipboard(text, ok_msg=strings.t("auto_copy_prompt_done"))
+
     def _copy_auto_log(self, e=None):
         self._copy_log_text([ln.get("msg", "") for ln in getattr(self, "_auto_log", [])])
 
@@ -10128,9 +10136,10 @@ class QAStudio:
             _mark("auto_local_path",
                   "Set the project folder — it's the home we push from.")
         if self.auto_live_inspection:
-            if not (self.auto_login_user or "").strip():
-                _mark("auto_login_user", strings.t("auto_err_test_user"))
-            if not (self.auto_login_pass or "").strip():
+            # The test account is optional: sites without a login (e.g. a public
+            # form) inspect fine without one. A user without a password is
+            # still a mistake, so only that pair is checked.
+            if (self.auto_login_user or "").strip() and not (self.auto_login_pass or "").strip():
                 _mark("auto_login_pass", strings.t("auto_err_test_pass"))
             if not self._auto_live_confirm:
                 self._auto_inspection_confirm_invalid = True
@@ -10191,7 +10200,7 @@ class QAStudio:
             total_steps = 0
             walk_payload = []
 
-            def _send_auto_report(failed=False, stopped=False):
+            def _send_auto_report(failed=False, stopped=False, blocked=False):
                 to_raw = (getattr(self, "_auto_email_to", "") or "").strip()
                 if not to_raw:
                     cb("No report email — no recipients selected.", "dim")
@@ -10219,6 +10228,10 @@ class QAStudio:
                 }
                 if failed:
                     summary = "Automation failed"
+                elif blocked:
+                    _n = int(getattr(self, "_auto_todo", 0) or 0)
+                    summary = (f"Generation blocked — {_n} step(s) need a verified locator"
+                               if _n else "Generation blocked — some steps need a verified locator")
                 elif stopped:
                     summary = "Stopped early"
                 elif walk_payload:
@@ -10235,7 +10248,7 @@ class QAStudio:
                         git_url=(self.auto_git_url or "").strip() or None,
                         git_branch=(self.auto_git_branch or "").strip() or None,
                         log_lines=email_log, org=E.AZURE_ORG, project=self.project,
-                        failed=failed, stopped=stopped,
+                        failed=failed, stopped=stopped, blocked=blocked,
                         source=("Test-case file" if backend_setup.automation_uses_file_source(self)
                                 else None))
                     ok, err = E.send_report(to, "QA Studio — Automation report", html)
@@ -10553,25 +10566,48 @@ class QAStudio:
                 # than compiling the spreadsheet a second time.
                 # The local screen JSON is diagnostic-only and git-ignored.
                 _login_url = self.auto_login_url.strip() or self.auto_site_url.strip()
+                # Cases verified AND passed in an earlier run of this folder (same
+                # content, same site) reuse their saved plan; only new, changed or
+                # failed cases go back through inspection and replay. _to_walk holds
+                # the SAME case dicts, so results land on walk_payload directly.
+                _to_walk, _reused = walk_payload, 0
+                _reused_steps = 0
                 if walk_payload and self.auto_live_inspection:
+                    _to_walk, _reused = E.split_cached_cases(
+                        walk_payload, project_dir, self.auto_site_url.strip(), _login_url,
+                        force=bool(getattr(self, "auto_reinspect_all", False)))
+                    # Proven counts verified STEPS (like a live inspection does).
+                    _reused_steps = sum(
+                        1 for _p in walk_payload for _tc in _p.get("test_cases") or []
+                        if _tc.get("inspection_reused")
+                        for _it in (_tc.get("inspection_plan") or {}).get("intents") or []
+                        if _it.get("role") != "precondition")
+                    if _reused:
+                        cb(strings.t("auto_reuse_log", n=_reused,
+                                     m=sum(len(p.get("test_cases") or []) for p in _to_walk)), "ok")
+                if walk_payload and self.auto_live_inspection and not _to_walk:
+                    self._auto_stats = dict(getattr(self, "_auto_stats", None) or {},
+                                            proven=str(_reused_steps), replay="%d/%d" % (_reused, _reused))
+                    self._auto_todo = 0
+                elif walk_payload and self.auto_live_inspection:
                     cb(strings.t("auto_inspection_start"), "info")
                     inspection = E.explore_and_map(
-                        walk_payload,
+                        _to_walk,
                         {"url": _login_url, "user": self.auto_login_user,
                          "password": self.auto_login_pass},
                         self.auto_site_url.strip(), cb=cb,
                         should_stop=lambda: self._auto_stop, headless=False)
-                    walk_payload = inspection.get("stories_payload") or walk_payload
+                    _to_walk = inspection.get("stories_payload") or _to_walk
                     _inspection_report = E.write_inspection_screens(project_dir, inspection, cb=cb)
                     # The local report is the durable hand-off between visible
                     # browser inspection and framework generation. Rehydrate its
                     # per-intent bindings rather than relying on an in-memory
                     # row-level locator that can be overwritten by a second
                     # action in the same spreadsheet step.
-                    E.apply_inspection_screens(walk_payload, _inspection_report)
+                    E.apply_inspection_screens(_to_walk, _inspection_report)
                     _stats = inspection.get("stats") or {}
                     self._auto_stats = dict(getattr(self, "_auto_stats", None) or {},
-                                            proven=str(int(_stats.get("verified") or 0)))
+                                            proven=str(int(_stats.get("verified") or 0) + _reused_steps))
                     self._auto_todo = (int(_stats.get("snapshot") or 0)
                                        + int(_stats.get("guess") or 0))
                     cb(strings.t("auto_inspection_done",
@@ -10586,14 +10622,18 @@ class QAStudio:
                     # do. A step that fails is flagged; generation then blocks
                     # unless the user allowed runtime healing for such steps.
                     _replay = E.replay_verify(
-                        walk_payload,
+                        _to_walk,
                         {"url": _login_url, "user": self.auto_login_user,
                          "password": self.auto_login_pass},
                         self.auto_site_url.strip(), cb=cb,
                         should_stop=lambda: self._auto_stop, headless=False)
                     E.write_verification_report(project_dir, _replay)
+                    # Remember what passed (and forget what failed) for next time.
+                    E.save_verified_cases(walk_payload, project_dir,
+                                          self.auto_site_url.strip(), _login_url)
                     if _replay:
                         _rp, _rf = int(_replay.get("passed") or 0), int(_replay.get("failed") or 0)
+                        _rp += _reused
                         self._auto_stats = dict(getattr(self, "_auto_stats", None) or {},
                                                 replay="%d/%d" % (_rp, _rp + _rf))
                     if self._auto_stop:
@@ -10621,6 +10661,15 @@ class QAStudio:
                     login = dict(login or {})
                     login["env_user"] = (self.auto_login_user or "").strip()
                     login["env_pass"] = self.auto_login_pass or ""
+                    # …and the report sender, so the project emails its report.
+                    if E.ensure_sender_creds():
+                        login["smtp_pass"] = E.GMAIL_APP_PASS
+                # Report recipients + sender address (not secret) go to the
+                # project's .env / config.properties so its after-run email is
+                # ready to use.
+                login = dict(login or {})
+                login["report_to"] = (getattr(self, "_auto_email_to", "") or "").strip()
+                login["smtp_user"] = E.GMAIL_SENDER
                 # Generate ONLY what the keep/re-evaluate choice said to (walk_payload):
                 # brand-new stories, the new test cases of "grew" stories, and any the
                 # user chose to re-evaluate. "Done" stories are kept untouched. (Was
@@ -10637,6 +10686,9 @@ class QAStudio:
                     if generated is None:
                         self._auto_result = ("blocked", str(getattr(self, "_auto_todo", 0) or ""))
                         cb(strings.t("auto_generation_blocked_unverified"), "err")
+                        # A blocked run still reports, so reviewers see which
+                        # steps to fix (the log lists them).
+                        _send_auto_report(blocked=True)
                         return
                 else:
                     self._auto_result = ("nothing", "")

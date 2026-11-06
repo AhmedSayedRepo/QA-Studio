@@ -1,0 +1,48 @@
+﻿Test Case ID,Test Case Title,Step,Action,Expected Result
+TC01,Login with a valid customer account,1,"Enter ""customer@practicesoftwaretesting.com"" in the ""Email address"" field",
+TC01,Login with a valid customer account,2,"Enter ""welcome01"" in the ""Password"" field",
+TC01,Login with a valid customer account,3,"Click the ""Login"" button","The ""My account"" page title is shown"
+TC02,Login with an unknown account shows an error,1,"Enter ""nobody@example.com"" in the ""Email address"" field",
+TC02,Login with an unknown account shows an error,2,"Enter ""wrongpass1"" in the ""Password"" field",
+TC02,Login with an unknown account shows an error,3,"Click the ""Login"" button","Error ""Invalid email or password"" is shown"
+TC03,Login without credentials shows required-field errors,1,"Click the ""Login"" button without filling any field","""Email is required"" and ""Password is required"" are shown"
+TC04,Search finds matching products,1,"Enter ""saw"" in the ""Search"" field",
+TC04,Search finds matching products,2,"Click the ""Search"" button","""Searched for: saw"" is shown"
+TC04,Search finds matching products,3,Check the product list,"""Wood Saw"" and ""Circular Saw"" are shown"
+TC05,Search with no match shows an empty-result message,1,"Enter ""zzzz"" in the ""Search"" field",
+TC05,Search with no match shows an empty-result message,2,"Click the ""Search"" button","""There are no products found."" is shown"
+TC06,Sort products by price low to high,1,"Select ""Price (Low - High)"" from the ""Sort"" dropdown","The first product shown is ""Washers"" with price ""$3.55"""
+TC07,Filter products by the Sander category,1,"Check the ""Sander"" category filter","""Sheet Sander"" and ""Belt Sander"" are shown"
+TC08,Product page shows details and actions,1,"Click the ""Thor Hammer"" product","The ""Thor Hammer"" product page is shown"
+TC08,Product page shows details and actions,2,Check the price and buttons,"Price ""11.14"", the ""Add to cart"" button and the ""Add to favourites"" button are shown"
+TC09,Add a product to the cart,1,"Click the ""Thor Hammer"" product","The ""Thor Hammer"" product page is shown"
+TC09,Add a product to the cart,2,"Click the ""Add to cart"" button","Message ""Product added to shopping cart."" is shown"
+TC09,Add a product to the cart,3,Check the cart icon in the header,"The cart quantity badge shows ""1"""
+TC10,Cart total updates with quantity,1,"Click the ""Thor Hammer"" product","The ""Thor Hammer"" product page is shown"
+TC10,Cart total updates with quantity,2,"Enter ""2"" in the ""Quantity"" field",
+TC10,Cart total updates with quantity,3,"Click the ""Add to cart"" button","Message ""Product added to shopping cart."" is shown"
+TC10,Cart total updates with quantity,4,Click the cart icon in the header,"The cart shows ""Thor Hammer"" with total ""$22.28"""
+TC11,Checkout reaches the billing address step,1,"Click the ""Thor Hammer"" product","The ""Thor Hammer"" product page is shown"
+TC11,Checkout reaches the billing address step,2,"Click the ""Add to cart"" button","Message ""Product added to shopping cart."" is shown"
+TC11,Checkout reaches the billing address step,3,Click the cart icon in the header,"The ""Proceed to checkout"" button is shown"
+TC11,Checkout reaches the billing address step,4,"Click the ""Proceed to checkout"" button","""you are already logged in"" message is shown"
+TC11,Checkout reaches the billing address step,5,"Click the ""Proceed to checkout"" button","The ""Billing Address"" heading is shown"
+TC12,Complete an order paying cash on delivery,1,"Click the ""Thor Hammer"" product","The ""Thor Hammer"" product page is shown"
+TC12,Complete an order paying cash on delivery,2,"Click the ""Add to cart"" button","Message ""Product added to shopping cart."" is shown"
+TC12,Complete an order paying cash on delivery,3,Click the cart icon in the header,"The ""Proceed to checkout"" button is shown"
+TC12,Complete an order paying cash on delivery,4,"Click the ""Proceed to checkout"" button",
+TC12,Complete an order paying cash on delivery,5,"Click the ""Proceed to checkout"" button","The ""Billing Address"" heading is shown"
+TC12,Complete an order paying cash on delivery,6,"Select ""Austria"" from the ""Country"" dropdown",
+TC12,Complete an order paying cash on delivery,7,"Enter ""1010"" in the ""Postal code"" field",
+TC12,Complete an order paying cash on delivery,8,"Enter ""12"" in the ""House number"" field",
+TC12,Complete an order paying cash on delivery,9,"Enter ""Vienna"" in the ""State"" field",
+TC12,Complete an order paying cash on delivery,10,"Click the ""Proceed to checkout"" button","The ""Payment"" step is shown"
+TC12,Complete an order paying cash on delivery,11,"Select ""Cash on Delivery"" from the ""Payment Method"" dropdown",
+TC12,Complete an order paying cash on delivery,12,"Click the ""Check payment"" button","""Payment was successful"" is shown"
+TC12,Complete an order paying cash on delivery,13,"Click the ""Confirm"" button","""Thanks for your order!"" is shown"
+TC13,Contact form requires subject and message,1,"Click the ""Contact"" link in the header","The ""Contact"" page title is shown"
+TC13,Contact form requires subject and message,2,"Click the ""Send"" button without filling the form","""Subject is required"" and ""Message is required"" are shown"
+TC14,Switch the site language to German,1,"Click the ""EN"" language button in the header",
+TC14,Switch the site language to German,2,"Click ""DE""","The header link ""Kontakt"" is shown"
+TC14,Switch the site language to German,3,"Click the ""DE"" language button in the header",
+TC14,Switch the site language to German,4,"Click ""EN""","The header link ""Contact"" is shown"

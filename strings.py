@@ -12332,31 +12332,31 @@ for _language, _values in _AUTOMATION_HELP_I18N.items():
 
 _READY_TO_RUN_I18N = {
     "en": {
-        "auto_env_creds": "Save this test account in the generated project's .env (git-ignored) so Playwright/Cypress scripts run straight from the IDE",
+        "auto_env_creds": "Save this test account and the report sender in the generated project's .env (git-ignored) so Playwright/Cypress scripts run and email their report straight from the IDE",
         "upd_note_js_ready_to_run": 'Playwright/Cypress output is ready to run: QA Studio installs the dependencies and browser, and adds one-click “Run tests” configurations for VS Code and IntelliJ/WebStorm.',
     },
     "ar": {
-        "auto_env_creds": 'حفظ حساب الاختبار هذا في ملف \u200e.env للمشروع الناتج (مُستبعد من git) لتعمل سكربتات Playwright/Cypress مباشرة من محرر الأكواد',
+        "auto_env_creds": 'حفظ حساب الاختبار هذا ومُرسل التقرير في ملف \u200e.env للمشروع الناتج (مُستبعد من git) لتعمل سكربتات Playwright/Cypress وترسل تقريرها مباشرة من محرر الأكواد',
         "upd_note_js_ready_to_run": 'أصبح ناتج Playwright/Cypress جاهزًا للتشغيل: يثبّت QA Studio الاعتماديات والمتصفح، ويضيف إعدادات تشغيل “Run tests” بنقرة واحدة لـ VS Code وIntelliJ/WebStorm.',
     },
     "fr": {
-        "auto_env_creds": "Enregistrer ce compte de test dans le .env du projet généré (ignoré par git) pour lancer les scripts Playwright/Cypress directement depuis l'IDE",
+        "auto_env_creds": "Enregistrer ce compte de test et l'expéditeur du rapport dans le .env du projet généré (ignoré par git) pour lancer les scripts Playwright/Cypress et envoyer leur rapport directement depuis l'IDE",
         "upd_note_js_ready_to_run": "La sortie Playwright/Cypress est prête à l'emploi : QA Studio installe les dépendances et le navigateur, et ajoute des configurations « Run tests » en un clic pour VS Code et IntelliJ/WebStorm.",
     },
     "tr": {
-        "auto_env_creds": "Playwright/Cypress betikleri doğrudan IDE'den çalışsın diye bu test hesabını oluşturulan projenin .env dosyasına (git'e dahil edilmez) kaydet",
+        "auto_env_creds": "Playwright/Cypress betikleri doğrudan IDE'den çalışıp raporlarını e-postayla göndersin diye bu test hesabını ve rapor göndericisini oluşturulan projenin .env dosyasına (git'e dahil edilmez) kaydet",
         "upd_note_js_ready_to_run": 'Playwright/Cypress çıktısı çalışmaya hazır: QA Studio bağımlılıkları ve tarayıcıyı kurar, VS Code ve IntelliJ/WebStorm için tek tıkla “Run tests” yapılandırmaları ekler.',
     },
     "es": {
-        "auto_env_creds": 'Guardar esta cuenta de prueba en el .env del proyecto generado (ignorado por git) para que los scripts de Playwright/Cypress se ejecuten directamente desde el IDE',
+        "auto_env_creds": 'Guardar esta cuenta de prueba y el remitente del informe en el .env del proyecto generado (ignorado por git) para que los scripts de Playwright/Cypress se ejecuten y envíen su informe directamente desde el IDE',
         "upd_note_js_ready_to_run": 'La salida de Playwright/Cypress queda lista para ejecutar: QA Studio instala las dependencias y el navegador, y añade configuraciones “Run tests” de un clic para VS Code e IntelliJ/WebStorm.',
     },
     "de": {
-        "auto_env_creds": 'Dieses Testkonto in der .env des erzeugten Projekts speichern (von git ignoriert), damit Playwright/Cypress-Skripte direkt aus der IDE laufen',
+        "auto_env_creds": 'Dieses Testkonto und den Berichtsabsender in der .env des erzeugten Projekts speichern (von git ignoriert), damit Playwright/Cypress-Skripte direkt aus der IDE laufen und ihren Bericht mailen',
         "upd_note_js_ready_to_run": 'Playwright/Cypress-Ausgabe ist startklar: QA Studio installiert Abhängigkeiten und Browser und fügt „Run tests“-Konfigurationen mit einem Klick für VS Code und IntelliJ/WebStorm hinzu.',
     },
     "nl": {
-        "auto_env_creds": 'Dit testaccount opslaan in de .env van het gegenereerde project (genegeerd door git) zodat Playwright/Cypress-scripts direct vanuit de IDE draaien',
+        "auto_env_creds": 'Dit testaccount en de rapportafzender opslaan in de .env van het gegenereerde project (genegeerd door git) zodat Playwright/Cypress-scripts direct vanuit de IDE draaien en hun rapport mailen',
         "upd_note_js_ready_to_run": 'Playwright/Cypress-uitvoer is klaar om te draaien: QA Studio installeert de afhankelijkheden en browser en voegt “Run tests”-configuraties met één klik toe voor VS Code en IntelliJ/WebStorm.',
     },
 }
@@ -12394,6 +12394,186 @@ _RELEASE_3_9_6_I18N = {
     },
 }
 for _language, _values in _RELEASE_3_9_6_I18N.items():
+    _STRINGS[_language].update(_values)
+
+_BROWSER_CONTEXT_I18N = {
+    "en": {"upd_note_browser_context": 'Generated Selenium and Cypress scripts now handle iframes, JavaScript alerts and confirms, new windows, file uploads and key presses (Playwright already did), and the replay check verifies them too.'},
+    "ar": {"upd_note_browser_context": 'أصبحت سكربتات Selenium وCypress المُنشأة تتعامل مع الإطارات (iframe) وتنبيهات JavaScript ونوافذ التأكيد والنوافذ الجديدة ورفع الملفات وضغطات المفاتيح (كما في Playwright)، ويتحقق منها فحص إعادة التشغيل أيضًا.'},
+    "fr": {"upd_note_browser_context": "Les scripts Selenium et Cypress générés gèrent désormais les iframes, les alertes et confirmations JavaScript, les nouvelles fenêtres, l'envoi de fichiers et les touches clavier (Playwright le faisait déjà), et la relecture les vérifie aussi."},
+    "tr": {"upd_note_browser_context": "Oluşturulan Selenium ve Cypress betikleri artık iframe'leri, JavaScript uyarı ve onaylarını, yeni pencereleri, dosya yüklemeyi ve tuş basışlarını da işliyor (Playwright zaten destekliyordu); yeniden oynatma kontrolü de bunları doğruluyor."},
+    "es": {"upd_note_browser_context": 'Los scripts de Selenium y Cypress generados ahora manejan iframes, alertas y confirmaciones de JavaScript, ventanas nuevas, subida de archivos y pulsaciones de teclas (Playwright ya lo hacía), y la repetición también los verifica.'},
+    "de": {"upd_note_browser_context": 'Erzeugte Selenium- und Cypress-Skripte unterstützen jetzt iframes, JavaScript-Alerts und -Bestätigungen, neue Fenster, Datei-Uploads und Tastendrücke (Playwright konnte das bereits), und die Replay-Prüfung prüft sie mit.'},
+    "nl": {"upd_note_browser_context": 'Gegenereerde Selenium- en Cypress-scripts ondersteunen nu iframes, JavaScript-meldingen en -bevestigingen, nieuwe vensters, bestandsuploads en toetsaanslagen (Playwright deed dat al), en de herhalingscontrole controleert ze ook.'},
+}
+for _language, _values in _BROWSER_CONTEXT_I18N.items():
+    _STRINGS[_language].update(_values)
+
+_COPY_PROMPT_I18N = {
+    "en": {
+        "auto_copy_prompt": 'Copy AI prompt',
+        "auto_copy_prompt_done": 'Prompt copied — paste it into any AI chat, add the user story, and save the reply as a .csv file for Automation.',
+        "auto_copy_prompt_tip": "Copies a prompt for ChatGPT, Gemini or another AI that writes automation test cases in QA Studio's CSV format",
+        "upd_note_copy_ai_prompt": "Copy AI prompt: get automation test cases in QA Studio's CSV format from ChatGPT, Gemini or any other AI, ready to import into Automation.",
+    },
+    "ar": {
+        "auto_copy_prompt": 'نسخ موجّه الذكاء الاصطناعي',
+        "auto_copy_prompt_done": 'تم نسخ الموجّه — الصقه في أي محادثة ذكاء اصطناعي، وأضف قصة المستخدم، واحفظ الرد كملف \u200e.csv للأتمتة.',
+        "auto_copy_prompt_tip": 'ينسخ موجّهًا لـ ChatGPT أو Gemini أو أي ذكاء اصطناعي آخر يكتب حالات اختبار أتمتة بصيغة CSV الخاصة بـ QA Studio',
+        "upd_note_copy_ai_prompt": 'نسخ موجّه الذكاء الاصطناعي: احصل على حالات اختبار أتمتة بصيغة CSV الخاصة بـ QA Studio من ChatGPT أو Gemini أو أي ذكاء اصطناعي، جاهزة للاستيراد في الأتمتة.',
+    },
+    "fr": {
+        "auto_copy_prompt": 'Copier le prompt IA',
+        "auto_copy_prompt_done": "Prompt copié — collez-le dans n'importe quel chat IA, ajoutez la user story et enregistrez la réponse en .csv pour l'Automatisation.",
+        "auto_copy_prompt_tip": "Copie un prompt pour ChatGPT, Gemini ou une autre IA qui écrit des cas de test d'automatisation au format CSV de QA Studio",
+        "upd_note_copy_ai_prompt": "Copier le prompt IA : obtenez des cas de test d'automatisation au format CSV de QA Studio depuis ChatGPT, Gemini ou une autre IA, prêts à importer.",
+    },
+    "tr": {
+        "auto_copy_prompt": 'Yapay zekâ istemini kopyala',
+        "auto_copy_prompt_done": 'İstem kopyalandı — herhangi bir yapay zekâ sohbetine yapıştırın, kullanıcı hikâyesini ekleyin ve yanıtı Otomasyon için .csv olarak kaydedin.',
+        "auto_copy_prompt_tip": 'ChatGPT, Gemini veya başka bir yapay zekâ için QA Studio CSV biçiminde otomasyon test vakaları yazan bir istem kopyalar',
+        "upd_note_copy_ai_prompt": 'Yapay zekâ istemini kopyala: ChatGPT, Gemini veya başka bir yapay zekâdan QA Studio CSV biçiminde, içe aktarmaya hazır otomasyon test vakaları alın.',
+    },
+    "es": {
+        "auto_copy_prompt": 'Copiar prompt de IA',
+        "auto_copy_prompt_done": 'Prompt copiado — pégalo en cualquier chat de IA, añade la historia de usuario y guarda la respuesta como .csv para Automatización.',
+        "auto_copy_prompt_tip": 'Copia un prompt para ChatGPT, Gemini u otra IA que escribe casos de prueba de automatización en el formato CSV de QA Studio',
+        "upd_note_copy_ai_prompt": 'Copiar prompt de IA: obtén casos de prueba de automatización en el formato CSV de QA Studio desde ChatGPT, Gemini u otra IA, listos para importar.',
+    },
+    "de": {
+        "auto_copy_prompt": 'KI-Prompt kopieren',
+        "auto_copy_prompt_done": 'Prompt kopiert — in einen beliebigen KI-Chat einfügen, die User Story ergänzen und die Antwort als .csv für die Automatisierung speichern.',
+        "auto_copy_prompt_tip": 'Kopiert einen Prompt für ChatGPT, Gemini oder eine andere KI, die Automatisierungs-Testfälle im CSV-Format von QA Studio schreibt',
+        "upd_note_copy_ai_prompt": 'KI-Prompt kopieren: Automatisierungs-Testfälle im CSV-Format von QA Studio aus ChatGPT, Gemini oder einer anderen KI holen, bereit zum Import.',
+    },
+    "nl": {
+        "auto_copy_prompt": 'AI-prompt kopiëren',
+        "auto_copy_prompt_done": 'Prompt gekopieerd — plak hem in een AI-chat, voeg de user story toe en sla het antwoord op als .csv voor Automatisering.',
+        "auto_copy_prompt_tip": 'Kopieert een prompt voor ChatGPT, Gemini of een andere AI die automatiseringstestgevallen schrijft in het CSV-formaat van QA Studio',
+        "upd_note_copy_ai_prompt": 'AI-prompt kopiëren: haal automatiseringstestgevallen in het CSV-formaat van QA Studio uit ChatGPT, Gemini of een andere AI, klaar om te importeren.',
+    },
+}
+for _language, _values in _COPY_PROMPT_I18N.items():
+    _STRINGS[_language].update(_values)
+
+_BATCH1_I18N = {
+    "en": {"upd_note_more_field_types": 'Automation now handles radio buttons, double- and right-click, leaving iframes, going back to or closing a new window, answering JavaScript prompts, date/time/range/colour fields, built-in form validation and multi-select lists.'},
+    "ar": {"upd_note_more_field_types": 'تدعم الأتمتة الآن أزرار الاختيار (radio) والنقر المزدوج والنقر بالزر الأيمن والخروج من الإطارات والعودة إلى النافذة الأصلية أو إغلاق النافذة الجديدة والإجابة على مطالبات JavaScript وحقول التاريخ والوقت والنطاق واللون والتحقق المدمج في النماذج والقوائم متعددة الاختيار.'},
+    "fr": {"upd_note_more_field_types": "L'automatisation gère désormais les boutons radio, le double-clic et le clic droit, la sortie des iframes, le retour à la fenêtre d'origine ou la fermeture d'un nouvel onglet, les réponses aux prompts JavaScript, les champs date/heure/plage/couleur, la validation native des formulaires et les listes à sélection multiple."},
+    "tr": {"upd_note_more_field_types": "Otomasyon artık radyo düğmelerini, çift ve sağ tıklamayı, iframe'den çıkmayı, ilk pencereye dönmeyi veya yeni sekmeyi kapatmayı, JavaScript istemlerini yanıtlamayı, tarih/saat/aralık/renk alanlarını, yerleşik form doğrulamasını ve çoklu seçim listelerini destekliyor."},
+    "es": {"upd_note_more_field_types": 'La automatización ahora admite botones de opción, doble clic y clic derecho, salir de iframes, volver a la ventana original o cerrar una pestaña nueva, responder prompts de JavaScript, campos de fecha/hora/rango/color, la validación nativa de formularios y listas de selección múltiple.'},
+    "de": {"upd_note_more_field_types": 'Die Automatisierung unterstützt jetzt Optionsfelder, Doppel- und Rechtsklick, das Verlassen von iframes, die Rückkehr zum ursprünglichen Fenster oder das Schließen eines neuen Tabs, Antworten auf JavaScript-Prompts, Datums-/Zeit-/Bereichs-/Farbfelder, die native Formularvalidierung und Mehrfachauswahllisten.'},
+    "nl": {"upd_note_more_field_types": 'Automatisering ondersteunt nu keuzerondjes, dubbel- en rechtsklikken, iframes verlaten, terug naar het oorspronkelijke venster of een nieuw tabblad sluiten, JavaScript-prompts beantwoorden, datum-/tijd-/bereik-/kleurvelden, ingebouwde formuliervalidatie en meervoudige keuzelijsten.'},
+}
+for _language, _values in _BATCH1_I18N.items():
+    _STRINGS[_language].update(_values)
+
+_RUN_REPORT_I18N = {
+    "en": {"upd_note_run_report": 'Generated projects now run with the browser visible, open their HTML report when the run finishes and email it (Selenium, Playwright and Cypress).'},
+    "ar": {"upd_note_run_report": 'تعمل المشاريع الناتجة الآن مع ظهور المتصفح، وتفتح تقرير HTML عند انتهاء التشغيل وترسله بالبريد (Selenium وPlaywright وCypress).'},
+    "fr": {"upd_note_run_report": "Les projets générés s'exécutent désormais avec le navigateur visible, ouvrent leur rapport HTML à la fin de l'exécution et l'envoient par e-mail (Selenium, Playwright et Cypress)."},
+    "tr": {"upd_note_run_report": 'Oluşturulan projeler artık tarayıcı görünür şekilde çalışıyor, çalışma bitince HTML raporunu açıyor ve e-postayla gönderiyor (Selenium, Playwright ve Cypress).'},
+    "es": {"upd_note_run_report": 'Los proyectos generados ahora se ejecutan con el navegador visible, abren su informe HTML al terminar y lo envían por correo (Selenium, Playwright y Cypress).'},
+    "de": {"upd_note_run_report": 'Erzeugte Projekte laufen jetzt mit sichtbarem Browser, öffnen nach dem Lauf ihren HTML-Bericht und versenden ihn per E-Mail (Selenium, Playwright und Cypress).'},
+    "nl": {"upd_note_run_report": 'Gegenereerde projecten draaien nu met zichtbare browser, openen hun HTML-rapport na de run en mailen het (Selenium, Playwright en Cypress).'},
+}
+for _language, _values in _RUN_REPORT_I18N.items():
+    _STRINGS[_language].update(_values)
+
+# Reuse verified cases between runs (regenerate only failed/changed cases).
+_REUSE_I18N = {
+    "en": {"auto_reinspect_all": "Re-inspect all cases",
+           "auto_reinspect_hint": "By default, cases that passed inspection and replay in an earlier run of this folder are reused, and only new, changed or failed cases are inspected again. Tick this after the site itself changed.",
+           "auto_reuse_log": "Reusing {n} case(s) verified in an earlier run — inspecting {m} new, changed or failed case(s).",
+           "upd_note_reuse_verified": "Regenerating now re-inspects only new, changed or failed cases and reuses the cases that already passed (tick “Re-inspect all cases” to redo everything)."},
+    "ar": {"auto_reinspect_all": "إعادة فحص كل الحالات",
+           "auto_reinspect_hint": "افتراضيًا تُعاد استخدام الحالات التي نجحت في الفحص والإعادة في تشغيل سابق لهذا المجلد، ولا يُعاد فحص إلا الحالات الجديدة أو المعدّلة أو الفاشلة. فعّل هذا الخيار بعد تغيّر الموقع نفسه.",
+           "auto_reuse_log": "إعادة استخدام {n} حالة تم التحقق منها في تشغيل سابق — فحص {m} حالة جديدة أو معدّلة أو فاشلة.",
+           "upd_note_reuse_verified": "إعادة الإنشاء تفحص الآن الحالات الجديدة أو المعدّلة أو الفاشلة فقط وتعيد استخدام الحالات الناجحة (فعّل «إعادة فحص كل الحالات» لإعادة كل شيء)."},
+    "fr": {"auto_reinspect_all": "Réinspecter tous les cas",
+           "auto_reinspect_hint": "Par défaut, les cas qui ont réussi l'inspection et la relecture lors d'une exécution précédente de ce dossier sont réutilisés ; seuls les cas nouveaux, modifiés ou en échec sont réinspectés. Cochez après une modification du site lui-même.",
+           "auto_reuse_log": "Réutilisation de {n} cas vérifié(s) lors d'une exécution précédente — inspection de {m} cas nouveau(x), modifié(s) ou en échec.",
+           "upd_note_reuse_verified": "La régénération ne réinspecte plus que les cas nouveaux, modifiés ou en échec et réutilise ceux qui ont déjà réussi (cochez « Réinspecter tous les cas » pour tout refaire)."},
+    "tr": {"auto_reinspect_all": "Tüm durumları yeniden incele",
+           "auto_reinspect_hint": "Varsayılan olarak bu klasörün önceki bir çalışmasında incelemeyi ve tekrar oynatmayı geçen durumlar yeniden kullanılır; yalnızca yeni, değişen veya başarısız durumlar yeniden incelenir. Sitenin kendisi değiştiyse bunu işaretleyin.",
+           "auto_reuse_log": "Önceki çalışmada doğrulanan {n} durum yeniden kullanılıyor — {m} yeni, değişen veya başarısız durum inceleniyor.",
+           "upd_note_reuse_verified": "Yeniden oluşturma artık yalnızca yeni, değişen veya başarısız durumları inceliyor ve geçmiş olanları yeniden kullanıyor (hepsini yeniden yapmak için “Tüm durumları yeniden incele”yi işaretleyin)."},
+    "es": {"auto_reinspect_all": "Volver a inspeccionar todos los casos",
+           "auto_reinspect_hint": "Por defecto se reutilizan los casos que superaron la inspección y la repetición en una ejecución anterior de esta carpeta, y solo se vuelven a inspeccionar los casos nuevos, cambiados o fallidos. Márcalo cuando el propio sitio haya cambiado.",
+           "auto_reuse_log": "Reutilizando {n} caso(s) verificado(s) en una ejecución anterior — inspeccionando {m} caso(s) nuevo(s), cambiado(s) o fallido(s).",
+           "upd_note_reuse_verified": "Al regenerar ahora solo se vuelven a inspeccionar los casos nuevos, cambiados o fallidos y se reutilizan los que ya pasaron (marca «Volver a inspeccionar todos los casos» para rehacerlo todo)."},
+    "de": {"auto_reinspect_all": "Alle Fälle neu prüfen",
+           "auto_reinspect_hint": "Standardmäßig werden Fälle, die Prüfung und Wiederholung in einem früheren Lauf dieses Ordners bestanden haben, wiederverwendet; nur neue, geänderte oder fehlgeschlagene Fälle werden neu geprüft. Aktivieren, wenn sich die Website selbst geändert hat.",
+           "auto_reuse_log": "{n} in einem früheren Lauf verifizierte(r) Fall/Fälle wiederverwendet — {m} neue, geänderte oder fehlgeschlagene Fälle werden geprüft.",
+           "upd_note_reuse_verified": "Beim Neuerzeugen werden jetzt nur neue, geänderte oder fehlgeschlagene Fälle neu geprüft; bestandene werden wiederverwendet („Alle Fälle neu prüfen“ macht alles neu)."},
+    "nl": {"auto_reinspect_all": "Alle cases opnieuw inspecteren",
+           "auto_reinspect_hint": "Standaard worden cases die inspectie en herhaling in een eerdere run van deze map hebben doorstaan hergebruikt; alleen nieuwe, gewijzigde of mislukte cases worden opnieuw geïnspecteerd. Vink dit aan als de site zelf is veranderd.",
+           "auto_reuse_log": "{n} case(s) uit een eerdere run hergebruikt — {m} nieuwe, gewijzigde of mislukte case(s) worden geïnspecteerd.",
+           "upd_note_reuse_verified": "Opnieuw genereren inspecteert nu alleen nieuwe, gewijzigde of mislukte cases en hergebruikt de cases die al slaagden (vink “Alle cases opnieuw inspecteren” aan om alles opnieuw te doen)."},
+}
+for _language, _values in _REUSE_I18N.items():
+    _STRINGS[_language].update(_values)
+
+_CREDS_OPTIONAL_I18N = {
+    "en": {"auto_creds_optional": "Leave both blank when the site has no login."},
+    "ar": {"auto_creds_optional": "اتركهما فارغين إذا لم يكن للموقع تسجيل دخول."},
+    "fr": {"auto_creds_optional": "Laissez les deux vides si le site n'a pas de connexion."},
+    "tr": {"auto_creds_optional": "Sitede giriş yoksa ikisini de boş bırakın."},
+    "es": {"auto_creds_optional": "Déjalos en blanco si el sitio no tiene inicio de sesión."},
+    "de": {"auto_creds_optional": "Beide leer lassen, wenn die Website keine Anmeldung hat."},
+    "nl": {"auto_creds_optional": "Laat beide leeg als de site geen login heeft."},
+}
+for _language, _values in _CREDS_OPTIONAL_I18N.items():
+    _STRINGS[_language].update(_values)
+
+# Help + release note: optional test account, reuse of verified cases.
+_HELP_REUSE_I18N = {
+    "en": {"helpm_auto_scripts_s1": "Enter the Site URL (and the Login URL if the site has a login) and turn on Live inspection. Add a test account only when the site needs a login — leave it blank otherwise. Every locator is proven on the real page and each case is replayed before any code is written.",
+           "helpm_auto_scripts_s6": "Generating again re-inspects only new, changed or failed cases; cases that passed before are reused without opening the browser (tick “Re-inspect all cases” after the site changes). After updating QA Studio, tick “Regenerate stories already in this folder” to rebuild with the latest engine — hand-edited classes are kept and the fresh copy is saved as .new.",
+           "upd_note_optional_account": "The test account is now optional for live inspection, so sites without a login work out of the box. A page that only has a password field (such as a form under test) is no longer mistaken for a login page, and a case that fails before its first step now blocks generation."},
+    "ar": {"helpm_auto_scripts_s1": "أدخل رابط الموقع (ورابط تسجيل الدخول إن كان للموقع تسجيل دخول) وفعّل الفحص المباشر. أضف حساب اختبار فقط إذا كان الموقع يتطلب تسجيل الدخول، واتركه فارغًا خلاف ذلك. يتم إثبات كل محدد على الصفحة الحقيقية وإعادة تشغيل كل حالة قبل كتابة أي كود.",
+           "helpm_auto_scripts_s6": "عند الإنشاء مرة أخرى يُعاد فحص الحالات الجديدة أو المعدّلة أو الفاشلة فقط، وتُعاد استخدام الحالات الناجحة دون فتح المتصفح (فعّل «إعادة فحص كل الحالات» بعد تغيّر الموقع). بعد تحديث QA Studio فعّل «إعادة إنشاء القصص الموجودة في هذا المجلد» لإعادة البناء بأحدث محرك، وتُحفظ الفئات المعدّلة يدويًا والنسخة الجديدة بامتداد \u200e.new.",
+           "upd_note_optional_account": "أصبح حساب الاختبار اختياريًا في الفحص المباشر، فتعمل المواقع التي لا تتطلب تسجيل دخول مباشرة. لم تعد الصفحة التي تحتوي على حقل كلمة مرور فقط (مثل نموذج قيد الاختبار) تُعامل كصفحة تسجيل دخول، والحالة التي تفشل قبل خطوتها الأولى تمنع الإنشاء الآن."},
+    "fr": {"helpm_auto_scripts_s1": "Saisissez l'URL du site (et l'URL de connexion si le site en a une) et activez l'inspection en direct. Ajoutez un compte de test seulement si le site exige une connexion ; sinon laissez-le vide. Chaque localisateur est prouvé sur la vraie page et chaque cas rejoué avant d'écrire du code.",
+           "helpm_auto_scripts_s6": "Une nouvelle génération ne réinspecte que les cas nouveaux, modifiés ou en échec ; les cas déjà réussis sont réutilisés sans ouvrir le navigateur (cochez « Réinspecter tous les cas » si le site a changé). Après une mise à jour de QA Studio, cochez « Régénérer les stories déjà présentes » pour reconstruire avec le dernier moteur ; vos classes modifiées sont conservées et la nouvelle copie est en .new.",
+           "upd_note_optional_account": "Le compte de test est désormais facultatif pour l'inspection en direct : les sites sans connexion fonctionnent directement. Une page qui n'a qu'un champ mot de passe (comme un formulaire testé) n'est plus prise pour une page de connexion, et un cas qui échoue avant sa première étape bloque désormais la génération."},
+    "tr": {"helpm_auto_scripts_s1": "Site URL'sini (site girişi varsa Giriş URL'sini de) girin ve Canlı incelemeyi açın. Test hesabını yalnızca site giriş gerektiriyorsa ekleyin, aksi halde boş bırakın. Her konum belirleyici gerçek sayfada kanıtlanır ve kod yazılmadan önce her vaka yeniden oynatılır.",
+           "helpm_auto_scripts_s6": "Yeniden oluşturmak yalnızca yeni, değişen veya başarısız durumları inceler; daha önce geçen durumlar tarayıcı açılmadan yeniden kullanılır (site değiştiyse “Tüm durumları yeniden incele”yi işaretleyin). QA Studio'yu güncelledikten sonra en güncel motorla yeniden oluşturmak için “Bu klasördeki mevcut hikâyeleri yeniden oluştur”u işaretleyin; elle düzenlenen sınıflar korunur, yeni kopya .new olarak kaydedilir.",
+           "upd_note_optional_account": "Test hesabı artık canlı inceleme için isteğe bağlı; giriş gerektirmeyen siteler doğrudan çalışır. Yalnızca parola alanı olan bir sayfa (test edilen bir form gibi) artık giriş sayfası sanılmıyor ve ilk adımından önce başarısız olan bir durum artık oluşturmayı durduruyor."},
+    "es": {"helpm_auto_scripts_s1": "Introduce la URL del sitio (y la de inicio de sesión si el sitio la tiene) y activa la inspección en vivo. Añade una cuenta de prueba solo si el sitio requiere inicio de sesión; si no, déjala en blanco. Cada localizador se comprueba en la página real y cada caso se repite antes de escribir código.",
+           "helpm_auto_scripts_s6": "Al volver a generar solo se inspeccionan los casos nuevos, cambiados o fallidos; los que ya pasaron se reutilizan sin abrir el navegador (marca «Volver a inspeccionar todos los casos» si el sitio cambió). Tras actualizar QA Studio, marca «Regenerar las historias que ya están en esta carpeta» para reconstruir con el motor más reciente; tus clases editadas se conservan y la copia nueva se guarda como .new.",
+           "upd_note_optional_account": "La cuenta de prueba ahora es opcional en la inspección en vivo, así que los sitios sin inicio de sesión funcionan directamente. Una página que solo tiene un campo de contraseña (como un formulario bajo prueba) ya no se confunde con una página de inicio de sesión, y un caso que falla antes de su primer paso ahora bloquea la generación."},
+    "de": {"helpm_auto_scripts_s1": "Site-URL (und Login-URL, falls die Website eine Anmeldung hat) eingeben und die Live-Inspektion aktivieren. Ein Testkonto nur angeben, wenn die Website eine Anmeldung braucht, sonst leer lassen. Jeder Locator wird auf der echten Seite geprüft und jeder Fall vor dem Schreiben von Code abgespielt.",
+           "helpm_auto_scripts_s6": "Beim erneuten Erzeugen werden nur neue, geänderte oder fehlgeschlagene Fälle neu geprüft; bereits bestandene werden ohne Browser wiederverwendet („Alle Fälle neu prüfen“ ankreuzen, wenn sich die Website geändert hat). Nach einem QA-Studio-Update „Bereits vorhandene Storys neu erzeugen“ ankreuzen, um mit der neuesten Engine neu zu bauen; von Hand bearbeitete Klassen bleiben erhalten, die neue Kopie liegt als .new daneben.",
+           "upd_note_optional_account": "Das Testkonto ist für die Live-Inspektion jetzt optional, Websites ohne Anmeldung funktionieren also direkt. Eine Seite mit nur einem Passwortfeld (etwa ein getestetes Formular) gilt nicht mehr als Login-Seite, und ein Fall, der vor seinem ersten Schritt scheitert, blockiert jetzt die Erzeugung."},
+    "nl": {"helpm_auto_scripts_s1": "Vul de site-URL in (en de inlog-URL als de site een login heeft) en zet live-inspectie aan. Voeg alleen een testaccount toe als de site een login vereist, laat het anders leeg. Elke locator wordt op de echte pagina bewezen en elk geval opnieuw afgespeeld voordat er code wordt geschreven.",
+           "helpm_auto_scripts_s6": "Opnieuw genereren inspecteert alleen nieuwe, gewijzigde of mislukte cases; cases die al slaagden worden hergebruikt zonder de browser te openen (vink “Alle cases opnieuw inspecteren” aan als de site is veranderd). Vink na een QA Studio-update “Stories die al in deze map staan opnieuw genereren” aan om met de nieuwste engine te herbouwen; met de hand bewerkte klassen blijven behouden en de nieuwe kopie staat ernaast als .new.",
+           "upd_note_optional_account": "Het testaccount is nu optioneel voor live-inspectie, dus sites zonder login werken direct. Een pagina met alleen een wachtwoordveld (zoals een formulier dat getest wordt) wordt niet langer voor een inlogpagina aangezien, en een case die vóór zijn eerste stap mislukt, blokkeert nu het genereren."},
+}
+for _language, _values in _HELP_REUSE_I18N.items():
+    _STRINGS[_language].update(_values)
+
+_RUN_FIXES_I18N = {
+    "en": {"upd_note_run_fixes": "Generated scripts: a multi-select check now passes when several options are selected, a right-click no longer leaves the browser's own menu open over the page, and `npx playwright test --list` no longer emails a report."},
+    "ar": {"upd_note_run_fixes": "السكربتات المُنشأة: أصبح التحقق من القائمة متعددة الاختيار ينجح عند اختيار عدة خيارات، ولم يعد النقر بالزر الأيمن يترك قائمة المتصفح مفتوحة فوق الصفحة، ولم يعد الأمر npx playwright test --list يرسل تقريرًا بالبريد."},
+    "fr": {"upd_note_run_fixes": "Scripts générés : la vérification d'une liste à choix multiples réussit désormais quand plusieurs options sont sélectionnées, un clic droit ne laisse plus le menu du navigateur ouvert sur la page, et `npx playwright test --list` n'envoie plus de rapport par e-mail."},
+    "tr": {"upd_note_run_fixes": "Oluşturulan betikler: çoklu seçim kontrolü artık birden fazla seçenek seçildiğinde geçiyor, sağ tıklama artık tarayıcının kendi menüsünü sayfanın üzerinde açık bırakmıyor ve `npx playwright test --list` artık rapor e-postası göndermiyor."},
+    "es": {"upd_note_run_fixes": "Scripts generados: la comprobación de una lista de selección múltiple ahora pasa cuando hay varias opciones elegidas, un clic derecho ya no deja abierto el menú del navegador sobre la página y `npx playwright test --list` ya no envía un informe por correo."},
+    "de": {"upd_note_run_fixes": "Erzeugte Skripte: Die Prüfung einer Mehrfachauswahl besteht jetzt, wenn mehrere Optionen gewählt sind, ein Rechtsklick lässt das Browsermenü nicht mehr über der Seite offen, und `npx playwright test --list` verschickt keinen Bericht mehr per E-Mail."},
+    "nl": {"upd_note_run_fixes": "Gegenereerde scripts: een controle op een meervoudige selectie slaagt nu als er meerdere opties gekozen zijn, een rechtsklik laat het browsermenu niet meer open boven de pagina staan, en `npx playwright test --list` mailt geen rapport meer."},
+}
+for _language, _values in _RUN_FIXES_I18N.items():
+    _STRINGS[_language].update(_values)
+
+_BRANDED_REPORT_I18N = {
+    "en": {"upd_note_branded_report": "Generated projects now write a QA Studio run report (results per story, each failure with its error, failing step and screenshot, and the run environment). It opens after every run and is emailed with the detailed Selenium, Playwright or Cypress report."},
+    "ar": {"upd_note_branded_report": "تكتب المشاريع الناتجة الآن تقرير تشغيل من QA Studio (النتائج لكل قصة، وكل فشل مع الخطأ والخطوة الفاشلة ولقطة الشاشة، وبيئة التشغيل). يُفتح بعد كل تشغيل ويُرسل بالبريد مع التقرير التفصيلي لـ Selenium أو Playwright أو Cypress."},
+    "fr": {"upd_note_branded_report": "Les projets générés écrivent désormais un rapport d'exécution QA Studio (résultats par story, chaque échec avec son erreur, l'étape en échec et une capture d'écran, et l'environnement). Il s'ouvre après chaque exécution et est envoyé par e-mail avec le rapport détaillé Selenium, Playwright ou Cypress."},
+    "tr": {"upd_note_branded_report": "Oluşturulan projeler artık bir QA Studio çalışma raporu yazıyor (hikâye başına sonuçlar, her hata için hata mesajı, başarısız adım ve ekran görüntüsü, çalışma ortamı). Her çalışmadan sonra açılır ve ayrıntılı Selenium, Playwright veya Cypress raporuyla e-postayla gönderilir."},
+    "es": {"upd_note_branded_report": "Los proyectos generados ahora escriben un informe de ejecución de QA Studio (resultados por historia, cada fallo con su error, el paso fallido y una captura, y el entorno). Se abre tras cada ejecución y se envía por correo con el informe detallado de Selenium, Playwright o Cypress."},
+    "de": {"upd_note_branded_report": "Erzeugte Projekte schreiben jetzt einen QA-Studio-Laufbericht (Ergebnisse pro Story, jeder Fehler mit Meldung, fehlgeschlagenem Schritt und Screenshot, dazu die Laufumgebung). Er öffnet sich nach jedem Lauf und wird mit dem ausführlichen Selenium-, Playwright- oder Cypress-Bericht per E-Mail versendet."},
+    "nl": {"upd_note_branded_report": "Gegenereerde projecten schrijven nu een QA Studio-runrapport (resultaten per story, elke fout met foutmelding, mislukte stap en screenshot, en de runomgeving). Het opent na elke run en wordt gemaild samen met het gedetailleerde Selenium-, Playwright- of Cypress-rapport."},
+}
+for _language, _values in _BRANDED_REPORT_I18N.items():
     _STRINGS[_language].update(_values)
 
 for _language, _values in _CASE_STYLE_I18N.items():

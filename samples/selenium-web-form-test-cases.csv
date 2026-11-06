@@ -1,0 +1,16 @@
+﻿Test Case ID,Test Case Title,Step,Action,Expected Result,Element Type,Preferred Locator,Frame Context,Automation Note
+TC01,Choose a radio button,1,Open https://www.selenium.dev/selenium/web/web-form.html,"The ""Web form"" heading is shown",,,,
+TC01,Choose a radio button,2,"Click the ""Default radio"" radio button","""Default radio"" is checked",radio,#my-radio-2,,
+TC02,"Pick a date, colour and range, then submit",1,Open https://www.selenium.dev/selenium/web/web-form.html,"The ""Web form"" heading is shown",,,,
+TC02,"Pick a date, colour and range, then submit",2,"Set the ""Date picker"" field to ""01/31/2026""",,date input,input[name=my-date],,
+TC02,"Pick a date, colour and range, then submit",3,"Set the ""Color picker"" field to ""#ff0000""",,color input,input[name=my-colors],,
+TC02,"Pick a date, colour and range, then submit",4,"Set the ""Example range"" slider to ""8""",,range,input[name=my-range],,
+TC02,"Pick a date, colour and range, then submit",5,"Click the ""Submit"" button","The ""Form submitted"" heading is shown",button,,,
+TC03,Choose several options in a multi-select list,1,Open https://www.selenium.dev/selenium/web/formPage.html,,,,,
+TC03,Choose several options in a multi-select list,2,"Select ""Ham"" and ""Onion gravy"" in the multi-select list","""Ham"" is selected",multi select,#multi,,
+TC04,Double-click a field,1,Open https://www.selenium.dev/selenium/web/mouse_interaction.html,"The ""Mouse Clicks"" heading is shown",,,,
+TC04,Double-click a field,2,"Double-click the ""Clickable"" field","Status ""double-clicked"" is shown",,#clickable,,
+TC05,Right-click a field,1,Open https://www.selenium.dev/selenium/web/mouse_interaction.html,"The ""Mouse Clicks"" heading is shown",,,,
+TC05,Right-click a field,2,"Right-click the ""Clickable"" field","Status ""context-clicked"" is shown",,#clickable,,
+TC06,Hover a button,1,Open https://www.selenium.dev/selenium/web/mouse_interaction.html,"The ""Mouse Clicks"" heading is shown",,,,
+TC06,Hover a button,2,"Hover over the ""Hoverable"" button","Status ""hovered"" is shown",button,#hover,,hover

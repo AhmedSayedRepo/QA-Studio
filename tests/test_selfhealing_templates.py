@@ -82,7 +82,7 @@ class AppHomeStartTests(unittest.TestCase):
         base = engine._sh_base_test(PKG)
         body = _method(base, "protected void openAppHome(")
         self.assertIn("driver.get(Config.BASE_URL);", body)
-        self.assertIn("loginFieldPresent(", body)
+        self.assertIn("loginFormPresent(", body)
         self.assertIn("performLogin();", body)
 
     def test_app_cases_start_with_open_app_home(self):
