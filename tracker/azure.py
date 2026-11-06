@@ -263,7 +263,8 @@ class AzureBackend(Backend):
                                self._project_name(project), plan.ref.id,
                                suite.ref.id) or [])
 
-    def create_test_case(self, project, plan, suite, title, story=None):
+    def create_test_case(self, project, plan, suite, title, story=None, labels=()):
+        # Tags come from engine.case_labels() inside engine.create_test_case.
         cid = self._call(self._e.create_test_case, self._project_name(project),
                          plan.ref.id, suite.ref.id, title,
                          story.ref.id if story else None)
@@ -271,6 +272,10 @@ class AzureBackend(Backend):
         return TestCase(ref=Ref(id=case_id), title=title, suite_ref=suite.ref,
                         story_ref=(story.ref if story else suite.story_ref),
                         url=self.item_url(Ref(id=case_id), project))
+
+    def fetch_case_labels(self, refs):
+        self._ensure_sdk()
+        return self._call(self._e.fetch_case_labels, [r.key or r.id for r in refs])
 
     def fetch_test_case_steps(self, ref):
         self._ensure_sdk()          # SDK-backed engine call

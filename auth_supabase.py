@@ -1667,7 +1667,7 @@ def sync_remote_credentials(azure_org, azure_pat, ai_provider, ai_api_key, ai_mo
 
 
 def enqueue_remote_run(kind, project, plan_id, story_ids, existing_mode="skip",
-                       output_lang="ar", email_recipients=None):
+                       output_lang="ar", email_recipients=None, case_style="manual"):
     """INSERT a remote_runs row AS the signed-in user (created_by = auth uid →
     the worker resolves THIS user's vault credentials). The DB trigger
     auto-dispatches the GitHub Actions workflow within seconds. Returns
@@ -1698,6 +1698,10 @@ def enqueue_remote_run(kind, project, plan_id, story_ids, existing_mode="skip",
            "email_recipients": [e.strip() for e in (email_recipients or []) if e.strip()],
            "created_by": uid,
            "project_id": project_id or None}
+    # Sent only for Automation style, so Manual runs keep working on a
+    # database that hasn't applied the case_style migration yet.
+    if case_style == "automation":
+        row["case_style"] = "automation"
     try:
         r = _client().post(f"{SUPABASE_URL}/rest/v1/remote_runs",
                            headers={"Authorization": f"Bearer {tok}",

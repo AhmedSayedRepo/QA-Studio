@@ -114,21 +114,89 @@ def _refresh_auto_state(app):
     return True
 
 
+def _result_banner_content(app):
+    """End-of-run banner body from app._auto_result, or None while running /
+    before any run."""
+    _res = getattr(app, "_auto_result", None)
+    if not _res or app._auto_running:
+        return None
+    import log_view
+    _kind, _detail = _res
+    _tone = log_view.banner_tone(_kind)
+    _fg = {"ok": T.GREEN, "err": T.RED, "warn": T.AMBER}.get(_tone, T.INK_2)
+    _bg = {"ok": T.GREEN_SOFT, "err": T.RED_SOFT, "warn": T.AMBER_SOFT}.get(_tone, T.CARD)
+    _icon = {"ok": ft.Icons.CHECK_CIRCLE, "err": ft.Icons.ERROR_OUTLINE,
+             "warn": ft.Icons.PAUSE_CIRCLE_OUTLINE}.get(_tone, ft.Icons.INFO_OUTLINE)
+    _text = strings.t("auto_result_" + _kind, detail=_detail)
+    return ft.Container(
+        ft.Row([ft.Icon(_icon, size=16, color=_fg),
+                ft.Text(_text, size=11.5, weight=ft.FontWeight.BOLD, color=_fg,
+                        expand=True, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS)],
+               spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        padding=ft.Padding.symmetric(horizontal=10, vertical=6),
+        bgcolor=_bg, border_radius=T.R, border=ft.Border.all(1, _fg))
+
+
+def _log_placeholder():
+    return ft.Container(empty_state(
+        ft.Icons.TERMINAL, strings.t("auto_no_activity"),
+        strings.t("auto_no_activity_hint")), height=320)
+
+
+def refresh_run_ui(app, starting=False):
+    """In-place update for a Generate run's start/end: buttons, spinner, the four
+    cards, the result banner and (on start) an emptied log. Returns False when the
+    Automation screen isn't showing or hasn't been built — caller falls back to
+    app.render()."""
+    if getattr(app, "active", None) != "automation":
+        return False
+    if not _refresh_auto_state(app):
+        return False
+    counts = app._auto_count()
+    for key, ctl in (getattr(app, "_auto_count_ctl", None) or {}).items():
+        try:
+            ctl.value = str(counts.get(key, ""))
+            ctl.update()
+        except Exception:
+            pass
+    rctr = getattr(app, "_auto_result_ctr", None)
+    if rctr is not None:
+        try:
+            body = _result_banner_content(app)
+            rctr.content = body
+            rctr.visible = body is not None
+            rctr.update()
+        except Exception:
+            pass
+    col = getattr(app, "_auto_log_col", None)
+    if col is not None:
+        try:
+            with app._auto_log_ui_lock:
+                if starting and not app._auto_log:
+                    col.controls = [_log_placeholder()]
+                    col._qa_placeholder = True
+                else:
+                    # Running -> finished changes case auto-collapse.
+                    app._apply_log_view(col)
+                col.update()
+        except Exception:
+            pass
+    return True
+
+
 def screen(app):
-        if not app.readonly and not (app.connected and app.project):
-            return regression.locked_state(
-                app, strings.t("auto_title"),
-                strings.t("auto_locked_sub"),
-                strings.t("auto_locked_msg"))
+        # No connect gate: a local CSV/XLSX needs no test-management tool. Only
+        # the tracker source does — it's shown disabled with a Setup hint.
+        tracker_ok = backend_setup.tracker_available(app)
         regression._auto_init(app)
         # ── left: config form ──
-        file_source = getattr(app, "auto_source_mode", "backend") == "file"
+        file_source = backend_setup.automation_uses_file_source(app)
         ready = bool((app.auto_test_case_file or "").strip()) if file_source else bool(
             app._auto_plans_selected and app._auto_selected)
 
         def _auto_refresh_gen_btn():
             app._auto_buttons_ready = (bool((app.auto_test_case_file or "").strip())
-                                        if getattr(app, "auto_source_mode", "backend") == "file"
+                                        if backend_setup.automation_uses_file_source(app)
                                         else bool(app._auto_plans_selected and app._auto_selected))
             _refresh_auto_state(app)
         app._auto_refresh_gen_btn = _auto_refresh_gen_btn
@@ -172,8 +240,8 @@ def screen(app):
                 cont.on_hover = _hover
             return cont
 
-        def _source_option(key, title, desc, icon):
-            active = getattr(app, "auto_source_mode", "backend") == key
+        def _source_option(key, title, desc, icon, enabled=True):
+            active = (("file" if file_source else "backend") == key)
             def _pick(e, value=key):
                 app.auto_source_mode = value
                 app._auto_invalid = set()
@@ -188,7 +256,9 @@ def screen(app):
                 padding=ft.Padding.symmetric(horizontal=12, vertical=10), expand=True,
                 bgcolor=T.VIOLET_SOFT if active else T.CARD_2,
                 border=ft.Border.all(2 if active else 1, T.VIOLET if active else T.BORDER),
-                border_radius=T.R, on_click=_pick)
+                border_radius=T.R, on_click=(_pick if enabled else None),
+                opacity=(1 if enabled else 0.55),
+                tooltip=(None if enabled else strings.t("auto_source_needs_connect")))
 
         if file_source:
             selected_file = (getattr(app, "auto_test_case_file", "") or "").strip()
@@ -213,18 +283,40 @@ def screen(app):
             _azure_card = regression.automation_source_card(app)
             source_details = ft.Column(list(_azure_card.content.controls[2:]), spacing=0)
 
+        def _flip_only_automation(e):
+            # Saved immediately; read by the worker when loading cases (no render).
+            app.auto_only_automation = bool(e.control.value)
+            try:
+                app.creds["auto_only_automation"] = app.auto_only_automation
+                import store
+                store.save(app.creds)
+            except Exception:
+                pass
+
+        only_tagged = ([] if file_source else [
+            ft.Container(height=10),
+            ft.Row([
+                ft.Checkbox(value=bool(getattr(app, "auto_only_automation", False)),
+                            active_color=T.VIOLET, on_change=_flip_only_automation),
+                ft.Text(strings.t("auto_only_tagged"), size=11.5, color=T.INK_2, expand=True),
+            ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        ])
+
         source_card = card(ft.Column([
             sec_head("A", strings.t("auto_sec_source")),
             ft.Container(height=10),
             ft.Row([
                 _source_option("backend",
                                backend_setup.label_for(backend_setup.active(app.creds)),
-                               strings.t("auto_source_backend_desc"), ft.Icons.CLOUD_OUTLINED),
+                               (strings.t("auto_source_backend_desc") if tracker_ok
+                                else strings.t("auto_source_needs_connect")),
+                               ft.Icons.CLOUD_OUTLINED, enabled=tracker_ok),
                 _source_option("file", strings.t("auto_source_file"),
                                strings.t("auto_source_file_desc"), ft.Icons.UPLOAD_FILE),
             ], spacing=10),
             ft.Container(height=12),
             source_details,
+            *only_tagged,
         ], spacing=0))
 
         framework_card = card(ft.Column([
@@ -254,10 +346,18 @@ def screen(app):
         ], spacing=0))
 
         def _flip_inspection(e):
+            # In place: show/hide the always-built details panel (no render(),
+            # so the form keeps its scroll position and typed values).
             app.auto_live_inspection = bool(e.control.value)
             app._auto_live_confirm = False
             app._auto_inspection_confirm_invalid = False
-            app.render()
+            confirm_box.value = False
+            confirm_error.visible = False
+            inspection_details.visible = app.auto_live_inspection
+            try:
+                inspection_details.update()
+            except Exception:
+                app.render()   # not mounted yet — fall back to a full build
 
         confirm_error = ft.Text(
             strings.t("auto_err_test_confirm"), size=11, color=T.RED,
@@ -274,6 +374,36 @@ def screen(app):
                 except Exception:
                     pass
 
+        def _flip_allow_unverified(e):
+            # Saved immediately; nothing else on screen depends on it (no render).
+            app.auto_allow_unverified = bool(e.control.value)
+            try:
+                app.creds["auto_allow_unverified"] = app.auto_allow_unverified
+                import store
+                store.save(app.creds)
+            except Exception:
+                pass
+
+        def _flip_env_creds(e):
+            # Saved immediately; read by the worker at generation (no render).
+            app.auto_env_creds = bool(e.control.value)
+            try:
+                app.creds["auto_env_creds"] = app.auto_env_creds
+                import store
+                store.save(app.creds)
+            except Exception:
+                pass
+
+        def _flip_regenerate(e):
+            # Saved immediately; read by the worker at classification (no render).
+            app.auto_regenerate = bool(e.control.value)
+            try:
+                app.creds["auto_regenerate"] = app.auto_regenerate
+                import store
+                store.save(app.creds)
+            except Exception:
+                pass
+
         inspection_enabled = bool(getattr(app, "auto_live_inspection", False))
         inspection_controls = [
             ft.Row([
@@ -286,8 +416,10 @@ def screen(app):
             ft.Text(strings.t("auto_inspection_desc"), size=11, color=T.INK_3,
                     weight=ft.FontWeight.W_500),
         ]
-        if inspection_enabled:
-            inspection_controls.extend([
+        confirm_box = ft.Checkbox(value=bool(getattr(app, "_auto_live_confirm", False)),
+                                  active_color=T.VIOLET, on_change=_confirm_inspection)
+        # Always built; the switch toggles .visible in place (see _flip_inspection).
+        inspection_details = ft.Column([
                 ft.Container(height=12),
                 app._auto_field(strings.t("auto_lbl_test_user"), "auto_login_user",
                                 "test.user@example.com", req=True),
@@ -296,8 +428,7 @@ def screen(app):
                                 "", password=True, req=True),
                 ft.Container(height=10),
                 ft.Row([
-                    ft.Checkbox(value=bool(getattr(app, "_auto_live_confirm", False)),
-                                active_color=T.VIOLET, on_change=_confirm_inspection),
+                    confirm_box,
                     ft.Text(strings.t("auto_inspection_confirm"), size=11.5,
                             color=T.INK_2, expand=True),
                 ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.START),
@@ -305,7 +436,22 @@ def screen(app):
                 ft.Container(height=4),
                 ft.Text(strings.t("auto_inspection_note"), size=11, color=T.INK_3,
                         weight=ft.FontWeight.W_500),
-            ])
+                ft.Container(height=10),
+                ft.Row([
+                    ft.Checkbox(value=bool(getattr(app, "auto_allow_unverified", False)),
+                                active_color=T.VIOLET, on_change=_flip_allow_unverified),
+                    ft.Text(strings.t("auto_allow_unverified"), size=11.5,
+                            color=T.INK_2, expand=True),
+                ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.START),
+                ft.Container(height=6),
+                ft.Row([
+                    ft.Checkbox(value=bool(getattr(app, "auto_env_creds", False)),
+                                active_color=T.VIOLET, on_change=_flip_env_creds),
+                    ft.Text(strings.t("auto_env_creds"), size=11.5,
+                            color=T.INK_2, expand=True),
+                ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.START),
+            ], spacing=0, visible=inspection_enabled)
+        inspection_controls.append(inspection_details)
         inspection_card = card(ft.Column([
             sec_head("D", strings.t("auto_sec_inspection")),
             ft.Container(height=10),
@@ -341,6 +487,17 @@ def screen(app):
             ft.Container(height=6),
             ft.Text(strings.t("auto_folder_note"),
                     size=11, color=T.INK_3, weight=ft.FontWeight.W_500),
+            ft.Container(height=10),
+            ft.Row([
+                ft.Checkbox(value=bool(getattr(app, "auto_regenerate", False)),
+                            active_color=T.VIOLET, on_change=_flip_regenerate),
+                ft.Column([
+                    ft.Text(strings.t("auto_regen_label"), size=11.5,
+                            weight=ft.FontWeight.BOLD, color=T.INK_2),
+                    ft.Text(strings.t("auto_regen_hint"), size=11, color=T.INK_3,
+                            weight=ft.FontWeight.W_500),
+                ], spacing=2, expand=True),
+            ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.START),
         ], spacing=0))
 
         email_picker = regression.email_recipient_picker(
@@ -369,6 +526,13 @@ def screen(app):
             git_card,
             local_card,
             email_card,
+            ft.Container(
+                ft.Row([ft.Icon(ft.Icons.HELP_OUTLINE, size=15, color=T.VIOLET_INK),
+                        ft.Text(strings.t("auto_tips_link"), size=12,
+                                weight=ft.FontWeight.BOLD, color=T.VIOLET_INK)],
+                       spacing=6, tight=True),
+                on_click=lambda e: app._show_help("auto_scripts"),
+                padding=ft.Padding.symmetric(horizontal=4, vertical=2), border_radius=6),
             app._auto_buttons_ctr,
         ], spacing=14, scroll=ft.ScrollMode.AUTO, expand=True)
 
@@ -461,6 +625,9 @@ def screen(app):
             # "1 placeholder" from "1 rendered line", and got it wrong whenever
             # two log lines landed before the first upd() ran.
             app._auto_log_col._qa_placeholder = not app._auto_log
+            # Case grouping / auto-collapse / All-Issues filter (log_view.py):
+            # only `visible` flags on the 1:1 rows built above.
+            app._apply_log_view(app._auto_log_col)
 
         spinner = (ft.ProgressRing(width=15, height=15, stroke_width=2, color=T.VIOLET)
                    if app._auto_running else ft.Icon(ft.Icons.TERMINAL, size=15, color=T.INK_3))
@@ -481,6 +648,32 @@ def screen(app):
                 border=ft.Border.all(1, (T.RED_SOFT if danger else T.BORDER)),
                 border_radius=8)
 
+        # All / Issues filter: two small chips, refreshed in place on toggle.
+        def _filter_chips():
+            issues = bool(getattr(app, "_auto_log_issues", False))
+            def chip(label, active, value):
+                return ft.Container(
+                    ft.Text(label, size=10.5, weight=ft.FontWeight.BOLD,
+                            color=(T.VIOLET_INK if active else T.INK_3)),
+                    padding=ft.Padding.symmetric(horizontal=8, vertical=4),
+                    border_radius=7, bgcolor=(T.VIOLET_SOFT if active else T.CARD),
+                    border=ft.Border.all(1, T.VIOLET if active else T.BORDER),
+                    on_click=lambda e, v=value: app._set_log_filter(v))
+            return ft.Row([chip(strings.t("auto_log_all"), not issues, False),
+                           chip(strings.t("auto_log_issues"), issues, True)],
+                          spacing=4, tight=True)
+        app._auto_log_filter_ctr = ft.Container(_filter_chips())
+
+        def _refresh_log_filter():
+            ctr = getattr(app, "_auto_log_filter_ctr", None)
+            if ctr is not None:
+                try:
+                    ctr.content = _filter_chips()
+                    ctr.update()
+                except Exception:
+                    pass
+        app._auto_refresh_log_filter = _refresh_log_filter
+
         # Pinned toolbar: spinner + title + Copy/Clear, fixed at the very top of
         # the log rail (a sibling of the scrollable column, not inside it) so it
         # never scrolls away with the log — only the log content beneath scrolls.
@@ -488,6 +681,8 @@ def screen(app):
             ft.Row([app._auto_spinner_ctr,
                     ft.Text(strings.t("auto_activity"), size=11, weight=ft.FontWeight.BOLD,
                            color=T.INK_3, expand=True),
+                    app._auto_log_filter_ctr,
+                    ft.Container(width=4),
                     _log_tool_btn(ft.Icons.COPY_ALL_OUTLINED, strings.t("auto_copy_log"),
                                  app._copy_auto_log),
                     ft.Container(width=6),
@@ -531,10 +726,16 @@ def screen(app):
         # log_toolbar's Row (which also has an expand=True child, the
         # "ACTIVITY" label). Wrapping both in their own fixed-height
         # Containers, matching the same proven pattern.
+        # End-of-run result banner (hidden while a run is active). Always built; refresh_run_ui() swaps its content / visibility in place.
+        _banner_body = _result_banner_content(app)
+        app._auto_result_ctr = ft.Container(_banner_body, height=48, margin=ft.Margin.only(bottom=10),
+                                            visible=_banner_body is not None)
+
         right = card(ft.Column([
             ft.Container(app._auto_counts_header(), height=76),
             ft.Container(height=12),
             ft.Container(log_toolbar, height=50),
+            app._auto_result_ctr,
             # NOT wrapped in its own ft.SelectionArea — shell() already wraps
             # the entire screen body in one outer SelectionArea, so this text
             # is already selectable (drag-select + Ctrl+C), same as run.py/

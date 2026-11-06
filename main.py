@@ -85,6 +85,7 @@ import run
 import report
 import automation
 import automation_file_source as auto_file_source
+import log_view
 import performance
 import setup
 import dialogs
@@ -369,6 +370,19 @@ class QAStudio:
         self.auto_login_user = self.creds.get("auto_login_user", "")
         self.auto_login_pass = self.creds.get("auto_login_pass", "")
         self.auto_live_inspection = bool(self.creds.get("auto_live_inspection", False))
+        self.auto_allow_unverified = bool(self.creds.get("auto_allow_unverified", False))
+        self.auto_regenerate = bool(self.creds.get("auto_regenerate", False))
+        self.auto_only_automation = bool(self.creds.get("auto_only_automation", False))
+        self.auto_env_creds = bool(self.creds.get("auto_env_creds", False))
+        # Email footers name the ACTIVE backend (read live, so a backend switch
+        # or account change is reflected without re-registering).
+        try:
+            E.set_email_source(lambda: backend_setup.label_for(
+                backend_setup.active(getattr(self, "creds", {}) or {})))
+        except Exception:
+            pass
+        self.case_style = ("automation" if self.creds.get("case_style") == "automation"
+                           else "manual")
         # Older builds persisted "azure" for the connected tracker source.
         # That source now follows whichever backend Setup selects.
         self.auto_source_mode = ("file" if self.creds.get("auto_source_mode") == "file"
@@ -4418,6 +4432,31 @@ class QAStudio:
             "url_label": "Open Azure DevOps",
         },
         **backend_setup.HELP,
+        "auto_cases": {
+            "title": 'Writing test cases for automation',
+            "steps": [
+                'In Setup, set Test style to Automation before generating. New cases are written script-ready and tagged “automation” in your backend.',
+                "Make the story's acceptance criteria name the real on-screen texts — button labels, page titles, messages. The AI copies them into the steps in quotes; vague criteria give vague steps.",
+                'One action per step, and one checkable fact per expected result: a quoted text that is shown, the page reached, an element shown/hidden/enabled, or a field value. Two facts? Quote both texts or use two steps.',
+                'Write visible states, not judgments: “the “Remove” button is shown”, not “the item was added successfully”.',
+                'Step 1 states the start: logged in or not, which page, and the data needed (e.g. cart has 1 item). Every case must run alone, in any order.',
+                'Use {{APP_USER}} / {{APP_PASS}} for the login. Never put real accounts, secrets or environment URLs in a case.',
+                'Keep cases short (8 steps at most): split a long multi-page journey into smaller cases.',
+                "Fix every ⚠ “Not automation-ready” line in the run log before automating. CAPTCHA, email/SMS/OTP codes and visual-layout checks can't be automated.",
+            ],
+        },
+        "auto_scripts": {
+            "title": 'Getting reliable automation scripts',
+            "steps": [
+                'Source: your backend (tick “Only test cases tagged automation”) or a CSV/XLSX file written with the same rules as automation test cases.',
+                "Enter the Site URL and Login URL of the environment you're testing, and turn on Live inspection with a test account. Every locator is proven on the real page and each case is replayed before any code is written.",
+                'Use one output folder per environment (dev, staging, production): locators and data can differ between builds.',
+                "After the run, open Issues. “Assertion target not found” means the case wording doesn't match the screen — quote the exact on-screen text in the case and run again.",
+                'Blocked means a step has no proven locator, so nothing is written. Fix the case rather than allowing unverified steps, so the scripts run without self-healing.',
+                'To run: set APP_USER and APP_PASS as environment variables. Selenium: mvn test. Playwright/Cypress: npm install, fill .env, npm test. QA_AI_API_KEY is only needed when TODO locators remain.',
+                'After updating QA Studio, tick “Regenerate stories already in this folder” to rebuild with the latest engine. Classes you edited by hand are kept; the fresh copy is saved as .new.',
+            ],
+        },
         "git_pat": {
             "title": "Git access token (PAT) for pushing tests",
             "steps": [
@@ -4746,6 +4785,80 @@ class QAStudio:
         except Exception:
             self.render()
 
+    def _build_backend_rows(self):
+        """Test-management picker + the ACTIVE backend's credential rows."""
+        _fields = backend_setup.picker_rows(self, field_label, hover_field)
+        if backend_setup.is_azure(self.creds):
+            _fields += [
+                field_label(strings.t("au_azure_org"), req=True,
+                            info=strings.t("au_azure_org_info"),
+                            on_info=lambda e: self._show_help("org")),
+                self._org_cell,
+                ft.Row([
+                    ft.Column([
+                        field_label(strings.t("au_azure_pat"), req=True,
+                                    info=strings.t("au_azure_pat_info"),
+                                    on_info=lambda e: self._show_help("pat")),
+                        self._pat_cell,
+                    ], expand=True, spacing=0),
+                ]),
+            ]
+        elif backend_setup.active(self.creds) == backend_setup.XRAY:
+            _fields += backend_setup.xray_rows(self, field_label, hover_field)
+        elif backend_setup.active(self.creds) == backend_setup.TESTRAIL:
+            _fields += backend_setup.testrail_rows(self, field_label, hover_field)
+        elif backend_setup.is_hybrid(self.creds):
+            _fields += backend_setup.hybrid_rows(self, field_label, hover_field)
+        else:
+            _fields += backend_setup.jira_rows(self, field_label, hover_field)
+        return _fields
+
+    def _refresh_backend_inplace(self):
+        """Called by backend_setup._on_pick after the backend changed: swap
+        just the credential rows and the Connect panel text in place.
+        Returns False (caller falls back to render()) when not mounted."""
+        cell = getattr(self, "_backend_cell", None)
+        if cell is None or self.active != "setup":
+            return False
+        try:
+            if cell.page is None:      # some Flet versions raise instead
+                return False
+        except Exception:
+            return False
+        try:
+            cell.controls = self._build_backend_rows()
+            cell.update()
+        except Exception:
+            return False
+        self._refresh_connect_panel_text()
+        return True
+
+    def _connect_step_rows(self, steps):
+        """Numbered step rows for the 'Step 1 · Connect' panel."""
+        return [ft.Container(ft.Row([
+            ft.Container(ft.Text(str(i + 1), size=11, color=T.INK_3, weight=ft.FontWeight.BOLD),
+                         width=20, height=20, bgcolor=T.CARD_2, border_radius=6,
+                         border=ft.Border.all(1, T.BORDER), alignment=ft.Alignment.CENTER),
+            ft.Text(t, size=12, color=T.INK_2, weight=ft.FontWeight.W_500)], spacing=8),
+            padding=ft.Padding.only(bottom=8))
+            for i, t in enumerate(steps)]
+
+    def _refresh_connect_panel_text(self):
+        """Patch the Connect panel's description + steps for the active backend.
+        No-op when that panel isn't on screen (e.g. already connected)."""
+        desc = getattr(self, "_connect_desc_text", None)
+        col = getattr(self, "_connect_steps_col", None)
+        if desc is None or col is None:
+            return
+        _desc, _steps = backend_setup.connect_panel_text(self.creds)
+        try:
+            desc.value = _desc
+            col.controls = self._connect_step_rows(_steps)
+            desc.update()
+            col.update()
+        except Exception:
+            pass   # not mounted: the next build reads the active backend anyway
+
     def _connection_edit(self):
         name = self._provider_choice
         # Cap the menu height so the (now grouped) provider list scrolls instead of
@@ -4825,30 +4938,10 @@ class QAStudio:
         # form after the AI fields. The Azure org/PAT rows are UNCHANGED, just
         # conditional; a legacy creds file (no "backend" key) resolves to "azure"
         # and renders exactly what it always did.
-        _fields = backend_setup.picker_rows(self, field_label, hover_field)
-        if backend_setup.is_azure(self.creds):
-            _fields += [
-                field_label(strings.t("au_azure_org"), req=True,
-                            info=strings.t("au_azure_org_info"),
-                            on_info=lambda e: self._show_help("org")),
-                self._org_cell,
-                ft.Row([
-                    ft.Column([
-                        field_label(strings.t("au_azure_pat"), req=True,
-                                    info=strings.t("au_azure_pat_info"),
-                                    on_info=lambda e: self._show_help("pat")),
-                        self._pat_cell,
-                    ], expand=True, spacing=0),
-                ]),
-            ]
-        elif backend_setup.active(self.creds) == backend_setup.XRAY:
-            _fields += backend_setup.xray_rows(self, field_label, hover_field)
-        elif backend_setup.active(self.creds) == backend_setup.TESTRAIL:
-            _fields += backend_setup.testrail_rows(self, field_label, hover_field)
-        elif backend_setup.is_hybrid(self.creds):
-            _fields += backend_setup.hybrid_rows(self, field_label, hover_field)
-        else:
-            _fields += backend_setup.jira_rows(self, field_label, hover_field)
+        # Built into a stable cell so switching backend (backend_setup._on_pick
+        # -> _refresh_backend_inplace) swaps just these rows: no full render.
+        self._backend_cell = ft.Column(self._build_backend_rows(), spacing=0)
+        _fields = [self._backend_cell]
 
         # AI provider section follows the test-management section.
         _fields += [
@@ -5087,6 +5180,55 @@ class QAStudio:
             ft.Row([seg(_t, ft.Icons.DESCRIPTION_OUTLINED, "titles"),
                     seg(_s, ft.Icons.LAYERS_OUTLINED, "steps")],
                    spacing=4, tight=compact),
+            padding=4, bgcolor=T.CARD_2, border_radius=T.R, border=ft.Border.all(1, T.BORDER))
+
+    def _case_style_segment(self):
+        """Manual / Automation test-case style for the generator. Saved at once
+        and updated in place (no render)."""
+        self._case_style_segs = {}
+
+        def _paint(c, sel):
+            c.bgcolor = T.VIOLET_SOFT if sel else None
+            c.border = ft.Border.all(1, T.VIOLET if sel else ft.Colors.TRANSPARENT)
+            for ctl in c.content.controls:
+                ctl.color = T.VIOLET_INK if sel else T.INK_2
+
+        def _pick(e, k):
+            self.case_style = k
+            try:
+                self.creds["case_style"] = k
+                store.save(self.creds)
+            except Exception:
+                pass
+            for key, c in self._case_style_segs.items():
+                _paint(c, key == k)
+                try:
+                    c.update()
+                except Exception:
+                    pass
+            hint = getattr(self, "_case_style_hint", None)
+            if hint is not None:
+                hint.value = strings.t("s_style_hint_" + k)
+                try:
+                    hint.update()
+                except Exception:
+                    pass
+
+        def seg(label, icon, key):
+            c = ft.Container(
+                ft.Row([ft.Icon(icon, size=16), ft.Text(label, size=12.5, weight=ft.FontWeight.BOLD)],
+                       spacing=7, tight=True, alignment=ft.MainAxisAlignment.CENTER),
+                height=40, expand=True, padding=ft.Padding.symmetric(horizontal=9, vertical=0),
+                alignment=ft.Alignment.CENTER, border_radius=T.R_SM,
+                on_click=lambda e, k=key: _pick(e, k))
+            _paint(c, self.case_style == key)
+            self._case_style_segs[key] = c
+            return c
+
+        return ft.Container(
+            ft.Row([seg(strings.t("s_style_manual"), ft.Icons.PERSON_OUTLINE, "manual"),
+                    seg(strings.t("s_style_automation"), ft.Icons.SMART_TOY_OUTLINED,
+                        "automation")], spacing=4),
             padding=4, bgcolor=T.CARD_2, border_radius=T.R, border=ft.Border.all(1, T.BORDER))
 
     def _set_tool(self, k, persist=True):
@@ -6750,24 +6892,21 @@ class QAStudio:
             self._connect_btn = primary_btn(
                 strings.t("main_connect_btn"), icon=ft.Icons.POWER, expand=True, wrap=True,
                 disabled=self._connecting, on_click=lambda e: self._connect())
+            # Backend-aware description + steps (was Azure/PAT text for every
+            # backend). Instance refs so a backend switch patches them in place.
+            _desc, _steps = backend_setup.connect_panel_text(self.creds)
+            self._connect_desc_text = ft.Text(_desc, size=12.5, color=T.INK_2,
+                                              weight=ft.FontWeight.W_500)
+            self._connect_steps_col = ft.Column(self._connect_step_rows(_steps), spacing=0)
             return card(ft.Column([
                 ft.Text(strings.t("main_step1"), size=11, weight=ft.FontWeight.BOLD, color=T.VIOLET_INK),
                 ft.Container(height=13),
                 ft.Row([ft.Container(width=8, height=8, bgcolor=T.RED, border_radius=10),
                         ft.Text(strings.t("main_not_connected_yet"), size=12, color=T.RED, weight=ft.FontWeight.BOLD)], spacing=6),
                 ft.Container(height=14),
-                ft.Text(strings.t("main_setup_desc"),
-                        size=12.5, color=T.INK_2, weight=ft.FontWeight.W_500),
+                self._connect_desc_text,
                 ft.Container(height=14),
-                *[ft.Container(ft.Row([
-                    ft.Container(ft.Text(str(i+1), size=11, color=T.INK_3, weight=ft.FontWeight.BOLD),
-                                 width=20, height=20, bgcolor=T.CARD_2, border_radius=6,
-                                 border=ft.Border.all(1, T.BORDER), alignment=ft.Alignment.CENTER),
-                    ft.Text(t, size=12, color=T.INK_2, weight=ft.FontWeight.W_500)], spacing=8),
-                    padding=ft.Padding.only(bottom=8))
-                  for i, t in enumerate([strings.t("au_step_validates_pat"),
-                                         strings.t("au_step_loads_projects"),
-                                         strings.t("au_step_fetches_plans")])],
+                self._connect_steps_col,
                 ft.Container(expand=True),
                 self._connect_status_row,
                 self._connect_btn,
@@ -7795,6 +7934,7 @@ class QAStudio:
             # Returns None for Azure, which makes engine use its own defaults —
             # i.e. the Azure path below is byte-for-byte what it always was.
             _ops = backend_setup.generation_ops(self)
+            E.set_case_style(getattr(self, "case_style", "manual"))
             try:
                 if self.tool == "steps":
                     E.run_steps(self.project, self.plan_id, self.story_ids, cb,
@@ -8443,7 +8583,10 @@ class QAStudio:
         lines, and reconciled to the emitted total when the project is written.
         'skipped' = duplicate test cases left out before sequencing, updated live
         via hidden `SKIPPED_LIVE: N` control lines the same way."""
-        return {"todo": getattr(self, "_auto_todo", 0),
+        stats = getattr(self, "_auto_stats", None) or {}
+        return {"proven": stats.get("proven", "\u2014"),
+                "replay": stats.get("replay", "\u2014"),
+                "todo": getattr(self, "_auto_todo", 0),
                 "skipped": getattr(self, "_auto_skipped", 0)}
 
     def _auto_counts_header(self):
@@ -8459,8 +8602,9 @@ class QAStudio:
         # that handle can be kept, same as the previous chip() closure did.
         c = self._auto_count()
         self._auto_count_ctl = {}
-        def tile(key, label, dot_color):
-            num = ft.Text(str(c[key]), size=22, weight=ft.FontWeight.BOLD, color="#FFFFFF")
+        def tile(key, label, dot_color, tip=None):
+            num = ft.Text(str(c[key]), size=20, weight=ft.FontWeight.BOLD, color="#FFFFFF",
+                          no_wrap=True)
             self._auto_count_ctl[key] = num
             try:
                 num_display = ft.ShaderMask(
@@ -8473,21 +8617,110 @@ class QAStudio:
                 num_display = num
             return ft.Container(
                 ft.Column([
+                    # One line, never wrapped mid-word ("Skippe / d" at 4-up):
+                    # smaller dot + tight gap, ellipsis for long translations
+                    # (the tooltip carries the full meaning).
                     ft.Row([ft.Text(label, size=10.5, color=T.INK_2, weight=ft.FontWeight.BOLD,
-                                    expand=True, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
-                            ft.Container(width=8, height=8, bgcolor=dot_color, border_radius=5)],
-                           vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                                    expand=True, max_lines=1, no_wrap=True,
+                                    overflow=ft.TextOverflow.ELLIPSIS),
+                            ft.Container(width=6, height=6, bgcolor=dot_color, border_radius=4)],
+                           spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                     num_display,
                 ], spacing=3),
-                padding=ft.Padding.symmetric(vertical=14, horizontal=12),
+                padding=ft.Padding.symmetric(vertical=12, horizontal=10),
                 bgcolor=T.CARD, border=ft.Border.all(1, T.BORDER),
-                border_radius=T.R, expand=True)
+                border_radius=T.R, expand=True, tooltip=tip)
+        # Pipeline cards: proof -> replay -> what still needs review -> dupes.
+        # ("todo" was labelled "self-healed at runtime" but always counted the
+        # TODO locators left for runtime — now named for what it is.)
         return ft.Row([
-            tile("todo", strings.t("main_stat_selfhealed"), T.VIOLET_INK),
-            tile("skipped", strings.t("main_stat_dupskipped"), T.AMBER),
-        ], spacing=7, vertical_alignment=ft.CrossAxisAlignment.STRETCH)
+            tile("proven", strings.t("auto_card_proven"), T.GREEN, strings.t("auto_card_proven_tip")),
+            tile("replay", strings.t("auto_card_replay"), T.VIOLET_INK, strings.t("auto_card_replay_tip")),
+            tile("todo", strings.t("auto_card_review"), T.AMBER, strings.t("auto_card_review_tip")),
+            tile("skipped", strings.t("auto_card_skipped"), T.INK_3, strings.t("auto_card_skipped_tip")),
+        ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.STRETCH)
+
+    def _auto_log_case_header(self, title):
+        """A case's 'walking …' line rendered as its group header: chevron,
+        title and a status pill. _apply_log_view fills in status/chevron/click."""
+        chev = ft.Icon(ft.Icons.EXPAND_MORE, size=16, color=T.INK_3)
+        pill_txt = ft.Text("\u2713", size=11, weight=ft.FontWeight.BOLD, color=T.GREEN)
+        pill = ft.Container(pill_txt, width=22, height=18, border_radius=6,
+                            alignment=ft.Alignment.CENTER, bgcolor=T.CARD)
+        is_ar = bool(title) and ("\u0600" <= title[0] <= "\u06ff")
+        row = ft.Container(
+            ft.Row([chev,
+                    ft.Text(title, size=12, weight=ft.FontWeight.BOLD, color=T.STORY,
+                            font_family=(T.F_AR if is_ar else None), expand=True,
+                            max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                    pill], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=ft.Padding.only(left=2, right=4, top=5, bottom=5),
+            margin=ft.Margin.only(top=4), border_radius=8, bgcolor=T.CARD,
+            border=ft.Border.all(1, T.BORDER), ink=True)
+        row._qa_chev, row._qa_pill, row._qa_pill_txt = chev, pill, pill_txt
+        return row
+
+    def _apply_log_view(self, col):
+        """Show/hide rows for case grouping + the All/Issues filter, and refresh
+        each case header's status pill, chevron and click. Rows stay 1:1 with
+        self._auto_log; this only flips `visible`. Caller does col.update()."""
+        if col is None or getattr(col, "_qa_placeholder", False):
+            return
+        ctrls = col.controls
+        lines = self._auto_log[:len(ctrls)]
+        model = log_view.build(lines)
+        running = bool(getattr(self, "_auto_running", False))
+        toggles = getattr(self, "_auto_log_toggles", None) or {}
+        vis = log_view.visibility(lines, running, toggles,
+                                  bool(getattr(self, "_auto_log_issues", False)), model)
+        tone_col = {"ok": T.GREEN, "warn": T.AMBER, "err": T.RED}
+        glyph = {"ok": "\u2713", "warn": "\u26a0", "err": "\u2717"}
+        for i, ctrl in enumerate(ctrls):
+            if i < len(vis):
+                ctrl.visible = vis[i]
+        for gid, idx in model["headers"].items():
+            if idx >= len(ctrls) or getattr(ctrls[idx], "_qa_pill_txt", None) is None:
+                continue
+            hdr, st = ctrls[idx], model["status"][gid]
+            hdr._qa_pill_txt.value = glyph[st]
+            hdr._qa_pill_txt.color = tone_col[st]
+            _glyph = (ft.Icons.EXPAND_MORE if log_view.is_open(model, gid, running, toggles)
+                      else ft.Icons.CHEVRON_RIGHT)
+            for _attr in ("icon", "name"):     # Flet renamed Icon.name -> Icon.icon
+                try:
+                    setattr(hdr._qa_chev, _attr, _glyph)
+                except Exception:
+                    pass
+            hdr.on_click = (lambda e, g=gid: self._toggle_log_group(g))
+
+    def _toggle_log_group(self, gid):
+        col = getattr(self, "_auto_log_col", None)
+        model = log_view.build(self._auto_log[:len(col.controls)] if col else self._auto_log)
+        toggles = self._auto_log_toggles = getattr(self, "_auto_log_toggles", None) or {}
+        toggles[gid] = not log_view.is_open(model, gid,
+                                            bool(getattr(self, "_auto_running", False)), toggles)
+        try:
+            self._apply_log_view(col)
+            col.update()
+        except Exception:
+            pass
+
+    def _set_log_filter(self, issues_only):
+        self._auto_log_issues = bool(issues_only)
+        col = getattr(self, "_auto_log_col", None)
+        try:
+            self._apply_log_view(col)
+            col.update()
+        except Exception:
+            pass
+        refresh = getattr(self, "_auto_refresh_log_filter", None)
+        if callable(refresh):
+            refresh()
 
     def _auto_log_line(self, msg, tone):
+        _case = log_view.case_title(msg)
+        if _case is not None:
+            return self._auto_log_case_header(_case)
         # "case" (Sequencing/title/⏱ lines from engine.py's _compile_one) gets
         # its own color — T.STORY, a brighter cyan than "story"/"info"'s
         # VIOLET_INK — so a case's own group of lines visually stands apart
@@ -8549,15 +8782,18 @@ class QAStudio:
         elif _has_own_symbol:
             sym = None
         elif tone == "case":
-            sym = ft.Text("\u203a", size=14, color=T.STORY, weight=ft.FontWeight.BOLD)
-        else:  # dim (and unknown): a small chevron instead of a plain bullet dot
-            sym = ft.Text("\u203a", size=14, color=T.INK_3, weight=ft.FontWeight.BOLD)
+            sym = ft.Icon(ft.Icons.CHEVRON_RIGHT, size=14, color=T.STORY)
+        else:  # dim (and unknown): a chevron ICON — the "\u203a" text glyph sat
+            # low in its line box and floated between wrapped lines.
+            sym = ft.Icon(ft.Icons.CHEVRON_RIGHT, size=14, color=T.INK_3)
         # Hugged to the RIGHT of its slot (toward the text) instead of
         # centered — centering a narrow glyph like "›" in a 16px box left
         # visible dead space on both sides, reading as a gap between the
         # symbol and the line instead of one connected entry.
-        sym_wrap = (ft.Container(sym, width=13, alignment=ft.Alignment.CENTER_RIGHT,
-                                 margin=ft.Margin.only(top=2))
+        # Fixed to the FIRST text line's height (12px text ≈ 17px line) and
+        # centred in it, so the marker lines up with line one even when the
+        # message wraps.
+        sym_wrap = (ft.Container(sym, width=13, height=17, alignment=ft.Alignment.CENTER_RIGHT)
                     if sym is not None else ft.Container(width=13))
         # Trailing "\n" copy-separator fix REVERTED — see _render_one_log's
         # comment (Run/Report log): it visibly added extra vertical gaps
@@ -8783,6 +9019,7 @@ class QAStudio:
                                 col.controls = [self._auto_log_line(e["msg"], e["tone"])
                                                 for e in self._auto_log]
                                 col._qa_placeholder = False
+                                self._apply_log_view(col)
                                 self._retag_log_tail(col)
                                 col.update()
                                 self._auto_log_scroll_end(col)
@@ -8832,6 +9069,7 @@ class QAStudio:
                                         _changed = True
                                 _pend.clear()
                             if _changed:
+                                self._apply_log_view(col)
                                 self._retag_log_tail(col)
                                 col.update()
                                 self._auto_log_scroll_end(col)
@@ -9037,7 +9275,16 @@ class QAStudio:
 
     def _clear_auto_log(self, e=None):
         self._auto_log = []
+        self._auto_log_toggles = {}
+        self._auto_result = None
         self._reset_auto_retry_state()
+        rctr = getattr(self, "_auto_result_ctr", None)
+        if rctr is not None:
+            try:
+                rctr.visible = False
+                rctr.update()
+            except Exception:
+                pass
         # Scoped update — same reasoning as the push-flow fix earlier (see
         # _push_automation / automation._refresh_auto_state): a full render()
         # rebuilds the ENTIRE Automation screen, not just the log, which is
@@ -9309,6 +9556,7 @@ class QAStudio:
                     self.tool, self.project, self.plan_id, self.story_ids,
                     existing_mode=getattr(self, "existing_mode", "skip"),
                     output_lang=E.OUTPUT_LANG,
+                    case_style=getattr(self, "case_style", "manual"),
                     email_recipients=[e.strip() for e in
                                       (getattr(self, "emails", "") or "").split(",")
                                       if e.strip()])
@@ -9834,6 +10082,21 @@ class QAStudio:
             actions_alignment=ft.MainAxisAlignment.END)
         self._show_dialog(dlg)
 
+    def _apply_saved_ai_creds(self):
+        """Push the saved AI provider, key and model to the engine — Connect
+        normally does this; Automation/Performance can run without Connect.
+        Returns False when the provider needs a key and none is saved."""
+        name = self._provider_choice
+        key = (self._saved_key(name) or "").strip()
+        if not key and name != "ollama":
+            return False
+        try:
+            E.set_credentials(provider=name, api_key=(key or None),
+                              model=(self._saved_model(name) or None))
+        except Exception:
+            return False
+        return True
+
     def _start_automation(self):
         # Guard like the Regression/Sprint plans: don't run two heavy generators at
         # once (GIL contention freezes everything), and don't double-start.
@@ -9852,7 +10115,7 @@ class QAStudio:
         def _mark(attr, msg):
             self._auto_invalid.add(attr)
             self._auto_invalid_msgs[attr] = msg
-        _auto_file_source = getattr(self, "auto_source_mode", "azure") == "file"
+        _auto_file_source = backend_setup.automation_uses_file_source(self)
         if _auto_file_source:
             if not (self.auto_test_case_file or "").strip():
                 _mark("auto_test_case_file", strings.t("auto_file_required"))
@@ -9879,6 +10142,17 @@ class QAStudio:
                 self._toast(strings.t("auto_err_test_confirm"))
             self.render()
             return
+        # Without Connect, the saved AI provider/key never reached the engine.
+        if not self.connected and not self._apply_saved_ai_creds():
+            self._toast(strings.t("main_api_key_required_provider"))
+            return
+        # Commit an address still sitting in the recipients field (typed, no Enter).
+        _flush = (getattr(self, "_email_flushers", None) or {}).get("auto_emails")
+        if _flush:
+            try:
+                _flush()
+            except Exception:
+                pass
         self._save_git_creds()
         self._auto_running = True
         self._auto_stop = False
@@ -9896,8 +10170,14 @@ class QAStudio:
         self._reset_auto_retry_state()
         self._auto_todo = 0          # live TODO tally, reset for this run
         self._auto_skipped = 0       # live duplicate-skip tally, reset for this run
+        self._auto_stats = {}        # proven / replay card values, reset for this run
+        self._auto_result = None     # end-of-run banner: (kind, detail)
+        self._auto_log_toggles = {}  # user expand/collapse per case group
         self._auto_run_start = time.time()
-        self.render()
+        # In place: buttons, spinner, cards, banner and an emptied log — no
+        # full render (keeps the form's scroll position and focus).
+        if not automation.refresh_run_ui(self, starting=True):
+            self.render()
 
         def cb(msg, tone="dim"):
             self._auto_logmsg(msg, tone)
@@ -9914,6 +10194,7 @@ class QAStudio:
             def _send_auto_report(failed=False, stopped=False):
                 to_raw = (getattr(self, "_auto_email_to", "") or "").strip()
                 if not to_raw:
+                    cb("No report email — no recipients selected.", "dim")
                     return
                 if not E.ensure_sender_creds():
                     cb("No report sent — no Gmail App Password is configured. An "
@@ -9930,7 +10211,10 @@ class QAStudio:
                     "Stories": len(stories_payload),
                     "Test cases": total_tc,
                     "Skipped": getattr(self, "_auto_skipped", 0),
-                    "Self-healed": getattr(self, "_auto_todo", 0),
+                    # was mislabelled "Self-healed"; it counts TODO steps
+                    "Needs review": getattr(self, "_auto_todo", 0),
+                    "Proven locators": (getattr(self, "_auto_stats", None) or {}).get("proven", "\u2014"),
+                    "Replay passed": (getattr(self, "_auto_stats", None) or {}).get("replay", "\u2014"),
                     "Time": E._fmt_secs(_secs),
                 }
                 if failed:
@@ -9951,7 +10235,9 @@ class QAStudio:
                         git_url=(self.auto_git_url or "").strip() or None,
                         git_branch=(self.auto_git_branch or "").strip() or None,
                         log_lines=email_log, org=E.AZURE_ORG, project=self.project,
-                        failed=failed, stopped=stopped)
+                        failed=failed, stopped=stopped,
+                        source=("Test-case file" if backend_setup.automation_uses_file_source(self)
+                                else None))
                     ok, err = E.send_report(to, "QA Studio — Automation report", html)
                 except Exception as _ex:
                     ok, err = False, str(_ex)[:150]
@@ -9970,7 +10256,9 @@ class QAStudio:
                 # the whole automation run at step 1. The Azure path stays
                 # byte-for-byte what it was.
                 _source_label = backend_setup.story_store_label(self)
-                _file_mode = getattr(self, "auto_source_mode", "azure") == "file"
+                # Same rule as the form: the local file whenever no tracker is
+                # connected, so a disconnected run never calls Azure DevOps.
+                _file_mode = backend_setup.automation_uses_file_source(self)
                 if _file_mode:
                     cb("Loading test cases from the selected file…", "dim")
                     _file_payload = auto_file_source.load_stories_payload(
@@ -10078,6 +10366,24 @@ class QAStudio:
                             story_tcs[_sid] = _out
                 if self._auto_stop:
                     cb("Stopped before scraping.", "warn"); return
+
+                # Optional: only cases tagged "automation" (generator's
+                # Automation style). A tracker that can't report labels is not
+                # filtered — say so rather than silently dropping everything.
+                if getattr(self, "auto_only_automation", False) and not _file_mode:
+                    _ids = [tc["id"] for lst in story_tcs.values() for tc in lst]
+                    try:
+                        _labels = (E.fetch_case_labels(_ids) if _ops is None
+                                   else backend_setup.case_labels_for(self, _ids))
+                    except Exception as _lex:
+                        _labels = None
+                        cb(f"Couldn't read case tags: {str(_lex)[:120]}", "warn")
+                    if _labels is None:
+                        cb(strings.t("auto_only_tagged_unsupported"), "warn")
+                    else:
+                        story_tcs, _kept, _tot = E.filter_cases_by_label(story_tcs, _labels)
+                        cb(strings.t("auto_only_tagged_log", kept=_kept, total=_tot),
+                           "info" if _kept else "warn")
 
                 # Phase B: steps for every test case, fetched CONCURRENTLY (was a
                 # serial fetch_test_case_steps per test case — slow on big sets).
@@ -10206,7 +10512,13 @@ class QAStudio:
                 new_ids, grew_ids, done_ids, new_tcs = E.classify_selection(
                     project_dir, stories_payload)
                 reeval = set()
-                if grew_ids or done_ids:
+                if (grew_ids or done_ids) and getattr(self, "auto_regenerate", False):
+                    # Standing choice from the form: rebuild existing stories with
+                    # the current engine, no dialog. Hand-edited classes are still
+                    # kept (fresh output goes to <Class>.new).
+                    reeval = set(grew_ids) | set(done_ids)
+                    cb(strings.t("auto_regen_log", n=len(reeval)), "info")
+                elif grew_ids or done_ids:
                     ev = threading.Event()
                     decision = {"reeval": set(), "cancel": False}
                     def _choose(kind):
@@ -10258,6 +10570,10 @@ class QAStudio:
                     # action in the same spreadsheet step.
                     E.apply_inspection_screens(walk_payload, _inspection_report)
                     _stats = inspection.get("stats") or {}
+                    self._auto_stats = dict(getattr(self, "_auto_stats", None) or {},
+                                            proven=str(int(_stats.get("verified") or 0)))
+                    self._auto_todo = (int(_stats.get("snapshot") or 0)
+                                       + int(_stats.get("guess") or 0))
                     cb(strings.t("auto_inspection_done",
                                  live=int(_stats.get("live") or 0),
                                  pending=int(_stats.get("snapshot") or 0)
@@ -10265,6 +10581,26 @@ class QAStudio:
                     if self._auto_stop:
                         cb("Stopped after live inspection.", "warn")
                         return
+                    # Replay every case in a fresh browser with ONLY the saved
+                    # locators (no scoring, no AI) — what the generated test will
+                    # do. A step that fails is flagged; generation then blocks
+                    # unless the user allowed runtime healing for such steps.
+                    _replay = E.replay_verify(
+                        walk_payload,
+                        {"url": _login_url, "user": self.auto_login_user,
+                         "password": self.auto_login_pass},
+                        self.auto_site_url.strip(), cb=cb,
+                        should_stop=lambda: self._auto_stop, headless=False)
+                    E.write_verification_report(project_dir, _replay)
+                    if _replay:
+                        _rp, _rf = int(_replay.get("passed") or 0), int(_replay.get("failed") or 0)
+                        self._auto_stats = dict(getattr(self, "_auto_stats", None) or {},
+                                                replay="%d/%d" % (_rp, _rp + _rf))
+                    if self._auto_stop:
+                        cb("Stopped after replay.", "warn")
+                        return
+                    if _replay and _replay.get("failed") and getattr(self, "auto_allow_unverified", False):
+                        cb(strings.t("auto_replay_failed_allowed", n=_replay["failed"]), "warn")
 
                 # 3) Generate a SELF-HEALING project from the stories. A live
                 #    inspection plan must have an exact capture for every executable
@@ -10277,6 +10613,14 @@ class QAStudio:
                 # APP_PASS from their environment at run time; inspection-only
                 # credentials are never written into the generated project.
                 login = {"url": _login_url} if _login_url else None
+                # Opt-in: put the test account in the JS project's git-ignored
+                # .env so the scripts run straight from the IDE.
+                if (getattr(self, "auto_env_creds", False)
+                        and getattr(self, "_auto_target", "selenium") != "selenium"
+                        and (self.auto_login_user or "").strip()):
+                    login = dict(login or {})
+                    login["env_user"] = (self.auto_login_user or "").strip()
+                    login["env_pass"] = self.auto_login_pass or ""
                 # Generate ONLY what the keep/re-evaluate choice said to (walk_payload):
                 # brand-new stories, the new test cases of "grew" stories, and any the
                 # user chose to re-evaluate. "Done" stories are kept untouched. (Was
@@ -10288,11 +10632,14 @@ class QAStudio:
                         project_dir, walk_payload, self.auto_site_url.strip(),
                         login=login, cb=cb, should_stop=lambda: self._auto_stop,
                         on_error=self._auto_on_ai_error, gate=self._auto_gate,
-                        target=getattr(self, "_auto_target", "selenium"))
+                        target=getattr(self, "_auto_target", "selenium"),
+                        allow_unverified=bool(getattr(self, "auto_allow_unverified", False)))
                     if generated is None:
+                        self._auto_result = ("blocked", str(getattr(self, "_auto_todo", 0) or ""))
                         cb(strings.t("auto_generation_blocked_unverified"), "err")
                         return
                 else:
+                    self._auto_result = ("nothing", "")
                     cb("Nothing new to generate — existing tests are kept as-is.", "ok")
 
                 self._auto_out_dir = project_dir
@@ -10305,27 +10652,20 @@ class QAStudio:
                 if self._auto_stop:
                     cb("Stopped.", "warn"); return
                 self._auto_built = True
+                if getattr(self, "_auto_result", None) is None:
+                    self._auto_result = ("generated", str(len(walk_payload or [])))
                 _hprov = T.disp_name(getattr(self, "_provider_choice", "") or "")
                 _tgt = getattr(self, "_auto_target", "selenium")
-                if _tgt == "selenium":
-                    cb(f"Done — review the activity, then Push to Git. In IntelliJ set "
-                       f"QA_AI_API_KEY (your {_hprov} key), APP_USER and APP_PASS, then run "
-                       f"`mvn test`. The report lands in target/surefire-reports; self-healing "
-                       f"resolves the TODO locators at runtime.", "ok")
-                else:
-                    _setup = ("npm install && npx playwright install"
-                              if _tgt == "playwright" else "npm install")
-                    _rep = ("npx playwright show-report" if _tgt == "playwright"
-                            else "open cypress/reports/index.html")
-                    cb(f"Done — review the activity, then Push to Git. Run `{_setup}`, put "
-                       f"QA_AI_API_KEY (your {_hprov} key), APP_USER and APP_PASS in .env, then "
-                       f"`npm test`. Self-healing resolves the TODO locators at runtime; open the "
-                       f"report with `{_rep}`.", "ok")
+                cb(E.automation_done_message(_tgt, int(getattr(self, "_auto_todo", 0) or 0),
+                                             _hprov), "ok")
                 _send_auto_report(stopped=bool(self._auto_stop))
             except Exception as ex:
+                self._auto_result = ("failed", str(ex)[:120])
                 cb(f"Automation failed: {str(ex)[:200]}", "err")
                 _send_auto_report(failed=True)
             finally:
+                if getattr(self, "_auto_result", None) is None and self._auto_stop:
+                    self._auto_result = ("stopped", "")
                 self._auto_running = False
                 self._auto_stop = False
                 try:
@@ -10334,7 +10674,7 @@ class QAStudio:
                 except Exception:
                     pass
                 self._auto_paused = False
-                self.ui_safe(self.render)
+                self.ui_safe(lambda: automation.refresh_run_ui(self) or self.render())
 
         self._bg(work)
 

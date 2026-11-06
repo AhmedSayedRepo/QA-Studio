@@ -1,0 +1,29 @@
+﻿Test Case ID,Test Case Title,Step,Action,Expected Result
+TC01,Login with valid credentials succeeds,1,"Enter ""standard_user"" in the Username field",
+TC01,Login with valid credentials succeeds,2,"Enter ""secret_sauce"" in the Password field",
+TC01,Login with valid credentials succeeds,3,"Click the ""Login"" button","The ""Products"" page title is displayed"
+TC02,Login with wrong password shows an error,1,"Enter ""standard_user"" in the Username field",
+TC02,Login with wrong password shows an error,2,"Enter ""wrong_password"" in the Password field",
+TC02,Login with wrong password shows an error,3,"Click the ""Login"" button","Error message ""Username and password do not match any user in this service"" is displayed"
+TC03,Locked out user cannot log in,1,"Enter ""locked_out_user"" in the Username field",
+TC03,Locked out user cannot log in,2,"Enter ""secret_sauce"" in the Password field",
+TC03,Locked out user cannot log in,3,"Click the ""Login"" button","Error message ""Sorry, this user has been locked out."" is displayed"
+TC04,Add Sauce Labs Backpack to the cart,1,"Click ""Add to cart"" for ""Sauce Labs Backpack""","The shopping cart badge shows ""1"""
+TC05,Remove Sauce Labs Bike Light from the cart,1,"Click ""Add to cart"" for ""Sauce Labs Bike Light""","The ""Remove"" button is displayed for ""Sauce Labs Bike Light"""
+TC05,Remove Sauce Labs Bike Light from the cart,2,"Click ""Remove"" for ""Sauce Labs Bike Light""","The ""Add to cart"" button is displayed again for ""Sauce Labs Bike Light"""
+TC06,Cart page lists the added product,1,"Click ""Add to cart"" for ""Sauce Labs Fleece Jacket""",
+TC06,Cart page lists the added product,2,Click the shopping cart icon,"The ""Your Cart"" page shows ""Sauce Labs Fleece Jacket"""
+TC07,Sort products by price low to high,1,"Select ""Price (low to high)"" from the product sort dropdown","The first product shown is ""Sauce Labs Onesie"""
+TC08,Complete checkout for one product,1,"Click ""Add to cart"" for ""Sauce Labs Bolt T-Shirt""",
+TC08,Complete checkout for one product,2,Click the shopping cart icon,
+TC08,Complete checkout for one product,3,"Click the ""Checkout"" button","The ""Checkout: Your Information"" page is displayed"
+TC08,Complete checkout for one product,4,"Enter ""Ahmed"" in the First Name field",
+TC08,Complete checkout for one product,5,"Enter ""Sayed"" in the Last Name field",
+TC08,Complete checkout for one product,6,"Enter ""11511"" in the Zip/Postal Code field",
+TC08,Complete checkout for one product,7,"Click the ""Continue"" button","The ""Checkout: Overview"" page is displayed"
+TC08,Complete checkout for one product,8,"Click the ""Finish"" button","""Thank you for your order!"" is displayed"
+TC09,Checkout requires a first name,1,Click the shopping cart icon,
+TC09,Checkout requires a first name,2,"Click the ""Checkout"" button",
+TC09,Checkout requires a first name,3,"Click the ""Continue"" button without filling the form","Error message ""Error: First Name is required"" is displayed"
+TC10,Logout from the side menu,1,"Click the ""Open Menu"" button","The side menu shows ""Logout"""
+TC10,Logout from the side menu,2,"Click ""Logout"" in the side menu","The Login page with the ""Login"" button is displayed"

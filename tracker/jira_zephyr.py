@@ -669,9 +669,11 @@ class JiraZephyrBackend(Backend):
                 url=f"{self.site}/browse/{row.get('key')}" if self.site else ""))
         return out
 
-    def create_test_case(self, project, plan, suite, title, story=None):
+    def create_test_case(self, project, plan, suite, title, story=None, labels=()):
         key = self._project_key(project)
         payload = {"projectKey": key, "name": (title or "").strip()[:255]}
+        if labels:
+            payload["labels"] = [str(x) for x in labels]
         if suite is not None and suite.ref.id:
             try:
                 payload["folderId"] = int(suite.ref.id)
@@ -696,6 +698,17 @@ class JiraZephyrBackend(Backend):
             except (TrackerError, ValueError, TypeError):
                 pass
         return case
+
+    def fetch_case_labels(self, refs):
+        out = {}
+        for r in refs:
+            k = r.key or r.id
+            try:
+                row = self._need_zephyr().get(f"testcases/{k}") or {}
+                out[k] = [str(x) for x in (row.get("labels") or [])]
+            except (TrackerError, ValueError, TypeError):
+                out[k] = []
+        return out
 
     def fetch_test_case_steps(self, ref):
         payload = self._need_zephyr().get(f"testcases/{ref.key or ref.id}/teststeps")

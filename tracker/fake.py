@@ -162,8 +162,10 @@ class FakeBackend(Backend):
         self._record(f"fetch_test_cases_for_suite({suite.ref.key})")
         return [self._cases[c] for c in self._cases_in_suite.get(suite.ref.id, [])]
 
-    def create_test_case(self, project, plan, suite, title, story=None):
+    def create_test_case(self, project, plan, suite, title, story=None, labels=()):
         cid, ckey = self._next("TC")
+        self.labels = getattr(self, "labels", {})
+        self.labels[cid] = list(labels or [])
         case = TestCase(ref=Ref(id=cid, key=ckey), title=title,
                         suite_ref=suite.ref,
                         story_ref=(story.ref if story else suite.story_ref),
@@ -173,6 +175,15 @@ class FakeBackend(Backend):
         self._cases_in_suite.setdefault(suite.ref.id, []).append(cid)
         self._record(f"create_test_case({title})")
         return case
+
+    def fetch_case_labels(self, refs):
+        labels = getattr(self, "labels", {})
+        out = {}
+        for r in refs:
+            for cid, case in self._cases.items():
+                if r.id in (cid, case.ref.key) or r.key in (cid, case.ref.key):
+                    out[r.key or r.id] = list(labels.get(cid, []))
+        return out
 
     def fetch_test_case_steps(self, ref):
         self._record(f"fetch_test_case_steps({ref.key})")

@@ -161,7 +161,15 @@ class Backend(ABC):
 
     @abstractmethod
     def create_test_case(self, project: Project, plan: Plan, suite: Suite,
-                         title: str, story: Optional[Story] = None) -> TestCase: ...
+                         title: str, story: Optional[Story] = None,
+                         labels=()) -> TestCase:
+        """`labels` (e.g. ["automation"]) tag the new case where the tracker
+        supports it; adapters may ignore them."""
+
+    def fetch_case_labels(self, refs):
+        """{case id/key: [labels]} for the given case refs, or None when this
+        tracker can't report labels (callers then skip label filtering)."""
+        return None
 
     @abstractmethod
     def fetch_test_case_steps(self, ref: Ref) -> List[Step]: ...

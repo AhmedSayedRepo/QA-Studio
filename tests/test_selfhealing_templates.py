@@ -74,5 +74,49 @@ class SelfHealingHoverTests(unittest.TestCase):
         self.assertIn("import org.openqa.selenium.interactions.Actions;", healer)
 
 
+class AppHomeStartTests(unittest.TestCase):
+    """App cases must not assume the site URL is an app page: on sites whose
+    root IS the login form (e.g. SauceDemo), they log in and land on the app."""
+
+    def test_base_test_open_app_home_logs_in_when_the_start_url_shows_the_login_form(self):
+        base = engine._sh_base_test(PKG)
+        body = _method(base, "protected void openAppHome(")
+        self.assertIn("driver.get(Config.BASE_URL);", body)
+        self.assertIn("loginFieldPresent(", body)
+        self.assertIn("performLogin();", body)
+
+    def test_app_cases_start_with_open_app_home(self):
+        case = {"title": "Add to cart", "bucket": 3, "ctype": "interaction",
+                "page_context": "app", "intents": []}
+        java, _ = engine.generate_selfhealing_test_class({"id": 7}, [case], PKG)
+        self.assertIn("openAppHome();", java)
+        self.assertNotIn("driver.get(Config.BASE_URL);", java)
+
+
+class LoginFormVisibleTests(unittest.TestCase):
+    def test_detects_a_displayed_password_field_only(self):
+        class E:
+            def __init__(self, shown): self.shown = shown
+            def is_displayed(self): return self.shown
+        class D:
+            def __init__(self, els): self.els = els
+            def find_elements(self, by, value): return self.els
+        self.assertTrue(engine._login_form_visible(D([E(False), E(True)])))
+        self.assertFalse(engine._login_form_visible(D([E(False)])))
+        self.assertFalse(engine._login_form_visible(D([])))
+
+
+class LoginSeedTests(unittest.TestCase):
+    """The generated login must find username fields named like 'user-name'
+    (SauceDemo) without AI healing — same breadth as the explorer's login."""
+    USER = "input[id*=user i]"
+
+    def test_generated_login_seed_matches_the_explorer_breadth(self):
+        self.assertIn(self.USER, engine._sh_base_test(PKG))
+
+    def test_replay_login_seed_matches_the_explorer_breadth(self):
+        self.assertIn(self.USER, engine._REPLAY_USER)
+
+
 if __name__ == "__main__":
     unittest.main()

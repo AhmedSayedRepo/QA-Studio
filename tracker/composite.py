@@ -172,9 +172,19 @@ class CompositeBackend(Backend):
         return self._tgt.fetch_existing_titles_for_suite(
             self._target_project(project), self._target_plan(project, plan), suite)
 
-    def create_test_case(self, project, plan, suite, title, story=None):
-        return self._tgt.create_test_case(
-            self._target_project(project), self._target_plan(project, plan), suite, title, story)
+    def create_test_case(self, project, plan, suite, title, story=None, labels=()):
+        try:
+            return self._tgt.create_test_case(
+                self._target_project(project), self._target_plan(project, plan), suite,
+                title, story, labels=labels)
+        except TypeError:
+            return self._tgt.create_test_case(
+                self._target_project(project), self._target_plan(project, plan), suite,
+                title, story)
+
+    def fetch_case_labels(self, refs):
+        # Cases live in the TARGET store.
+        return self._tgt.fetch_case_labels(refs)
 
     def fetch_test_case_steps(self, ref):
         # ref is a TARGET (TestRail) case id — no project needed.

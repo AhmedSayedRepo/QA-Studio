@@ -52,6 +52,28 @@ def set_output_lang(lang):
     OUTPUT_LANG = code if code in LANGUAGES else "en"
     return OUTPUT_LANG
 
+# Test-case style for the generator: "manual" (default) or "automation".
+# Automation adds stricter writing rules to the title/step prompts, an
+# automatability check per case, and an `automation` tag/label on new cases.
+CASE_STYLE = "manual"
+AUTOMATION_TAG = "automation"
+
+
+def set_case_style(style):
+    global CASE_STYLE
+    CASE_STYLE = "automation" if str(style or "").strip().lower() == "automation" else "manual"
+    return CASE_STYLE
+
+
+def is_automation_style():
+    return CASE_STYLE == "automation"
+
+
+def case_labels():
+    """Labels/tags to put on a newly created case for the current style."""
+    return [AUTOMATION_TAG] if is_automation_style() else []
+
+
 def out_lang_name():
     """The language NAME to instruct the AI with (e.g. 'French')."""
     return LANGUAGES.get(OUTPUT_LANG, LANGUAGES["en"])["name"]
@@ -3027,6 +3049,110 @@ def _coerce_step_list(data):
     return [it for it in data if isinstance(it, dict)]
 
 
+_AUTOMATION_TITLE_RULES = """
+
+        AUTOMATION MODE — these cases will be automated (Selenium / Playwright / Cypress):
+        - Each title is ONE independent, repeatable scenario that can run alone, in any order.
+        - Only scenarios a script can check on screen: no visual/layout judgment, no
+          CAPTCHA, no email/SMS/OTP inbox, no third-party pages, no "feels fast".
+        - Keep each scenario focused: split a long multi-page journey into several
+          smaller cases (each with its own start state) instead of one long case.
+        - Name the screen/feature in the title, never an environment URL or account.
+        - Keep writing in the output language required above.
+"""
+
+_AUTOMATION_STEP_RULES = """
+
+        AUTOMATION MODE — these steps will be executed by a script, so be literal:
+        - One action per step, starting with a verb: open, click, type/enter, select,
+          check, hover, press, wait for. Never two actions in one step.
+        - Name the exact element by its VISIBLE label or text in curly quotes, e.g.
+          click the \u201cLogin\u201d button, type into the \u201cUsername\u201d field.
+          Never use straight double quotes.
+        - Give exact input values in curly quotes. For the login account use the
+          placeholders {{APP_USER}} and {{APP_PASS}} instead of real credentials.
+        - 'expected' must be observable by a script: exact text shown (quoted), the page
+          or URL reached, an element visible/hidden/enabled/disabled, or a field value.
+          Quote EVERY on-screen text you expect, e.g. the \u201cYour Cart\u201d page
+          shows \u201cSauce Labs Fleece Jacket\u201d.
+        - One fact per expected result; if two things must be true, quote both texts
+          or use two steps.
+        - Describe visible states, not judgments: the \u201cRemove\u201d button is shown,
+          the \u201cAdd to cart\u201d button disappears — never successfully, correct,
+          properly, as expected, appropriate, looks good.
+        - First step's 'precondition' states the start state explicitly (logged in or
+          not, which page, required data such as \u201ccart has 1 item\u201d). The case
+          must run alone, in any order, without relying on another case.
+        - No environment URLs, real accounts or secrets — name pages by their title and
+          use {{APP_USER}} / {{APP_PASS}} for the login.
+        - At most 8 steps.
+        - Keep writing in the output language required above.
+"""
+
+# Words that make an expected result unverifiable by a script (en + ar).
+_VAGUE_EXPECTED = ("correct", "correctly", "properly", "as expected", "appropriate",
+                   "looks good", "looks fine", "works fine", "successfully", "normal",
+                   "بشكل صحيح", "كما هو متوقع", "بشكل مناسب", "بنجاح")
+_NOT_AUTOMATABLE = ("captcha", "otp", "one-time", "sms", "inbox", "email received",
+                    "layout", "visually", "look and feel", "color", "colour", "font",
+                    "رمز التحقق", "البريد الوارد", "رسالة نصية", "التصميم", "الألوان")
+_MULTI_ACTION_RE = re.compile(
+    r"\b(and then|then|after that|and click|and type|and enter|and select|and press)\b"
+    r"|\u062b\u0645 ", re.I)
+
+
+def _has_term(text, terms):
+    """First term found in text — whole words for Latin terms, substring for
+    Arabic (no reliable word boundaries there)."""
+    for w in terms:
+        if w.isascii():
+            if re.search(r"(?<![a-z])" + re.escape(w) + r"(?![a-z])", text):
+                return w
+        elif w in text:
+            return w
+    return None
+
+
+# Expected results that check a visible state/page need no quoted text.
+_STATE_WORDS = ("shown", "visible", "displayed", "appears", "hidden", "disappears",
+                "not shown", "enabled", "disabled", "checked", "selected", "url",
+                "redirect", "navigat", "page", "empty", "contains", "value", "count",
+                "يظهر", "تظهر", "يختفي", "تختفي", "مفعل", "معطل", "صفحة", "قيمة")
+_MAX_AUTOMATION_STEPS = 8
+
+
+def automation_issues(steps):
+    """Return short reasons a generated case is not automation-ready (empty =
+    ready). Pure text check on the step dicts {precondition, action, expected}."""
+    issues = []
+    if not steps:
+        return ["no steps"]
+    first = steps[0] if isinstance(steps[0], dict) else {}
+    if not str(first.get("precondition") or "").strip():
+        issues.append("start state not stated (step 1 precondition)")
+    if len(steps) > _MAX_AUTOMATION_STEPS:
+        issues.append(f"{len(steps)} steps — split into smaller cases")
+    for i, st in enumerate(steps, start=1):
+        if not isinstance(st, dict):
+            continue
+        action = str(st.get("action") or "").strip()
+        expected = str(st.get("expected") or "").strip()
+        low_a, low_e = action.lower(), expected.lower()
+        if _MULTI_ACTION_RE.search(action):
+            issues.append(f"step {i}: more than one action")
+        if not expected:
+            issues.append(f"step {i}: no expected result")
+        elif _has_term(low_e, _VAGUE_EXPECTED) and not _QUOTED_RE.search(expected):
+            issues.append(f"step {i}: expected result is vague")
+        elif (not _QUOTED_RE.search(expected)
+              and not any(w in low_e for w in _STATE_WORDS)):
+            issues.append(f"step {i}: no exact on-screen text — quote it")
+        hit = _has_term(low_a + " " + low_e, _NOT_AUTOMATABLE)
+        if hit:
+            issues.append(f"step {i}: not automatable ({hit})")
+    return issues
+
+
 def generate_steps(tc_title, acceptance_criteria, ui_description="", log=None,
                    should_stop=None, on_slow=None, on_retry=None):
     if _is_arabic_out():
@@ -3161,6 +3287,8 @@ def generate_steps(tc_title, acceptance_criteria, ui_description="", log=None,
         Format:
         {{"ac_quote":"...","steps": [{{"precondition":"...","action":"...","expected":"..."}}]}}
     """
+    if is_automation_style():
+        text += _AUTOMATION_STEP_RULES
     time.sleep(1)
     last_err = None
     for attempt in range(5):
@@ -3574,6 +3702,8 @@ def generate_titles(story_title, criteria, existing_titles=None, log=None,
         {existing_block}
         Format: {{"titles": [{{"ac":"AC1","title":"title 1"}},{{"ac":"AC2","title":"title 2"}}]}}
     """
+    if is_automation_style():
+        prompt += _AUTOMATION_TITLE_RULES
     should_stop = should_stop or (lambda: False)
     _interruptible_sleep(1)
     if should_stop() or _STOP_EVENT.is_set():
@@ -3615,6 +3745,9 @@ def create_test_case(project, plan_id, suite_id, title, story_id):
     """Create a test case work item and add it to the suite. Returns tc_id."""
     from azure.devops.v7_0.work_item_tracking.models import JsonPatchOperation
     patch = [JsonPatchOperation(op="add", path="/fields/System.Title", value=title)]
+    if case_labels():
+        patch.append(JsonPatchOperation(op="add", path="/fields/System.Tags",
+                                        value="; ".join(case_labels())))
     if story_id:
         patch.append(JsonPatchOperation(op="add", path="/relations/-", value={
             "rel": "Microsoft.VSTS.Common.TestedBy-Reverse",
@@ -3627,6 +3760,31 @@ def create_test_case(project, plan_id, suite_id, title, story_id):
     except Exception:
         pass
     return tc_id
+
+
+def fetch_case_labels(case_ids):
+    """Azure: {case id: [tags]} for test cases, batched 200 per call."""
+    ids = [int(i) for i in case_ids if str(i).strip().isdigit()]
+    out = {}
+    for i in range(0, len(ids), 200):
+        for w in _wit_client.get_work_items(ids[i:i + 200], fields=["System.Tags"]) or []:
+            tags = str((w.fields or {}).get("System.Tags") or "")
+            out[w.id] = [t.strip() for t in tags.split(";") if t.strip()]
+    return out
+
+
+def filter_cases_by_label(story_tcs, labels, tag=AUTOMATION_TAG):
+    """Keep only cases whose labels include `tag` (case-insensitive).
+    story_tcs: {story_id: [{"id", "title"}]}; labels: {case id: [labels]} with
+    keys that may be int or str. Returns (filtered, kept, total)."""
+    norm = {str(k): [str(x).strip().lower() for x in (v or [])] for k, v in labels.items()}
+    out, kept, total = {}, 0, 0
+    for sid, cases in story_tcs.items():
+        keep = [c for c in cases if tag.lower() in norm.get(str(c.get("id")), [])]
+        total += len(cases)
+        kept += len(keep)
+        out[sid] = keep
+    return out, kept, total
 
 
 def _norm_title(t):
@@ -5531,6 +5689,13 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
             if not steps:
                 raise RuntimeError("AI returned steps with no action/expected text")
             _o.write_steps(tc_id, build_steps_xml(steps), project, story_id)
+            if is_automation_style():
+                _issues = automation_issues(steps)
+                if _issues:
+                    cb("log", {"msg": "Not automation-ready — " + "; ".join(_issues[:4])
+                                      + (" …" if len(_issues) > 4 else "")
+                                      + ". Fix these steps before automating.",
+                               "tone": "warn", "ico": "⚠", "id": tc_id, "indent": True})
             return {"ok": True, "tc_id": tc_id, "tc_title": tc_title, "story_id": story_id,
                     "steps": steps, "inadequate_reason": inadequate_reason,
                     "tc_start": _tc_start}
@@ -6122,6 +6287,48 @@ def _logo_tag(size=42):
             f"style='display:block;border:0;outline:none;text-decoration:none' />")
 
 
+# ── shared email footer ─────────────────────────────────────────────────────
+# Where the data came from, for "Generated by QA Studio vX · <source> + AI".
+# The UI registers a callable (the active backend's label) so every email
+# names the CURRENT backend — never a hard-coded "Azure DevOps".
+_EMAIL_SOURCE = ""
+
+
+def set_email_source(source):
+    """str, or a zero-arg callable returning the active backend's label."""
+    global _EMAIL_SOURCE
+    _EMAIL_SOURCE = source or ""
+
+
+def _email_source():
+    try:
+        src = _EMAIL_SOURCE() if callable(_EMAIL_SOURCE) else _EMAIL_SOURCE
+    except Exception:
+        src = ""
+    return str(src or "").strip()
+
+
+def email_footer_text(source=None, note=""):
+    """Plain footer line: 'Generated by QA Studio v3.9.6 · Jira + Zephyr Scale + AI'."""
+    src = (source if source is not None else _email_source()).strip()
+    ver = local_version()
+    parts = ["Generated by QA Studio" + (f" v{ver}" if ver and ver != "0.0.0" else ""),
+             (f"{src} + AI" if src else "AI-assisted QA")]
+    if note:
+        parts.append(note)
+    return " \u00b7 ".join(parts)
+
+
+def email_footer_html(source=None, note="", meta_html="", logo=24):
+    """The footer block every QA Studio email ends with (logo + one line)."""
+    INK3 = "#9C9AA6"
+    text = _html.escape(email_footer_text(source, note)).replace("\u00b7", "&middot;")
+    return (f"<table role='presentation' cellpadding='0' cellspacing='0'><tr>"
+            f"<td valign='middle' style='padding-right:9px'>{_logo_tag(logo)}</td>"
+            f"<td valign='middle' style='font-size:11.5px;font-weight:600;color:{INK3};"
+            f"line-height:1.5'>{text}</td></tr></table>" + (meta_html or ""))
+
+
 def build_report_email(tool, summary, stats, action_items=None, skipped_items=None,
                        per_story=None, plan_url=None, total_secs=None, log_lines=None,
                        org=None, project=None, url_map=None):
@@ -6427,12 +6634,10 @@ def build_report_email(tool, summary, stats, action_items=None, skipped_items=No
                      f"{_sec_head(INK, 'Run activity log', str(len(log_lines)) + ' lines')}"
                      f"<div style='margin-top:14px'>{log_box}</div></td></tr>")
 
-    footer = (f"<table role='presentation' cellpadding='0' cellspacing='0'><tr>"
-              f"<td valign='middle' style='padding-right:9px'>{_logo_tag(24)}</td>"
-              f"<td valign='middle' style='font-size:11.5px;font-weight:600;color:{INK3}'>"
-              f"Generated by QA Studio &middot; Azure DevOps + AI</td></tr></table>"
-              + (f"<div style='font-family:{MONO};font-size:11px;color:{INK3};margin-top:8px;line-height:1.6'>"
-                 f"Org: {_html.escape(str(org))} &middot; Project: {_html.escape(str(project))}</div>" if (org and project) else ""))
+    footer = email_footer_html(
+        meta_html=(f"<div style='font-family:{MONO};font-size:11px;color:{INK3};margin-top:8px;line-height:1.6'>"
+                   f"Org: {_html.escape(str(org))} &middot; Project: {_html.escape(str(project))}</div>"
+                   if (org and project) else ""))
 
     return f"""<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
 </head>
@@ -6453,7 +6658,7 @@ def build_report_email(tool, summary, stats, action_items=None, skipped_items=No
 
 def build_automation_report_email(target, summary, stats, project_dir=None, git_url=None,
                                   git_branch=None, log_lines=None, org=None, project=None,
-                                  failed=False, stopped=False):
+                                  failed=False, stopped=False, source=None):
     """Restrained, email-safe HTML summary of an Automation-screen run — same
     masthead/hero/metric-strip/log/footer chrome as build_report_email, so all
     three report emails (run report, sprint summary, automation) read as one
@@ -6521,8 +6726,8 @@ def build_automation_report_email(target, summary, stats, project_dir=None, git_
     def _mcolor(k, v):
         try: iv = int(str(v).split('/')[0].strip())
         except Exception: iv = 0
-        if k in ("Stories", "Test cases") and iv > 0: return GREEN
-        if k in ("Self-healed", "Skipped") and iv > 0: return AMBER
+        if k in ("Stories", "Test cases", "Proven locators", "Replay passed") and iv > 0: return GREEN
+        if k in ("Self-healed", "Needs review", "Skipped") and iv > 0: return AMBER
         if k == "Time": return INK
         return INK3
     mcells = ""
@@ -6623,12 +6828,11 @@ def build_automation_report_email(target, summary, stats, project_dir=None, git_
                      f"{_sec_head(INK, 'Automation activity log', str(len(log_lines)) + ' lines')}"
                      f"<div style='margin-top:14px'>{log_box}</div></td></tr>")
 
-    footer = (f"<table role='presentation' cellpadding='0' cellspacing='0'><tr>"
-              f"<td valign='middle' style='padding-right:9px'>{_logo_tag(24)}</td>"
-              f"<td valign='middle' style='font-size:11.5px;font-weight:600;color:{INK3}'>"
-              f"Generated by QA Studio &middot; Azure DevOps + AI</td></tr></table>"
-              + (f"<div style='font-family:{MONO};font-size:11px;color:{INK3};margin-top:8px;line-height:1.6'>"
-                 f"Org: {_html.escape(str(org))} &middot; Project: {_html.escape(str(project))}</div>" if (org and project) else ""))
+    footer = email_footer_html(
+        source=source,
+        meta_html=(f"<div style='font-family:{MONO};font-size:11px;color:{INK3};margin-top:8px;line-height:1.6'>"
+                   f"Org: {_html.escape(str(org))} &middot; Project: {_html.escape(str(project))}</div>"
+                   if (org and project) else ""))
 
     return f"""<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
 </head>
@@ -6790,10 +6994,8 @@ def build_sprint_summary_email(data):
                    f"{_sec_head(INK, 'Stories', len(stories))}"
                    f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0' style='margin-top:10px'>{story_header}{rows}</table>{_stories_more}</td></tr>") if stories else ""
 
-    footer = (f"<table role='presentation' cellpadding='0' cellspacing='0'><tr>"
-              f"<td valign='middle' style='padding-right:9px'>{_logo_tag(24)}</td>"
-              f"<td valign='middle' style='font-size:11.5px;font-weight:600;color:{INK3}'>Generated by QA Studio &middot; Azure DevOps + AI</td></tr></table>"
-              + (f"<div style='font-family:{MONO};font-size:11px;color:{INK3};margin-top:8px'>Org: {_html.escape(str(_org))} &middot; Project: {_html.escape(str(_proj))}</div>" if _proj else ""))
+    footer = email_footer_html(
+        meta_html=(f"<div style='font-family:{MONO};font-size:11px;color:{INK3};margin-top:8px'>Org: {_html.escape(str(_org))} &middot; Project: {_html.escape(str(_proj))}</div>" if _proj else ""))
 
     return f"""<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
 </head>
@@ -7161,11 +7363,9 @@ def build_ai_usage_email(report):
         f"use a model with no published price and are excluded from the cost total above.</div></td></tr>"
     ) if report.get("unpriced_calls") else ""
 
-    footer = (f"<table role='presentation' cellpadding='0' cellspacing='0'><tr>"
-             f"<td valign='middle' style='padding-right:9px'>{_logo_tag(24)}</td>"
-             f"<td valign='middle' style='font-size:11.5px;font-weight:600;color:{INK3}'>"
-             f"Generated by QA Studio &middot; token counts are exact (from each provider's own "
-             f"response); cost is an estimate from a locally maintained price table.</td></tr></table>")
+    footer = email_footer_html(
+        note="token counts are exact (from each provider's own response); cost is an "
+             "estimate from a locally maintained price table")
 
     return f"""<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
 </head>
@@ -7615,6 +7815,39 @@ def _best_inspection_binding(intent, bindings):
     return ranked[0][1]
 
 
+def _diff_key(e):
+    """DOM-diff identity of a harvested element: WHERE it is plus WHAT it says.
+    Text is part of it so a same-position element whose text changed (a page
+    title 'Checkout: Your Information' -> 'Checkout: Overview') counts as new."""
+    return (e.get("id"), e.get("name"), e.get("css"), e.get("xpath"),
+            (e.get("text") or "").strip())
+
+
+def _diff_keys(elements):
+    return set(_diff_key(e) for e in elements or [])
+
+
+def _new_since(before_keys, after):
+    """Elements in `after` that appeared or changed text since `before_keys`."""
+    return [e for e in after or [] if _diff_key(e) not in before_keys]
+
+
+def _type_leaves_empty(intent, steps):
+    """A value-less 'type' step means 'leave this field empty' when the compiled
+    target OR the authored step(s) it came from say so ('without filling the
+    form', 'leave blank'…). Otherwise the walk fills a placeholder."""
+    if (intent.get("value") or "").strip():
+        return False
+    text = (intent.get("target") or "") + " " + " ".join(intent.get("keywords") or [])
+    if _wants_empty_field(text):
+        return True
+    for n in intent.get("from_steps") or []:
+        if isinstance(n, int) and 1 <= n <= len(steps or []):
+            if _wants_empty_field(str((steps[n - 1] or {}).get("action") or "")):
+                return True
+    return False
+
+
 def _wants_empty_field(text):
     t = (text or "").lower()
     return any(k in t for k in _EMPTY_FIELD_KWS)
@@ -7889,6 +8122,57 @@ def _split_composite_negative_assertion(intent):
                         "kind": "text", "check": "not_visible",
                         "assert_before_action": True})
     return [product_check, badge_check]
+
+
+_QUOTED_RE = re.compile('"([^"]+)"|\u201c([^\u201d]+)\u201d|\u00ab([^\u00bb]+)\u00bb')
+
+
+def _quoted_phrases(text):
+    out = []
+    for groups in _QUOTED_RE.findall(str(text or "")):
+        phrase = next((g for g in groups if g), "").strip()
+        if phrase and phrase not in out:
+            out.append(phrase)
+    return out
+
+
+def _split_by_quoted_expected(intent, steps=None):
+    """Atomic checks from the authored expected result's quoted phrases.
+
+    'The "Your Cart" page shows "Sauce Labs Fleece Jacket"' names two exact UI
+    texts that live in two elements (title + product). Returns one exact-text
+    assertion per phrase (a single phrase too, when it differs from the current
+    target), else []. Phrases come from the intent's expected text, or — when
+    the compiler dropped the quotes — from the source steps' authored expected
+    result. The walk only uses this when no single element matches the whole
+    assertion, so one-element outcomes ('"Remove" for "Bike Light"' -> the bike
+    light's Remove button) keep binding that element."""
+    if intent.get("role") != "assertion" or _is_negative_assertion(intent):
+        return []
+    phrases = _quoted_phrases(intent.get("expected"))
+    if len(phrases) < 2 and steps:
+        # The compiler often rewrites the outcome WITHOUT its quotes
+        # ('Sauce Labs Fleece Jacket on Your Cart page'). The authored expected
+        # result of the source step(s) still has them — use those.
+        src = []
+        for n in intent.get("from_steps") or []:
+            if isinstance(n, int) and 1 <= n <= len(steps):
+                src.extend(p for p in _quoted_phrases((steps[n - 1] or {}).get("expected"))
+                           if p not in src)
+        if len(src) > len(phrases):
+            phrases = src
+    if not phrases:
+        return []
+    if len(phrases) == 1 and _norm(phrases[0]) == _norm(str(intent.get("target") or "")):
+        return []   # already checking exactly that text — nothing to split
+    parts = []
+    for phrase in phrases:
+        atomic = {k: v for k, v in intent.items()
+                  if k not in ("inspection_source", "inspection_unresolved",
+                               "live_locator", "locator_bindings")}
+        atomic.update({"target": phrase, "keywords": [phrase], "kind": "text"})
+        parts.append(atomic)
+    return parts
 
 
 def _split_composite_positive_assertion(intent):
@@ -8594,6 +8878,109 @@ def _to_locator(el):
     return {"by": "xpath", "value": el.get("xpath", "")}
 
 
+def _locator_candidates(el):
+    """Every candidate locator for one harvested element, most STABLE first:
+    data-testid > data-svgicon > stable id > name > aria-label > short visible
+    text > the harvest's own selector candidates > its robust css. The
+    positional absolute xpath is deliberately NOT a candidate: it is unique by
+    construction but breaks on any layout change (that's what healing was
+    papering over)."""
+    out = []
+
+    def add(by, value):
+        value = (value or "").strip()
+        if value and not any(c["by"] == by and c["value"] == value for c in out):
+            out.append({"by": by, "value": value})
+
+    tid = (el.get("testid") or "").strip()
+    if tid:
+        # The harvest's `testid` comes from data-testid OR data-test OR data-cy
+        # (SauceDemo uses data-test); offer all three — the proof keeps the
+        # one that actually matches.
+        for attr in ("data-testid", "data-test", "data-cy"):
+            add("css", '[%s="%s"]' % (attr, tid))
+    svg = (el.get("svgicon") or "").strip()
+    if svg:
+        add("css", '[data-svgicon="%s"]' % svg)
+    eid = (el.get("id") or "").strip()
+    if eid and not _VOLATILE_ID.search(eid):
+        add("id", eid)
+    add("name", el.get("name"))
+    aria = (el.get("aria") or "").strip()
+    if aria:
+        add("xpath", "//*[@aria-label=%s]" % _xq(aria))
+    txt = (el.get("text") or "").strip()
+    if txt and len(txt) <= 40:
+        add("xpath", "//%s[normalize-space()=%s]" % (el.get("tag") or "*", _xq(txt)))
+    for sel in (el.get("selectorCandidates") or []):
+        if sel and not _VOLATILE_ID.search(sel):
+            add("css", sel)
+    css = el.get("css") or ""
+    if css and not _VOLATILE_ID.search(css):
+        add("css", css)
+    return out
+
+
+_PROOF_BY = {"id": "ID", "name": "NAME", "css": "CSS_SELECTOR", "xpath": "XPATH"}
+
+
+def _prove_locator(driver, el, By, max_fallbacks=2):
+    """Prove a locator for `el` on the LIVE page, right where the explorer bound it.
+
+    A candidate is proven only when it matches EXACTLY ONE element in the DOM
+    and that element IS the bound one (located through its absolute xpath).
+    Exactly-one also satisfies Playwright's strict mode, not just Selenium's
+    first-match. Returns `_to_locator`-shaped {"by","value"} plus:
+      verified  — True when the returned locator was proven
+      fallbacks — up to `max_fallbacks` more proven locators (primary excluded)
+      reason    — why it is unverified ("no-driver", "target-not-found",
+                  "not-unique"); absent when verified
+    When nothing can be proven the legacy `_to_locator` choice is kept, so
+    behaviour never regresses — it is just honestly marked unverified."""
+    legacy = _to_locator(el) or {"by": "xpath", "value": ""}
+
+    def unverified(reason):
+        return dict(legacy, verified=False, fallbacks=[], reason=reason)
+
+    if driver is None or not el:
+        return unverified("no-driver")
+
+    def find(by_key, value):
+        try:
+            return list(driver.find_elements(getattr(By, _PROOF_BY[by_key]), value))
+        except Exception:
+            return None   # a selector the browser rejects proves nothing
+
+    target = None
+    xp = (el.get("xpath") or "").strip()
+    if xp.startswith("/"):
+        hits = find("xpath", xp) or []
+        target = hits[0] if len(hits) == 1 else None
+    elif el.get("css"):
+        hits = [h for h in (find("css", el["css"]) or []) if _displayed(h)]
+        target = hits[0] if hits else None
+    if target is None:
+        return unverified("target-not-found")
+
+    proven = []
+    for cand in _locator_candidates(el):
+        hits = find(cand["by"], cand["value"])
+        if hits is not None and len(hits) == 1 and hits[0] == target:
+            proven.append(cand)
+            if len(proven) > max_fallbacks:
+                break
+    if not proven:
+        return unverified("not-unique")
+    return dict(proven[0], verified=True, fallbacks=proven[1:1 + max_fallbacks])
+
+
+def _displayed(web_el):
+    try:
+        return bool(web_el.is_displayed())
+    except Exception:
+        return False
+
+
 _KIND_SYNONYMS = {"press": "click", "tap": "click", "open": "navigate",
                   "goto": "navigate", "input": "type", "enter": "type",
                   "fill": "type", "verify": "none", "check": "none",
@@ -8719,6 +9106,19 @@ def _harvest_errors(driver):
             "return (function(){" + _ERROR_HARVEST_JS + "})();") or []
     except Exception:
         return []
+
+
+def _login_form_visible(driver):
+    """True when a password field is displayed — the page is a login form."""
+    try:
+        from selenium.webdriver.common.by import By
+        css = By.CSS_SELECTOR
+    except Exception:
+        css = "css selector"
+    try:
+        return any(_displayed(e) for e in driver.find_elements(css, "input[type=password]"))
+    except Exception:
+        return False
 
 
 def _verify_logged_in(driver, login_url, cb):
@@ -8884,10 +9284,16 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
         return els
 
     def _el_key(e):
-        return (e.get("id"), e.get("name"), e.get("css"), e.get("xpath"))
+        # DOM-diff key (see _diff_key): position + text, so changed text = new.
+        return _diff_key(e)
 
-    def to_locator(el):
-        """Stable locator strategy (module-level _to_locator, see there)."""
+    def to_locator(el, prove=False):
+        """Stable locator strategy (module-level _to_locator, see there). With
+        prove=True (element bound LIVE, page in the right state) the locator is
+        proven unique on the page and carries verified/fallbacks — see
+        _prove_locator."""
+        if prove:
+            return _prove_locator(driver, el, By)
         return _to_locator(el)
 
     def _dedup_reindex(els):
@@ -9462,12 +9868,21 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                 else:
                     try:
                         cb("    loading start page (authenticated app)\u2026", "dim")
+                        landing = None
                         if have_creds:
                             cb("    establishing a fresh authenticated session…", "dim")
                             ok_case, reason_case = do_login(fresh=True)
                             if not ok_case:
                                 raise RuntimeError("login could not be verified: " + reason_case)
+                            landing = driver.current_url
                         driver.get(site_url); _t.sleep(wait_secs)
+                        # Some sites' root IS the login form even with a valid
+                        # session (e.g. SauceDemo). App cases must start on the
+                        # app, so fall back to where the login landed.
+                        if landing and _login_form_visible(driver):
+                            cb("    start URL shows the login form \u2014 using the "
+                               "post-login page instead: " + landing, "dim")
+                            driver.get(landing); _t.sleep(wait_secs)
                     except Exception as e:
                         cb(f"    could not establish case start state: {str(e)[:90]}", "warn")
                         continue
@@ -9512,7 +9927,26 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                         preferred = preferred_capture(it, assertion_pool)
                         context_result = context_result_capture(assertion_pool) if it.get("context_result") else None
                         el, src = (preferred if preferred else context_result) or bind_target(it, assertion_pool)
-                        captured = to_locator(el) if el else None
+                        # One outcome naming two exact texts held by two elements
+                        # ('"Your Cart" page shows "Fleece Jacket"') can't bind to
+                        # a single element. Only then split it on the authored
+                        # quoted phrases: this one becomes the first check, the
+                        # rest are inserted right after and walked next.
+                        if (el is None or src != "live") and not is_negative:
+                            _parts = _split_by_quoted_expected(it, tc.get("steps") or [])
+                            if _parts:
+                                _pos = next(i for i, x in enumerate(intents) if x is it)
+                                it.clear(); it.update(_parts[0])
+                                for _k, _extra in enumerate(_parts[1:], start=1):
+                                    intents.insert(_pos + _k, _extra)
+                                cb(f"    \u21b3 split into {len(_parts)} exact checks "
+                                   f"from the quoted expected text", "dim")
+                                preferred = preferred_capture(it, assertion_pool)
+                                el, src = preferred or bind_target(it, assertion_pool)
+                        # A disappearing target is already gone after the
+                        # action, so it can't be proven live here.
+                        captured = (to_locator(el, prove=(src == "live" and not is_negative))
+                                    if el else None)
                         it["inspection_source"] = src
                         if is_negative and captured:
                             it["assert_before_action"] = True
@@ -9643,7 +10077,7 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                         cb("      GUESS: no element matched \u2014 // TODO verify locator", "warn")
                         _todo(story, tc, fs, it.get("target"), "guess")
                         continue
-                    captured = to_locator(el)
+                    captured = to_locator(el, prove=(src == "live"))
                     it["inspection_source"] = src
                     if src == "live" and captured:
                         it["live_locator"] = captured
@@ -9656,9 +10090,7 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                         _todo(story, tc, fs, it.get("target"), "snapshot")
                         continue
                     # STAGE 3 — interception-proof action
-                    empty_ok = (verb == "type" and not (it.get("value") or "").strip()
-                                and _wants_empty_field((it.get("target", "") + " " +
-                                                        " ".join(it.get("keywords") or []))))
+                    empty_ok = (verb == "type" and _type_leaves_empty(it, steps))
                     typed_value = it.get("value", "")
                     if verb == "type" and not typed_value and starts_logged_out and have_creds and not is_neg:
                         field_hint = _norm((it.get("target", "") + " " +
@@ -9712,9 +10144,12 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                 # runtime helper and obtain APP_USER/APP_PASS from .env.
                 plan_intents = json.loads(json.dumps(intents, ensure_ascii=False))
                 for plan_intent in plan_intents:
-                    if (plan_intent.get("verb") == "type" and
-                            _is_login_flow_action(plan_intent)):
-                        plan_intent["value"] = ""
+                    if plan_intent.get("verb") == "type":
+                        # Only the REAL credentials are kept out (as runtime
+                        # placeholders); authored test data such as a wrong
+                        # password stays — negative tests depend on it.
+                        plan_intent["value"] = _plan_safe_value(
+                            plan_intent.get("value"), login if have_creds else {})
                 tc["inspection_plan"] = {
                     "schema_version": 1,
                     "case_type": ctype,
@@ -9755,10 +10190,19 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
             if key in seen:
                 continue
             seen.add(key); uniq.append(e)
+        proof = _proof_summary(stories_payload)
+        cb(f"Locator proof \u2014 {proof['verified']} proven unique on the live page, "
+           f"{len(proof['unverified'])} not proven.",
+           "ok" if not proof["unverified"] else "warn")
+        for _u in proof["unverified"][:40]:
+            cb(f"   - story {_u['story']} / {(_u['case'] or '')[:26]} / step {_u['step']} "
+               f"[{_u['kind']}] {_u['reason']}", "warn")
         result = {"stories_payload": stories_payload, "dom_snapshot": uniq[:300],
                 "screen_captures": screen_captures,
                 "stats": {"live": live_count, "snapshot": snap_count,
-                          "guess": guess_count}}
+                          "guess": guess_count, "verified": proof["verified"],
+                          "unverified": len(proof["unverified"])},
+                "locator_proof": proof}
         if failure_records:
             result["failure_analysis"] = tuple(failure_records)
         return result
@@ -9767,6 +10211,28 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
             driver.quit()
         except Exception:
             pass
+
+
+def _proof_summary(stories_payload):
+    """Count proven step locators and list every unproven one with its reason.
+    'not-proven' = a locator captured without a live proof (snapshot match,
+    older run, or an assertion on an element that disappears)."""
+    verified, unverified = 0, []
+    for story_pack in stories_payload or []:
+        story_id = (story_pack.get("story") or {}).get("id")
+        for tc in story_pack.get("test_cases") or []:
+            for index, step in enumerate(tc.get("steps") or [], start=1):
+                for key, kind in (("locator", "action"), ("assert_locator", "assertion")):
+                    loc = step.get(key)
+                    if not isinstance(loc, dict) or not loc.get("value"):
+                        continue
+                    if loc.get("verified") is True:
+                        verified += 1
+                    else:
+                        unverified.append({"story": story_id, "case": tc.get("title", ""),
+                                           "step": index, "kind": kind,
+                                           "reason": loc.get("reason") or "not-proven"})
+    return {"verified": verified, "unverified": unverified}
 
 
 def _inspection_step_bindings(stories_payload):
@@ -11377,7 +11843,7 @@ def validate_and_sequence_suite(stories_payload, log=None, want_ai=True,
     return out
 
 
-def sequence_verified_inspection_plans(stories_payload, log=None):
+def sequence_verified_inspection_plans(stories_payload, log=None, allow_unverified=False):
     """Build generation IR directly from the one-pass live inspection plans.
 
     No model is invoked here.  A plan is accepted only when every executable
@@ -11411,12 +11877,24 @@ def sequence_verified_inspection_plans(stories_payload, log=None):
                 # switch must therefore be accepted without a fake locator.
                 allowed = (source in ("start_state", "context") or
                            (source == "live" and has_exact_locator))
+                # A step that failed the no-healing replay would need runtime
+                # healing. Block unless the user explicitly allowed that.
+                if allowed and intent.get("replay_failed") and not allow_unverified:
+                    incomplete.append((story.get("id"), tc.get("title"),
+                                       "%s (replay: %s)" % ((intent.get("target") or "step")[:50],
+                                                            intent["replay_failed"])))
+                    continue
                 if not allowed:
                     incomplete.append((story.get("id"), tc.get("title"),
                                        (intent.get("target") or "unidentified step")[:70]))
             ctype = plan.get("case_type") or _classify_case(tc)
             pctx = plan.get("page_context") or _infer_page_context(tc, ctype)
-            explicit_login = bool(plan.get("explicit_login_flow")) or _case_has_explicit_login_flow(intents)
+            # A negative-login case types its OWN (wrong) values on the login
+            # page; treating it as a login flow made the generated test log in
+            # for real first and then look for the error on the app page.
+            explicit_login = ((bool(plan.get("explicit_login_flow"))
+                               or _case_has_explicit_login_flow(intents))
+                              and ctype != "negative_login")
             low = _norm(tc.get("title", ""))
             positive_login = (explicit_login and ctype != "negative_login" and
                               any(k in low for k in ("نجاح", "صحيح", "الصحيحة", "valid",
@@ -11445,6 +11923,344 @@ def sequence_verified_inspection_plans(stories_payload, log=None):
         return None
     log("Generating directly from the verified live inspection plan (no second AI compile).", "ok")
     return out
+
+
+# Runtime credential placeholders. A saved inspection plan never holds the real
+# test credentials; a typed value equal to one becomes a placeholder that the
+# generated code reads from APP_USER / APP_PASS (and the replay from the login
+# it was given). Any other typed value is authored test data and is kept
+# ('wrong_password', 'locked_out_user' — negative tests need them).
+APP_USER_TOKEN = "{{APP_USER}}"
+APP_PASS_TOKEN = "{{APP_PASS}}"
+
+
+def _plan_safe_value(value, login):
+    v = "" if value is None else str(value)
+    login = login or {}
+    if v and v == (login.get("user") or None):
+        return APP_USER_TOKEN
+    if v and v == (login.get("password") or None):
+        return APP_PASS_TOKEN
+    return v
+
+
+def _replay_value(value, login):
+    login = login or {}
+    if value == APP_USER_TOKEN:
+        return login.get("user", "")
+    if value == APP_PASS_TOKEN:
+        return login.get("password", "")
+    return "" if value is None else str(value)
+
+
+# ── Replay verification (no healing) ──────────────────────────────────────
+# Runs the sequenced cases the way the GENERATED test runs them — BaseTest's
+# login, generate_selfhealing_test_class's per-case prelude, _emit_intent's
+# assertion rules, Healer.act's verbs — but with healing OFF: each step may use
+# only its saved locator (+ the proven fallbacks from _prove_locator). A case
+# that passes here needs no runtime healing on the same environment.
+_REPLAY_BY = {"id": "ID", "name": "NAME", "css": "CSS_SELECTOR",
+              "cssSelector": "CSS_SELECTOR", "xpath": "XPATH"}
+_REPLAY_LOGIN_FIELDS = "input[type=password],#username,input[name=username]"
+_REPLAY_USER = "#username,input[type=email],input[name=email],input[name=username],input[name*=user i],input[id*=user i]"
+_REPLAY_PASS = "#password,input[type=password]"
+_REPLAY_SUBMIT = "#kc-login,button[type=submit],input[type=submit]"
+
+
+def _replay_norm(s):
+    """Same folding as the generated Healer.normText (Arabic-aware)."""
+    s = (s or "").lower()
+    s = re.sub("[ً-ْٰـ]", "", s)
+    s = re.sub("[أإآ]", "ا", s)
+    return s.replace("ة", "ه").replace("ى", "ي")
+
+
+def replay_sequenced(sequenced, base_url, login, make_driver, By, cb=None,
+                     should_stop=None, wait=12, sleep=None):
+    """Replay every sequenced case with saved locators only; return a report:
+    {"passed", "failed", "stopped", "cases": [{story, title, passed, steps,
+    target, reason, fallbacks_used}]}. A failing intent is marked
+    intent["replay_failed"] = reason (and a passing case clears it)."""
+    import time as _t
+    cb = cb or (lambda *a, **k: None)
+    should_stop = should_stop or (lambda: False)
+    sleep = sleep or _t.sleep
+    login = login or {}
+    report = {"passed": 0, "failed": 0, "stopped": False, "cases": []}
+
+    def poll(fn, secs):
+        end = _t.time() + max(0, secs)
+        while True:
+            got = fn()
+            if got or _t.time() >= end:
+                return got
+            sleep(0.25)
+
+    for pack in sequenced or []:
+        if should_stop():
+            report["stopped"] = True
+            break
+        story = pack.get("story") or {}
+        driver = make_driver()
+        try:
+            def by(key):
+                return getattr(By, _REPLAY_BY.get(key, "CSS_SELECTOR"))
+
+            def find_all(key, value):
+                try:
+                    return list(driver.find_elements(by(key), value))
+                except Exception:
+                    return []
+
+            def find(locs):
+                """First locator whose FIRST match is visible (Selenium
+                findElement + visibility, as the generated Healer). Returns
+                (element, index_used, reason)."""
+                reason = "not-found"
+                for i, (key, value) in enumerate(locs):
+                    def hit(key=key, value=value):
+                        els = find_all(key, value)
+                        return els[0] if els and _displayed(els[0]) else None
+                    el = poll(hit, wait if i == 0 else min(wait, 2))
+                    if el is not None:
+                        return el, i, ""
+                    if find_all(key, value):
+                        reason = "not-visible"
+                return None, -1, reason
+
+            def body_text():
+                try:
+                    return _replay_norm(driver.execute_script(
+                        "return document.body ? document.body.innerText : '';") or "")
+                except Exception:
+                    return ""
+
+            def open_login_page():
+                try:
+                    driver.delete_all_cookies()
+                except Exception:
+                    pass
+                driver.get(base_url)
+                if not poll(lambda: find_all("css", _REPLAY_LOGIN_FIELDS), min(wait, 4)):
+                    if login.get("url"):
+                        driver.get(login["url"])
+                        poll(lambda: find_all("css", _REPLAY_LOGIN_FIELDS), min(wait, 4))
+
+            def perform_login():
+                for sel, val in ((_REPLAY_USER, login.get("user", "")),
+                                 (_REPLAY_PASS, login.get("password", ""))):
+                    el, _, why = find([("css", sel)])
+                    if el is None:
+                        raise RuntimeError("login-" + why)
+                    el.clear()
+                    if val:
+                        el.send_keys(val)
+                before = driver.current_url
+                el, _, why = find([("css", _REPLAY_SUBMIT)])
+                if el is None:
+                    raise RuntimeError("login-" + why)
+                el.click()
+                poll(lambda: driver.current_url != before, wait)
+
+            def locs_for(intent, app_page):
+                seed_by, seed_val, _known = _seed_locator_for_intent(intent, app_page=app_page)
+                if seed_val == "TODO_RESOLVE_AT_RUNTIME":
+                    return []
+                out = [(seed_by, seed_val)]
+                for fb in ((intent.get("live_locator") or {}).get("fallbacks") or []):
+                    if fb.get("by") and fb.get("value"):
+                        out.append((fb["by"], fb["value"]))
+                return out
+
+            def run_intent(intent, app_page):
+                """'' on success, else a failure reason. Returns (reason, used_fallback)."""
+                role = intent.get("role")
+                if role == "precondition":
+                    return "", False
+                locs = locs_for(intent, app_page)
+                kind = (intent.get("kind") or "").lower()
+                if role == "assertion":
+                    if intent.get("assert_before_action"):
+                        if not locs:
+                            return "unresolved", False
+                        shown = [e for e in find_all(*locs[0]) if _displayed(e)]
+                        return ("still-visible" if shown else ""), False
+                    check = (intent.get("check") or "").lower()
+                    if (not locs and not intent.get("inspection_unresolved") and
+                            check not in ("checked", "enabled", "disabled", "selected",
+                                          "selected_value", "value_selected") and
+                            (kind in ("text", "message", "menu", "validation", "error") or not kind)):
+                        kws = [k for k in (intent.get("keywords") or []) if k] or \
+                              ([intent.get("target")] if intent.get("target") else [])
+                        ok = poll(lambda: any(_replay_norm(k) in body_text() for k in kws),
+                                  min(wait, 8))
+                        return ("text-missing" if not ok else ""), False
+                    if not locs:
+                        return "unresolved", False
+                    el, idx, why = find(locs)
+                    if el is None:
+                        return why, False
+                    if check == "checked" and not el.is_selected():
+                        return "not-checked", idx > 0
+                    if check in ("enabled", "disabled") and el.is_enabled() != (check == "enabled"):
+                        return "wrong-enabled-state", idx > 0
+                    return "", idx > 0
+                verb = intent.get("verb") or "click"
+                value = str(intent.get("value") or "")
+                if verb == "navigate" and value.lower().startswith(("http://", "https://")):
+                    driver.get(value)
+                    return "", False
+                if verb in ("navigate", "wait"):
+                    return "", False
+                if not locs:
+                    return "unresolved", False
+                el, idx, why = find(locs)
+                if el is None:
+                    return why, False
+                try:
+                    driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
+                except Exception:
+                    pass
+                try:
+                    if verb == "type":
+                        el.clear()
+                        typed = _replay_value(value, login)
+                        if typed:
+                            el.send_keys(typed)
+                    elif verb == "select":
+                        try:
+                            from selenium.webdriver.support.ui import Select
+                            Select(el).select_by_visible_text(value)
+                        except Exception:
+                            el.click()
+                    elif verb == "hover":
+                        from selenium.webdriver.common.action_chains import ActionChains
+                        ActionChains(driver).move_to_element(el).perform()
+                    else:
+                        try:
+                            el.click()
+                        except Exception:
+                            driver.execute_script("arguments[0].click();", el)
+                except Exception as exc:
+                    return "action-failed: %s" % type(exc).__name__, idx > 0
+                return "", idx > 0
+
+            open_login_page()
+            for case in sorted(pack.get("cases") or [], key=lambda c: c.get("priority", 0)):
+                if should_stop():
+                    report["stopped"] = True
+                    break
+                bucket = case.get("bucket", 3)
+                explicit = bool(case.get("explicit_login_flow"))
+                row = {"story": story.get("id"), "title": case.get("title", ""),
+                       "passed": True, "steps": [], "target": "", "reason": "",
+                       "fallbacks_used": 0}
+                try:
+                    if explicit or bucket == 2:
+                        open_login_page()
+                        perform_login()
+                    elif bucket < 2:
+                        open_login_page()
+                    else:
+                        # mirrors BaseTest.openAppHome()
+                        driver.get(base_url)
+                        if poll(lambda: find_all("css", _REPLAY_LOGIN_FIELDS), min(wait, 2)):
+                            perform_login()
+                except Exception as exc:
+                    row.update(passed=False, reason=str(exc) or "login-failed")
+                app_page = bucket == 3 or explicit
+                for intent in (case.get("intents") or []) if row["passed"] else []:
+                    intent.pop("replay_failed", None)
+                    if (bucket == 2 and intent.get("role") == "action") or (
+                            explicit and _is_login_flow_action(intent)):
+                        continue
+                    try:
+                        reason, used_fb = run_intent(intent, app_page)
+                    except Exception as exc:
+                        reason, used_fb = "error: %s" % type(exc).__name__, False
+                    row["fallbacks_used"] += 1 if used_fb else 0
+                    if reason:
+                        intent["replay_failed"] = reason
+                        row.update(passed=False, reason=reason,
+                                   steps=list(intent.get("from_steps") or []),
+                                   target=(intent.get("target") or "")[:80])
+                        break
+                report["passed" if row["passed"] else "failed"] += 1
+                report["cases"].append(row)
+                cb(("    ✓ replay: %s" if row["passed"] else
+                    "    ✗ replay: %s — step %s %s (%s)") % (
+                    (row["title"][:50],) if row["passed"] else
+                    (row["title"][:50], row["steps"], row["target"][:40], row["reason"])),
+                   "ok" if row["passed"] else "warn")
+        finally:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+    return report
+
+
+def replay_verify(stories_payload, login, site_url, cb=None, should_stop=None,
+                  headless=False):
+    """Replay the walked + sequenced cases in a FRESH Chrome (one per story,
+    like the generated BaseTest) using saved locators only. Returns the
+    replay_sequenced report, or None when the plans are incomplete (generation
+    is blocked for those anyway)."""
+    cb = cb or (lambda *a, **k: None)
+    sequenced = sequence_verified_inspection_plans(stories_payload)
+    if not sequenced:
+        cb("Replay skipped \u2014 some steps have no verified locator yet "
+           "(listed above); fix those first.", "warn")
+        return None
+    from selenium import webdriver
+    from selenium.webdriver.chrome.options import Options
+    from selenium.webdriver.common.by import By
+
+    def make_driver():
+        opts = Options()
+        if headless:
+            opts.add_argument("--headless=new")
+        for arg in ("--no-sandbox", "--disable-dev-shm-usage", "--window-size=1440,900",
+                    "--disable-gpu",
+                    "--disable-features=PasswordLeakDetection,PasswordManagerOnboarding"):
+            opts.add_argument(arg)
+        opts.add_experimental_option("prefs", {
+            "credentials_enable_service": False,
+            "profile.password_manager_enabled": False,
+            "profile.password_manager_leak_detection": False,
+            "profile.default_content_setting_values.notifications": 2,
+        })
+        opts.set_capability("unhandledPromptBehavior", "ignore")
+        drv = webdriver.Chrome(options=opts)
+        drv.set_page_load_timeout(45)
+        return drv
+
+    try:
+        site_url = _normalise_browser_http_url(site_url, "Target site URL")
+    except ValueError as exc:
+        cb(f"Replay skipped: {exc}", "err")
+        return None
+    cb("Replaying every case with its saved locators only (no healing)…", "info")
+    report = replay_sequenced(sequenced, site_url, login, make_driver, By, cb=cb,
+                              should_stop=should_stop)
+    cb(f"Replay — {report['passed']} case(s) passed, {report['failed']} failed.",
+       "ok" if not report["failed"] else "warn")
+    return report
+
+
+def write_verification_report(out_dir, report):
+    """Save the replay report next to inspection-screens.json. Value-free:
+    titles, step numbers, targets and reasons only."""
+    if not report:
+        return None
+    path = os.path.join(out_dir, "verification-report.json")
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(report, fh, ensure_ascii=False, indent=2)
+        return path
+    except Exception:
+        return None
 
 
 def _seed_locator_for_intent(intent, app_page=False):
@@ -11834,6 +12650,7 @@ def _sh_healer(pkg):
 
 import org.openqa.selenium.*;
 import org.openqa.selenium.interactions.Actions;
+import org.openqa.selenium.support.pagefactory.ByAll;
 import org.openqa.selenium.support.ui.ExpectedConditions;
 import org.openqa.selenium.support.ui.Select;
 import org.openqa.selenium.support.ui.WebDriverWait;
@@ -12010,6 +12827,11 @@ public final class Healer {
         } catch (Exception e) { return "[]"; }
     }
 
+    /** Primary locator plus proven fallbacks, tried in order (Selenium ByAll):
+     *  a broken primary resolves through a fallback with no AI call. */
+    public static By anyOf(By... bys) {
+        return bys.length == 1 ? bys[0] : new ByAll(bys);
+    }
     public static By toBy(String by, String value) {
         if (by == null) return By.cssSelector(value);
         switch (by) {
@@ -12078,6 +12900,13 @@ public abstract class BaseTest {
         }
     }
 
+    /** App cases start here: the site URL, logging in first when that URL
+     *  shows the login form (some sites' root IS the login page even with a
+     *  session, e.g. SauceDemo) — the login then lands on the app's home. */
+    protected void openAppHome() {
+        driver.get(Config.BASE_URL);
+        if (loginFieldPresent(2000)) performLogin();
+    }
     /** True once a username/password field is on the page (polls up to ms). */
     protected boolean loginFieldPresent(long ms) {
         long end = System.currentTimeMillis() + ms;
@@ -12096,7 +12925,7 @@ public abstract class BaseTest {
     /** Perform a real successful login using the seed login locators + healing. */
     protected void performLogin() {
         heal.act("login.username", "type",
-            Healer.toBy("cssSelector", "#username,input[name=username],input[type=email]"),
+            Healer.toBy("cssSelector", "#username,input[type=email],input[name=email],input[name=username],input[name*=user i],input[id*=user i]"),
             "{\\"target\\":\\"username field\\",\\"kind\\":\\"input\\"}", Config.USER);
         heal.act("login.password", "type",
             Healer.toBy("cssSelector", "#password,input[type=password]"),
@@ -12203,6 +13032,14 @@ def _emit_intent(lines, key, intent, seed_sink=None, app_page=False):
     by, val, _known = _seed_locator_for_intent(intent, app_page=app_page)
     seed = ("null" if val == "TODO_RESOLVE_AT_RUNTIME"
             else 'Healer.toBy("%s", "%s")' % (by, _java_str(val)))
+    # Proven fallbacks (see _prove_locator) ride along via Selenium's ByAll, so
+    # a broken primary resolves without any AI healing call.
+    _fbs = [f for f in ((intent.get("live_locator") or {}).get("fallbacks") or [])
+            if f.get("by") and f.get("value")]
+    if seed != "null" and _fbs:
+        seed = "Healer.anyOf(%s)" % ", ".join(
+            [seed] + ['Healer.toBy("%s", "%s")' % ("cssSelector" if f["by"] == "css" else f["by"],
+                                                  _java_str(f["value"])) for f in _fbs])
     todo = "  // TODO verify locator (resolved at runtime)" if val == "TODO_RESOLVE_AT_RUNTIME" else ""
 
     def _seed(k):
@@ -12263,8 +13100,11 @@ def _emit_intent(lines, key, intent, seed_sink=None, app_page=False):
     if verb == "navigate" and str(intent.get("value") or "").lower().startswith(("http://", "https://")):
         lines.append('        driver.get("%s");' % value)
         return
-    lines.append('        heal.act("%s", "%s", %s, "%s", "%s");%s'
-                 % (_java_str(key), verb, seed, _java_str(ij), value, todo))
+    raw_value = intent.get("value", "")
+    value_expr = ("Config.USER" if raw_value == APP_USER_TOKEN else
+                  "Config.PASS" if raw_value == APP_PASS_TOKEN else '"%s"' % value)
+    lines.append('        heal.act("%s", "%s", %s, "%s", %s);%s'
+                 % (_java_str(key), verb, seed, _java_str(ij), value_expr, todo))
     _seed(key)
 
 
@@ -12306,7 +13146,7 @@ def generate_selfhealing_test_class(story, cases, pkg, seed_sink=None):
             L.append("        openLoginPage();")
             L.append("        performLogin();")
         else:
-            L.append("        driver.get(Config.BASE_URL);")
+            L.append("        openAppHome();")
         # emit intents (for the login-transition case, skip its action intents —
         # performLogin() already did the real login — but keep its assertions)
         for ii, intent in enumerate(c.get("intents", [])):
@@ -12547,16 +13387,41 @@ def build_selfhealing_project(out_dir, sequenced, base_url, login=None,
     _write_seed_locators(out_dir, seed_sink, cb)
     _prune_generated_orphans(out_dir, pkg, m, cb)
     cb(f"TODO_LIVE: {_todo_total}", "meta")   # reconcile the live counter to the emitted total
-    cb(f"TODO: {_todo_total} locator(s) to resolve at runtime "
-       f"(the rest are seeded).", "warn")
+    if _todo_total:
+        cb(f"TODO: {_todo_total} locator(s) to resolve at runtime "
+           f"(the rest are seeded).", "warn")
+    else:
+        cb("Every locator is seeded — none left for runtime self-healing.", "ok")
     cb(f"Wrote {len(written)} files, {len(test_classes)} test class(es) this run.", "ok")
     return written
+
+
+def automation_done_message(target, todo, provider="your AI provider"):
+    """Final 'Done' line. The AI key is only asked for when TODO locators are
+    left for runtime healing; with 0 TODOs it is optional."""
+    if target == "selenium":
+        run = ("In IntelliJ set APP_USER and APP_PASS, then run `mvn test` "
+               "(report: target/surefire-reports).")
+    else:
+        rep = ("npx playwright show-report" if target == "playwright"
+               else "open cypress/reports/index.html")
+        run = ("Open the folder in VS Code or IntelliJ/WebStorm and run 'Run tests' "
+               "(installs anything missing first) — or `npm test`. Make sure APP_USER and "
+               f"APP_PASS are in .env (report: `{rep}`).")
+    if todo:
+        key = (f" Also set QA_AI_API_KEY (your {provider} key) — self-healing resolves "
+               f"the {todo} TODO locator(s) at runtime.")
+    else:
+        key = (" No TODO locators, so QA_AI_API_KEY is optional — set it only if you "
+               "want self-healing when a locator breaks later.")
+    return "Done — review the activity, then Push to Git. " + run + key
 
 
 def generate_and_push_selfhealing(out_dir, stories_payload, base_url, login=None,
                                   group_id="com.qastudio", artifact_id="automation-tests",
                                   cb=None, should_stop=lambda: False, want_ai=True,
-                                  on_error=None, gate=None, target="selenium"):
+                                  on_error=None, gate=None, target="selenium",
+                                  allow_unverified=False):
     """End-to-end no-browser path: validate+sequence → generate self-healing
     project. (Push is done separately via push_to_git, as today.)
     on_error/gate enable pause-on-error and manual pause (see
@@ -12568,7 +13433,8 @@ def generate_and_push_selfhealing(out_dir, stories_payload, base_url, login=None
         for tc in (pack.get("test_cases") or [])
     )
     if has_inspection_plan:
-        sequenced = sequence_verified_inspection_plans(stories_payload, log=cb)
+        sequenced = sequence_verified_inspection_plans(stories_payload, log=cb,
+                                                       allow_unverified=allow_unverified)
         if sequenced is None:
             return None
     else:
@@ -12593,10 +13459,18 @@ def generate_and_push_selfhealing(out_dir, stories_payload, base_url, login=None
                # frozen login URL can carry a stale ui_locales=en; see the
                # auth.js template comment for the live failure this caused).
                "ui_locale": ("ar" if _is_arabic_out() else "en"),
-               "ai_provider": _ai_prov, "ai_base_url": _ai_base, "ai_model": _ai_model}
-        return automation_targets.build(target, out_dir, sequenced, cfg,
-                                        _seed_locator_for_intent, _HARVEST_JS,
-                                        cb=cb, should_stop=should_stop, orig_tcs=_orig_tcs)
+               "ai_provider": _ai_prov, "ai_base_url": _ai_base, "ai_model": _ai_model,
+               # Test account for the git-ignored .env — only when the user
+               # opted in on the Automation screen (empty otherwise).
+               "app_user": (login or {}).get("env_user", ""),
+               "app_pass": (login or {}).get("env_pass", "")}
+        written = automation_targets.build(target, out_dir, sequenced, cfg,
+                                           _seed_locator_for_intent, _HARVEST_JS,
+                                           cb=cb, should_stop=should_stop, orig_tcs=_orig_tcs)
+        if written is not None and not should_stop():
+            # Ready to run: dependencies (and the browser) installed in the folder.
+            automation_targets.install_dependencies(out_dir, cb=cb, should_stop=should_stop)
+        return written
     return build_selfhealing_project(out_dir, sequenced, base_url, login,
                                      group_id, artifact_id, cb, should_stop,
                                      orig_tcs=_orig_tcs)

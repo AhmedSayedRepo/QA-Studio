@@ -276,8 +276,29 @@ class TestRailBackend(Backend):
         self._tmpl_cache[pid] = tid
         return tid
 
-    def create_test_case(self, project, plan, suite, title, story=None):
+    def _automated_type_id(self):
+        """Id of TestRail's "Automated" case type (global list). Cached; None
+        when the instance has no such type."""
+        if hasattr(self, "_auto_type_id"):
+            return self._auto_type_id
+        tid = None
+        try:
+            for t in (self._get("get_case_types") or []):
+                if isinstance(t, dict) and "automat" in (t.get("name") or "").lower():
+                    tid = t.get("id")
+                    break
+        except Exception:
+            tid = None
+        self._auto_type_id = tid
+        return tid
+
+    def create_test_case(self, project, plan, suite, title, story=None, labels=()):
         body = {"title": (title or "")[:250]}
+        if labels:
+            # TestRail has no free labels on cases: use the "Automated" case type.
+            type_id = self._automated_type_id()
+            if type_id is not None:
+                body["type_id"] = type_id
         tid = self._steps_template_id(project)
         if tid is not None:
             # Create with the separated-steps template so update_test_case_steps
@@ -295,6 +316,21 @@ class TestRailBackend(Backend):
         return TestCase(ref=Ref(id=cid), title=title, suite_ref=suite.ref,
                         story_ref=(story.ref if story else suite.story_ref),
                         url=self.item_url(Ref(id=cid)))
+
+    def fetch_case_labels(self, refs):
+        # No free labels in TestRail: the "Automated" case type stands in.
+        auto = self._automated_type_id()
+        if auto is None:
+            return None
+        out = {}
+        for r in refs:
+            k = r.id or r.key
+            try:
+                c = self._get(f"get_case/{k}") or {}
+                out[k] = ["automation"] if c.get("type_id") == auto else []
+            except Exception:
+                out[k] = []
+        return out
 
     def fetch_test_case_steps(self, ref):
         c = self._get(f"get_case/{ref.id}") or {}

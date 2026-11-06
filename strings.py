@@ -11798,6 +11798,607 @@ for _language, _note in _AI_MODEL_REFRESH_RELEASE_I18N.items():
     _STRINGS[_language]["upd_note_ai_model_refresh"] = _note
 
 
+# Setup 'Step 1 · Connect' panel for non-Azure backends (backend_setup.
+# connect_panel_text). {creds}/{source}/{target} are product names such as
+# "Jira + Zephyr Scale", "Jira", "TestRail" — never translated.
+_CONNECT_PANEL_I18N = {
+    "en": {
+        "bset_conn_desc": "Save your credentials, then connect. We validate your {creds} credentials and load your projects and test plans.",
+        "bset_conn_step_validate": "Validates your {creds} credentials",
+        "bset_conn_step_projects": "Loads your {source} projects",
+        "bset_conn_step_plans": "Fetches existing test plans from {target}",
+    },
+    "ar": {
+        "bset_conn_desc": "احفظ بيانات الاعتماد ثم اتصل. نتحقق من بيانات اعتماد {creds} ونحمّل مشاريعك وخطط الاختبار.",
+        "bset_conn_step_validate": "يتحقق من بيانات اعتماد {creds}",
+        "bset_conn_step_projects": "يحمّل مشاريعك في {source}",
+        "bset_conn_step_plans": "يجلب خطط الاختبار الحالية من {target}",
+    },
+    "fr": {
+        "bset_conn_desc": "Enregistrez vos identifiants, puis connectez-vous. Nous validons vos identifiants {creds} et chargeons vos projets et plans de test.",
+        "bset_conn_step_validate": "Valide vos identifiants {creds}",
+        "bset_conn_step_projects": "Charge vos projets {source}",
+        "bset_conn_step_plans": "Récupère les plans de test existants depuis {target}",
+    },
+    "tr": {
+        "bset_conn_desc": "Kimlik bilgilerinizi kaydedin, ardından bağlanın. {creds} kimlik bilgilerinizi doğrular, projelerinizi ve test planlarınızı yükleriz.",
+        "bset_conn_step_validate": "{creds} kimlik bilgilerinizi doğrular",
+        "bset_conn_step_projects": "{source} projelerinizi yükler",
+        "bset_conn_step_plans": "{target} içindeki mevcut test planlarını getirir",
+    },
+    "es": {
+        "bset_conn_desc": "Guarda tus credenciales y conéctate. Validamos tus credenciales de {creds} y cargamos tus proyectos y planes de prueba.",
+        "bset_conn_step_validate": "Valida tus credenciales de {creds}",
+        "bset_conn_step_projects": "Carga tus proyectos de {source}",
+        "bset_conn_step_plans": "Obtiene los planes de prueba existentes de {target}",
+    },
+    "de": {
+        "bset_conn_desc": "Speichern Sie Ihre Zugangsdaten und verbinden Sie sich. Wir prüfen Ihre {creds}-Zugangsdaten und laden Ihre Projekte und Testpläne.",
+        "bset_conn_step_validate": "Prüft Ihre {creds}-Zugangsdaten",
+        "bset_conn_step_projects": "Lädt Ihre {source}-Projekte",
+        "bset_conn_step_plans": "Ruft vorhandene Testpläne aus {target} ab",
+    },
+    "nl": {
+        "bset_conn_desc": "Sla uw inloggegevens op en maak verbinding. We valideren uw {creds}-inloggegevens en laden uw projecten en testplannen.",
+        "bset_conn_step_validate": "Valideert uw {creds}-inloggegevens",
+        "bset_conn_step_projects": "Laadt uw {source}-projecten",
+        "bset_conn_step_plans": "Haalt bestaande testplannen op uit {target}",
+    },
+}
+for _language, _values in _CONNECT_PANEL_I18N.items():
+    _STRINGS[_language].update(_values)
+
+
+# Verified-locator automation: replay override + release note.
+_VERIFIED_LOCATORS_I18N = {
+    "en": {
+        "auto_allow_unverified": "Generate even if some steps fail the replay (those steps will rely on runtime self-healing)",
+        "auto_replay_failed_allowed": "{n} case(s) failed the replay — generating anyway as allowed; those steps will rely on runtime self-healing.",
+        "upd_note_verified_locators": "Automation now proves every captured locator is unique on the live page, keeps proven fallbacks, and replays each case with saved locators only before generating — so the generated tests run without runtime self-healing.",
+    },
+    "ar": {
+        "auto_allow_unverified": "الإنشاء حتى لو فشلت بعض الخطوات في إعادة التشغيل (ستعتمد هذه الخطوات على الإصلاح الذاتي أثناء التشغيل)",
+        "auto_replay_failed_allowed": "فشلت {n} حالة في إعادة التشغيل — يتم الإنشاء على أي حال كما سمحت؛ ستعتمد هذه الخطوات على الإصلاح الذاتي أثناء التشغيل.",
+        "upd_note_verified_locators": "تتحقق الأتمتة الآن من أن كل محدد مُلتقط فريد على الصفحة الحية، وتحتفظ ببدائل مُثبتة، وتعيد تشغيل كل حالة بالمحددات المحفوظة فقط قبل الإنشاء — لتعمل الاختبارات المُنشأة دون إصلاح ذاتي أثناء التشغيل.",
+    },
+    "fr": {
+        "auto_allow_unverified": "Générer même si certaines étapes échouent à la relecture (ces étapes dépendront de l'auto-réparation à l'exécution)",
+        "auto_replay_failed_allowed": "{n} cas ont échoué à la relecture — génération quand même, comme autorisé ; ces étapes dépendront de l'auto-réparation à l'exécution.",
+        "upd_note_verified_locators": "L'automatisation vérifie désormais que chaque localisateur capturé est unique sur la page réelle, conserve des alternatives vérifiées et rejoue chaque cas avec les seuls localisateurs enregistrés avant la génération — les tests générés s'exécutent sans auto-réparation.",
+    },
+    "tr": {
+        "auto_allow_unverified": "Bazı adımlar yeniden oynatmada başarısız olsa bile oluştur (bu adımlar çalışma zamanı kendi kendini onarmaya dayanır)",
+        "auto_replay_failed_allowed": "{n} vaka yeniden oynatmada başarısız oldu — izin verildiği için yine de oluşturuluyor; bu adımlar çalışma zamanı kendi kendini onarmaya dayanacak.",
+        "upd_note_verified_locators": "Otomasyon artık yakalanan her konum belirleyicinin canlı sayfada benzersiz olduğunu doğrular, doğrulanmış yedekleri saklar ve oluşturmadan önce her vakayı yalnızca kayıtlı konum belirleyicilerle yeniden oynatır — oluşturulan testler çalışma zamanı onarımı olmadan çalışır.",
+    },
+    "es": {
+        "auto_allow_unverified": "Generar aunque algunos pasos fallen en la repetición (esos pasos dependerán de la autorreparación en ejecución)",
+        "auto_replay_failed_allowed": "{n} caso(s) fallaron en la repetición — se genera igualmente, como se permitió; esos pasos dependerán de la autorreparación en ejecución.",
+        "upd_note_verified_locators": "La automatización ahora comprueba que cada localizador capturado sea único en la página real, conserva alternativas comprobadas y repite cada caso solo con los localizadores guardados antes de generar — así las pruebas generadas se ejecutan sin autorreparación.",
+    },
+    "de": {
+        "auto_allow_unverified": "Auch erzeugen, wenn einige Schritte beim Replay fehlschlagen (diese Schritte verlassen sich auf Selbstheilung zur Laufzeit)",
+        "auto_replay_failed_allowed": "{n} Fall/Fälle beim Replay fehlgeschlagen — wird wie erlaubt trotzdem erzeugt; diese Schritte verlassen sich auf Selbstheilung zur Laufzeit.",
+        "upd_note_verified_locators": "Die Automatisierung prüft jetzt, dass jeder erfasste Locator auf der echten Seite eindeutig ist, behält geprüfte Alternativen und spielt jeden Fall vor der Erzeugung nur mit den gespeicherten Locatoren ab — die erzeugten Tests laufen ohne Selbstheilung.",
+    },
+    "nl": {
+        "auto_allow_unverified": "Ook genereren als sommige stappen falen bij de herhaling (die stappen vertrouwen op zelfherstel tijdens uitvoering)",
+        "auto_replay_failed_allowed": "{n} geval(len) faalden bij de herhaling — er wordt toch gegenereerd zoals toegestaan; die stappen vertrouwen op zelfherstel tijdens uitvoering.",
+        "upd_note_verified_locators": "De automatisering controleert nu dat elke vastgelegde locator uniek is op de echte pagina, bewaart gecontroleerde alternatieven en speelt elk geval vóór het genereren af met alleen de opgeslagen locators — zodat de gegenereerde tests zonder zelfherstel draaien.",
+    },
+}
+for _language, _values in _VERIFIED_LOCATORS_I18N.items():
+    _STRINGS[_language].update(_values)
+
+
+# Automation without a tracker connection: the tracker source needs Setup.
+_UNGATED_I18N = {
+    "en": {"auto_source_needs_connect": "Connect a test management tool in Setup to use this source"},
+    "ar": {"auto_source_needs_connect": "اربط أداة إدارة الاختبارات من شاشة الإعداد لاستخدام هذا المصدر"},
+    "fr": {"auto_source_needs_connect": "Connectez un outil de gestion des tests dans Configuration pour utiliser cette source"},
+    "tr": {"auto_source_needs_connect": "Bu kaynağı kullanmak için Kurulum'da bir test yönetim aracı bağlayın"},
+    "es": {"auto_source_needs_connect": "Conecta una herramienta de gestión de pruebas en Configuración para usar esta fuente"},
+    "de": {"auto_source_needs_connect": "Verbinden Sie in der Einrichtung ein Testmanagement-Tool, um diese Quelle zu nutzen"},
+    "nl": {"auto_source_needs_connect": "Koppel in Instellen een testbeheertool om deze bron te gebruiken"},
+}
+for _language, _values in _UNGATED_I18N.items():
+    _STRINGS[_language].update(_values)
+
+
+# Automation activity rail: pipeline cards, log filter, result banner.
+_RAIL_I18N = {
+    "en": {
+        "auto_card_proven": 'Proven',
+        "auto_card_proven_tip": 'Locators proven unique on the live page',
+        "auto_card_replay": 'Replay',
+        "auto_card_replay_tip": 'Cases passed / replayed with saved locators only (no healing)',
+        "auto_card_review": 'Review',
+        "auto_card_review_tip": 'Steps that still need a verified locator',
+        "auto_card_skipped": 'Skipped',
+        "auto_card_skipped_tip": 'Duplicate test cases left out',
+        "auto_log_all": 'All',
+        "auto_log_issues": 'Issues',
+        "auto_result_generated": 'Generated — {detail} story(ies), ready to push',
+        "auto_result_blocked": 'Blocked — {detail} step(s) need a verified locator (see Issues)',
+        "auto_result_failed": 'Failed — {detail}',
+        "auto_result_stopped": 'Stopped before finishing',
+        "auto_result_nothing": 'Nothing new — existing tests kept as-is',
+    },
+    "ar": {
+        "auto_card_proven": 'مُثبت',
+        "auto_card_proven_tip": 'محددات ثبت أنها فريدة على الصفحة الحية',
+        "auto_card_replay": 'إعادة التشغيل',
+        "auto_card_replay_tip": 'حالات نجحت / أُعيد تشغيلها بالمحددات المحفوظة فقط (بدون إصلاح)',
+        "auto_card_review": 'مراجعة',
+        "auto_card_review_tip": 'خطوات ما زالت تحتاج محددًا مُتحققًا منه',
+        "auto_card_skipped": 'متجاوز',
+        "auto_card_skipped_tip": 'حالات اختبار مكررة تم استبعادها',
+        "auto_log_all": 'الكل',
+        "auto_log_issues": 'المشكلات',
+        "auto_result_generated": 'تم الإنشاء — {detail} قصة، جاهز للدفع',
+        "auto_result_blocked": 'تم الحظر — {detail} خطوة تحتاج محددًا مُتحققًا منه (راجع المشكلات)',
+        "auto_result_failed": 'فشل — {detail}',
+        "auto_result_stopped": 'توقف قبل الانتهاء',
+        "auto_result_nothing": 'لا جديد — تم الإبقاء على الاختبارات الحالية',
+    },
+    "fr": {
+        "auto_card_proven": 'Prouvés',
+        "auto_card_proven_tip": 'Localisateurs prouvés uniques sur la page réelle',
+        "auto_card_replay": 'Relecture',
+        "auto_card_replay_tip": 'Cas réussis / rejoués avec les seuls localisateurs enregistrés (sans réparation)',
+        "auto_card_review": 'À revoir',
+        "auto_card_review_tip": "Étapes qui ont encore besoin d'un localisateur vérifié",
+        "auto_card_skipped": 'Ignorés',
+        "auto_card_skipped_tip": 'Cas de test en double exclus',
+        "auto_log_all": 'Tout',
+        "auto_log_issues": 'Problèmes',
+        "auto_result_generated": 'Généré — {detail} récit(s), prêt à pousser',
+        "auto_result_blocked": 'Bloqué — {detail} étape(s) sans localisateur vérifié (voir Problèmes)',
+        "auto_result_failed": 'Échec — {detail}',
+        "auto_result_stopped": 'Arrêté avant la fin',
+        "auto_result_nothing": 'Rien de nouveau — tests existants conservés',
+    },
+    "tr": {
+        "auto_card_proven": 'Kanıtlı',
+        "auto_card_proven_tip": 'Canlı sayfada benzersiz olduğu kanıtlanan konum belirleyiciler',
+        "auto_card_replay": 'Tekrar',
+        "auto_card_replay_tip": 'Yalnızca kayıtlı konum belirleyicilerle başarılı / tekrar oynatılan vakalar (onarım yok)',
+        "auto_card_review": 'İnceleme',
+        "auto_card_review_tip": 'Hâlâ doğrulanmış konum belirleyici gereken adımlar',
+        "auto_card_skipped": 'Atlanan',
+        "auto_card_skipped_tip": 'Hariç tutulan yinelenen test vakaları',
+        "auto_log_all": 'Tümü',
+        "auto_log_issues": 'Sorunlar',
+        "auto_result_generated": 'Oluşturuldu — {detail} hikâye, gönderilmeye hazır',
+        "auto_result_blocked": "Engellendi — {detail} adım doğrulanmış konum belirleyici gerektiriyor (Sorunlar'a bakın)",
+        "auto_result_failed": 'Başarısız — {detail}',
+        "auto_result_stopped": 'Bitmeden durduruldu',
+        "auto_result_nothing": 'Yeni bir şey yok — mevcut testler korundu',
+    },
+    "es": {
+        "auto_card_proven": 'Probados',
+        "auto_card_proven_tip": 'Localizadores probados como únicos en la página real',
+        "auto_card_replay": 'Repetición',
+        "auto_card_replay_tip": 'Casos superados / repetidos solo con localizadores guardados (sin reparación)',
+        "auto_card_review": 'Revisar',
+        "auto_card_review_tip": 'Pasos que aún necesitan un localizador verificado',
+        "auto_card_skipped": 'Omitidos',
+        "auto_card_skipped_tip": 'Casos de prueba duplicados excluidos',
+        "auto_log_all": 'Todo',
+        "auto_log_issues": 'Problemas',
+        "auto_result_generated": 'Generado — {detail} historia(s), listo para subir',
+        "auto_result_blocked": 'Bloqueado — {detail} paso(s) necesitan un localizador verificado (ver Problemas)',
+        "auto_result_failed": 'Falló — {detail}',
+        "auto_result_stopped": 'Detenido antes de terminar',
+        "auto_result_nothing": 'Nada nuevo — se mantienen las pruebas existentes',
+    },
+    "de": {
+        "auto_card_proven": 'Geprüft',
+        "auto_card_proven_tip": 'Auf der echten Seite als eindeutig geprüfte Locatoren',
+        "auto_card_replay": 'Replay',
+        "auto_card_replay_tip": 'Bestandene / abgespielte Fälle nur mit gespeicherten Locatoren (ohne Heilung)',
+        "auto_card_review": 'Prüfen',
+        "auto_card_review_tip": 'Schritte, die noch einen geprüften Locator brauchen',
+        "auto_card_skipped": 'Übersprungen',
+        "auto_card_skipped_tip": 'Ausgelassene doppelte Testfälle',
+        "auto_log_all": 'Alle',
+        "auto_log_issues": 'Probleme',
+        "auto_result_generated": 'Erzeugt — {detail} Story(s), bereit zum Pushen',
+        "auto_result_blocked": 'Blockiert — {detail} Schritt(e) ohne geprüften Locator (siehe Probleme)',
+        "auto_result_failed": 'Fehlgeschlagen — {detail}',
+        "auto_result_stopped": 'Vor dem Ende gestoppt',
+        "auto_result_nothing": 'Nichts Neues — bestehende Tests bleiben',
+    },
+    "nl": {
+        "auto_card_proven": 'Bewezen',
+        "auto_card_proven_tip": 'Locators die uniek bleken op de echte pagina',
+        "auto_card_replay": 'Herhaling',
+        "auto_card_replay_tip": 'Gevallen geslaagd / afgespeeld met alleen opgeslagen locators (zonder herstel)',
+        "auto_card_review": 'Nakijken',
+        "auto_card_review_tip": 'Stappen die nog een gecontroleerde locator nodig hebben',
+        "auto_card_skipped": 'Overgeslagen',
+        "auto_card_skipped_tip": 'Uitgesloten dubbele testgevallen',
+        "auto_log_all": 'Alles',
+        "auto_log_issues": 'Problemen',
+        "auto_result_generated": "Gegenereerd — {detail} story('s), klaar om te pushen",
+        "auto_result_blocked": 'Geblokkeerd — {detail} stap(pen) zonder gecontroleerde locator (zie Problemen)',
+        "auto_result_failed": 'Mislukt — {detail}',
+        "auto_result_stopped": 'Gestopt voor het einde',
+        "auto_result_nothing": 'Niets nieuws — bestaande tests behouden',
+    },
+}
+for _language, _values in _RAIL_I18N.items():
+    _STRINGS[_language].update(_values)
+
+
+# Regenerate existing stories (standing option on the output-folder card).
+_REGEN_I18N = {
+    "en": {
+        "auto_regen_label": "Regenerate stories already in this folder",
+        "auto_regen_hint": "Rebuilds them with the latest engine instead of asking. Classes you edited by hand are kept; the fresh version is saved next to them as .new.",
+        "auto_regen_log": "Regenerating {n} existing story(ies) with the current engine — hand-edited classes are kept (fresh copy saved as .new).",
+        "upd_note_regenerate": "Automation can regenerate stories already in the output folder with the latest engine, and the Generate run now updates the screen in place.",
+    },
+    "ar": {
+        "auto_regen_label": "إعادة إنشاء القصص الموجودة في هذا المجلد",
+        "auto_regen_hint": "يعيد بناءها بأحدث محرك بدلًا من السؤال. تُحفظ الفئات التي عدّلتها يدويًا، وتُحفظ النسخة الجديدة بجانبها بامتداد ‎.new.",
+        "auto_regen_log": "إعادة إنشاء {n} قصة موجودة بالمحرك الحالي — تُحفظ الفئات المعدّلة يدويًا (النسخة الجديدة بامتداد ‎.new).",
+        "upd_note_regenerate": "يمكن للأتمتة الآن إعادة إنشاء القصص الموجودة في مجلد الإخراج بأحدث محرك، ويُحدَّث تشغيل الإنشاء الشاشة في مكانها.",
+    },
+    "fr": {
+        "auto_regen_label": "Régénérer les stories déjà présentes dans ce dossier",
+        "auto_regen_hint": "Les reconstruit avec le moteur le plus récent sans demander. Les classes modifiées à la main sont conservées ; la nouvelle version est enregistrée à côté en .new.",
+        "auto_regen_log": "Régénération de {n} story(s) existante(s) avec le moteur actuel — les classes modifiées à la main sont conservées (copie neuve en .new).",
+        "upd_note_regenerate": "L'automatisation peut régénérer les stories déjà présentes dans le dossier de sortie avec le moteur le plus récent, et l'exécution de Générer met à jour l'écran sur place.",
+    },
+    "tr": {
+        "auto_regen_label": "Bu klasördeki mevcut hikâyeleri yeniden oluştur",
+        "auto_regen_hint": "Sormadan en güncel motorla yeniden oluşturur. Elle düzenlediğiniz sınıflar korunur; yeni sürüm yanlarına .new olarak kaydedilir.",
+        "auto_regen_log": "{n} mevcut hikâye güncel motorla yeniden oluşturuluyor — elle düzenlenen sınıflar korunuyor (yeni kopya .new olarak).",
+        "upd_note_regenerate": "Otomasyon artık çıktı klasöründeki mevcut hikâyeleri en güncel motorla yeniden oluşturabilir ve Oluştur çalışması ekranı yerinde günceller.",
+    },
+    "es": {
+        "auto_regen_label": "Regenerar las historias que ya están en esta carpeta",
+        "auto_regen_hint": "Las reconstruye con el motor más reciente sin preguntar. Las clases editadas a mano se conservan; la versión nueva se guarda junto a ellas como .new.",
+        "auto_regen_log": "Regenerando {n} historia(s) existente(s) con el motor actual — las clases editadas a mano se conservan (copia nueva como .new).",
+        "upd_note_regenerate": "La automatización puede regenerar las historias que ya están en la carpeta de salida con el motor más reciente, y la ejecución de Generar actualiza la pantalla en su sitio.",
+    },
+    "de": {
+        "auto_regen_label": "Bereits vorhandene Storys in diesem Ordner neu erzeugen",
+        "auto_regen_hint": "Erzeugt sie ohne Rückfrage mit der neuesten Engine neu. Von Hand bearbeitete Klassen bleiben erhalten; die neue Fassung wird daneben als .new gespeichert.",
+        "auto_regen_log": "{n} vorhandene Story(s) werden mit der aktuellen Engine neu erzeugt — von Hand bearbeitete Klassen bleiben erhalten (neue Kopie als .new).",
+        "upd_note_regenerate": "Die Automatisierung kann bereits im Ausgabeordner vorhandene Storys mit der neuesten Engine neu erzeugen, und der Erzeugen-Lauf aktualisiert den Bildschirm direkt.",
+    },
+    "nl": {
+        "auto_regen_label": "Stories die al in deze map staan opnieuw genereren",
+        "auto_regen_hint": "Bouwt ze opnieuw met de nieuwste engine zonder te vragen. Met de hand bewerkte klassen blijven behouden; de nieuwe versie wordt ernaast opgeslagen als .new.",
+        "auto_regen_log": "{n} bestaande story('s) worden opnieuw gegenereerd met de huidige engine — met de hand bewerkte klassen blijven behouden (nieuwe kopie als .new).",
+        "upd_note_regenerate": "Automatisering kan stories die al in de uitvoermap staan opnieuw genereren met de nieuwste engine, en de Genereren-run werkt het scherm ter plekke bij.",
+    },
+}
+for _language, _values in _REGEN_I18N.items():
+    _STRINGS[_language].update(_values)
+
+# Generator test style: Manual / Automation.
+_CASE_STYLE_I18N = {
+    "en": {
+        "s_test_style": 'Test style',
+        "s_style_manual": 'Manual',
+        "s_style_automation": 'Automation',
+        "s_style_hint_manual": 'Readable cases for testers to run by hand.',
+        "s_style_hint_automation": 'Strict one-action steps with exact labels, values and checkable results, tagged “automation” in the backend; steps a script can’t check are flagged in the log.',
+        "upd_note_automation_cases": 'The generator has an Automation test style: strict, script-ready steps, tagged “automation” in your backend, with non-automatable steps flagged.',
+    },
+    "ar": {
+        "s_test_style": 'نمط الاختبار',
+        "s_style_manual": 'يدوي',
+        "s_style_automation": 'أتمتة',
+        "s_style_hint_manual": 'حالات مقروءة ينفذها المختبرون يدويًا.',
+        "s_style_hint_automation": 'خطوات صارمة بإجراء واحد مع تسميات وقيم دقيقة ونتائج قابلة للتحقق، موسومة بـ “automation” في الأداة؛ وتُعلَّم في السجل الخطوات التي لا يمكن للسكربت التحقق منها.',
+        "upd_note_automation_cases": 'أصبح للمولّد نمط اختبار للأتمتة: خطوات صارمة جاهزة للسكربت، موسومة بـ “automation” في أداتك، مع تعليم الخطوات غير القابلة للأتمتة.',
+    },
+    "fr": {
+        "s_test_style": 'Style de test',
+        "s_style_manual": 'Manuel',
+        "s_style_automation": 'Automatisation',
+        "s_style_hint_manual": 'Cas lisibles que les testeurs exécutent à la main.',
+        "s_style_hint_automation": 'Étapes strictes à une action, avec libellés, valeurs exactes et résultats vérifiables, étiquetées « automation » dans l’outil ; les étapes non vérifiables par un script sont signalées dans le journal.',
+        "upd_note_automation_cases": 'Le générateur a un style de test Automatisation : étapes strictes prêtes pour un script, étiquetées « automation » dans votre outil, avec les étapes non automatisables signalées.',
+    },
+    "tr": {
+        "s_test_style": 'Test stili',
+        "s_style_manual": 'Manuel',
+        "s_style_automation": 'Otomasyon',
+        "s_style_hint_manual": 'Test uzmanlarının elle çalıştıracağı okunur vakalar.',
+        "s_style_hint_automation": 'Tam etiket, değer ve doğrulanabilir sonuçlarla tek eylemli katı adımlar; araçta “automation” etiketiyle; betiğin doğrulayamayacağı adımlar günlükte işaretlenir.',
+        "upd_note_automation_cases": 'Oluşturucuda Otomasyon test stili var: betiğe hazır katı adımlar, aracınızda “automation” etiketiyle, otomatikleştirilemeyen adımlar işaretlenir.',
+    },
+    "es": {
+        "s_test_style": 'Estilo de prueba',
+        "s_style_manual": 'Manual',
+        "s_style_automation": 'Automatización',
+        "s_style_hint_manual": 'Casos legibles para que los testers los ejecuten a mano.',
+        "s_style_hint_automation": 'Pasos estrictos de una acción con etiquetas, valores exactos y resultados comprobables, etiquetados “automation” en la herramienta; los pasos que un script no puede comprobar se marcan en el registro.',
+        "upd_note_automation_cases": 'El generador tiene un estilo de prueba Automatización: pasos estrictos listos para script, etiquetados “automation” en tu herramienta, con los pasos no automatizables marcados.',
+    },
+    "de": {
+        "s_test_style": 'Teststil',
+        "s_style_manual": 'Manuell',
+        "s_style_automation": 'Automatisierung',
+        "s_style_hint_manual": 'Lesbare Fälle, die Tester von Hand ausführen.',
+        "s_style_hint_automation": 'Strikte Ein-Aktions-Schritte mit exakten Beschriftungen, Werten und prüfbaren Ergebnissen, im Tool mit „automation“ markiert; Schritte, die ein Skript nicht prüfen kann, werden im Protokoll markiert.',
+        "upd_note_automation_cases": 'Der Generator hat einen Automatisierungs-Teststil: strikte, skriptfertige Schritte, im Tool mit „automation“ markiert, nicht automatisierbare Schritte werden gekennzeichnet.',
+    },
+    "nl": {
+        "s_test_style": 'Teststijl',
+        "s_style_manual": 'Handmatig',
+        "s_style_automation": 'Automatisering',
+        "s_style_hint_manual": 'Leesbare gevallen die testers met de hand uitvoeren.',
+        "s_style_hint_automation": 'Strikte stappen met één actie, exacte labels, waarden en controleerbare resultaten, in de tool gelabeld “automation”; stappen die een script niet kan controleren worden in het logboek gemarkeerd.',
+        "upd_note_automation_cases": 'De generator heeft een Automatisering-teststijl: strikte, scriptklare stappen, in je tool gelabeld “automation”, met niet-automatiseerbare stappen gemarkeerd.',
+    },
+}
+_ONLY_TAGGED_I18N = {
+    "en": {
+        "auto_only_tagged": 'Only test cases tagged “automation”',
+        "auto_only_tagged_log": 'Kept {kept} of {total} test case(s) tagged “automation”.',
+        "auto_only_tagged_unsupported": "This backend can't report case tags — loading all test cases.",
+    },
+    "ar": {
+        "auto_only_tagged": 'حالات الاختبار الموسومة بـ “automation” فقط',
+        "auto_only_tagged_log": 'تم الإبقاء على {kept} من {total} حالة اختبار موسومة بـ “automation”.',
+        "auto_only_tagged_unsupported": 'لا تستطيع هذه الأداة قراءة وسوم الحالات — سيتم تحميل كل حالات الاختبار.',
+    },
+    "fr": {
+        "auto_only_tagged": 'Seulement les cas de test étiquetés « automation »',
+        "auto_only_tagged_log": '{kept} cas de test sur {total} étiquetés « automation » conservés.',
+        "auto_only_tagged_unsupported": 'Cet outil ne peut pas lire les étiquettes des cas — chargement de tous les cas de test.',
+    },
+    "tr": {
+        "auto_only_tagged": 'Yalnızca “automation” etiketli test vakaları',
+        "auto_only_tagged_log": '“automation” etiketli {total} test vakasından {kept} tanesi tutuldu.',
+        "auto_only_tagged_unsupported": 'Bu araç vaka etiketlerini okuyamıyor — tüm test vakaları yükleniyor.',
+    },
+    "es": {
+        "auto_only_tagged": 'Solo casos de prueba etiquetados “automation”',
+        "auto_only_tagged_log": 'Se conservaron {kept} de {total} caso(s) de prueba etiquetados “automation”.',
+        "auto_only_tagged_unsupported": 'Esta herramienta no puede leer las etiquetas de los casos — se cargan todos los casos de prueba.',
+    },
+    "de": {
+        "auto_only_tagged": 'Nur mit „automation“ markierte Testfälle',
+        "auto_only_tagged_log": '{kept} von {total} Testfall/Testfällen mit „automation“ behalten.',
+        "auto_only_tagged_unsupported": 'Dieses Tool kann keine Fall-Labels lesen — alle Testfälle werden geladen.',
+    },
+    "nl": {
+        "auto_only_tagged": 'Alleen testgevallen met label “automation”',
+        "auto_only_tagged_log": '{kept} van {total} testgeval(len) met label “automation” behouden.',
+        "auto_only_tagged_unsupported": 'Deze tool kan geen labels van gevallen lezen — alle testgevallen worden geladen.',
+    },
+}
+for _language, _values in _ONLY_TAGGED_I18N.items():
+    _STRINGS[_language].update(_values)
+
+_AUTOMATION_HELP_I18N = {
+    "en": {
+        "helpm_auto_cases_title": 'Writing test cases for automation',
+        "helpm_auto_cases_s0": 'In Setup, set Test style to Automation before generating. New cases are written script-ready and tagged “automation” in your backend.',
+        "helpm_auto_cases_s1": "Make the story's acceptance criteria name the real on-screen texts — button labels, page titles, messages. The AI copies them into the steps in quotes; vague criteria give vague steps.",
+        "helpm_auto_cases_s2": 'One action per step, and one checkable fact per expected result: a quoted text that is shown, the page reached, an element shown/hidden/enabled, or a field value. Two facts? Quote both texts or use two steps.',
+        "helpm_auto_cases_s3": 'Write visible states, not judgments: “the “Remove” button is shown”, not “the item was added successfully”.',
+        "helpm_auto_cases_s4": 'Step 1 states the start: logged in or not, which page, and the data needed (e.g. cart has 1 item). Every case must run alone, in any order.',
+        "helpm_auto_cases_s5": 'Use {{APP_USER}} / {{APP_PASS}} for the login. Never put real accounts, secrets or environment URLs in a case.',
+        "helpm_auto_cases_s6": 'Keep cases short (8 steps at most): split a long multi-page journey into smaller cases.',
+        "helpm_auto_cases_s7": "Fix every ⚠ “Not automation-ready” line in the run log before automating. CAPTCHA, email/SMS/OTP codes and visual-layout checks can't be automated.",
+        "helpm_auto_scripts_title": 'Getting reliable automation scripts',
+        "helpm_auto_scripts_s0": 'Source: your backend (tick “Only test cases tagged automation”) or a CSV/XLSX file written with the same rules as automation test cases.',
+        "helpm_auto_scripts_s1": "Enter the Site URL and Login URL of the environment you're testing, and turn on Live inspection with a test account. Every locator is proven on the real page and each case is replayed before any code is written.",
+        "helpm_auto_scripts_s2": 'Use one output folder per environment (dev, staging, production): locators and data can differ between builds.',
+        "helpm_auto_scripts_s3": "After the run, open Issues. “Assertion target not found” means the case wording doesn't match the screen — quote the exact on-screen text in the case and run again.",
+        "helpm_auto_scripts_s4": 'Blocked means a step has no proven locator, so nothing is written. Fix the case rather than allowing unverified steps, so the scripts run without self-healing.',
+        "helpm_auto_scripts_s5": 'To run: set APP_USER and APP_PASS as environment variables. Selenium: mvn test. Playwright/Cypress: npm install, fill .env, npm test. QA_AI_API_KEY is only needed when TODO locators remain.',
+        "helpm_auto_scripts_s6": 'After updating QA Studio, tick “Regenerate stories already in this folder” to rebuild with the latest engine. Classes you edited by hand are kept; the fresh copy is saved as .new.',
+        "s_style_tips": 'Writing tips',
+        "auto_tips_link": 'Tips for reliable automation scripts',
+    },
+    "ar": {
+        "helpm_auto_cases_title": 'كتابة حالات اختبار للأتمتة',
+        "helpm_auto_cases_s0": 'في الإعداد، اختر نمط الاختبار «أتمتة» قبل الإنشاء. تُكتب الحالات الجديدة جاهزة للسكربت وتُوسم بـ “automation” في أداتك.',
+        "helpm_auto_cases_s1": 'اجعل معايير قبول القصة تذكر النصوص الحقيقية على الشاشة — أسماء الأزرار وعناوين الصفحات والرسائل. ينسخها الذكاء الاصطناعي في الخطوات بين علامات اقتباس؛ والمعايير المبهمة تعطي خطوات مبهمة.',
+        "helpm_auto_cases_s2": 'إجراء واحد في كل خطوة، وحقيقة واحدة قابلة للتحقق في كل نتيجة متوقعة: نص مقتبس يظهر، أو الصفحة التي تم الوصول إليها، أو عنصر ظاهر/مخفي/مفعل، أو قيمة حقل. حقيقتان؟ اقتبس النصين أو استخدم خطوتين.',
+        "helpm_auto_cases_s3": 'اكتب حالات مرئية لا أحكامًا: «يظهر زر “Remove”» وليس «تمت إضافة العنصر بنجاح».',
+        "helpm_auto_cases_s4": 'الخطوة 1 تحدد البداية: مسجل الدخول أم لا، وأي صفحة، والبيانات المطلوبة (مثل: السلة بها عنصر واحد). يجب أن تعمل كل حالة وحدها وبأي ترتيب.',
+        "helpm_auto_cases_s5": 'استخدم {{APP_USER}} / {{APP_PASS}} لتسجيل الدخول. لا تضع حسابات حقيقية أو أسرارًا أو روابط بيئات في الحالة.',
+        "helpm_auto_cases_s6": 'اجعل الحالات قصيرة (8 خطوات كحد أقصى): قسّم الرحلة الطويلة عبر عدة صفحات إلى حالات أصغر.',
+        "helpm_auto_cases_s7": 'أصلح كل سطر ⚠ «غير جاهز للأتمتة» في سجل التشغيل قبل الأتمتة. لا يمكن أتمتة CAPTCHA ورموز البريد/الرسائل/OTP وفحوصات التصميم المرئي.',
+        "helpm_auto_scripts_title": 'الحصول على سكربتات أتمتة موثوقة',
+        "helpm_auto_scripts_s0": 'المصدر: أداتك (فعّل «حالات الاختبار الموسومة بـ automation فقط») أو ملف CSV/XLSX مكتوب بنفس قواعد حالات الأتمتة.',
+        "helpm_auto_scripts_s1": 'أدخل رابط الموقع ورابط تسجيل الدخول للبيئة التي تختبرها، وفعّل الفحص المباشر بحساب اختبار. يتم إثبات كل محدد على الصفحة الحقيقية وإعادة تشغيل كل حالة قبل كتابة أي كود.',
+        "helpm_auto_scripts_s2": 'استخدم مجلد إخراج لكل بيئة (تطوير، تجهيز، إنتاج): قد تختلف المحددات والبيانات بين الإصدارات.',
+        "helpm_auto_scripts_s3": 'بعد التشغيل افتح «المشكلات». «لم يُعثر على هدف التحقق» يعني أن صياغة الحالة لا تطابق الشاشة — اقتبس النص الدقيق في الحالة وأعد التشغيل.',
+        "helpm_auto_scripts_s4": '«محظور» يعني أن خطوة بلا محدد مُثبت، فلا يُكتب شيء. أصلح الحالة بدل السماح بخطوات غير مُتحقق منها، لتعمل السكربتات دون إصلاح ذاتي.',
+        "helpm_auto_scripts_s5": 'للتشغيل: اضبط APP_USER وAPP_PASS كمتغيرات بيئة. Selenium: \u200fmvn test. \u200fPlaywright/Cypress: \u200fnpm install ثم املأ \u200e.env ثم npm test. لا يلزم QA_AI_API_KEY إلا إذا بقيت محددات TODO.',
+        "helpm_auto_scripts_s6": 'بعد تحديث QA Studio فعّل «إعادة إنشاء القصص الموجودة في هذا المجلد» لإعادة البناء بأحدث محرك. تُحفظ الفئات التي عدّلتها يدويًا، والنسخة الجديدة بامتداد \u200e.new.',
+        "s_style_tips": 'نصائح الكتابة',
+        "auto_tips_link": 'نصائح لسكربتات أتمتة موثوقة',
+    },
+    "fr": {
+        "helpm_auto_cases_title": "Écrire des cas de test pour l'automatisation",
+        "helpm_auto_cases_s0": 'Dans Configuration, réglez le style de test sur Automatisation avant de générer. Les nouveaux cas sont prêts pour un script et étiquetés « automation » dans votre outil.',
+        "helpm_auto_cases_s1": "Faites nommer aux critères d'acceptation les vrais textes à l'écran — libellés de boutons, titres de pages, messages. L'IA les recopie entre guillemets ; des critères vagues donnent des étapes vagues.",
+        "helpm_auto_cases_s2": "Une action par étape, et un fait vérifiable par résultat attendu : un texte cité affiché, la page atteinte, un élément affiché/masqué/activé, ou la valeur d'un champ. Deux faits ? Citez les deux textes ou utilisez deux étapes.",
+        "helpm_auto_cases_s3": "Décrivez des états visibles, pas des jugements : « le bouton “Remove” est affiché », pas « l'article a été ajouté avec succès ».",
+        "helpm_auto_cases_s4": "L'étape 1 indique le départ : connecté ou non, quelle page, quelles données (ex. panier avec 1 article). Chaque cas doit s'exécuter seul, dans n'importe quel ordre.",
+        "helpm_auto_cases_s5": "Utilisez {{APP_USER}} / {{APP_PASS}} pour la connexion. Jamais de vrais comptes, secrets ou URL d'environnement dans un cas.",
+        "helpm_auto_cases_s6": 'Gardez des cas courts (8 étapes au plus) : découpez un long parcours sur plusieurs pages en cas plus petits.',
+        "helpm_auto_cases_s7": "Corrigez chaque ligne ⚠ « Non prêt pour l'automatisation » du journal avant d'automatiser. CAPTCHA, codes e-mail/SMS/OTP et vérifications visuelles de mise en page ne s'automatisent pas.",
+        "helpm_auto_scripts_title": "Obtenir des scripts d'automatisation fiables",
+        "helpm_auto_scripts_s0": 'Source : votre outil (cochez « Seulement les cas étiquetés automation ») ou un fichier CSV/XLSX écrit avec les mêmes règles.',
+        "helpm_auto_scripts_s1": "Saisissez l'URL du site et de connexion de l'environnement testé, et activez l'inspection en direct avec un compte de test. Chaque localisateur est prouvé sur la vraie page et chaque cas rejoué avant d'écrire du code.",
+        "helpm_auto_scripts_s2": 'Un dossier de sortie par environnement (dev, recette, production) : localisateurs et données peuvent différer entre versions.',
+        "helpm_auto_scripts_s3": "Après l'exécution, ouvrez Problèmes. « Cible d'assertion introuvable » signifie que la formulation ne correspond pas à l'écran — citez le texte exact dans le cas et relancez.",
+        "helpm_auto_scripts_s4": "Bloqué signifie qu'une étape n'a pas de localisateur prouvé : rien n'est écrit. Corrigez le cas plutôt que d'autoriser des étapes non vérifiées, pour des scripts sans auto-réparation.",
+        "helpm_auto_scripts_s5": "Exécution : définissez APP_USER et APP_PASS en variables d'environnement. Selenium : mvn test. Playwright/Cypress : npm install, remplissez .env, npm test. QA_AI_API_KEY n'est utile que s'il reste des localisateurs TODO.",
+        "helpm_auto_scripts_s6": 'Après une mise à jour de QA Studio, cochez « Régénérer les stories déjà présentes » pour reconstruire avec le dernier moteur. Vos classes modifiées sont conservées ; la nouvelle copie est en .new.',
+        "s_style_tips": "Conseils d'écriture",
+        "auto_tips_link": "Conseils pour des scripts d'automatisation fiables",
+    },
+    "tr": {
+        "helpm_auto_cases_title": 'Otomasyon için test vakası yazma',
+        "helpm_auto_cases_s0": "Oluşturmadan önce Kurulum'da Test stilini Otomasyon yapın. Yeni vakalar betiğe hazır yazılır ve aracınızda “automation” etiketi alır.",
+        "helpm_auto_cases_s1": 'Hikâyenin kabul kriterleri ekrandaki gerçek metinleri adlandırsın — buton etiketleri, sayfa başlıkları, mesajlar. Yapay zekâ bunları adımlara tırnak içinde kopyalar; belirsiz kriterler belirsiz adımlar verir.',
+        "helpm_auto_cases_s2": 'Her adımda tek eylem, her beklenen sonuçta tek doğrulanabilir olgu: görünen tırnaklı bir metin, ulaşılan sayfa, görünen/gizli/etkin bir öğe ya da alan değeri. İki olgu mu? İki metni de tırnaklayın veya iki adım kullanın.',
+        "helpm_auto_cases_s3": 'Yargı değil görünür durum yazın: “Remove” butonu görünür — “ürün başarıyla eklendi” değil.',
+        "helpm_auto_cases_s4": '1. adım başlangıcı belirtir: giriş yapılmış mı, hangi sayfa, gereken veri (örn. sepette 1 ürün). Her vaka tek başına ve her sırada çalışmalı.',
+        "helpm_auto_cases_s5": "Giriş için {{APP_USER}} / {{APP_PASS}} kullanın. Vakaya asla gerçek hesap, gizli bilgi ya da ortam URL'si koymayın.",
+        "helpm_auto_cases_s6": 'Vakaları kısa tutun (en çok 8 adım): çok sayfalı uzun bir akışı küçük vakalara bölün.',
+        "helpm_auto_cases_s7": 'Otomasyondan önce çalışma günlüğündeki her ⚠ “Otomasyona hazır değil” satırını düzeltin. CAPTCHA, e-posta/SMS/OTP kodları ve görsel yerleşim kontrolleri otomatikleştirilemez.',
+        "helpm_auto_scripts_title": 'Güvenilir otomasyon betikleri almak',
+        "helpm_auto_scripts_s0": 'Kaynak: aracınız (“Yalnızca automation etiketli vakalar”ı işaretleyin) veya aynı kurallarla yazılmış bir CSV/XLSX dosyası.',
+        "helpm_auto_scripts_s1": "Test ettiğiniz ortamın Site ve Giriş URL'sini girin ve bir test hesabıyla Canlı incelemeyi açın. Her konum belirleyici gerçek sayfada kanıtlanır ve kod yazılmadan önce her vaka yeniden oynatılır.",
+        "helpm_auto_scripts_s2": 'Her ortam için ayrı çıktı klasörü kullanın (dev, staging, production): konum belirleyiciler ve veriler sürümler arasında farklı olabilir.',
+        "helpm_auto_scripts_s3": "Çalışmadan sonra Sorunlar'ı açın. “Doğrulama hedefi bulunamadı”, vaka ifadesinin ekranla eşleşmediği anlamına gelir — ekrandaki tam metni vakada tırnaklayın ve yeniden çalıştırın.",
+        "helpm_auto_scripts_s4": 'Engellendi, bir adımın kanıtlanmış konum belirleyicisi olmadığı anlamına gelir; hiçbir şey yazılmaz. Doğrulanmamış adımlara izin vermek yerine vakayı düzeltin ki betikler kendi kendini onarmadan çalışsın.',
+        "helpm_auto_scripts_s5": 'Çalıştırmak için: APP_USER ve APP_PASS ortam değişkenlerini ayarlayın. Selenium: mvn test. Playwright/Cypress: npm install, .env doldurun, npm test. QA_AI_API_KEY yalnızca TODO konum belirleyiciler kaldıysa gerekir.',
+        "helpm_auto_scripts_s6": "QA Studio'yu güncelledikten sonra en güncel motorla yeniden oluşturmak için “Bu klasördeki mevcut hikâyeleri yeniden oluştur”u işaretleyin. Elle düzenlediğiniz sınıflar korunur; yeni kopya .new olarak kaydedilir.",
+        "s_style_tips": 'Yazım ipuçları',
+        "auto_tips_link": 'Güvenilir otomasyon betikleri için ipuçları',
+    },
+    "es": {
+        "helpm_auto_cases_title": 'Escribir casos de prueba para automatización',
+        "helpm_auto_cases_s0": 'En Configuración, pon el estilo de prueba en Automatización antes de generar. Los casos nuevos quedan listos para script y etiquetados “automation” en tu herramienta.',
+        "helpm_auto_cases_s1": 'Haz que los criterios de aceptación nombren los textos reales en pantalla — etiquetas de botones, títulos de página, mensajes. La IA los copia entre comillas; criterios vagos dan pasos vagos.',
+        "helpm_auto_cases_s2": 'Una acción por paso y un hecho comprobable por resultado esperado: un texto citado que se muestra, la página alcanzada, un elemento visible/oculto/habilitado o el valor de un campo. ¿Dos hechos? Cita ambos textos o usa dos pasos.',
+        "helpm_auto_cases_s3": 'Describe estados visibles, no juicios: “se muestra el botón “Remove””, no “el artículo se añadió correctamente”.',
+        "helpm_auto_cases_s4": 'El paso 1 indica el inicio: con sesión o no, qué página y qué datos (p. ej. carrito con 1 artículo). Cada caso debe ejecutarse solo y en cualquier orden.',
+        "helpm_auto_cases_s5": 'Usa {{APP_USER}} / {{APP_PASS}} para el inicio de sesión. Nunca pongas cuentas reales, secretos ni URL de entorno en un caso.',
+        "helpm_auto_cases_s6": 'Mantén los casos cortos (máximo 8 pasos): divide un recorrido largo de varias páginas en casos más pequeños.',
+        "helpm_auto_cases_s7": 'Corrige cada línea ⚠ “No listo para automatización” del registro antes de automatizar. CAPTCHA, códigos por email/SMS/OTP y comprobaciones visuales de diseño no se pueden automatizar.',
+        "helpm_auto_scripts_title": 'Obtener scripts de automatización fiables',
+        "helpm_auto_scripts_s0": 'Fuente: tu herramienta (marca “Solo casos etiquetados automation”) o un archivo CSV/XLSX escrito con las mismas reglas.',
+        "helpm_auto_scripts_s1": 'Introduce la URL del sitio y de inicio de sesión del entorno que pruebas y activa la inspección en vivo con una cuenta de prueba. Cada localizador se comprueba en la página real y cada caso se repite antes de escribir código.',
+        "helpm_auto_scripts_s2": 'Usa una carpeta de salida por entorno (dev, staging, producción): localizadores y datos pueden variar entre versiones.',
+        "helpm_auto_scripts_s3": 'Tras la ejecución, abre Problemas. “Objetivo de aserción no encontrado” significa que la redacción no coincide con la pantalla — cita el texto exacto en el caso y vuelve a ejecutar.',
+        "helpm_auto_scripts_s4": 'Bloqueado significa que un paso no tiene localizador comprobado y no se escribe nada. Corrige el caso en lugar de permitir pasos no verificados, para que los scripts funcionen sin autorreparación.',
+        "helpm_auto_scripts_s5": 'Para ejecutar: define APP_USER y APP_PASS como variables de entorno. Selenium: mvn test. Playwright/Cypress: npm install, rellena .env, npm test. QA_AI_API_KEY solo hace falta si quedan localizadores TODO.',
+        "helpm_auto_scripts_s6": 'Tras actualizar QA Studio, marca “Regenerar las historias que ya están en esta carpeta” para reconstruir con el motor más reciente. Tus clases editadas se conservan; la copia nueva se guarda como .new.',
+        "s_style_tips": 'Consejos de redacción',
+        "auto_tips_link": 'Consejos para scripts de automatización fiables',
+    },
+    "de": {
+        "helpm_auto_cases_title": 'Testfälle für die Automatisierung schreiben',
+        "helpm_auto_cases_s0": 'Stellen Sie vor dem Erzeugen in der Einrichtung den Teststil auf Automatisierung. Neue Fälle sind skriptfertig und im Tool mit „automation“ markiert.',
+        "helpm_auto_cases_s1": 'Lassen Sie die Akzeptanzkriterien die echten Bildschirmtexte nennen — Button-Beschriftungen, Seitentitel, Meldungen. Die KI übernimmt sie in Anführungszeichen; vage Kriterien ergeben vage Schritte.',
+        "helpm_auto_cases_s2": 'Eine Aktion pro Schritt und eine prüfbare Tatsache pro erwartetem Ergebnis: ein zitierter angezeigter Text, die erreichte Seite, ein Element sichtbar/verborgen/aktiv oder ein Feldwert. Zwei Tatsachen? Beide Texte zitieren oder zwei Schritte.',
+        "helpm_auto_cases_s3": 'Beschreiben Sie sichtbare Zustände statt Urteile: „der Button “Remove” wird angezeigt“, nicht „der Artikel wurde erfolgreich hinzugefügt“.',
+        "helpm_auto_cases_s4": 'Schritt 1 nennt den Start: angemeldet oder nicht, welche Seite, welche Daten (z. B. Warenkorb mit 1 Artikel). Jeder Fall muss allein und in beliebiger Reihenfolge laufen.',
+        "helpm_auto_cases_s5": 'Verwenden Sie {{APP_USER}} / {{APP_PASS}} für die Anmeldung. Niemals echte Konten, Geheimnisse oder Umgebungs-URLs in einen Fall.',
+        "helpm_auto_cases_s6": 'Halten Sie Fälle kurz (höchstens 8 Schritte): Teilen Sie lange mehrseitige Abläufe in kleinere Fälle.',
+        "helpm_auto_cases_s7": 'Beheben Sie vor der Automatisierung jede ⚠-Zeile „Nicht automatisierungsbereit“ im Protokoll. CAPTCHA, E-Mail/SMS/OTP-Codes und visuelle Layoutprüfungen lassen sich nicht automatisieren.',
+        "helpm_auto_scripts_title": 'Zuverlässige Automatisierungsskripte erhalten',
+        "helpm_auto_scripts_s0": 'Quelle: Ihr Tool („Nur mit automation markierte Testfälle“ ankreuzen) oder eine CSV/XLSX-Datei nach denselben Regeln.',
+        "helpm_auto_scripts_s1": 'Geben Sie Site- und Login-URL der getesteten Umgebung ein und aktivieren Sie die Live-Inspektion mit einem Testkonto. Jeder Locator wird auf der echten Seite geprüft und jeder Fall vor dem Schreiben von Code abgespielt.',
+        "helpm_auto_scripts_s2": 'Ein Ausgabeordner pro Umgebung (Dev, Staging, Produktion): Locatoren und Daten können sich zwischen Builds unterscheiden.',
+        "helpm_auto_scripts_s3": 'Öffnen Sie nach dem Lauf „Probleme“. „Assertion-Ziel nicht gefunden“ bedeutet, dass die Formulierung nicht zum Bildschirm passt — zitieren Sie den exakten Text im Fall und starten Sie neu.',
+        "helpm_auto_scripts_s4": 'Blockiert heißt: Ein Schritt hat keinen geprüften Locator, es wird nichts geschrieben. Korrigieren Sie den Fall, statt ungeprüfte Schritte zuzulassen, damit die Skripte ohne Selbstheilung laufen.',
+        "helpm_auto_scripts_s5": 'Ausführen: APP_USER und APP_PASS als Umgebungsvariablen setzen. Selenium: mvn test. Playwright/Cypress: npm install, .env ausfüllen, npm test. QA_AI_API_KEY ist nur nötig, wenn TODO-Locatoren übrig sind.',
+        "helpm_auto_scripts_s6": 'Nach einem QA-Studio-Update „Bereits vorhandene Storys neu erzeugen“ ankreuzen, um mit der neuesten Engine neu zu bauen. Von Hand bearbeitete Klassen bleiben erhalten; die neue Kopie liegt als .new daneben.',
+        "s_style_tips": 'Schreibtipps',
+        "auto_tips_link": 'Tipps für zuverlässige Automatisierungsskripte',
+    },
+    "nl": {
+        "helpm_auto_cases_title": 'Testgevallen schrijven voor automatisering',
+        "helpm_auto_cases_s0": 'Zet in Instellen de teststijl op Automatisering voordat je genereert. Nieuwe gevallen zijn scriptklaar en in je tool gelabeld “automation”.',
+        "helpm_auto_cases_s1": 'Laat de acceptatiecriteria de echte schermteksten noemen — knoplabels, paginatitels, meldingen. De AI neemt ze tussen aanhalingstekens over; vage criteria geven vage stappen.',
+        "helpm_auto_cases_s2": 'Eén actie per stap en één controleerbaar feit per verwacht resultaat: een geciteerde tekst die zichtbaar is, de bereikte pagina, een element zichtbaar/verborgen/actief of een veldwaarde. Twee feiten? Citeer beide teksten of gebruik twee stappen.',
+        "helpm_auto_cases_s3": 'Beschrijf zichtbare toestanden, geen oordelen: “de knop “Remove” is zichtbaar”, niet “het artikel is succesvol toegevoegd”.',
+        "helpm_auto_cases_s4": 'Stap 1 noemt het begin: ingelogd of niet, welke pagina, welke data (bijv. winkelwagen met 1 artikel). Elk geval moet zelfstandig en in elke volgorde draaien.',
+        "helpm_auto_cases_s5": "Gebruik {{APP_USER}} / {{APP_PASS}} voor het inloggen. Zet nooit echte accounts, geheimen of omgevings-URL's in een geval.",
+        "helpm_auto_cases_s6": "Houd gevallen kort (maximaal 8 stappen): splits een lange route over meerdere pagina's in kleinere gevallen.",
+        "helpm_auto_cases_s7": 'Los elke ⚠-regel “Niet klaar voor automatisering” in het logboek op voordat je automatiseert. CAPTCHA, e-mail/sms/OTP-codes en visuele layoutcontroles zijn niet te automatiseren.',
+        "helpm_auto_scripts_title": 'Betrouwbare automatiseringsscripts krijgen',
+        "helpm_auto_scripts_s0": 'Bron: je tool (vink “Alleen testgevallen met label automation” aan) of een CSV/XLSX-bestand met dezelfde regels.',
+        "helpm_auto_scripts_s1": 'Vul de site- en inlog-URL in van de omgeving die je test en zet live-inspectie aan met een testaccount. Elke locator wordt op de echte pagina bewezen en elk geval opnieuw afgespeeld voordat er code wordt geschreven.',
+        "helpm_auto_scripts_s2": 'Gebruik één uitvoermap per omgeving (dev, staging, productie): locators en data kunnen per build verschillen.',
+        "helpm_auto_scripts_s3": 'Open na de run Problemen. “Assertiedoel niet gevonden” betekent dat de formulering niet overeenkomt met het scherm — citeer de exacte schermtekst in het geval en draai opnieuw.',
+        "helpm_auto_scripts_s4": 'Geblokkeerd betekent dat een stap geen bewezen locator heeft; er wordt niets geschreven. Herstel het geval in plaats van ongecontroleerde stappen toe te staan, zodat de scripts zonder zelfherstel draaien.',
+        "helpm_auto_scripts_s5": 'Uitvoeren: zet APP_USER en APP_PASS als omgevingsvariabelen. Selenium: mvn test. Playwright/Cypress: npm install, vul .env, npm test. QA_AI_API_KEY is alleen nodig als er TODO-locators over zijn.',
+        "helpm_auto_scripts_s6": 'Vink na een QA Studio-update “Stories die al in deze map staan opnieuw genereren” aan om met de nieuwste engine te herbouwen. Met de hand bewerkte klassen blijven behouden; de nieuwe kopie staat ernaast als .new.',
+        "s_style_tips": 'Schrijftips',
+        "auto_tips_link": 'Tips voor betrouwbare automatiseringsscripts',
+    },
+}
+for _language, _values in _AUTOMATION_HELP_I18N.items():
+    _STRINGS[_language].update(_values)
+
+_READY_TO_RUN_I18N = {
+    "en": {
+        "auto_env_creds": "Save this test account in the generated project's .env (git-ignored) so Playwright/Cypress scripts run straight from the IDE",
+        "upd_note_js_ready_to_run": 'Playwright/Cypress output is ready to run: QA Studio installs the dependencies and browser, and adds one-click “Run tests” configurations for VS Code and IntelliJ/WebStorm.',
+    },
+    "ar": {
+        "auto_env_creds": 'حفظ حساب الاختبار هذا في ملف \u200e.env للمشروع الناتج (مُستبعد من git) لتعمل سكربتات Playwright/Cypress مباشرة من محرر الأكواد',
+        "upd_note_js_ready_to_run": 'أصبح ناتج Playwright/Cypress جاهزًا للتشغيل: يثبّت QA Studio الاعتماديات والمتصفح، ويضيف إعدادات تشغيل “Run tests” بنقرة واحدة لـ VS Code وIntelliJ/WebStorm.',
+    },
+    "fr": {
+        "auto_env_creds": "Enregistrer ce compte de test dans le .env du projet généré (ignoré par git) pour lancer les scripts Playwright/Cypress directement depuis l'IDE",
+        "upd_note_js_ready_to_run": "La sortie Playwright/Cypress est prête à l'emploi : QA Studio installe les dépendances et le navigateur, et ajoute des configurations « Run tests » en un clic pour VS Code et IntelliJ/WebStorm.",
+    },
+    "tr": {
+        "auto_env_creds": "Playwright/Cypress betikleri doğrudan IDE'den çalışsın diye bu test hesabını oluşturulan projenin .env dosyasına (git'e dahil edilmez) kaydet",
+        "upd_note_js_ready_to_run": 'Playwright/Cypress çıktısı çalışmaya hazır: QA Studio bağımlılıkları ve tarayıcıyı kurar, VS Code ve IntelliJ/WebStorm için tek tıkla “Run tests” yapılandırmaları ekler.',
+    },
+    "es": {
+        "auto_env_creds": 'Guardar esta cuenta de prueba en el .env del proyecto generado (ignorado por git) para que los scripts de Playwright/Cypress se ejecuten directamente desde el IDE',
+        "upd_note_js_ready_to_run": 'La salida de Playwright/Cypress queda lista para ejecutar: QA Studio instala las dependencias y el navegador, y añade configuraciones “Run tests” de un clic para VS Code e IntelliJ/WebStorm.',
+    },
+    "de": {
+        "auto_env_creds": 'Dieses Testkonto in der .env des erzeugten Projekts speichern (von git ignoriert), damit Playwright/Cypress-Skripte direkt aus der IDE laufen',
+        "upd_note_js_ready_to_run": 'Playwright/Cypress-Ausgabe ist startklar: QA Studio installiert Abhängigkeiten und Browser und fügt „Run tests“-Konfigurationen mit einem Klick für VS Code und IntelliJ/WebStorm hinzu.',
+    },
+    "nl": {
+        "auto_env_creds": 'Dit testaccount opslaan in de .env van het gegenereerde project (genegeerd door git) zodat Playwright/Cypress-scripts direct vanuit de IDE draaien',
+        "upd_note_js_ready_to_run": 'Playwright/Cypress-uitvoer is klaar om te draaien: QA Studio installeert de afhankelijkheden en browser en voegt “Run tests”-configuraties met één klik toe voor VS Code en IntelliJ/WebStorm.',
+    },
+}
+for _language, _values in _READY_TO_RUN_I18N.items():
+    _STRINGS[_language].update(_values)
+
+_RELEASE_3_9_6_I18N = {
+    "en": {
+        "upd_note_automation_filter_tips": 'Automation can load only the test cases tagged “automation” from your backend, and both Setup and Automation have built-in tips for writing reliable automation cases and scripts.',
+        "upd_note_automation_fixes": 'Fixes: a typed report-email address is now included without pressing Enter, and assertions naming several on-screen texts are checked reliably on Playwright, Cypress and Selenium.',
+    },
+    "ar": {
+        "upd_note_automation_filter_tips": 'يمكن للأتمتة الآن تحميل حالات الاختبار الموسومة بـ “automation” فقط من أداتك، وتحتوي شاشتا الإعداد والأتمتة على نصائح مدمجة لكتابة حالات وسكربتات أتمتة موثوقة.',
+        "upd_note_automation_fixes": 'إصلاحات: يُضاف عنوان البريد المكتوب للتقرير دون الضغط على Enter، ويتم التحقق بشكل موثوق من النتائج التي تذكر عدة نصوص على الشاشة في Playwright وCypress وSelenium.',
+    },
+    "fr": {
+        "upd_note_automation_filter_tips": "L'automatisation peut ne charger que les cas étiquetés « automation » depuis votre outil, et Configuration et Automatisation proposent des conseils intégrés pour écrire des cas et scripts fiables.",
+        "upd_note_automation_fixes": "Correctifs : une adresse e-mail saisie pour le rapport est prise en compte sans appuyer sur Entrée, et les vérifications citant plusieurs textes à l'écran sont fiables sur Playwright, Cypress et Selenium.",
+    },
+    "tr": {
+        "upd_note_automation_filter_tips": 'Otomasyon artık aracınızdan yalnızca “automation” etiketli test vakalarını yükleyebilir; Kurulum ve Otomasyon ekranlarında güvenilir vaka ve betik yazımı için yerleşik ipuçları var.',
+        "upd_note_automation_fixes": "Düzeltmeler: yazılan rapor e-posta adresi Enter'a basmadan eklenir ve ekrandaki birden çok metni içeren doğrulamalar Playwright, Cypress ve Selenium'da güvenilir şekilde kontrol edilir.",
+    },
+    "es": {
+        "upd_note_automation_filter_tips": 'Automatización puede cargar solo los casos etiquetados “automation” de tu herramienta, y Configuración y Automatización incluyen consejos para escribir casos y scripts fiables.',
+        "upd_note_automation_fixes": 'Correcciones: una dirección de correo escrita para el informe se incluye sin pulsar Intro, y las aserciones que citan varios textos en pantalla se comprueban de forma fiable en Playwright, Cypress y Selenium.',
+    },
+    "de": {
+        "upd_note_automation_filter_tips": 'Die Automatisierung kann nur die mit „automation“ markierten Testfälle aus Ihrem Tool laden, und Einrichtung sowie Automatisierung enthalten Tipps für zuverlässige Automatisierungsfälle und -skripte.',
+        "upd_note_automation_fixes": 'Korrekturen: Eine eingetippte Berichts-E-Mail-Adresse wird ohne Enter übernommen, und Prüfungen mit mehreren Bildschirmtexten werden in Playwright, Cypress und Selenium zuverlässig geprüft.',
+    },
+    "nl": {
+        "upd_note_automation_filter_tips": 'Automatisering kan alleen de testgevallen met label “automation” uit je tool laden, en Instellen en Automatisering bevatten tips voor betrouwbare automatiseringsgevallen en -scripts.',
+        "upd_note_automation_fixes": 'Oplossingen: een getypt e-mailadres voor het rapport wordt meegenomen zonder Enter, en controles met meerdere schermteksten worden betrouwbaar gecontroleerd in Playwright, Cypress en Selenium.',
+    },
+}
+for _language, _values in _RELEASE_3_9_6_I18N.items():
+    _STRINGS[_language].update(_values)
+
+for _language, _values in _CASE_STYLE_I18N.items():
+    _STRINGS[_language].update(_values)
+
 def t(key, **kw):
     """Look up a UI string by key in the current UI language, falling back to
     English, then to the key itself. Optional kwargs are applied via str.format."""

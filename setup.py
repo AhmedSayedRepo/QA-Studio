@@ -57,6 +57,9 @@ def screen(app):
             return ft.Text(_txt, size=12.5, color=T.INK_2, weight=ft.FontWeight.W_500)
         app._setup_desc_build = _lang_desc_ctrl
         app._setup_desc_cell = ft.Container(_lang_desc_ctrl())
+        _style_hint = ft.Text(strings.t("s_style_hint_" + getattr(app, "case_style", "manual")),
+                              size=11, color=T.INK_3, weight=ft.FontWeight.W_500)
+        app._case_style_hint = _style_hint
         tool_card = card(ft.Column([
             sec_head("2", strings.t("set_generate"),
                      ft.Text(strings.t("s_two_gen"), size=11, color=T.INK_3, weight=ft.FontWeight.BOLD)),
@@ -68,6 +71,24 @@ def screen(app):
             # persist=True) is the only thing meant to change what future
             # sessions start with.
             app._tool_segment(persist=False),
+            ft.Container(height=14),
+            # Manual vs Automation test-case style (stricter steps + tag),
+            # full width under the generator selector.
+            ft.Row([
+                ft.Text(strings.t("s_test_style"), size=12, weight=ft.FontWeight.BOLD, color=T.INK_2),
+                ft.Container(expand=True),
+                ft.Container(
+                    ft.Row([ft.Icon(ft.Icons.HELP_OUTLINE, size=14, color=T.VIOLET_INK),
+                            ft.Text(strings.t("s_style_tips"), size=11.5,
+                                    weight=ft.FontWeight.BOLD, color=T.VIOLET_INK)],
+                           spacing=5, tight=True),
+                    on_click=lambda e: app._show_help("auto_cases"),
+                    padding=ft.Padding.symmetric(horizontal=6, vertical=2), border_radius=6),
+            ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            ft.Container(height=8),
+            app._case_style_segment(),
+            ft.Container(height=6),
+            _style_hint,
             ft.Container(height=14),
             # Output language toggle
             ft.Row([

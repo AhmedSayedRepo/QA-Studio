@@ -290,14 +290,22 @@ class XrayBackend(JiraZephyrBackend):
                                 url=self.item_url(Ref(id="", key=j.get("key") or ""), project)))
         return out
 
-    def create_test_case(self, project, plan, suite, title, story=None):
+    def create_test_case(self, project, plan, suite, title, story=None, labels=()):
         key = self._project_key(project)
-        data = self._need_xray().graphql(
-            "mutation($s:String!,$p:String!){ createTest("
-            "testType:{name:\"Manual\"}, "
-            "jira:{fields:{summary:$s, project:{key:$p}}}){ "
-            "test{ issueId jira(fields:[\"key\"]) } warnings } }",
-            {"s": title, "p": key})
+        if labels:
+            data = self._need_xray().graphql(
+                "mutation($s:String!,$p:String!,$l:[String]){ createTest("
+                "testType:{name:\"Manual\"}, "
+                "jira:{fields:{summary:$s, project:{key:$p}, labels:$l}}){ "
+                "test{ issueId jira(fields:[\"key\"]) } warnings } }",
+                {"s": title, "p": key, "l": [str(x) for x in labels]})
+        else:
+            data = self._need_xray().graphql(
+                "mutation($s:String!,$p:String!){ createTest("
+                "testType:{name:\"Manual\"}, "
+                "jira:{fields:{summary:$s, project:{key:$p}}}){ "
+                "test{ issueId jira(fields:[\"key\"]) } warnings } }",
+                {"s": title, "p": key})
         t = ((data.get("createTest") or {}).get("test")) or {}
         case = TestCase(ref=Ref(id=str(t.get("issueId") or ""),
                                 key=(t.get("jira") or {}).get("key") or ""),
@@ -355,6 +363,19 @@ class XrayBackend(JiraZephyrBackend):
                 self._issueid_cache = {}
             self._issueid_cache[key] = iid
         return iid
+
+    def fetch_case_labels(self, refs):
+        # Xray tests are Jira issues: labels are the issue's own labels.
+        out = {}
+        for r in refs:
+            k = r.key or r.id
+            try:
+                row = self._need_jira().get(f"api/3/issue/{k}",
+                                            params={"fields": "labels"}) or {}
+                out[k] = [str(x) for x in ((row.get("fields") or {}).get("labels") or [])]
+            except (TrackerError, ValueError, TypeError):
+                out[k] = []
+        return out
 
     def fetch_test_case_steps(self, ref):
         iid = self._xray_issue_id(ref)

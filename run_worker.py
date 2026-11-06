@@ -417,6 +417,7 @@ def main():
         global _ENGINE, _RUN
         _ENGINE, _RUN = E, run
         E.set_output_lang(run.get("output_lang") or "ar")
+        E.set_case_style(run.get("case_style") or "manual")
         cred_src = _apply_credentials(E, run)
         _cb("log", {"msg": f"Remote run starting — credentials: {cred_src}", "tone": "dim"})
         E.clear_stop()

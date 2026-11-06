@@ -940,6 +940,15 @@ def plan_link_label(app):
     return f"Open plan in {where}" if where else "Open plan"
 
 
+def case_labels_for(app, case_ids):
+    """{case id/key: [labels]} from the active non-Azure backend, or None when
+    it can't report labels."""
+    from tracker.models import Ref
+    backend = get_backend(app)
+    refs = [Ref(id=str(c), key=str(c)) for c in case_ids]
+    return backend.fetch_case_labels(refs)
+
+
 def generation_ops(app):
     """Build the ops object `engine.run_titles`/`run_steps` need, for the
     ACTIVE backend. Returns None for Azure, meaning "use engine's defaults" —
@@ -1133,8 +1142,20 @@ def generation_ops(app):
         if story_id:
             found = backend.fetch_stories([Ref(id=str(story_id), key=str(story_id))])
             story = found[0] if found else None
-        case = backend.create_test_case(_proj(project), _plan(plan_id),
-                                        _suite(suite_id), title, story)
+        labels = E.case_labels()
+        if labels:
+            # Automation-style generation: tag the case so it is told apart
+            # from manual ones (adapters without label support ignore it).
+            try:
+                case = backend.create_test_case(_proj(project), _plan(plan_id),
+                                                _suite(suite_id), title, story,
+                                                labels=labels)
+            except TypeError:
+                case = backend.create_test_case(_proj(project), _plan(plan_id),
+                                                _suite(suite_id), title, story)
+        else:
+            case = backend.create_test_case(_proj(project), _plan(plan_id),
+                                            _suite(suite_id), title, story)
         return case.ref.key or case.ref.id      # engine expects a bare id
 
     def cases_for_suite(project, plan_id, suite_id):
@@ -1461,6 +1482,18 @@ def _section_header(ft, T, current_label):
         padding=14, margin=ft.Margin.only(bottom=14))
 
 
+def _picker_hidden(current):
+    """Backends left out of the picker. Standalone TestRail always (reached via
+    the hybrids). Jira + Zephyr Scale until its auth is proven, except when it
+    is the CURRENT backend (so nobody is stranded) or a developer sets
+    QA_SHOW_ZEPHYR=1 to test it."""
+    import os
+    hidden = {TESTRAIL}
+    if current != JIRA_ZEPHYR and (os.environ.get("QA_SHOW_ZEPHYR") or "").strip() != "1":
+        hidden.add(JIRA_ZEPHYR)
+    return hidden
+
+
 def picker_rows(app, field_label, hover_field):
     """The 'Test management backend' selector, led by a distinct section header."""
     import flet as ft
@@ -1494,9 +1527,7 @@ def picker_rows(app, field_label, hover_field):
     # backend, registry and code stay intact; this only drops it from the picker.
     # It's still shown if it's the CURRENTLY active backend, so an already-
     # connected user isn't stranded on an option they can't reselect.
-    _hidden = {TESTRAIL}
-    if current != JIRA_ZEPHYR:
-        _hidden.add(JIRA_ZEPHYR)
+    _hidden = _picker_hidden(current)
     _pick = sorted((b for b in BACKENDS
                     if b[0] in allowed and b[0] not in _hidden),
                    key=lambda b: b[1].lower())
@@ -1519,6 +1550,52 @@ def picker_rows(app, field_label, hover_field):
         ft.Container(ft.Text(blurb, size=11, color=T.INK_2),
                      padding=ft.Padding.only(left=2, top=2, bottom=12)),
     ]
+
+
+def tracker_available(app):
+    """Whether screens may use the test-management tool right now: connected
+    with a project picked (or the read-only viewer, which kept access before)."""
+    if getattr(app, "readonly", False):
+        return True
+    return bool(getattr(app, "connected", False) and getattr(app, "project", None))
+
+
+def automation_uses_file_source(app):
+    """Automation reads a local CSV/XLSX when the user chose that source, or
+    whenever no tracker is available (the tracker source can't work then)."""
+    if not tracker_available(app):
+        return True
+    return getattr(app, "auto_source_mode", "backend") == "file"
+
+
+# Product names used by Setup's 'Step 1 · Connect' panel, per backend:
+# (credentials being validated, where projects come from, where plans live).
+# Product names are not translated; the sentence templates around them are.
+_CONNECT_PANEL_PRODUCTS = {
+    JIRA_ZEPHYR: ("Jira + Zephyr Scale", "Jira", "Zephyr Scale"),
+    XRAY: ("Jira + Xray", "Jira", "Xray"),
+    TESTRAIL: ("TestRail", "TestRail", "TestRail"),
+    AZURE_TESTRAIL: ("Azure DevOps + TestRail", "Azure DevOps", "TestRail"),
+    JIRA_TESTRAIL: ("Jira + TestRail", "Jira", "TestRail"),
+}
+
+
+def connect_panel_text(creds):
+    """(description, [3 step lines]) for Setup's 'Step 1 · Connect' panel,
+    matching the ACTIVE backend. Azure keeps its original wording verbatim;
+    the panel used to show that Azure/PAT text for every backend."""
+    name = active(creds or {})
+    products = _CONNECT_PANEL_PRODUCTS.get(name)
+    if not products:
+        return (strings.t("main_setup_desc"),
+                [strings.t("au_step_validates_pat"),
+                 strings.t("au_step_loads_projects"),
+                 strings.t("au_step_fetches_plans")])
+    creds_names, source, target = products
+    return (strings.t("bset_conn_desc", creds=creds_names),
+            [strings.t("bset_conn_step_validate", creds=creds_names),
+             strings.t("bset_conn_step_projects", source=source),
+             strings.t("bset_conn_step_plans", target=target)])
 
 
 def _on_pick(app, e):
@@ -1575,6 +1652,16 @@ def _on_pick(app, e):
         app._toast(strings.t("bset_backend_set", label=label_for(chosen)))
     except Exception:
         pass
+    # Swap just the credential rows + the Connect panel text in place (no full
+    # render: keeps scroll position and doesn't rebuild the whole screen). Fall
+    # back to render() when the screen can't patch itself (not mounted, etc.).
+    refresh = getattr(app, "_refresh_backend_inplace", None)
+    if callable(refresh):
+        try:
+            if refresh():
+                return
+        except Exception:
+            pass
     try:
         app.render()
     except Exception:
