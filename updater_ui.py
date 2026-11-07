@@ -296,6 +296,14 @@ def _release_notes_card(version):
             ft.Text(strings.t(key), size=11.5, color=T.INK_2,
                     weight=ft.FontWeight.W_500, expand=True),
         ], spacing=7, vertical_alignment=ft.CrossAxisAlignment.START))
+    # A long list scrolls inside a fixed-height box, so it can't run past the
+    # dialog and under the Continue button.
+    total_chars = sum(len(strings.t(k)) for k in note_keys)
+    if total_chars > 700:
+        notes = ft.Container(ft.Column(note_rows, spacing=8, scroll=ft.ScrollMode.AUTO),
+                             height=330)
+    else:
+        notes = ft.Column(note_rows, spacing=6, tight=True)
     return ft.Container(
         ft.Column([
             ft.Text(strings.t("upd_whats_new"), size=12.5, color=T.INK,
@@ -303,7 +311,7 @@ def _release_notes_card(version):
             ft.Text(strings.t("upd_whats_new_version", version=version or E.local_version()),
                     size=11, color=T.INK_3, weight=ft.FontWeight.W_500),
             ft.Container(height=2),
-            *note_rows,
+            notes,
         ], spacing=6, tight=True),
         bgcolor=T.CARD_2, border=ft.Border.all(1, T.BORDER),
         border_radius=T.R_LG, padding=ft.Padding.symmetric(horizontal=13, vertical=11))

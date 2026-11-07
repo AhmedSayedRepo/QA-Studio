@@ -12613,7 +12613,7 @@ for _language, _values in _RUN_FROM_I18N.items():
     _STRINGS[_language].update(_values)
 
 _REPORT_STEPS_I18N = {
-    'en': {'upd_note_report_steps': 'Detailed reports now name every step ("Step 2 · Select \\"Fast\\" in …") with its own time; Playwright records a video of every test and Cypress report videos play again.'},
+    'en': {'upd_note_report_steps': 'Detailed reports now name every step ("Step 2 · Select “Fast” in …") with its own time; Playwright records a video of every test and Cypress report videos play again.'},
     'ar': {'upd_note_report_steps': 'تعرض التقارير التفصيلية الآن اسم كل خطوة ووقتها، ويسجّل Playwright فيديو لكل اختبار، وعادت مقاطع فيديو تقارير Cypress للعمل.'},
     'fr': {'upd_note_report_steps': 'Les rapports détaillés nomment désormais chaque étape avec sa durée ; Playwright enregistre une vidéo de chaque test et les vidéos du rapport Cypress se lisent à nouveau.'},
     'tr': {'upd_note_report_steps': 'Ayrıntılı raporlar artık her adımı süresiyle adlandırıyor; Playwright her testin videosunu kaydediyor ve Cypress rapor videoları yeniden oynatılıyor.'},
