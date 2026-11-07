@@ -397,24 +397,44 @@ def screen(app):
             except Exception:
                 pass
 
-        def _flip_regenerate(e):
-            # Saved immediately; read by the worker at classification (no render).
-            app.auto_regenerate = bool(e.control.value)
-            try:
-                app.creds["auto_regenerate"] = app.auto_regenerate
-                import store
-                store.save(app.creds)
-            except Exception:
-                pass
+        # "If this folder already has scripts": one clear choice instead of two
+        # checkboxes (regenerate + re-inspect all). Saved at once; updated in place.
+        existing_opts = {}
 
-        def _flip_reinspect_all(e):
-            app.auto_reinspect_all = bool(e.control.value)
-            try:
-                app.creds["auto_reinspect_all"] = app.auto_reinspect_all
-                import store
-                store.save(app.creds)
-            except Exception:
-                pass
+        def _paint_existing(c, sel):
+            c.bgcolor = T.VIOLET_SOFT if sel else None
+            c.border = ft.Border.all(1, T.VIOLET if sel else T.BORDER)
+            dot = c.content.controls[0]
+            dot.color = T.VIOLET if sel else T.INK_3
+            dot.icon = (ft.Icons.RADIO_BUTTON_CHECKED if sel
+                        else ft.Icons.RADIO_BUTTON_UNCHECKED)
+
+        def _pick_existing(e, mode):
+            app.set_existing_mode(mode)
+            for key, c in existing_opts.items():
+                _paint_existing(c, key == mode)
+                try:
+                    c.update()
+                except Exception:
+                    pass
+
+        def existing_option(mode, icon):
+            c = ft.Container(
+                ft.Row([
+                    ft.Icon(ft.Icons.RADIO_BUTTON_UNCHECKED, size=18),
+                    ft.Icon(icon, size=18, color=T.INK_2),
+                    ft.Column([
+                        ft.Text(strings.t("auto_existing_" + mode), size=12,
+                                weight=ft.FontWeight.BOLD, color=T.INK_2),
+                        ft.Text(strings.t("auto_existing_" + mode + "_hint"), size=11,
+                                color=T.INK_3, weight=ft.FontWeight.W_500),
+                    ], spacing=2, expand=True),
+                ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.START),
+                padding=ft.Padding.symmetric(horizontal=10, vertical=8),
+                border_radius=T.R_SM, on_click=lambda e, m=mode: _pick_existing(e, m))
+            _paint_existing(c, getattr(app, "auto_existing_mode", "update") == mode)
+            existing_opts[mode] = c
+            return c
 
         inspection_enabled = bool(getattr(app, "auto_live_inspection", True))
         inspection_controls = [
@@ -465,17 +485,6 @@ def screen(app):
                     ft.Text(strings.t("auto_env_creds"), size=11.5,
                             color=T.INK_2, expand=True),
                 ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.START),
-                ft.Container(height=6),
-                ft.Row([
-                    ft.Checkbox(value=bool(getattr(app, "auto_reinspect_all", False)),
-                                active_color=T.VIOLET, on_change=_flip_reinspect_all),
-                    ft.Column([
-                        ft.Text(strings.t("auto_reinspect_all"), size=11.5,
-                                color=T.INK_2),
-                        ft.Text(strings.t("auto_reinspect_hint"), size=11, color=T.INK_3,
-                                weight=ft.FontWeight.W_500),
-                    ], spacing=2, expand=True),
-                ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.START),
             ], spacing=0, visible=inspection_enabled)
         inspection_controls.append(inspection_details)
         inspection_card = card(ft.Column([
@@ -513,17 +522,15 @@ def screen(app):
             ft.Container(height=6),
             ft.Text(strings.t("auto_folder_note"),
                     size=11, color=T.INK_3, weight=ft.FontWeight.W_500),
-            ft.Container(height=10),
-            ft.Row([
-                ft.Checkbox(value=bool(getattr(app, "auto_regenerate", False)),
-                            active_color=T.VIOLET, on_change=_flip_regenerate),
-                ft.Column([
-                    ft.Text(strings.t("auto_regen_label"), size=11.5,
-                            weight=ft.FontWeight.BOLD, color=T.INK_2),
-                    ft.Text(strings.t("auto_regen_hint"), size=11, color=T.INK_3,
-                            weight=ft.FontWeight.W_500),
-                ], spacing=2, expand=True),
-            ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.START),
+            ft.Container(height=12),
+            ft.Text(strings.t("auto_existing_title"), size=12, weight=ft.FontWeight.BOLD,
+                    color=T.INK_2),
+            ft.Container(height=6),
+            existing_option("update", ft.Icons.AUTORENEW),
+            ft.Container(height=6),
+            existing_option("recheck", ft.Icons.MANAGE_SEARCH),
+            ft.Container(height=6),
+            existing_option("keep", ft.Icons.LOCK_OUTLINE),
         ], spacing=0))
 
         email_picker = regression.email_recipient_picker(
@@ -651,6 +658,9 @@ def screen(app):
             # "1 placeholder" from "1 rendered line", and got it wrong whenever
             # two log lines landed before the first upd() ran.
             app._auto_log_col._qa_placeholder = not app._auto_log
+            # Fresh column: any update still "in flight" targeted the old one,
+            # so let the next log line schedule a render for this one.
+            app._auto_log_upd_pending = False
             # Case grouping / auto-collapse / All-Issues filter (log_view.py):
             # only `visible` flags on the 1:1 rows built above.
             app._apply_log_view(app._auto_log_col)

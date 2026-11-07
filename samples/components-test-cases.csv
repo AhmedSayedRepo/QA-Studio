@@ -1,0 +1,14 @@
+﻿Test Case ID,Test Case Title,Step,Action,Expected Result,Element Type,Preferred Locator,Frame Context,Automation Note
+TC01,Pick an option from a custom dropdown,1,Open https://jqueryui.com/resources/demos/selectmenu/default.html,"The ""Select a speed"" dropdown is shown",,,,
+TC01,Pick an option from a custom dropdown,2,"Select ""Fast"" from the ""Select a speed"" dropdown","The ""Select a speed"" dropdown shows ""Fast""",custom dropdown,,,
+TC02,Pick a suggestion from an autocomplete field,1,Open https://jqueryui.com/resources/demos/autocomplete/default.html,"The ""Tags"" field is shown",,,,
+TC02,Pick a suggestion from an autocomplete field,2,"Type ""Ja"" in the ""Tags"" field and pick ""JavaScript""","The ""Tags"" field shows ""JavaScript""",autocomplete,,,
+TC03,Tick a checkbox inside a web component,1,Open https://www.selenium.dev/selenium/web/shadowRootPage.html,,,,,
+TC03,Tick a checkbox inside a web component,2,Tick the checkbox inside the custom checkbox element,The checkbox is checked,checkbox,,,The checkbox lives in the element's shadow DOM
+TC04,Load more posts by scrolling,1,Open https://infinite-scroll.com/demo/full-page/,"The ""Full page demo"" heading is shown",,,,
+TC04,Load more posts by scrolling,2,"Scroll down until ""3a - Logo Pizza delivered"" appears","The post ""3a - Logo Pizza delivered"" is shown",infinite scroll,,,More posts load each time the page reaches the bottom
+TC05,Drag an item onto a drop zone,1,Open https://jqueryui.com/resources/demos/droppable/default.html,"The ""Drop here"" box is shown",,,,
+TC05,Drag an item onto a drop zone,2,"Drag ""Drag me to my target"" onto ""Drop here""","The ""Dropped!"" message is shown",drag and drop,,,
+TC06,Check a value in a table row,1,Open https://the-internet.herokuapp.com/tables,"The row with ""Jason"" shows ""$100.00"" in the ""Due"" column",,,,
+TC07,Download a file,1,Open https://www.selenium.dev/selenium/web/downloads/download.html,"The ""Downloads"" heading is shown",,,,
+TC07,Download a file,2,"Click the ""File 1"" link","The file ""file_1.txt"" is downloaded",link,,,

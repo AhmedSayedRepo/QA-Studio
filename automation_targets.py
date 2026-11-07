@@ -14,7 +14,7 @@ The emitter is deliberately decoupled from engine.py: it receives `seed_fn`
 (engine._seed_locator_for_intent) and `harvest_js` (engine._HARVEST_JS) as
 arguments, so it can be unit-tested without importing the (large) engine module.
 """
-import os, json, time, hashlib
+import os, json, re, time, hashlib
 
 TARGETS = ("selenium", "playwright", "cypress")
 
@@ -44,6 +44,16 @@ def _save_manifest(out_dir, m):
             json.dump(m, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
+
+
+def _with_batch2_js(text):
+    """Fill the shared Batch 2 scripts (option picker, scroll limit) from engine,
+    so inspection, replay and every generated framework use the same rule."""
+    import engine as _E
+    return (text.replace("__PICK_OPTION_FN__", json.dumps(_E._PICK_OPTION_FN))
+                .replace("__SCROLL_MAX__", str(_E._SCROLL_MAX))
+                .replace("__DROP_TARGET_FN__", json.dumps(_E._DROP_TARGET_FN))
+                .replace("__TABLE_CELL_FN__", json.dumps(_E._TABLE_CELL_FN)))
 
 
 def _wif(path, content, written, out_dir):
@@ -189,10 +199,15 @@ module.exports = defineConfig({
     // The browser is visible while tests run; HEADLESS=true (or CI) hides it.
     headless: !!process.env.CI || String(process.env.HEADLESS).toLowerCase() === 'true',
     screenshot: 'on',              // capture a screenshot for EVERY test (not only failures)
-    video: 'retain-on-failure',    // keep a video when a test fails
+    // A video of EVERY test in the report; VIDEO=retain-on-failure keeps only
+    // failed ones (smaller report), VIDEO=off records none.
+    video: process.env.VIDEO || 'on',
     trace: 'retain-on-failure',
     actionTimeout: 15000,
   },
+  // A failed test is run once more (a site blip shouldn't fail the run); the
+  // report marks a test that passed on the retry as "flaky". RETRIES=0 turns it off.
+  retries: Number(process.env.RETRIES ?? 1),
 });
 """
 
@@ -270,6 +285,11 @@ SMTP_USER=
 SMTP_PASS=
 SMTP_HOST=smtp.gmail.com
 SMTP_PORT=465
+# Videos in the detailed report: on (every test), retain-on-failure or off.
+VIDEO=on
+# Shown in the report as "Run from" (detected automatically: IntelliJ IDEA,
+# VS Code, CI, Terminal…). Set it only to override the detected name.
+# QA_IDE=IntelliJ IDEA
 """
 
 _PW_FIXTURES = """// Extends Playwright's test with a `heal` fixture — a self-healing locator
@@ -277,11 +297,59 @@ _PW_FIXTURES = """// Extends Playwright's test with a `heal` fixture — a self-
 const base = require('@playwright/test');
 const { Healer } = require('./support/healer');
 
+// A failed test whose page is a host/server error page (Heroku "Application
+// error", 502/503/504, the browser's "can't be reached") is labelled "Site
+// unavailable": the site was down, not the test. Only short pages are checked,
+// so a real page that merely mentions an error isn't mislabelled.
+function qaSiteDown(title, text) {
+  const body = String(text || '');
+  if (body.length > 2500) return '';
+  const s = (String(title || '') + ' ' + body).toLowerCase();
+  const rules = [
+    ['application error', 'the page showed "Application error" (the Heroku app is down)'],
+    ['502 bad gateway', 'the server answered 502 Bad Gateway'],
+    ['503 service', 'the server answered 503 Service Unavailable'],
+    ['service unavailable', 'the server answered Service Unavailable'],
+    ['504 gateway', 'the server answered 504 Gateway Timeout'],
+    ['gateway time-out', 'the server answered 504 Gateway Timeout'],
+    ['internal server error', 'the server answered 500 Internal Server Error'],
+    ["this site can't be reached", 'the browser could not reach the site'],
+    ['this site can\u2019t be reached', 'the browser could not reach the site'],
+    ['this page isn\u2019t working', 'the site returned a server error page'],
+    ["this page isn't working", 'the site returned a server error page'],
+    ['err_name_not_resolved', 'the site address could not be resolved (DNS)'],
+    ['err_connection_refused', 'the site refused the connection'],
+    ['err_connection_timed_out', 'the connection to the site timed out'],
+  ];
+  for (const [needle, why] of rules) if (s.includes(needle)) return why;
+  return '';
+}
+
+async function pageText(page) {
+  const title = await page.title().catch(() => '');
+  const text = await page.evaluate(() => {
+    const out = [document.body ? document.body.innerText : ''];
+    document.querySelectorAll('iframe').forEach((f) => {
+      try { out.push(f.contentDocument.body.innerText); } catch (e) { /* cross-origin */ }
+    });
+    return out.join(' ');
+  }).catch(() => '');
+  return { title, text };
+}
+
 const test = base.test.extend({
-  heal: async ({ page }, use) => { await use(new Healer(page)); },
+  heal: async ({ page }, use, testInfo) => {
+    await use(new Healer(page));
+    if (testInfo.status !== testInfo.expectedStatus) {
+      const { title, text } = await pageText(page);
+      const why = qaSiteDown(title, text);
+      if (why) testInfo.annotations.push({ type: 'Site unavailable',
+        description: why + ' — the site was down or erroring, not a test problem.' });
+    }
+  },
 });
 
-module.exports = { test, expect: base.expect };
+module.exports = { test, expect: base.expect, qaSiteDown };
 """
 
 _PW_LOCATORS_JS = """// Load/save the committed locators.json and translate a stored {by,value} into a
@@ -300,13 +368,16 @@ function toSelector(spec) {
   const by = (spec && spec.by) || 'css';
   const v = (spec && spec.value) || '';
   switch (by) {
-    case 'id':          return '#' + v;
+    case 'id':          return '[id="' + v + '"]';   // valid even when the id starts with a digit
     case 'name':        return '[name=\"' + v + '\"]';
     case 'className':   return '.' + v;
     case 'tagName':     return v;
     case 'linkText':
     case 'text':        return 'text=' + v;
     case 'xpath':       return 'xpath=' + v;
+    // Shadow DOM "host >>> inner": each part is a CSS query inside the previous
+    // element; Playwright's CSS engine pierces open shadow roots.
+    case 'shadow':      return v.split(' >>> ').map((p) => 'css=' + p).join(' >> ');
     case 'css':
     case 'cssSelector':
     default:            return v;
@@ -427,6 +498,14 @@ function normText(s) {
     .replace(/ى/g, 'ي');
 }
 
+// Visible option/suggestion by text (custom dropdowns, autocomplete lists):
+// the same script QA Studio's live inspection used.
+const PICK_FN = __PICK_OPTION_FN__;
+const SCROLL_MAX = __SCROLL_MAX__;
+// Drag & drop target by text, and the table-cell check (shared with QA Studio).
+const DROP_FN = __DROP_TARGET_FN__;
+const TABLE_FN = __TABLE_CELL_FN__;
+
 // QA Studio key names (ENTER, ARROWUP…) → Playwright key names (Enter, ArrowUp…).
 const _PW_KEYS = { ENTER: 'Enter', ESCAPE: 'Escape', ESC: 'Escape', TAB: 'Tab', SPACE: 'Space',
   BACKSPACE: 'Backspace', DELETE: 'Delete', ARROWUP: 'ArrowUp', ARROWDOWN: 'ArrowDown',
@@ -437,8 +516,69 @@ function pwKey(value) {
   return _PW_KEYS[v.toUpperCase().replace(/[_\\s]/g, '')] || v;
 }
 
+// Data-driven runs: {{name}} placeholders take the current data row's value;
+// {{random.email}}, {{random.number}}, {{random.text}}, {{today}}, {{today+3d}}
+// and {{now}} are generated once per test. Unknown placeholders stay as written.
+function qaDataKey(n) { return String(n || '').toLowerCase().replace(/[^0-9a-z]+/g, '_').replace(/^_+|_+$/g, ''); }
+function qaDataFill(text, values, cache) {
+  if (text == null || String(text).indexOf('{{') === -1) return text;
+  const vals = {};
+  Object.keys(values || {}).forEach((k) => { vals[qaDataKey(k)] = values[k]; });
+  return String(text).replace(/\\{\\{\\s*([^{}]+?)\\s*\\}\\}/g, (all, raw) => {
+    const key = qaDataKey(raw);
+    if (key === 'app_user') return process.env.APP_USER || all;
+    if (key === 'app_pass') return process.env.APP_PASS || all;
+    if (Object.prototype.hasOwnProperty.call(vals, key)) return String(vals[key]);
+    const g = String(raw).toLowerCase().replace(/\\s+/g, '');
+    if (cache[g] != null) return cache[g];
+    let v = null;
+    if (g === 'random.email') v = 'qa.' + Date.now() + Math.floor(Math.random() * 1e4) + '@example.com';
+    else if (g === 'random.number') v = String(100000 + Math.floor(Math.random() * 900000));
+    else if (g === 'random.text') v = 'QA ' + Math.random().toString(36).slice(2, 8);
+    else if (g === 'now') v = String(Date.now());
+    else {
+      const m = g.match(/^today(?:([+-])(\\d+)d)?$/);
+      if (m) { const d = new Date(); d.setDate(d.getDate() + (m[1] === '-' ? -1 : 1) * Number(m[2] || 0)); v = d.toISOString().slice(0, 10); }
+    }
+    if (v == null) return all;
+    cache[g] = v;
+    return v;
+  });
+}
+
 class Healer {
-  constructor(page) { this.page = page; this.scope = page; this.store = load(); this.pendingPopup = null; }
+  constructor(page) { this.page = page; this.scope = page; this.store = load(); this.pendingPopup = null; this.data = {}; this.dataCache = {}; }
+
+  // Data-driven test: the current row's values (see qaDataFill).
+  useData(values) { this.data = values || {}; this.dataCache = {}; }
+  fill(text) { return qaDataFill(text, this.data, this.dataCache); }
+
+  async pickOption(text) {
+    const end = Date.now() + 8000;
+    do {
+      const h = await this.page.evaluateHandle('(' + PICK_FN + ')(' + JSON.stringify(String(text)) + ')');
+      const opt = h.asElement();
+      if (opt) { await opt.click(); return; }
+      await this.page.waitForTimeout(250);
+    } while (Date.now() < end);
+    throw new Error('Option "' + text + '" did not appear after opening the list');
+  }
+
+  // Infinite scroll / lazy load: scroll down until the step's element exists.
+  async scrollTo(key, seed, intent) {
+    const specs = [this.store[key], seed].concat((seed && seed.fallbacks) || []).filter(Boolean);
+    for (let i = 0; i < SCROLL_MAX; i++) {
+      for (const spec of specs) {
+        if (await this._ok(spec, 500)) {
+          try { await this._loc(spec).scrollIntoViewIfNeeded(); } catch (e) {}
+          return;
+        }
+      }
+      await this.page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+      await this.page.waitForTimeout(1200);
+    }
+    await this.resolve(key, seed, intent);   // last chance: AI healing, or a clear failure
+  }
 
   _loc(spec) { return this.scope.locator(toSelector(spec)).first(); }
 
@@ -490,14 +630,53 @@ class Healer {
 
   async act(key, verb, seed, intent, value) {
     if (verb === 'navigate' || verb === 'wait') return;
+    if (verb === 'scroll_to') return this.scrollTo(key, seed, intent);
     const el = await this.resolve(key, seed, intent);
     try { await el.scrollIntoViewIfNeeded(); } catch (e) {}
     switch (verb) {
       case 'type':   await el.fill(value == null ? '' : String(value)); break;
       case 'select': {
         const opts = String(value == null ? '' : value).split(';').map((o) => o.trim()).filter(Boolean);
-        try { await el.selectOption(opts.length > 1 ? opts.map((label) => ({ label })) : { label: String(value) }); break; }
-        catch (e) { await el.click(); break; } // custom dropdown trigger
+        const tag = await el.evaluate((n) => n.tagName.toLowerCase());
+        if (tag === 'select') {
+          await el.selectOption(opts.length > 1 ? opts.map((label) => ({ label })) : { label: String(value) });
+        } else {
+          // Custom dropdown: open the trigger, then pick the option by its text.
+          await el.click();
+          await this.pickOption(String(value));
+        }
+        break;
+      }
+      case 'drag': {
+        // Drop target = the element showing `value`; dragTo covers both mouse-
+        // driven (jQuery UI, sortable lists) and HTML5 draggable items.
+        let target = null;
+        const end = Date.now() + 8000;
+        while (!target && Date.now() < end) {
+          target = (await this.page.evaluateHandle('(' + DROP_FN + ')(' + JSON.stringify(String(value)) + ')')).asElement();
+          if (!target) await this.page.waitForTimeout(250);
+        }
+        if (!target) throw new Error('Drop target "' + value + '" not found');
+        // Real mouse down / move / up: works for mouse-driven widgets and, in
+        // Chromium, for HTML5 draggable items too.
+        await el.hover();
+        await this.page.mouse.down();
+        const box = await target.boundingBox();
+        await this.page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 12 });
+        await this.page.mouse.up();
+        await this.page.waitForTimeout(300);
+        break;
+      }
+      case 'autocomplete': {
+        const raw = String(value == null ? '' : value);
+        const cut = raw.indexOf('=>');
+        const typed = (cut >= 0 ? raw.slice(0, cut) : raw).trim();
+        const pick = (cut >= 0 ? raw.slice(cut + 2) : raw).trim() || typed;
+        await el.click();
+        await el.fill('');
+        await el.pressSequentially(typed || pick, { delay: 50 });   // real keystrokes fire the suggestions
+        await this.pickOption(pick);
+        break;
       }
       case 'hover':  await el.hover(); break;
       case 'double_click': await el.dblclick(); break;
@@ -558,6 +737,55 @@ class Healer {
     this.page = opener;
     this.scope = opener;
     await opener.bringToFront();
+  }
+
+  // In a table row containing `row`, the column headed `column` shows `expected`.
+  async assertTableCell(row, column, expected) {
+    const end = Date.now() + 10000;
+    do {
+      try {
+        const args = [row, column, expected].map((v) => JSON.stringify(String(v))).join(',');
+        if (await this.page.evaluate('(' + TABLE_FN + ')(' + args + ')')) return true;
+      } catch (e) {}
+      await this.page.waitForTimeout(300);
+    } while (Date.now() < end);
+    return false;
+  }
+
+  // Downloads: listen BEFORE the click that starts it, then check the file name.
+  prepareDownload() {
+    this.pendingDownload = this.page.waitForEvent('download', { timeout: 20000 });
+  }
+
+  async assertDownloaded(name) {
+    try {
+      const d = await this.pendingDownload;
+      this.pendingDownload = null;
+      const file = d.suggestedFilename();
+      await d.saveAs(require('path').join('downloads', file));
+      return file.toLowerCase().includes(String(name).toLowerCase());
+    } catch (e) { console.log('[heal] assertDownloaded failed: ' + e.message); return false; }
+  }
+
+  async assertValue(key, seed, intent, expected) {
+    try {
+      const el = await this.resolve(key, seed, intent);
+      const want = normText(expected);
+      const end = Date.now() + 5000;
+      do {
+        // An input's value, or the text a custom dropdown shows.
+        let shown = '';
+        // A native <select> shows its selected option's text, not its value.
+        try {
+          shown = await el.evaluate((n) => n.tagName === 'SELECT'
+            ? Array.from(n.selectedOptions).map((o) => o.text + ' ' + o.value).join(' ')
+            : (('value' in n && n.value) || n.innerText || ''));
+        } catch (e) { shown = await el.innerText(); }
+        if (normText(shown).includes(want)) return true;
+        await this.page.waitForTimeout(250);
+      } while (Date.now() < end);
+      return false;
+    } catch (e) { console.log('[heal] assertValue ' + key + ' failed: ' + e.message); return false; }
   }
 
   async assertInvalid(key, seed, intent) {
@@ -759,6 +987,23 @@ def _spec_name(sid):
     return "story-%s.spec.js" % safe
 
 
+def _login_steps_as_authored(case):
+    """Same rule as engine._login_steps_as_authored: a login case whose
+    username/password/submit steps were all verified live is emitted as written
+    instead of through the shared login helper (which opens the base URL)."""
+    if not case.get("explicit_login_flow"):
+        return False
+    acts = [i for i in (case.get("intents") or [])
+            if _is_login_transition_action(i) and i.get("verb") != "navigate"]
+    return bool(acts) and all((i.get("live_locator") or {}).get("verified") for i in acts)
+
+
+def _starts_with_absolute_navigate(case):
+    first = next((i for i in (case.get("intents") or []) if i.get("role") == "action"), {})
+    return (first.get("verb") == "navigate" and
+            str(first.get("value") or "").lower().startswith(("http://", "https://")))
+
+
 def _is_login_transition_action(intent):
     """Whether an authored action is fulfilled by the shared login helper."""
     if intent.get("role") != "action":
@@ -839,6 +1084,15 @@ def _emit_pw_intent(lines, key, intent, seed_fn, seeds, app_page=False):
         lines.append("    // precondition (no UI action): %s" %
                      (str(target)[:70].replace("\n", " ")))
         return
+    if role == "assertion" and (intent.get("check") or "") == "table":
+        row, col, want = (str(intent.get("value") or "").split("|") + ["", "", ""])[:3]
+        lines.append("    expect(await heal.assertTableCell(%s, %s, %s)).toBeTruthy();"
+                     % tuple(json.dumps(x.strip(), ensure_ascii=False) for x in (row, col, want)))
+        return
+    if role == "assertion" and (intent.get("check") or "") == "download":
+        lines.append("    expect(await heal.assertDownloaded(%s)).toBeTruthy();"
+                     % json.dumps(str(intent.get("value") or ""), ensure_ascii=False))
+        return
     if role == "assertion":
         kind = (intent.get("kind") or "").lower()
         kws = [k for k in (intent.get("keywords") or []) if k] or ([target] if target else [])
@@ -865,6 +1119,13 @@ def _emit_pw_intent(lines, key, intent, seed_fn, seeds, app_page=False):
             lines.append("    expect(await heal.assertInvalid(%s, %s, %s)).toBeTruthy();"
                          % (json.dumps(key), json.dumps(seed, ensure_ascii=False),
                             json.dumps(ij, ensure_ascii=False)))
+            _record()
+            return
+        if check == "value":
+            want = str(intent.get("value") or intent.get("expected") or "")
+            lines.append("    expect(await heal.assertValue(%s, %s, %s, %s)).toBeTruthy();"
+                         % (json.dumps(key), json.dumps(seed, ensure_ascii=False),
+                            json.dumps(ij, ensure_ascii=False), json.dumps(want, ensure_ascii=False)))
             _record()
             return
         if check in ("selected", "selected_value", "value_selected"):
@@ -926,6 +1187,30 @@ def _emit_pw_intent(lines, key, intent, seed_fn, seeds, app_page=False):
     _record()
 
 
+_JS_STR_RE = re.compile(r'"(?:[^"\\\n]|\\.)*"')
+
+
+def _wrap_data_literals(lines, fn):
+    """Wrap every JS string literal that holds a {{data}} placeholder in fn(...)
+    so the value is filled from the current data row when the test runs."""
+    import engine as _E
+
+    def sub(m):
+        lit = m.group(0)
+        try:
+            text = json.loads(lit)
+        except Exception:
+            return lit
+        return "%s(%s)" % (fn, lit) if _E._has_data_tokens(text) else lit
+    return [_JS_STR_RE.sub(sub, ln) if "{{" in ln else ln for ln in lines]
+
+
+def _case_data_rows(c):
+    rows = c.get("data") or (c.get("tc") or {}).get("data") or []
+    return [{"name": str(r.get("name") or "Row %d" % (i + 1)), "values": dict(r.get("values") or {})}
+            for i, r in enumerate(rows)]
+
+
 def _pw_spec(story, cases, seed_fn, seeds):
     """Emit a Playwright spec file for one story from compiled intents.
 
@@ -946,10 +1231,22 @@ def _pw_spec(story, cases, seed_fn, seeds):
         bucket = c.get("bucket", 3)
         explicit_login_flow = bool(c.get("explicit_login_flow"))
         L.append("")
-        L.append(indent + "  test(%s, async ({ page, heal }) => {"
-                 % json.dumps(c.get("title", "case %d" % ci)))
-        body = []
-        if explicit_login_flow:
+        rows = _case_data_rows(c)
+        title = c.get("title", "case %d" % ci)
+        if rows:
+            # Data-driven: one test per data row, named after the row.
+            L.append(indent + "  for (const row of %s) {" % json.dumps(rows, ensure_ascii=False))
+            L.append(indent + "  test(%s + row.name, async ({ page, heal }) => {"
+                     % json.dumps(title + " · ", ensure_ascii=False))
+        else:
+            L.append(indent + "  test(%s, async ({ page, heal }) => {" % json.dumps(title))
+        body = ["    heal.useData(row.values);"] if rows else []
+        if _login_steps_as_authored(c):
+            # Verified login steps run as written (each test starts logged out).
+            if not _starts_with_absolute_navigate(c):
+                body.append("    await openLoginPage(page);")
+            explicit_login_flow = False
+        elif explicit_login_flow:
             body.append("    await performLogin(page);")
         elif bucket < 2:
             body.append("    await openLoginPage(page);")
@@ -967,6 +1264,7 @@ def _pw_spec(story, cases, seed_fn, seeds):
             # event has already fired.  Context actions themselves are emitted
             # as explicit no-locator transitions below.
             next_intent = intents[ii + 1] if ii + 1 < len(intents) else {}
+            step_start = len(body)
             if intent.get("role") == "action" and next_intent.get("role") == "action":
                 next_verb = next_intent.get("verb")
                 if next_verb == "dialog_accept" and next_intent.get("value"):
@@ -978,10 +1276,24 @@ def _pw_spec(story, cases, seed_fn, seeds):
                     body.append("    heal.prepareDialog('dismiss');")
                 elif next_verb == "window_switch":
                     body.append("    heal.prepareWindow();")
+            if (intent.get("role") == "action" and next_intent.get("role") == "assertion"
+                    and (next_intent.get("check") or "") == "download"):
+                body.append("    heal.prepareDownload();")
             _emit_pw_intent(body, "%s.%d.%d" % (sid, ci, ii), intent, seed_fn,
                             seeds, app_page=(bucket == 3 or explicit_login_flow))
-        L.extend(indent + ln for ln in body)
+            # A named step in the HTML report ("Step 2 · Select "Fast" in …")
+            # with its own time, instead of the raw heal.act(…) call.
+            import engine as _E
+            label = _E._intent_step_label(intent)
+            if label and len(body) > step_start:
+                chunk = body[step_start:]
+                body[step_start:] = (["    await test.step(%s, async () => {"
+                                      % json.dumps(label, ensure_ascii=False)]
+                                     + ["  " + ln for ln in chunk] + ["    });"])
+        L.extend(indent + ln for ln in _wrap_data_literals(body, "heal.fill"))
         L.append(indent + "  });")
+        if rows:
+            L.append(indent + "  }")
 
     L = []
     L.append("const { test, expect } = require('../fixtures');")
@@ -1094,13 +1406,20 @@ function dataUri(p) {
 }
 
 // The first absolute URL a spec opens = the site that story tests.
-function siteOf(specFile) {
+// Every site a spec opens (page.goto / cy.visit with a full URL), in order;
+// falls back to APP_BASE_URL when the spec only uses relative paths.
+function sitesOf(specFile) {
+  const out = [];
   try {
-    const m = fs.readFileSync(specFile, 'utf8').match(/(?:goto|visit)\\(\\s*["'`](https?:\\/\\/[^"'`/]+)/);
-    if (m) return m[1];
+    const re = /(?:goto|visit)\\(\\s*["'`](https?:\\/\\/[^"'`/]+)/g;
+    const text = fs.readFileSync(specFile, 'utf8');
+    let m;
+    while ((m = re.exec(text))) if (out.indexOf(m[1]) === -1) out.push(m[1]);
   } catch (e) { /* fall back */ }
-  return process.env.APP_BASE_URL || '';
+  if (!out.length && process.env.APP_BASE_URL) out.push(process.env.APP_BASE_URL);
+  return out;
 }
+function siteOf(specFile) { return sitesOf(specFile).join(', '); }
 
 function totals(run) {
   const t = { passed: 0, failed: 0, skipped: 0, flaky: 0, total: 0 };
@@ -1154,7 +1473,8 @@ function buildHtml(run, mode, detailName) {
     + '<table width="100%" cellpadding="0" cellspacing="0"><tr>'
     + (logo ? '<td width="46" valign="middle"><img src="' + logo + '" width="38" height="38" alt="QA Studio" style="display:block;border:0"></td>' : '')
     + '<td valign="middle"><div style="font-size:17px;font-weight:800;color:' + C.ink + '">QA Studio</div>'
-    + '<div style="font-size:12px;color:' + C.ink2 + '">' + esc(run.framework) + ' automation run</div></td>'
+    + '<div style="font-size:12px;color:' + C.ink2 + '">' + esc(run.framework) + ' automation run'
+    + ((run.env || {}).ide ? ' · run from <b>' + esc(run.env.ide) + '</b>' : '') + '</div></td>'
     + '<td valign="middle" align="right" style="font-size:12px;color:' + C.ink2 + '">' + esc(stamp) + '</td>'
     + '</tr></table></td></tr>';
   const banner = '<tr><td style="padding:22px 28px 6px">'
@@ -1195,6 +1515,7 @@ function buildHtml(run, mode, detailName) {
     return '<div style="border:1px solid ' + C.line + ';border-left:4px solid ' + C.red + ';border-radius:6px;padding:12px 14px;margin-bottom:12px;background:' + C.card + '">'
       + '<div style="font-size:14px;font-weight:700;color:' + C.ink + '">' + esc(x.title) + '</div>'
       + '<div style="font-size:11px;color:' + C.ink3 + ';margin-top:2px">' + esc(s.name) + '</div>'
+      + (x.site ? '<div style="font-size:12px;font-weight:700;color:#8A5A00;background:#FFF4DB;border:1px solid #F1D9A6;border-radius:5px;padding:6px 9px;margin-top:8px">Site unavailable \u2014 ' + esc(x.site) + '</div>' : '')
       + (x.step ? '<div style="font-size:12px;color:' + C.ink2 + ';margin-top:8px"><b>Failing step:</b> ' + esc(x.step) + '</div>' : '')
       + (x.error ? '<pre style="white-space:pre-wrap;word-break:break-word;font-family:' + MONO + ';font-size:12px;color:' + C.red + ';background:' + C.redSoft + ';padding:8px 10px;border-radius:5px;margin:8px 0 0">' + esc(x.error) + '</pre>' : '')
       + img + '</div>';
@@ -1207,8 +1528,9 @@ function buildHtml(run, mode, detailName) {
       + '<td ' + TD + ' width="60" align="right" nowrap>' + secs(x.duration) + '</td></tr>').join('') + '</table>').join('')) : '';
 
   const e = run.env || {};
-  const sites = Array.from(new Set(run.stories.map((s) => s.site).filter(Boolean)));
-  const envRows = [['Framework', run.framework + (e.frameworkVersion ? ' ' + e.frameworkVersion : '')],
+  const sites = Array.from(new Set([].concat(...run.stories.map((s) => String(s.site || '').split(', ')))
+    .filter(Boolean)));
+  const envRows = [['Run from', e.ide], ['Framework', run.framework + (e.frameworkVersion ? ' ' + e.frameworkVersion : '')],
     ['Browser', (e.browser || '') + (e.browserVersion ? ' ' + e.browserVersion : '')],
     ['Mode', e.headless == null ? '' : (e.headless ? 'Headless' : 'Headed (browser visible)')],
     ['Sites', sites.join(', ')], ['OS', e.os], ['Machine', e.host], ['Runtime', e.runtime]]
@@ -1217,8 +1539,8 @@ function buildHtml(run, mode, detailName) {
   const env = section('Environment', '<table width="100%" cellpadding="0" cellspacing="0">' + envRows + '</table>');
 
   const detail = mode === 'file' && detailName
-    ? '<a href="' + esc(detailName) + '" style="color:' + C.brand + ';font-weight:700">Open the detailed ' + esc(run.framework) + ' report</a> (every step, trace and video).'
-    : 'Attached: <b>qa-studio-report.html</b> (this summary with screenshots) and the detailed ' + esc(run.framework) + ' report.';
+    ? '<a href="' + esc(detailName) + '" style="color:' + C.brand + ';font-weight:700">Open the detailed report</a> (every test with its steps and screenshot).'
+    : 'Attached: <b>qa-studio-report.html</b> (this summary with screenshots) and <b>qa-studio-detailed.html</b> (every test with its steps and screenshot).';
   const foot = '<tr><td style="padding:22px 28px 24px"><div style="font-size:12px;color:' + C.ink2 + ';margin-bottom:12px">' + detail + '</div>'
     + '<div style="font-size:11.5px;font-weight:600;color:' + C.ink3 + ';border-top:1px solid ' + C.line + ';padding-top:12px">'
     + 'Generated by QA Studio' + (QA_VERSION.indexOf('__') === -1 ? ' v' + QA_VERSION : '') + ' · ' + esc(run.framework) + '</div></td></tr>';
@@ -1256,7 +1578,9 @@ async function mailReport(run, summaryFile, detailFile) {
   catch (e) { console.log('[report] email skipped — run npm install (nodemailer missing)'); return; }
   const t = totals(run);
   const html = buildHtml(run, 'email');
-  const subject = (t.failed ? '✗ ' : '✓ ') + 'QA Studio — ' + run.framework + ' run: ' + t.passed + '/' + t.total
+  const ide = (run.env || {}).ide;
+  const subject = (t.failed ? '✗ ' : '✓ ') + 'QA Studio — ' + run.framework + ' run'
+    + (ide ? ' from ' + ide : '') + ': ' + t.passed + '/' + t.total
     + ' passed' + (t.failed ? ', ' + t.failed + ' failed' : '') + (t.skipped ? ', ' + t.skipped + ' skipped' : '');
   const attachments = [];
   if (exists(LOGO)) attachments.push({ filename: 'qa-logo.png', path: LOGO, cid: 'qa-logo' });
@@ -1265,7 +1589,8 @@ async function mailReport(run, summaryFile, detailFile) {
   }));
   let budget = 20 * 1024 * 1024;
   for (const [f, name] of [[summaryFile, 'qa-studio-report.html'],
-                           [detailFile, run.framework.toLowerCase() + '-report.html']]) {
+                           [detailFile, path.basename(detailFile || '').indexOf('qa-studio') === 0 ? 'qa-studio-detailed.html'
+                             : run.framework.toLowerCase() + '-report.html']]) {
     try {
       const size = exists(f) ? fs.statSync(f).size : 0;
       if (size && size < budget) { attachments.push({ filename: name, path: f }); budget -= size; }
@@ -1280,7 +1605,57 @@ async function mailReport(run, summaryFile, detailFile) {
   } catch (e) { console.log('[report] email failed: ' + e.message); }
 }
 
-module.exports = { openFile, mailReport, writeReport, buildHtml, siteOf, stripAnsi };
+// Where the run was started — shown in the report and the email subject.
+// QA_IDE in .env overrides it; otherwise CI variables, the IDE's terminal
+// variables, then the parent processes (an IDE's Run button sets no variable).
+const IDE_NAMES = [
+  [/^idea(64)?(\\.exe)?$|intellij/i, 'IntelliJ IDEA'], [/^webstorm/i, 'WebStorm'],
+  [/^pycharm/i, 'PyCharm'], [/^rider/i, 'Rider'], [/^goland/i, 'GoLand'],
+  [/^eclipse/i, 'Eclipse'], [/^cursor/i, 'Cursor'], [/^windsurf/i, 'Windsurf'],
+  [/^code( - insiders)?(\\.exe)?$|^code-insiders/i, 'VS Code'], [/^devenv(\\.exe)?$/i, 'Visual Studio'],
+];
+function ideFromParents() {
+  try {
+    const { execFileSync } = require('child_process');
+    const procs = new Map();
+    const out = process.platform === 'win32'
+      ? execFileSync('powershell', ['-NoProfile', '-Command',
+        "Get-CimInstance Win32_Process | ForEach-Object { '{0}|{1}|{2}' -f $_.ProcessId,$_.ParentProcessId,$_.Name }"],
+      { encoding: 'utf8', timeout: 15000, windowsHide: true })
+      : execFileSync('ps', ['-A', '-o', 'pid=,ppid=,comm='], { encoding: 'utf8', timeout: 5000 });
+    out.split(/\\r?\\n/).forEach((line) => {
+      const m = process.platform === 'win32' ? line.trim().split('|') : line.trim().match(/^(\\d+)\\s+(\\d+)\\s+(.*)$/);
+      if (!m) return;
+      const parts = process.platform === 'win32' ? m : m.slice(1);
+      if (parts.length >= 3) procs.set(Number(parts[0]), { ppid: Number(parts[1]), name: path.basename(String(parts[2]).trim()) });
+    });
+    let pid = process.ppid;
+    for (let i = 0; i < 12 && procs.has(pid); i++) {
+      const p = procs.get(pid);
+      const hit = IDE_NAMES.find(([re]) => re.test(p.name));
+      if (hit) return hit[1];
+      pid = p.ppid;
+    }
+  } catch (e) { /* unknown is fine */ }
+  return '';
+}
+function detectIde() {
+  const e = process.env;
+  if (e.QA_IDE) return e.QA_IDE;
+  if (e.GITHUB_ACTIONS) return 'GitHub Actions';
+  if (e.TF_BUILD) return 'Azure Pipelines';
+  if (e.GITLAB_CI) return 'GitLab CI';
+  if (e.JENKINS_URL) return 'Jenkins';
+  if (e.CI) return 'CI';
+  const fromParents = ideFromParents();
+  if (fromParents) return fromParents;
+  if (e.CURSOR_TRACE_ID) return 'Cursor';
+  if (e.TERM_PROGRAM === 'vscode' || e.VSCODE_PID || e.VSCODE_IPC_HOOK_CLI) return 'VS Code';
+  if (/jetbrains/i.test(e.TERMINAL_EMULATOR || '')) return 'JetBrains IDE';
+  return 'Terminal';
+}
+
+module.exports = { openFile, mailReport, writeReport, buildHtml, siteOf, stripAnsi, detectIde };
 
 // `node report-mailer.js --open <file>` opens a report on demand (npm run report).
 if (require.main === module) {
@@ -1298,7 +1673,7 @@ _PW_AFTER_RUN_JS = """// Playwright reporter that runs AFTER the HTML report is 
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { openFile, mailReport, writeReport, siteOf, stripAnsi } = require('./report-mailer');
+const { openFile, mailReport, writeReport, writeDetailed, siteOf, stripAnsi, detectIde } = require('./report-mailer');
 
 function storyOf(test) {
   let s = test.parent;
@@ -1340,7 +1715,15 @@ class AfterRun {
       }
       const shot = (r.attachments || []).find((a) => a.name === 'screenshot' && a.path);
       const err = r.error || (r.errors || [])[0];
+      const down = [...(t.annotations || []), ...(r.annotations || [])]
+        .find((a) => a && a.type === 'Site unavailable');
+      const tsteps = (r.steps || []).filter((x) => x.category === 'test.step' && /^Step \\d+ /.test(x.title));
       stories.get(name).tests.push({ title: t.title, status, duration: r.duration || 0,
+        steps: tsteps.map((x) => x.title),
+        failIdx: tsteps.findIndex((x) => x.error),
+        fullError: err ? stripAnsi(err.message).slice(0, 4000) : '',
+        stack: err && err.stack ? stripAnsi(err.stack).split('\\n').filter((l) => /^\\s*at /.test(l)).slice(0, 14).join('\\n') : '',
+        site: status === 'failed' && down ? String(down.description || '') : '',
         error: err ? stripAnsi(err.message).split('\\n').filter(Boolean).slice(0, 6).join('\\n').slice(0, 900) : '',
         step: status === 'failed' ? stepOf(err) : '',
         screenshot: shot ? shot.path : '' });
@@ -1352,11 +1735,12 @@ class AfterRun {
       stories: Array.from(stories.values()),
       env: { frameworkVersion: pwVersion, browser: use.channel || use.browserName || 'chromium',
         headless: use.headless, os: os.type() + ' ' + os.release(), host: os.hostname(),
-        runtime: 'Node ' + process.version } };
+        runtime: 'Node ' + process.version, ide: detectIde() } };
     const dir = path.resolve('playwright-report');
-    const summary = writeReport(run, dir, 'index.html');
+    const detailed = writeDetailed(run, dir, 'index.html');
+    const summary = writeReport(run, dir, detailed ? 'qa-studio-detailed.html' : 'index.html');
     openFile(summary || path.join(dir, 'index.html'));
-    await mailReport(run, summary, path.join(dir, 'index.html'));
+    await mailReport(run, summary, detailed || path.join(dir, 'index.html'));
   }
 }
 module.exports = AfterRun;
@@ -1373,9 +1757,128 @@ def _qa_version():
         return ""
 
 
+# Detailed report writer (raw string: no escaping); styled by the same CSS/JS as
+# the Selenium detailed report (engine._SH_DETAIL_CSS / _SH_DETAIL_JS).
+_DETAIL_WRITER_JS = r"""// ---- Detailed report (qa-studio-detailed.html): every test with its steps,
+// error, screenshot and retries — same layout as the Selenium one. ----
+const DETAIL_CSS = __DETAIL_CSS__;
+const DETAIL_JS = __DETAIL_JS__;
+function dur(ms) { return ms < 1000 ? Math.round(ms || 0) + ' ms' : secs(ms); }
+function detailedHtml(run, frameworkReport) {
+  const t = totals(run);
+  const total = t.total, failed = t.failed, skipped = t.skipped, flaky = t.flaky;
+  const passed = Math.max(0, total - failed - skipped);
+  const rate = total ? Math.round(passed * 100 / total) : 0;
+  const seg = (cls, n) => n > 0 ? "<span class='" + cls + "' style='width:" + (n * 100 / total) + "%'></span>" : '';
+  const kpiCard = (label, v, cls) => "<div class='kpi " + (cls || '') + "'><div class='kv'>" + esc(v) + "</div><div class='kl'>" + label + '</div></div>';
+  const e = run.env || {};
+  const started = new Date(run.startedAt || Date.now());
+  let budget = 8 * 1024 * 1024;   // screenshots are embedded up to this size, then linked
+  const out = [];
+  out.push("<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>",
+    '<title>QA Studio - ' + esc(run.framework) + ' detailed report</title><style>' + DETAIL_CSS + '</style></head><body>',
+    "<header class='top'><div class='brand'>" + (exists(LOGO) ? "<img src='" + dataUri(LOGO) + "' alt=''>" : ''),
+    "<div><div class='name'>QA Studio</div><div class='sub'>" + esc(run.framework) + ' detailed report' + (e.ide ? ' &middot; run from <b>' + esc(e.ide) + '</b>' : '') + '</div></div></div>',
+    "<div class='when'>" + esc(started.toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })) + '</div></header><main>');
+  out.push("<section class='hero " + (failed ? 'bad' : 'ok') + "'><div class='verdict'><h1>"
+    + (failed ? failed + ' of ' + total + ' tests failed' : 'All ' + total + ' tests passed') + "</h1><div class='meta'>"
+    + run.stories.length + (run.stories.length === 1 ? ' story' : ' stories') + ' &middot; ' + secs(run.duration || 0)
+    + (e.browser ? ' &middot; ' + esc(e.browser) : '') + "</div></div><div class='bar'>"
+    + seg('pass', passed) + seg('fail', failed) + seg('skip', skipped) + "</div><div class='kpis'>"
+    + kpiCard('Pass rate', rate + '%', failed ? '' : 'pass') + kpiCard('Passed', passed, 'pass')
+    + kpiCard('Failed', failed, failed ? 'fail' : '') + kpiCard('Skipped', skipped, '')
+    + kpiCard('Flaky', flaky, flaky ? 'flaky' : '') + kpiCard('Duration', secs(run.duration || 0), '') + '</div></section>');
+  const st = (x) => x.status === 'flaky' ? 'passed' : x.status;
+  out.push("<div class='tools'><div class='chips'>",
+    "<button class='chip on' data-f='all'>All <b>" + total + '</b></button>',
+    "<button class='chip' data-f='failed'>Failed <b>" + failed + '</b></button>',
+    "<button class='chip' data-f='passed'>Passed <b>" + passed + '</b></button>',
+    "<button class='chip' data-f='skipped'>Skipped <b>" + skipped + '</b></button>',
+    "</div><input id='q' type='search' placeholder='Search tests, steps or errors'>",
+    "<button class='ghost' id='xp' type='button'>Expand all</button></div>");
+  for (const s of run.stories) {
+    const c = s.counts || {};
+    out.push("<section class='story'><div class='sh'><h2>" + esc(s.name) + "</h2><div class='sc'>"
+      + "<span class='c pass'>" + (c.passed || 0) + ' passed</span>'
+      + (c.failed ? "<span class='c fail'>" + c.failed + ' failed</span>' : '')
+      + (c.skipped ? "<span class='c skip'>" + c.skipped + ' skipped</span>' : '')
+      + "<span class='c'>" + secs(c.duration || 0) + '</span></div></div>');
+    for (const x of s.tests) {
+      const status = st(x);
+      const steps = x.steps || [];
+      const search = (x.title + ' ' + steps.join(' ') + ' ' + (x.fullError || x.error || '')).toLowerCase();
+      out.push("<details class='t " + status + "' data-s='" + status + "' data-q='" + esc(search) + "'" + (status === 'failed' ? ' open' : '') + '>'
+        + "<summary><span class='dot'></span><span class='tt'>" + esc(x.title) + '</span>'
+        + (x.status === 'flaky' ? "<span class='badge flaky'>Passed on retry</span>" : '')
+        + (x.site ? "<span class='badge site'>Site unavailable</span>" : '')
+        + "<span class='st " + status + "'>" + status.charAt(0).toUpperCase() + status.slice(1) + '</span>'
+        + "<span class='ms'>" + dur(x.duration) + "</span></summary><div class='body'>");
+      if (x.site) out.push("<div class='down'><b>Site unavailable</b> &mdash; " + esc(x.site) + '</div>');
+      if (steps.length) {
+        const bad = status === 'failed' ? (x.failIdx != null && x.failIdx >= 0 ? x.failIdx : steps.length - 1) : -1;
+        out.push("<div class='lbl'>Steps</div><ol class='steps'>");
+        steps.forEach((line, i) => {
+          const m = /^Step (\d+) · (.*)$/.exec(line);
+          out.push('<li' + (i === bad ? " class='bad'" : '') + "><span class='n'>" + esc(m ? m[1] : String(i + 1))
+            + "</span><span class='x'>" + esc(m ? m[2] : line) + '</span>'
+            + (i === bad ? "<span class='here'>Failed here</span>" : '') + '</li>');
+        });
+        out.push('</ol>');
+      }
+      const err = x.fullError || x.error;
+      if (err) {
+        out.push("<div class='lbl'>Error</div><pre class='err'>" + esc(err) + '</pre>');
+        if (x.stack) out.push("<details class='stack'><summary>Stack trace</summary><pre>" + esc(x.stack) + '</pre></details>');
+      }
+      if (x.screenshot && exists(x.screenshot)) {
+        let src = '';
+        try {
+          const size = fs.statSync(x.screenshot).size;
+          if (size <= budget) { src = dataUri(x.screenshot); budget -= size; }
+        } catch (e2) { /* link instead */ }
+        if (!src) src = 'file:///' + path.resolve(x.screenshot).replace(/\\/g, '/');
+        out.push("<div class='lbl'>Screenshot</div><img class='shot' loading='lazy' alt='Screenshot' src='" + src + "'>");
+      }
+      if (!steps.length && !err && !(x.screenshot && exists(x.screenshot)))
+        out.push("<div class='none'>No steps or screenshot were recorded for this test.</div>");
+      out.push('</div></details>');
+    }
+    out.push('</section>');
+  }
+  out.push("<div class='empty' id='empty' hidden>No tests match.</div>");
+  const sites = [];
+  run.stories.forEach((s) => String(s.site || '').split(', ').forEach((u) => { if (u && sites.indexOf(u) === -1) sites.push(u); }));
+  const rows = [['Run from', e.ide], ['Framework', run.framework + (e.frameworkVersion ? ' ' + e.frameworkVersion : '')],
+    ['Browser', [e.browser, e.browserVersion].filter(Boolean).join(' ')],
+    ['Mode', e.headless === undefined ? '' : e.headless ? 'Headless' : 'Headed (browser visible)'],
+    ['Retries', process.env.RETRIES || '1'], ['Sites', sites.join(', ')], ['OS', e.os], ['Machine', e.host], ['Runtime', e.runtime]]
+    .filter((r) => r[1]).map((r) => '<tr><th>' + esc(r[0]) + '</th><td>' + esc(r[1]) + '</td></tr>').join('');
+  out.push("<section class='env'><h2>Environment</h2><table>" + rows + '</table></section>');
+  if (frameworkReport) out.push("<p style='text-align:center;margin:16px 0 0'><a href='" + esc(frameworkReport)
+    + "' style='color:var(--brand);font-weight:700'>Open the " + esc(run.framework) + " report</a> (traces, videos, every command).</p>");
+  out.push('</main><footer>Generated by QA Studio' + (QA_VERSION.indexOf('__') === -1 ? ' v' + QA_VERSION : '')
+    + ' &middot; ' + esc(run.framework) + "</footer><div class='zoom' id='zoom' hidden><img alt=''></div><script>" + DETAIL_JS + '</script></body></html>');
+  return out.join('');
+}
+function writeDetailed(run, dir, frameworkReport) {
+  const file = path.join(dir, 'qa-studio-detailed.html');
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(file, detailedHtml(run, frameworkReport), 'utf8');
+    return file;
+  } catch (e) { console.log('[report] could not write the detailed report: ' + e.message); return ''; }
+}
+
+"""
+
+
 def _report_mailer_js():
+    import engine as _E
     ver = _qa_version()
-    return _REPORT_MAILER_JS.replace("__QA_VERSION__", ver) if ver else _REPORT_MAILER_JS
+    js = _REPORT_MAILER_JS.replace("__QA_VERSION__", ver) if ver else _REPORT_MAILER_JS
+    writer = (_DETAIL_WRITER_JS.replace("__DETAIL_CSS__", json.dumps(_E._SH_DETAIL_CSS))
+              .replace("__DETAIL_JS__", json.dumps(_E._SH_DETAIL_JS)))
+    return js.replace("module.exports = { openFile,", writer + "module.exports = { writeDetailed, openFile,", 1)
 
 
 def _copy_logo(dest, written, out_dir):
@@ -1603,7 +2106,7 @@ def build_playwright_project(out_dir, sequenced, cfg, seed_fn, harvest_js,
          written, out_dir)
     _wif(os.path.join(support_dir, "harvest.js"),
          _PW_HARVEST_HEAD + (harvest_js or "return [];") + _PW_HARVEST_TAIL, written, out_dir)
-    _wif(os.path.join(support_dir, "healer.js"), _PW_HEALER_JS, written, out_dir)
+    _wif(os.path.join(support_dir, "healer.js"), _with_batch2_js(_PW_HEALER_JS), written, out_dir)
     _wif(os.path.join(support_dir, "report-mailer.js"), _report_mailer_js(), written, out_dir)
     _copy_logo(os.path.join(support_dir, "qa-logo.png"), written, out_dir)
     _wif(os.path.join(support_dir, "after-run.js"), _PW_AFTER_RUN_JS, written, out_dir)
@@ -1710,6 +2213,9 @@ module.exports = defineConfig({
     overwrite: false,
     saveAllAttempts: true,
   },
+  // Test cases may open pages on more than one site (or a login on another
+  // domain); in Chrome/Edge/Electron this lets them run without cy.origin().
+  chromeWebSecurity: false,
   e2e: {
     baseUrl: process.env.APP_BASE_URL || undefined,
     specPattern: 'cypress/e2e/**/*.cy.js',
@@ -1717,11 +2223,15 @@ module.exports = defineConfig({
     defaultCommandTimeout: 12000,
     screenshotOnRunFailure: true,
     video: true,
+    // A failed test is run once more in `cypress run` (a site blip shouldn't fail
+    // the run). RETRIES=0 turns it off.
+    retries: { runMode: Number(process.env.RETRIES ?? 1), openMode: 0 },
     setupNodeEvents(on, config) {
       // Build the mochawesome HTML report, then open it and email it. (Calling the
       // reporter hooks here, instead of its plugin, lets one after:run do both.)
       const { beforeRunHook, afterRunHook } = require('cypress-mochawesome-reporter/lib');
       let browserInfo = {};
+      const qaStepStore = new Map();
       on('before:run', async (details) => {
         browserInfo = (details && details.browser) || {};
         await beforeRunHook(details);
@@ -1730,8 +2240,20 @@ module.exports = defineConfig({
         await afterRunHook();
         if (!config.isTextTerminal || !results || !results.runs) return;   // only for 'cypress run'
         const path = require('path');
+        // The mochawesome report links each video as videos/<spec folder>/<spec>.mp4
+        // (e.g. videos/cypress/e2e/x.cy.js.mp4) but Cypress saves it flat
+        // (videos/x.cy.js.mp4): copy it where the report looks, or the report
+        // shows a 0:00 video that never plays.
+        for (const r of results.runs) {
+          try {
+            if (!r.video || !r.spec || !r.spec.relative) continue;
+            const dest = path.join('cypress', 'reports', 'videos', path.dirname(r.spec.relative), path.basename(r.video));
+            require('fs').mkdirSync(path.dirname(dest), { recursive: true });
+            require('fs').copyFileSync(r.video, dest);
+          } catch (e) { console.log('[report] could not place the video: ' + e.message); }
+        }
         const os = require('os');
-        const { openFile, mailReport, writeReport, siteOf, stripAnsi } = require('./cypress/report-mailer');
+        const { openFile, mailReport, writeReport, writeDetailed, siteOf, stripAnsi, detectIde } = require('./cypress/report-mailer');
         const stories = new Map();
         for (const r of results.runs) {
           const spec = (r.spec && (r.spec.absolute || r.spec.relative)) || '';
@@ -1744,13 +2266,27 @@ module.exports = defineConfig({
               stories.set(name, { name, file: path.basename(spec), site: siteOf(spec), tests: [] });
             }
             const status = t.state === 'passed' ? 'passed' : t.state === 'failed' ? 'failed' : 'skipped';
-            const shot = status !== 'failed' ? null
+            const passShot = status === 'passed'
+              ? shots.find((s) => s.path.includes('passed -- ' + title.replace(/[\\/:*?"<>|]/g, ''))) : null;
+            const shot = status !== 'failed' ? passShot
               : shots.find((s) => s.path.includes(title) && /failed/i.test(s.path))
                 || (shots.filter((s) => /failed/i.test(s.path)).length === 1
                   ? shots.find((s) => /failed/i.test(s.path)) : null);
             const duration = t.duration != null ? t.duration
               : (t.attempts || []).reduce((a, x) => a + (x.duration || 0), 0);
-            stories.get(name).tests.push({ title, status, duration, step: '',
+            const downMsg = status === 'failed' ? String(t.displayError || '') : '';
+            const downAt = downMsg.indexOf('Site unavailable \u2014 ');
+            const derr = stripAnsi(t.displayError || '');
+            const dlines = derr.split('\\n');
+            const atIdx = dlines.findIndex((l) => /^\\s+at /.test(l));
+            const specRel = (r.spec && r.spec.relative) || '';
+            const steps = (qaStepStore.get(specRel + '::' + title) || []);
+            const flakyRun = status === 'passed' && (t.attempts || []).length > 1;
+            stories.get(name).tests.push({ title, status: flakyRun ? 'flaky' : status, duration, step: '',
+              steps,
+              fullError: status === 'failed' ? (atIdx > 0 ? dlines.slice(0, atIdx) : dlines).join('\\n').trim().slice(0, 4000) : '',
+              stack: status === 'failed' && atIdx > 0 ? dlines.slice(atIdx, atIdx + 14).map((l) => l.trim()).join('\\n') : '',
+              site: downAt >= 0 ? downMsg.slice(downAt + 19).split('. The site was down')[0] : '',
               error: status === 'failed'
                 ? stripAnsi(t.displayError).split('\\n').filter(Boolean).slice(0, 6).join('\\n').slice(0, 900) : '',
               screenshot: shot ? shot.path : '' });
@@ -1761,16 +2297,37 @@ module.exports = defineConfig({
           env: { frameworkVersion: results.cypressVersion, browser: results.browserName,
             browserVersion: results.browserVersion, headless: browserInfo.isHeadless,
             os: (results.osName || os.type()) + ' ' + (results.osVersion || os.release()),
-            host: os.hostname(), runtime: 'Node ' + process.version } };
+            host: os.hostname(), runtime: 'Node ' + process.version, ide: detectIde() } };
         const dir = path.resolve('cypress/reports');
-        const summary = writeReport(run, dir, 'index.html');
+        const detailed = writeDetailed(run, dir, 'index.html');
+        const summary = writeReport(run, dir, detailed ? 'qa-studio-detailed.html' : 'index.html');
         openFile(summary || path.join(dir, 'index.html'));
-        await mailReport(run, summary, path.join(dir, 'index.html'));
+        await mailReport(run, summary, detailed || path.join(dir, 'index.html'));
       });
       on('task', {
+        // Each test's "Step N · …" labels, kept for the detailed report.
+        qaSteps({ spec, title, steps }) {
+          qaStepStore.set(String(spec || '') + '::' + String(title || ''), steps || []);
+          return null;
+        },
         loadLocators: tasks.loadLocators,
         saveLocator: tasks.saveLocator,
         pickLocator: tasks.pickLocator,
+        // Download steps: is there a finished file whose name contains `name`?
+        findDownload(name) {
+          const fs = require('fs');
+          const dir = config.downloadsFolder || 'cypress/downloads';
+          try {
+            const want = String(name || '').toLowerCase();
+            // A repeat download is saved as "file_1 (1).txt": match name and extension separately.
+            const dot = want.lastIndexOf('.');
+            const stem = dot > 0 ? want.slice(0, dot) : want, ext = dot > 0 ? want.slice(dot) : '';
+            return fs.readdirSync(dir).some((f) => {
+              const n = f.toLowerCase();
+              return n.includes(stem) && n.endsWith(ext) && !n.endsWith('.crdownload') && !n.endsWith('.tmp');
+            });
+          } catch (e) { return false; }
+        },
       });
       config.env = Object.assign({}, config.env, {
         APP_BASE_URL: process.env.APP_BASE_URL || '',
@@ -1887,6 +2444,64 @@ _CY_SUPPORT_E2E = """// Loaded before every spec — registers the self-healing 
 // and the mochawesome HTML reporter.
 require('cypress-mochawesome-reporter/register');
 require('./healer');
+
+// A failed test whose page is a host/server error page (Heroku "Application
+// error", 502/503/504, the browser's "can't be reached") is labelled "Site
+// unavailable": the site was down, not the test. Only short pages are checked,
+// so a real page that merely mentions an error isn't mislabelled.
+function qaSiteDown(title, text) {
+  const body = String(text || '');
+  if (body.length > 2500) return '';
+  const s = (String(title || '') + ' ' + body).toLowerCase();
+  const rules = [
+    ['application error', 'the page showed "Application error" (the Heroku app is down)'],
+    ['502 bad gateway', 'the server answered 502 Bad Gateway'],
+    ['503 service', 'the server answered 503 Service Unavailable'],
+    ['service unavailable', 'the server answered Service Unavailable'],
+    ['504 gateway', 'the server answered 504 Gateway Timeout'],
+    ['gateway time-out', 'the server answered 504 Gateway Timeout'],
+    ['internal server error', 'the server answered 500 Internal Server Error'],
+    ["this site can't be reached", 'the browser could not reach the site'],
+    ['this site can\u2019t be reached', 'the browser could not reach the site'],
+    ['this page isn\u2019t working', 'the site returned a server error page'],
+    ["this page isn't working", 'the site returned a server error page'],
+    ['err_name_not_resolved', 'the site address could not be resolved (DNS)'],
+    ['err_connection_refused', 'the site refused the connection'],
+    ['err_connection_timed_out', 'the connection to the site timed out'],
+  ];
+  for (const [needle, why] of rules) if (s.includes(needle)) return why;
+  return '';
+}
+
+// Step labels for the detailed report ("Step N · …", logged by every spec).
+let qaSteps = [];
+beforeEach(() => { qaSteps = []; });
+Cypress.on('log:added', (attrs) => {
+  const msg = String((attrs && attrs.message) || '').replace(/\\*\\*/g, '').trim();
+  if (attrs && attrs.name === 'log' && /^Step \\d+ /.test(msg)) qaSteps.push(msg);
+});
+afterEach(function () {
+  const t = this.currentTest;
+  cy.task('qaSteps', { spec: Cypress.spec.relative, title: t.title, steps: qaSteps.slice() }, { log: false });
+  // Passed tests get a screenshot too (QA_SCREENSHOTS=failed turns this off).
+  if (t.state === 'passed' && String(Cypress.env('QA_SCREENSHOTS') || 'all') !== 'failed') {
+    cy.screenshot('passed -- ' + t.title.replace(/[\\/:*?"<>|]/g, ''), { capture: 'viewport', log: false });
+  }
+});
+
+Cypress.on('fail', (err) => {
+  try {
+    const doc = cy.state('document');
+    let text = doc && doc.body ? doc.body.innerText : '';
+    if (doc) doc.querySelectorAll('iframe').forEach((f) => {
+      try { text += ' ' + f.contentDocument.body.innerText; } catch (e) { /* cross-origin */ }
+    });
+    const why = qaSiteDown(doc ? doc.title : '', text);
+    if (why) err.message = 'Site unavailable \u2014 ' + why
+      + '. The site was down or erroring, not a test problem.\\n\\n' + err.message;
+  } catch (e) { /* keep the original error */ }
+  throw err;
+});
 """
 
 _CY_HARVEST_HEAD = """// DOM harvester — returns a compact list of interactable elements for the AI
@@ -1907,16 +2522,45 @@ const { harvest } = require('./harvest');
 // (same-origin) iframe; each test starts back on the main page.
 let __frame = null;
 beforeEach(() => { __frame = null; });
+// Shadow DOM locator "host >>> inner" (see toSelector): find it in the app's
+// document, or chain .shadow().find() for Cypress commands.
+const SHADOW_PREFIX = 'shadow::';
+function _shadowFind(doc, chain) {
+  const parts = String(chain).split(' >>> ');
+  let roots = [doc];
+  for (let i = 0; i < parts.length - 1; i++) {
+    const next = [];
+    roots.forEach((r) => r.querySelectorAll(parts[i]).forEach((h) => { if (h.shadowRoot) next.push(h.shadowRoot); }));
+    roots = next;
+  }
+  const out = [];
+  roots.forEach((r) => r.querySelectorAll(parts[parts.length - 1]).forEach((e) => out.push(e)));
+  return out;
+}
 function _jq(sel) {
+  if (typeof sel === 'string' && sel.indexOf(SHADOW_PREFIX) === 0) {
+    const doc = Cypress.$('html').get(0).ownerDocument;
+    return Cypress.$(_shadowFind(doc, sel.slice(SHADOW_PREFIX.length)));
+  }
   if (!__frame) return Cypress.$(sel);
   const f = Cypress.$(__frame).get(0);
   const doc = f && f.contentDocument;
   return doc ? Cypress.$(doc).find(sel) : Cypress.$();
 }
-function _q(sel) {
-  if (!__frame) return _q(sel);
+// Every heal command queries through here (frame- and shadow-aware).
+function _q(selector) {
+  if (typeof selector === 'string' && selector.indexOf(SHADOW_PREFIX) === 0) {
+    const parts = selector.slice(SHADOW_PREFIX.length).split(' >>> ');
+    let c = cy.get(parts[0]);
+    for (let i = 1; i < parts.length; i++) c = c.shadow().find(parts[i]);
+    return c;
+  }
+  if (!__frame) return cy.get(selector);
+  // The target may be the frame's <body> itself (a rich-text editor such as
+  // TinyMCE: <body id="tinymce" contenteditable>), which find() never returns.
   return cy.get(__frame, { log: false }).its('0.contentDocument.body')
-    .should('not.be.empty').then((body) => cy.wrap(body).find(sel));
+    .should('not.be.empty').then((body) => (Cypress.$(body).is(selector)
+      ? cy.wrap(body) : cy.wrap(body).find(selector)));
 }
 function _scopeDoc() {
   if (!__frame) return cy.document({ log: false });
@@ -1933,13 +2577,14 @@ function toSelector(spec) {
   const by = (spec && spec.by) || 'css';
   const v = (spec && spec.value) || '';
   switch (by) {
-    case 'id':        return '#' + v;
+    case 'id':        return '[id="' + v + '"]';   // valid even when the id starts with a digit
     case 'name':      return '[name=\"' + v + '\"]';
     case 'className': return '.' + v;
     case 'tagName':   return v;
     case 'linkText':
     case 'text':      return ':contains(' + JSON.stringify(v) + ')';
     case 'xpath':     return null; // xpath needs a plugin; fall through to heal
+    case 'shadow':    return SHADOW_PREFIX + v;
     case 'css':
     case 'cssSelector':
     default:          return v;
@@ -2006,6 +2651,8 @@ Cypress.Commands.add('openAppHome', () => {
 });
 
 Cypress.Commands.add('loginSession', () => {
+  // No test account (APP_USER empty) = a site without a login: nothing to restore.
+  if (!Cypress.env('APP_USER')) return;
   cy.session('qa-studio-user', () => { cy.performLogin(); },
              { cacheAcrossSpecs: true });
 });
@@ -2019,6 +2666,10 @@ Cypress.Commands.add('healSelector', (key, seed, intent) => {
     if (cached) steps.push([cached, seed ? 8 : 48]);
     if (seed) steps.push([seed, 48]);
     for (const fb of (seed && seed.fallbacks) || []) steps.push([fb, 8]);
+    // Cypress has no XPath: skip those locators at once instead of polling
+    // them for 12 s; the proven CSS fallbacks behind them are used instead.
+    for (let i = steps.length - 1; i >= 0; i--) if (!toSelector(steps[i][0])) steps.splice(i, 1);
+    if (steps.length && steps[0][1] < 48) steps[0][1] = 48;
     const tryNext = (i) => {
       if (i >= steps.length) return _healWithAI(key, intent);
       return _poll(steps[i][0], steps[i][1]).then((ok) =>
@@ -2045,8 +2696,75 @@ function _healWithAI(key, intent) {
     });
 }
 
+// Data-driven runs: {{name}} placeholders take the current data row's value;
+// {{random.email}}, {{random.number}}, {{random.text}}, {{today}}, {{today+3d}}
+// and {{now}} are generated once per test. Unknown placeholders stay as written.
+function qaDataKey(n) { return String(n || '').toLowerCase().replace(/[^0-9a-z]+/g, '_').replace(/^_+|_+$/g, ''); }
+function qaDataFill(text, values, cache) {
+  if (text == null || String(text).indexOf('{{') === -1) return text;
+  const vals = {};
+  Object.keys(values || {}).forEach((k) => { vals[qaDataKey(k)] = values[k]; });
+  return String(text).replace(/\\{\\{\\s*([^{}]+?)\\s*\\}\\}/g, (all, raw) => {
+    const key = qaDataKey(raw);
+    if (key === 'app_user') return process.env.APP_USER || all;
+    if (key === 'app_pass') return process.env.APP_PASS || all;
+    if (Object.prototype.hasOwnProperty.call(vals, key)) return String(vals[key]);
+    const g = String(raw).toLowerCase().replace(/\\s+/g, '');
+    if (cache[g] != null) return cache[g];
+    let v = null;
+    if (g === 'random.email') v = 'qa.' + Date.now() + Math.floor(Math.random() * 1e4) + '@example.com';
+    else if (g === 'random.number') v = String(100000 + Math.floor(Math.random() * 900000));
+    else if (g === 'random.text') v = 'QA ' + Math.random().toString(36).slice(2, 8);
+    else if (g === 'now') v = String(Date.now());
+    else {
+      const m = g.match(/^today(?:([+-])(\\d+)d)?$/);
+      if (m) { const d = new Date(); d.setDate(d.getDate() + (m[1] === '-' ? -1 : 1) * Number(m[2] || 0)); v = d.toISOString().slice(0, 10); }
+    }
+    if (v == null) return all;
+    cache[g] = v;
+    return v;
+  });
+}
+// The spec sets the row with qaUseData(row.values) at the start of each test.
+let __qaDataCache = {};
+globalThis.qaUseData = (values) => { Cypress.env('QA_DATA', values || {}); __qaDataCache = {}; };
+globalThis.qaFill = (text) => qaDataFill(text, Cypress.env('QA_DATA') || {}, __qaDataCache);
+
+// Visible option/suggestion by text (custom dropdowns, autocomplete lists):
+// the same script QA Studio's live inspection used, run in the app's window.
+const PICK_FN = __PICK_OPTION_FN__;
+const SCROLL_MAX = __SCROLL_MAX__;
+const DROP_FN = __DROP_TARGET_FN__;
+const TABLE_FN = __TABLE_CELL_FN__;
+function _findOption(doc, text) {
+  return doc.defaultView.eval('(' + PICK_FN + ')')(String(text));
+}
+function _pickOption(text) {
+  return cy.document({ log: false, timeout: 8000 })
+    .should((doc) => { expect(_findOption(doc, text), 'option "' + text + '"').to.exist; })
+    .then((doc) => { cy.wrap(_findOption(doc, text), { log: false }).click({ force: true }); });
+}
+// Infinite scroll / lazy load: scroll down until the step's element exists.
+function _scrollTo(key, seed, intent) {
+  return cy.task('loadLocators', null, { log: false }).then((store) => {
+    const specs = [store && store[key], seed].concat((seed && seed.fallbacks) || []).filter(Boolean);
+    const step = (i) => {
+      const hit = specs.find((s) => _has(s));
+      if (hit) return _q(toSelector(hit)).first().scrollIntoView();
+      if (i >= SCROLL_MAX) {
+        return cy.healSelector(key, seed, intent).then((sel) => _q(sel).first().scrollIntoView());
+      }
+      return cy.window({ log: false })
+        .then((w) => { w.scrollTo(0, w.document.documentElement.scrollHeight); })
+        .wait(1200, { log: false }).then(() => step(i + 1));
+    };
+    return step(0);
+  });
+}
+
 Cypress.Commands.add('healAct', (key, verb, seed, intent, value) => {
   if (verb === 'navigate' || verb === 'wait') return;
+  if (verb === 'scroll_to') return _scrollTo(key, seed, intent);
   cy.healSelector(key, seed, intent).then((sel) => {
     if (verb === 'type') {
       _q(sel).first().clear();
@@ -2056,8 +2774,42 @@ Cypress.Commands.add('healAct', (key, verb, seed, intent, value) => {
         const opts = String(value == null ? '' : value).split(';').map((o) => o.trim()).filter(Boolean);
         if ($el.is('select') && opts.length > 1) cy.wrap($el).select(opts);   // multi-select
         else if ($el.is('select')) cy.wrap($el).select(String(value));
-        else cy.wrap($el).scrollIntoView().click({ force: true });
+        else {
+          // Custom dropdown: open the trigger, then pick the option by its text.
+          cy.wrap($el).scrollIntoView().click({ force: true });
+          _pickOption(String(value));
+        }
       });
+    } else if (verb === 'drag') {
+      // Drop target = the element showing `value`. HTML5 draggable items get
+      // drag events with a shared DataTransfer; others get mouse events.
+      _q(sel).first().then(($src) => {
+        cy.document({ log: false, timeout: 8000 })
+          .should((doc) => { expect(doc.defaultView.eval('(' + DROP_FN + ')')(String(value)), 'drop target').to.exist; })
+          .then((doc) => {
+            const tgt = doc.defaultView.eval('(' + DROP_FN + ')')(String(value));
+            if ($src.attr('draggable') === 'true') {
+              const dt = new doc.defaultView.DataTransfer();
+              cy.wrap($src).trigger('dragstart', { dataTransfer: dt });
+              cy.wrap(tgt).trigger('dragenter', { dataTransfer: dt })
+                .trigger('dragover', { dataTransfer: dt }).trigger('drop', { dataTransfer: dt });
+              cy.wrap($src).trigger('dragend', { dataTransfer: dt });
+            } else {
+              const r = tgt.getBoundingClientRect();
+              const x = r.left + r.width / 2, y = r.top + r.height / 2;
+              cy.wrap($src).trigger('mousedown', { which: 1, button: 0, force: true });
+              cy.wrap(doc.body).trigger('mousemove', { which: 1, clientX: x, clientY: y, pageX: x, pageY: y, force: true })
+                .trigger('mouseup', { which: 1, clientX: x, clientY: y, pageX: x, pageY: y, force: true });
+            }
+          });
+      });
+    } else if (verb === 'autocomplete') {
+      const raw = String(value == null ? '' : value);
+      const cut = raw.indexOf('=>');
+      const typed = (cut >= 0 ? raw.slice(0, cut) : raw).trim();
+      const pick = (cut >= 0 ? raw.slice(cut + 2) : raw).trim() || typed;
+      _q(sel).first().click({ force: true }).clear().type(typed || pick);
+      _pickOption(pick);
     } else if (verb === 'double_click') {
       _q(sel).first().dblclick({ force: true });
     } else if (verb === 'right_click') {
@@ -2152,6 +2904,32 @@ Cypress.Commands.add('prepareDialog', (accept, text) => {
 Cypress.Commands.add('exitFrame', () => { __frame = null; });
 // Cypress keeps one tab, so "back to the original window" = previous page.
 Cypress.Commands.add('backToOriginalWindow', () => { __frame = null; cy.go('back'); });
+// In a table row containing `row`, the column headed `column` shows `expected`.
+Cypress.Commands.add('healAssertTableCell', (row, column, expected) => {
+  _scopeDoc().should((doc) => {
+    const ok = doc.defaultView.eval('(' + TABLE_FN + ')')(String(row), String(column), String(expected));
+    expect(ok, 'row "' + row + '" / column "' + column + '" shows "' + expected + '"').to.equal(true);
+  });
+});
+// A finished download whose name contains `name` (cypress/downloads), within 20 s.
+Cypress.Commands.add('healAssertDownloaded', (name) => {
+  const check = (n) => cy.task('findDownload', name, { log: false }).then((ok) => {
+    if (ok) return;
+    if (n <= 0) throw new Error('File "' + name + '" was not downloaded');
+    return cy.wait(1000, { log: false }).then(() => check(n - 1));
+  });
+  return check(20);
+});
+Cypress.Commands.add('healAssertValue', (key, seed, intent, expected) => {
+  cy.healSelector(key, seed, intent).then((sel) => _q(sel).first().should(($el) => {
+    // An input's value, or the text a custom dropdown shows.
+    // A native <select> shows its selected option's text, not its value.
+    const shown = $el.is('select')
+      ? $el.find('option:selected').map((i, o) => o.text + ' ' + o.value).get().join(' ')
+      : ($el.is('input,textarea') ? $el.val() : $el.text());
+    expect(_cyNormText(shown), 'shown value').to.contain(_cyNormText(expected));
+  }));
+});
 Cypress.Commands.add('healAssertInvalid', (key, seed, intent) => {
   cy.healSelector(key, seed, intent).then((sel) => _q(sel).first().should(($el) => {
     const node = $el.get(0);
@@ -2226,6 +3004,15 @@ def _emit_cy_intent(lines, key, intent, seed_fn, seeds, app_page=False):
         lines.append("    // precondition (no UI action): %s" %
                      (str(target)[:70].replace("\n", " ")))
         return
+    if role == "assertion" and (intent.get("check") or "") == "table":
+        row, col, want = (str(intent.get("value") or "").split("|") + ["", "", ""])[:3]
+        lines.append("    cy.healAssertTableCell(%s, %s, %s);"
+                     % tuple(json.dumps(x.strip(), ensure_ascii=False) for x in (row, col, want)))
+        return
+    if role == "assertion" and (intent.get("check") or "") == "download":
+        lines.append("    cy.healAssertDownloaded(%s);"
+                     % json.dumps(str(intent.get("value") or ""), ensure_ascii=False))
+        return
     if role == "assertion":
         kind = (intent.get("kind") or "").lower()
         kws = [k for k in (intent.get("keywords") or []) if k] or ([target] if target else [])
@@ -2251,6 +3038,13 @@ def _emit_cy_intent(lines, key, intent, seed_fn, seeds, app_page=False):
             lines.append("    cy.healAssertInvalid(%s, %s, %s);"
                          % (json.dumps(key), json.dumps(seed, ensure_ascii=False),
                             json.dumps(ij, ensure_ascii=False)))
+            _record()
+            return
+        if check == "value":
+            want = str(intent.get("value") or intent.get("expected") or "")
+            lines.append("    cy.healAssertValue(%s, %s, %s, %s);"
+                         % (json.dumps(key), json.dumps(seed, ensure_ascii=False),
+                            json.dumps(ij, ensure_ascii=False), json.dumps(want, ensure_ascii=False)))
             _record()
             return
         if check in ("selected", "selected_value", "value_selected"):
@@ -2316,8 +3110,22 @@ def _cy_spec(story, cases, seed_fn, seeds):
         bucket = c.get("bucket", 3)
         explicit_login_flow = bool(c.get("explicit_login_flow"))
         L.append("")
-        L.append("  it(%s, () => {" % json.dumps(c.get("title", "case %d" % ci)))
-        if explicit_login_flow:
+        rows = _case_data_rows(c)
+        if rows:
+            # Data-driven: one test per data row, named after the row.
+            L.append("  for (const row of %s) {" % json.dumps(rows, ensure_ascii=False))
+            L.append("  it(%s + row.name, () => {"
+                     % json.dumps(c.get("title", "case %d" % ci) + " · ", ensure_ascii=False))
+            L.append("    qaUseData(row.values);")
+        else:
+            L.append("  it(%s, () => {" % json.dumps(c.get("title", "case %d" % ci)))
+        case_start = len(L)
+        if _login_steps_as_authored(c):
+            # Verified login steps run as written (test isolation = logged out).
+            if not _starts_with_absolute_navigate(c):
+                L.append("    cy.openLoginPage();")
+            explicit_login_flow = False
+        elif explicit_login_flow:
             L.append("    cy.performLogin();")
         elif bucket < 2:
             L.append("    cy.openLoginPage();")
@@ -2329,7 +3137,13 @@ def _cy_spec(story, cases, seed_fn, seeds):
             # visit() lands on the login redirect and none of the case's
             # elements exist; see the identical Playwright fix in _pw_spec).
             L.append("    cy.loginSession();")
-            L.append("    cy.openAppHome();")
+            # A case that opens its own absolute URL first starts there: visiting
+            # the base URL first would make that URL a second origin, which
+            # Cypress refuses without cy.origin().
+            first = next((i for i in c.get("intents", []) if i.get("role") == "action"), {})
+            if not (first.get("verb") == "navigate" and
+                    str(first.get("value") or "").lower().startswith(("http://", "https://"))):
+                L.append("    cy.openAppHome();")
         intents = c.get("intents", [])
         for ii, intent in enumerate(intents):
             if (bucket == 2 and intent.get("role") == "action") or (
@@ -2338,6 +3152,11 @@ def _cy_spec(story, cases, seed_fn, seeds):
             # Dialog answers and same-tab windows must be set up BEFORE the
             # click that triggers them (same rule as the Playwright output).
             _next = intents[ii + 1] if ii + 1 < len(intents) else {}
+            import engine as _E
+            _label = _E._intent_step_label(intent)
+            if _label:
+                # Named step in the Cypress command log, the video and the report's code view.
+                L.append("    cy.log(%s);" % json.dumps("**" + _label + "**", ensure_ascii=False))
             if intent.get("role") == "action" and _next.get("role") == "action":
                 if _next.get("verb") == "dialog_accept" and _next.get("value"):
                     L.append("    cy.prepareDialog(true, %s);"
@@ -2350,7 +3169,10 @@ def _cy_spec(story, cases, seed_fn, seeds):
                     L.append("    cy.prepareSameTabWindow();")
             _emit_cy_intent(L, "%s.%d.%d" % (sid, ci, ii), intent, seed_fn, seeds,
                             app_page=(bucket == 3 or explicit_login_flow))
+        L[case_start:] = _wrap_data_literals(L[case_start:], "qaFill")
         L.append("  });")
+        if rows:
+            L.append("  }")
     L.append("});")
     return "\n".join(L) + "\n", "story-%s.cy.js" % ("".join(ch for ch in sid if ch.isalnum()) or "0")
 
@@ -2389,7 +3211,7 @@ def build_cypress_project(out_dir, sequenced, cfg, seed_fn, harvest_js,
     _wif(os.path.join(support_dir, "harvest.js"),
          _CY_HARVEST_HEAD + (harvest_js or "return [];") + _CY_HARVEST_TAIL, written, out_dir)
     _wif(os.path.join(support_dir, "healer.js"),
-         _CY_HEALER_JS.replace("__UI_LOCALE__", cfg.get("ui_locale", "ar")),
+         _with_batch2_js(_CY_HEALER_JS.replace("__UI_LOCALE__", cfg.get("ui_locale", "ar"))),
          written, out_dir)
 
     _prepare_env(out_dir, cfg, written)

@@ -77,7 +77,8 @@ class WiringTests(unittest.TestCase):
         main = (ROOT / "main.py").read_text(encoding="utf-8")
         self.assertIn("E.split_cached_cases(", main)
         self.assertIn("E.save_verified_cases(walk_payload, project_dir", main)
-        self.assertIn("_flip_reinspect_all", (ROOT / "automation.py").read_text(encoding="utf-8"))
+        self.assertIn("if _replay:\n                        E.save_verified_cases(", main)
+        self.assertIn("existing_option(\"recheck\"", (ROOT / "automation.py").read_text(encoding="utf-8"))
         self.assertIn(".qastudio/verified-cases.json", E._sh_gitignore())
 
     def test_strings(self):
@@ -127,7 +128,7 @@ class HelpAndReleaseNoteTests(unittest.TestCase):
             self.assertIn(key, keys)
         for lang in ("en", "ar", "fr", "tr", "es", "de", "nl"):
             self.assertIn("upd_note_optional_account", strings._STRINGS[lang])
-        self.assertIn("Re-inspect all cases", strings._STRINGS["en"]["helpm_auto_scripts_s6"])
+        self.assertIn("re-check every case", strings._STRINGS["en"]["helpm_auto_scripts_s6"])
 
 
 class ListModeNoMailTests(unittest.TestCase):
@@ -151,8 +152,8 @@ class BrandedRunReportTests(unittest.TestCase):
         for s in ("function buildHtml(run, mode, detailName)", "qa-studio-report.html",
                   "cid: x._cid", "Results by story", "Environment"):
             self.assertIn(s, js)
-        self.assertIn("writeReport(run, dir, 'index.html')", A._PW_AFTER_RUN_JS)
-        self.assertIn("writeReport(run, dir, 'index.html')", A._CY_CONFIG)
+        self.assertIn("writeReport(run, dir, detailed ? 'qa-studio-detailed.html' : 'index.html')", A._PW_AFTER_RUN_JS)
+        self.assertIn("writeReport(run, dir, detailed ? 'qa-studio-detailed.html' : 'index.html')", A._CY_CONFIG)
         self.assertIn("browserInfo.isHeadless", A._CY_CONFIG)
 
     def test_java_report(self):

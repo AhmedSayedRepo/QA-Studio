@@ -41,6 +41,99 @@ def _rows_from_csv(path):
                 for row in reader]
 
 
+# Sheets that hold test DATA (one row per run of a data-driven case), not steps.
+_DATA_SHEETS = {"data", "test data", "testdata", "data sets", "datasets", "data set"}
+
+
+def _sheet_rows(sheet):
+    values = sheet.iter_rows(values_only=True)
+    header = next(values, None)
+    if not header or not any(_text(v) for v in header):
+        return None
+    keys = [_header(v) for v in header]
+    return [{keys[i]: _text(value) for i, value in enumerate(row)
+             if i < len(keys) and keys[i]}
+            for row in values]
+
+
+def _data_rows_from_xlsx(path):
+    try:
+        from openpyxl import load_workbook
+    except ImportError:  # pragma: no cover
+        return []
+    book = load_workbook(path, read_only=True, data_only=True)
+    try:
+        for sheet in book.worksheets:
+            if _header(sheet.title) in _DATA_SHEETS:
+                return _sheet_rows(sheet) or []
+    finally:
+        book.close()
+    return []
+
+
+def data_source_name(path):
+    """The data file/sheet a test-case file draws its data rows from, or ""."""
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".xlsx":
+        try:
+            from openpyxl import load_workbook
+            book = load_workbook(path, read_only=True, data_only=True)
+            try:
+                for sheet in book.worksheets:
+                    if _header(sheet.title) in _DATA_SHEETS:
+                        return "%s (sheet '%s')" % (os.path.basename(path), sheet.title)
+            finally:
+                book.close()
+        except Exception:
+            return ""
+        return ""
+    stem = os.path.splitext(path)[0]
+    for suffix in ("-data.csv", ".data.csv", "_data.csv"):
+        if os.path.isfile(stem + suffix):
+            return os.path.basename(stem + suffix)
+    return ""
+
+
+def _data_rows_from_companion_csv(path):
+    """'cases.csv' -> 'cases-data.csv' (or cases.data.csv / cases_data.csv)."""
+    stem = os.path.splitext(path)[0]
+    for suffix in ("-data.csv", ".data.csv", "_data.csv"):
+        candidate = stem + suffix
+        if os.path.isfile(candidate):
+            return _rows_from_csv(candidate)
+    return []
+
+
+_DATA_KEY_COLUMNS = ("test case id", "testcase id", "case id", "id",
+                     "test case title", "testcase title", "case title", "title")
+_DATA_NAME_COLUMNS = ("data set", "dataset", "data name", "row name", "name", "iteration")
+
+
+def _attach_data(cases, rows):
+    """Give each case its data rows: {"name": ..., "values": {column: value}}.
+    A row names its case by Test Case ID or Title; a row with neither applies
+    to every case that uses {{placeholders}}."""
+    for position, row in enumerate(rows, start=1):
+        if not any(row.values()):
+            continue
+        key = _field(row, "test case id", "testcase id", "case id", "id")
+        title = _field(row, "test case title", "testcase title", "case title", "title")
+        name = _field(row, *_DATA_NAME_COLUMNS)
+        values = {k: v for k, v in row.items()
+                  if k and k not in _DATA_KEY_COLUMNS and k not in _DATA_NAME_COLUMNS and v != ""}
+        if not values:
+            continue
+        for case in cases:
+            uses_tokens = any("{{" in (st.get("action", "") + st.get("expected", ""))
+                              for st in case["steps"])
+            if (key and key == case.get("source_id")) or \
+                    (title and title.lower() == case["title"].lower()) or \
+                    (not key and not title and uses_tokens):
+                rows_for = case.setdefault("data", [])
+                rows_for.append({"name": name or "Row %d" % (len(rows_for) + 1),
+                                 "values": dict(values)})
+
+
 def _rows_from_xlsx(path):
     try:
         from openpyxl import load_workbook
@@ -49,6 +142,8 @@ def _rows_from_xlsx(path):
     book = load_workbook(path, read_only=True, data_only=True)
     try:
         for sheet in book.worksheets:
+            if _header(sheet.title) in _DATA_SHEETS:
+                continue
             values = sheet.iter_rows(values_only=True)
             header = next(values, None)
             if not header or not any(_text(v) for v in header):
@@ -101,6 +196,7 @@ def load_test_cases(path):
             raise ValueError(f"Row {position}: Action is required.")
         key = case_id or title
         case = grouped.setdefault(key, {"id": case_id or f"row-{position}",
+                                        "source_id": case_id,
                                         "title": title, "steps": []})
         step = {"index": len(case["steps"]) + 1,
                 "action": action, "expected": expected}
@@ -108,7 +204,14 @@ def load_test_cases(path):
         case["steps"].append(step)
     if not grouped:
         raise ValueError("No test-case steps were found in the selected file.")
-    return list(grouped.values())
+    cases = list(grouped.values())
+    # Data-driven cases: a "Data" sheet (Excel) or "<file>-data.csv" (CSV).
+    data_rows = _data_rows_from_xlsx(path) if ext == ".xlsx" else _data_rows_from_companion_csv(path)
+    if data_rows:
+        _attach_data(cases, data_rows)
+    for case in cases:
+        case.pop("source_id", None)
+    return cases
 
 
 def load_stories_payload(path):
@@ -125,4 +228,6 @@ def load_stories_payload(path):
         "story": {"id": f"file-{fingerprint}", "title": f"Imported file: {name}",
                   "criteria": "Test cases imported from a local file."},
         "test_cases": cases,
+        # Shown in the run log: which data file/sheet the data rows came from.
+        "data_source": data_source_name(path),
     }]

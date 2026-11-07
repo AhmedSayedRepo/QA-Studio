@@ -44,8 +44,13 @@ class SourceWiringTests(unittest.TestCase):
 
     def test_regenerate_skips_dialog(self):
         self.assertIn('getattr(self, "auto_regenerate", False)', self.main)
-        self.assertIn('self.creds.get("auto_regenerate", False)', self.main)
-        self.assertIn("_flip_regenerate", self.auto)
+        # One three-way choice now drives the regenerate / re-inspect flags.
+        self.assertIn("def set_existing_mode(self, mode, save=True):", self.main)
+        self.assertIn('self.auto_regenerate = mode != "keep"', self.main)
+        self.assertIn('self.auto_reinspect_all = mode == "recheck"', self.main)
+        self.assertIn('getattr(self, "auto_existing_mode", "") == "keep"', self.main)
+        for mode in ("update", "recheck", "keep"):
+            self.assertIn('existing_option("%s"' % mode, self.auto)
 
     def test_generate_run_updates_in_place(self):
         self.assertIn("automation.refresh_run_ui(self, starting=True)", self.main)

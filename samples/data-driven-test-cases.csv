@@ -1,0 +1,4 @@
+﻿Test Case ID,Test Case Title,Step,Action,Expected Result,Element Type,Preferred Locator,Frame Context,Automation Note
+DD01,Pick a language from the autocomplete,1,Open https://jqueryui.com/resources/demos/autocomplete/default.html,"The ""Tags"" field is shown",,,,
+DD01,Pick a language from the autocomplete,2,"Type ""{{prefix}}"" in the ""Tags"" field and pick ""{{language}}""","The ""Tags"" field shows ""{{language}}""",autocomplete,,,
+DD02,Check each person's amount due,1,Open https://the-internet.herokuapp.com/tables,"The row with ""{{first_name}}"" shows ""{{due}}"" in the ""Due"" column",,,,

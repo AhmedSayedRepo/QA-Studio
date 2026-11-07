@@ -2975,6 +2975,83 @@ def fetch_test_case_detail(tc_id):
         return "", []
 
 
+def _azure_local_data_rows(raw):
+    """Rows of an Azure test case's own parameter values
+    (Microsoft.VSTS.TCM.LocalDataSource as a .NET DataSet XML)."""
+    import xml.etree.ElementTree as ET
+    rows = []
+    try:
+        root = ET.fromstring(raw)
+    except Exception:
+        return rows
+    for table in root:
+        tag = table.tag.split("}")[-1]
+        if tag == "schema":
+            continue
+        values = {}
+        for cell in table:
+            values[cell.tag.split("}")[-1]] = (cell.text or "").strip()
+        if any(values.values()):
+            rows.append(values)
+    return rows
+
+
+def _azure_shared_data_rows(set_id):
+    """Rows of an Azure 'Shared Parameter' work item (its parameterSet XML)."""
+    import xml.etree.ElementTree as ET
+    try:
+        wi = _wit_client.get_work_item(int(set_id), fields=["Microsoft.VSTS.TCM.Parameters"])
+        root = ET.fromstring((wi.fields or {}).get("Microsoft.VSTS.TCM.Parameters", "") or "")
+    except Exception:
+        return []
+    rows = []
+    for row in root.iter("dataRow"):
+        values = {kvp.get("key", ""): kvp.get("value", "") for kvp in row.iter("kvp")}
+        if any(values.values()):
+            rows.append(values)
+    return rows
+
+
+def fetch_test_case_data(tc_id):
+    """Data rows of an Azure DevOps parameterized test case (its own values or
+    shared parameter sets), as [{"name": "Row 1", "values": {param: value}}]."""
+    try:
+        wi = _wit_client.get_work_item(
+            tc_id, fields=["Microsoft.VSTS.TCM.Parameters", "Microsoft.VSTS.TCM.LocalDataSource"])
+        raw = ((wi.fields or {}).get("Microsoft.VSTS.TCM.LocalDataSource", "") or "").strip()
+    except Exception:
+        return []
+    rows = []
+    if raw.startswith("{"):
+        try:
+            spec = json.loads(raw)
+        except Exception:
+            spec = {}
+        mapping = {m.get("sharedParameterName"): m.get("localParamName")
+                   for m in spec.get("parameterMap") or [] if m.get("sharedParameterName")}
+        for set_id in spec.get("sharedParameterDataSetIds") or []:
+            for r in _azure_shared_data_rows(set_id):
+                rows.append({mapping.get(k, k): v for k, v in r.items()})
+    elif raw.startswith("<"):
+        rows = _azure_local_data_rows(raw)
+    return [{"name": "Row %d" % (i + 1), "values": r} for i, r in enumerate(rows)]
+
+
+def azure_params_to_placeholders(steps, data_rows):
+    """Azure writes a parameter as @name in step text; QA Studio uses {{name}}.
+    Only names that the case's data actually defines are converted (an e-mail
+    address like a@b.com is left alone)."""
+    names = sorted({k for r in data_rows or [] for k in (r.get("values") or {})}, key=len, reverse=True)
+    if not names:
+        return steps
+    pat = re.compile(r"(?<![\w.])@(" + "|".join(re.escape(n) for n in names) + r")\b")
+    for st in steps or []:
+        for f in ("action", "expected"):
+            if st.get(f):
+                st[f] = pat.sub(lambda m: "{{%s}}" % m.group(1), st[f])
+    return steps
+
+
 def fetch_test_case_title(tc_id):
     """Just the title for one test case. The suite listing is fetched with
     witFields=System.Id (fast counting) and carries no name, so the Run/Report
@@ -3833,10 +3910,19 @@ Test Case ID,Test Case Title,Step,Action,Expected Result,Element Type,Preferred 
    - date input, time input, color input, range → step: Set the \"<label>\" field to \"<value>\" (value in the field's own format, e.g. 2026-01-31, 14:30, #ff0000, 8)
    - multi select → step: Select \"<option 1>\" and \"<option 2>\" in the \"<label>\" list
    - radio → step: Click the \"<label>\" radio button (Expected Result: \"<label>\" is checked)
+   - custom dropdown (a styled list that is not a native <select>) → step: Select \"<option>\" from the \"<label>\" dropdown
+   - autocomplete → step: Type \"<first letters>\" in the \"<label>\" field and pick \"<suggestion>\"
+   - infinite scroll → step: Scroll down until \"<exact text of the item>\" appears
+   - drag and drop → step: Drag \"<item text>\" onto \"<drop zone text>\"
+   - Table check (no type needed) → Expected Result: The row with \"<row text>\" shows \"<value>\" in the \"<column header>\" column
+   - Download check (no type needed) → Expected Result of the click that downloads: The file \"<file name>\" is downloaded
+   - Elements inside a web component (shadow DOM) need no special type: QA Studio finds them automatically
    - checkbox, native select, link, button, text input, password input → optional, only when the label alone is ambiguous
    - Built-in browser validation (the "Please fill out this field" bubble) is not page text: write the Expected Result as: The \"<field label>\" field is flagged as invalid
 9. Preferred Locator (optional): a CSS selector you are SURE of (e.g. #file-upload); QA Studio still verifies it on the live page.
 10. Automation Note (optional): timing hints such as "wait up to 10 seconds for the loading bar".
+11. Data-driven cases (the same steps with several sets of values): write each changing value as a placeholder in double curly braces inside the quotes, e.g. Type "{{username}}" in the "Username" field / Expected Result: The message "{{message}}" is shown. Then, AFTER the CSV, output a second CSV block titled DATA with the columns: Test Case ID,Data Set,<one column per placeholder> — one row per run (Data Set is a short name such as "valid user"). Save it next to the cases file as <cases file name>-data.csv (or as a sheet named Data in the same Excel file).
+   - Generated values need no data row: {{random.email}}, {{random.number}}, {{random.text}}, {{today}}, {{today+3d}}, {{now}}.
 
 Now write the CSV."""
 
@@ -7551,7 +7637,7 @@ function selectorCandidates(el){
   add(robustCss(el));
   return out.slice(0,5);
 }
-const sel='input,button,a,select,textarea,iframe,frame,[role=button],[role=link],[role=tab],[role=menuitem],[role=option],[role=checkbox],[role=switch],[contenteditable=true]';
+const sel='input,button,a,select,textarea,iframe,frame,[role=button],[role=link],[role=tab],[role=menuitem],[role=option],[role=checkbox],[role=switch],[role=combobox],[contenteditable=true],[draggable=true],.ui-draggable,[data-rbd-draggable-id],[aria-roledescription=draggable],[aria-roledescription=sortable]';
 const textSel='[role=heading],[role=status],[role=alert],h1,h2,h3,h4,h5,h6,.inventory_item_name,.cart_item,.shopping_cart_badge,.title,.flash,.figcaption,.subheader,#result,#uploaded-files,[data-testid]';
 function adjacentText(el){
   // Some plain HTML forms put a checkbox's human label in an unwrapped text
@@ -7578,8 +7664,31 @@ function anameOf(el){
   if(!n) n = adjacentText(el);
   return (n||'').trim().slice(0,80);
 }
+// Open shadow roots (web components): their controls are harvested too, with
+// `shadow` = the host chain ("host-css >>> inner-host-css"); css stays
+// relative to the element's own shadow root.
+function shadowRoots(){
+  const out=[];
+  const walk=(root)=>{ root.querySelectorAll('*').forEach(e=>{
+    if(e.shadowRoot && out.length<50){ out.push(e.shadowRoot); walk(e.shadowRoot); } }); };
+  try{ walk(document); }catch(e){}
+  return out;
+}
+function hostChain(el){
+  const parts=[]; let r=el.getRootNode ? el.getRootNode() : document;
+  while(r && r!==document && r.host){
+    const h=r.host, hr=h.getRootNode(), tag=h.tagName.toLowerCase();
+    // A custom element's tag is usually unique and stable: prefer it (or its id).
+    let part=h.id ? '#'+CSS.escape(h.id)
+      : (tag.indexOf('-')>0 && hr.querySelectorAll(tag).length===1 ? tag : robustCss(h));
+    parts.unshift(part); r=hr;
+  }
+  return parts.join(' >>> ');
+}
 const uniq=new Set();
-const els=[...document.querySelectorAll(sel),...document.querySelectorAll(textSel)].filter(el=>{
+const pool=[...document.querySelectorAll(sel),...document.querySelectorAll(textSel)];
+shadowRoots().forEach(r=>{ pool.push(...r.querySelectorAll(sel), ...r.querySelectorAll(textSel)); });
+const els=pool.filter(el=>{
   if(uniq.has(el)) return false; uniq.add(el);
   return !!(el.offsetWidth||el.offsetHeight||el.getClientRects().length);
 });
@@ -7629,7 +7738,8 @@ return els.slice(0,350).map((el,i)=>({
   disabled: !!(el.disabled||el.getAttribute('aria-disabled')==='true'),
   visible: !!(el.offsetWidth||el.offsetHeight||el.getClientRects().length),
   css: robustCss(el),
-  xpath: xpathOf(el),
+  shadow: hostChain(el),
+  xpath: hostChain(el) ? '' : xpathOf(el),
   selectorCandidates: selectorCandidates(el)
 }));
 """
@@ -7858,6 +7968,25 @@ def _is_login_flow_action(intent):
     return is_user_field or is_password_field or is_login_submit or is_login_navigation
 
 
+def _login_steps_as_authored(case, is_login_action):
+    """A login case whose username/password/submit steps were all verified on the
+    live page is generated exactly as written (its own 'Open .../login', its
+    own fields), instead of the shared performLogin() helper — that helper goes
+    to the project's base URL, which isn't the login page on a site whose login
+    is just one page under test (the-internet /login)."""
+    if not case.get("explicit_login_flow"):
+        return False
+    acts = [i for i in (case.get("intents") or [])
+            if is_login_action(i) and i.get("verb") != "navigate"]
+    return bool(acts) and all((i.get("live_locator") or {}).get("verified") for i in acts)
+
+
+def _starts_with_absolute_navigate(case):
+    first = next((i for i in (case.get("intents") or []) if i.get("role") == "action"), {})
+    return (first.get("verb") == "navigate" and
+            str(first.get("value") or "").lower().startswith(("http://", "https://")))
+
+
 def _is_shopping_cart_navigation(intent):
     if intent.get("role") != "action" or intent.get("verb") != "click":
         return False
@@ -7972,13 +8101,16 @@ _VERB_SYNONYMS = {
     "double click": "double_click", "double-click": "double_click", "dblclick": "double_click",
     "doubleclick": "double_click", "right click": "right_click", "right-click": "right_click",
     "context click": "right_click", "rightclick": "right_click", "set": "set_value",
+    "scroll to": "scroll_to", "scroll": "scroll_to", "autocomplete": "autocomplete",
+    "drag": "drag", "drag and drop": "drag",
 }
 _ASSERTION_VERB_WORDS = {"verify", "check", "assert", "expect", "confirm",
                          "تأكد", "تحقق", "يظهر", "تظهر"}
 _VALID_ACTION_VERBS = ("navigate", "click", "type", "select", "hover", "wait",
                        "frame", "dialog_accept", "dialog_dismiss", "window_switch",
                        "upload", "key_press", "double_click", "right_click", "set_value",
-                       "frame_exit", "window_back", "window_close")
+                       "frame_exit", "window_back", "window_close", "autocomplete",
+                       "scroll_to", "drag")
 # Browser-context steps that act on the browser, not on a page element.
 _CONTEXT_VERBS = ("dialog_accept", "dialog_dismiss", "window_switch", "frame_exit",
                   "window_back", "window_close")
@@ -8034,6 +8166,40 @@ def _source_operation_contract(step):
         verb, kind = "select", "select"
         label = re.findall(r'(?:from|in)\s+the\s+["\u201c]([^"\u201d]+)["\u201d]', action)
         value = "; ".join(p for p in _quoted_phrases(action) if p not in label)
+    elif not is_verify and ("drag" in element_type or re.match(r"\s*drag\b", action, re.I)):
+        # 'Drag "Drag me to my target" onto "Drop here"': the step binds the
+        # source; the drop target is found by its text when the step runs.
+        verb, kind = "drag", "any"
+        onto = re.search(r'\b(?:onto|on|to|into|over)\s+(?:the\s+)?["\u201c]([^"\u201d]+)["\u201d]',
+                         action, re.I)
+        quoted = _quoted_phrases(action)
+        value = onto.group(1) if onto else (quoted[-1] if len(quoted) > 1 else "")
+    elif not is_verify and any(t in element_type for t in ("autocomplete", "typeahead",
+                                                           "type ahead", "suggestion")):
+        # 'Type "Ja" in "Tags" and pick "JavaScript"' -> value "Ja=>JavaScript".
+        verb, kind = "autocomplete", "input"
+        typed = re.search(r'\b(?:type|enter|write)\s+["\u201c]([^"\u201d]+)["\u201d]', action, re.I)
+        pick = re.search(r'\b(?:pick|choose|select|click)\s+(?:the\s+)?(?:suggestion\s+)?'
+                         r'["\u201c]([^"\u201d]+)["\u201d]', action, re.I)
+        quoted = _quoted_phrases(action)
+        t_val = typed.group(1) if typed else (quoted[0] if quoted else "")
+        p_val = pick.group(1) if pick else t_val
+        value = t_val + ("=>" + p_val if p_val and p_val != t_val else "")
+    elif not is_verify and any(t in element_type for t in ("custom dropdown", "custom select",
+                                                           "select menu", "combobox",
+                                                           "react select", "dropdown menu")):
+        # Not a native <select>: open the trigger, then pick the option by text.
+        verb, kind = "select", "select"
+        label = re.findall(r'(?:from|in)\s+the\s+["\u201c]([^"\u201d]+)["\u201d]', action)
+        opts = [p for p in _quoted_phrases(action) if p not in label]
+        value = opts[0] if opts else ""
+    elif not is_verify and (any(t in element_type for t in ("infinite scroll", "lazy load",
+                                                            "lazy-load"))
+                            or re.match(r"\s*scroll\b", action, re.I)):
+        # 'Scroll down until "3a - Logo Pizza delivered" appears'.
+        verb, kind = "scroll_to", "any"
+        quoted = _quoted_phrases(action)
+        value = quoted[-1] if quoted else ""
     elif "radio" in element_type and not is_verify:
         verb, kind = "click", "radio"
     elif "window context" in element_type or "new window" in source or "switch window" in source:
@@ -8336,6 +8502,14 @@ def _split_by_quoted_expected(intent, steps=None):
     light's Remove button) keep binding that element."""
     if intent.get("role") != "assertion" or _is_negative_assertion(intent):
         return []
+    # A part made by an earlier split must never split again: it keeps the same
+    # source step, so it would re-create the same parts forever (a live run
+    # looped on 'The "Tags" field shows "JavaScript"'). Checks of a field's
+    # value / state, a table cell or a download are not page-text checks.
+    if intent.get("split_part") or (intent.get("check") or "") in (
+            "value", "table", "download", "invalid", "checked", "unchecked",
+            "enabled", "disabled", "selected"):
+        return []
     phrases = _quoted_phrases(intent.get("expected"))
     if len(phrases) < 2 and steps:
         # The compiler often rewrites the outcome WITHOUT its quotes
@@ -8357,7 +8531,8 @@ def _split_by_quoted_expected(intent, steps=None):
         atomic = {k: v for k, v in intent.items()
                   if k not in ("inspection_source", "inspection_unresolved",
                                "live_locator", "locator_bindings")}
-        atomic.update({"target": phrase, "keywords": [phrase], "kind": "text"})
+        atomic.update({"target": phrase, "keywords": [phrase], "kind": "text",
+                       "split_part": True})
         parts.append(atomic)
     return parts
 
@@ -8449,7 +8624,7 @@ def compile_test_case(tc, story=None, log=None, case_type="interaction",
         "no commentary. Each <intent> object has exactly these fields:\n"
         '  "role"      : "precondition" | "action" | "assertion"\n'
         '  "verb"      : for role=action one of [navigate,click,type,select,hover,wait,'
-        'double_click,right_click,set_value]; else "" (set_value = date/time/range/color '
+        'double_click,right_click,set_value,autocomplete,scroll_to,drag]; else "" (set_value = date/time/range/color '
         'inputs, value in the field\'s own format, e.g. 2026-01-31 or 50)\n'
         '  "target"    : short human name of the element or goal\n'
         '  "keywords"  : 1-6 short tokens — the EXACT visible text/aria-label/placeholder '
@@ -8459,7 +8634,8 @@ def compile_test_case(tc, story=None, log=None, case_type="interaction",
         '  "kind"      : expected element type (button,input,link,menuitem,text,...)\n'
         '  "value"     : text to type ("" for an empty-field check); for select = the option\'s visible text\n'
         '  "check"     : optional assertion kind, else "" (use "invalid" when the browser\'s '
-        'built-in validation flags a field, e.g. "Please fill out this field")\n'
+        'built-in validation flags a field, e.g. "Please fill out this field"; "value" when a '
+        'field must show a value, with that value in "value")\n'
         '  "expected"  : the expected-outcome text, if any, else ""\n'
         '  "from_steps": array of the original step "n" value(s) this intent came from\n\n'
         "RULES\n"
@@ -8650,6 +8826,40 @@ def compile_test_case(tc, story=None, log=None, case_type="interaction",
                         intent["check"] = "invalid"
                         intent["kind"] = intent.get("kind") if intent.get("kind") not in (
                             "", "any", "text") else "input"
+                    # 'The "Tags" field shows "JavaScript"': the field's own value.
+                    shown = re.search(r'\bfield\s+(?:now\s+)?(?:shows|contains|has(?:\s+the)?\s+value)'
+                                      r'\s+["\u201c]([^"\u201d]+)["\u201d]',
+                                      str(source_step.get("expected") or ""), re.I)
+                    if intent.get("role") == "assertion" and shown:
+                        intent["check"] = "value"
+                        intent["value"] = shown.group(1)
+                        intent["kind"] = "input"
+                    exp_text = str(source_step.get("expected") or "")
+                    if intent.get("role") == "assertion":
+                        q = r'["\u201c]([^"\u201d]+)["\u201d]'
+                        # 'The row with "Jason" shows "$100.00" in the "Due" column'
+                        tab = re.search(r'\brow\s+(?:with|for|containing)\s+' + q +
+                                        r'\s+shows\s+' + q + r'\s+in\s+the\s+' + q +
+                                        r'\s+column', exp_text, re.I)
+                        if tab:
+                            intent["check"] = "table"
+                            intent["value"] = "|".join((tab.group(1), tab.group(3), tab.group(2)))
+                            intent["kind"] = "text"
+                        # 'The file "file_1.txt" is downloaded'
+                        dl = re.search(r'\bfile\s+' + q + r'\s+(?:is|was|gets)\s+downloaded',
+                                       exp_text, re.I)
+                        if dl:
+                            intent["check"] = "download"
+                            intent["value"] = dl.group(1)
+                            intent["kind"] = "text"
+
+        # A value check reads what a control SHOWS: an input's value or a custom
+        # dropdown's text. The model may call that control a "button" — don't
+        # let that kind hide the real control from binding.
+        for intent in clean:
+            if (intent.get("role") == "assertion" and (intent.get("check") or "") == "value"
+                    and (intent.get("kind") or "") not in ("input", "select")):
+                intent["kind"] = "any"
 
         # The optional live inspector records exact element locators on the
         # authored raw steps. Carry only direct, live captures into the compiled
@@ -9062,6 +9272,10 @@ def _to_locator(el):
     (PrimeNG pn_id_*, Angular/React, GUIDs) are skipped — they change every run."""
     if not el:
         return None
+    if (el.get("shadow") or "").strip():
+        inner = ("#" + el["id"]) if el.get("id") and not _VOLATILE_ID.search(el["id"]) \
+            else (el.get("css") or "")
+        return {"by": "shadow", "value": el["shadow"].strip() + " >>> " + inner}
     tid = (el.get("testid") or "").strip()
     if tid:
         return {"by": "css", "value": '[data-testid="%s"]' % tid}
@@ -9134,6 +9348,19 @@ def _locator_candidates(el):
     css = el.get("css") or ""
     if css and not _VOLATILE_ID.search(css):
         add("css", css)
+    chain = (el.get("shadow") or "").strip()
+    if chain:
+        # Inside a shadow root only CSS reaches the element: prefix every CSS
+        # candidate with the host chain; id/name become CSS, xpath is dropped.
+        wrapped = []
+        for c in out:
+            inner = {"css": c["value"], "id": "#" + c["value"],
+                     "name": '[name="%s"]' % c["value"]}.get(c["by"])
+            if inner:
+                v = chain + " >>> " + inner
+                if not any(w["value"] == v for w in wrapped):
+                    wrapped.append({"by": "shadow", "value": v})
+        return wrapped
     return out
 
 
@@ -9162,6 +9389,8 @@ def _prove_locator(driver, el, By, max_fallbacks=2):
         return unverified("no-driver")
 
     def find(by_key, value):
+        if by_key == "shadow":
+            return _find_shadow(driver, value)
         try:
             return list(driver.find_elements(getattr(By, _PROOF_BY[by_key]), value))
         except Exception:
@@ -9169,7 +9398,10 @@ def _prove_locator(driver, el, By, max_fallbacks=2):
 
     target = None
     xp = (el.get("xpath") or "").strip()
-    if xp.startswith("/"):
+    if (el.get("shadow") or "").strip() and el.get("css"):
+        hits = [h for h in find("shadow", el["shadow"].strip() + " >>> " + el["css"]) if _displayed(h)]
+        target = hits[0] if hits else None
+    elif xp.startswith("/"):
         hits = find("xpath", xp) or []
         target = hits[0] if len(hits) == 1 else None
     elif el.get("css"):
@@ -9419,6 +9651,10 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
         "profile.password_manager_enabled": False,
         "profile.password_manager_leak_detection": False,
         "profile.default_content_setting_values.notifications": 2,
+        # Download steps are verified by finding the file here.
+        "download.default_directory": _download_dir(),
+        "download.prompt_for_download": False,
+        "safebrowsing.enabled": True,
     })
     opts.add_argument("--disable-features=PasswordLeakDetection,PasswordManagerOnboarding")
     # Chrome's default prompt behavior can dismiss a JavaScript alert as a side
@@ -9543,6 +9779,10 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
     def find_live(el):
         """Locate the actual Selenium element for an harvested element dict."""
         try:
+            if (el.get("shadow") or "").strip():
+                inner = ("#" + el["id"]) if el.get("id") else el.get("css", "")
+                hits = _find_shadow(driver, el["shadow"].strip() + " >>> " + inner)
+                return hits[0] if hits else None
             if el.get("id"):
                 return driver.find_element(By.ID, el["id"])
             if el.get("name"):
@@ -9651,6 +9891,7 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
             return True
 
     failure_action_error = None  # terminal action error only; never a retry signal
+    last_action_at = [time.time()]   # download checks only accept files saved after this
 
     def _act(el_dict, verb, value, empty_ok=False):
         """STAGE 3 — perform an action so it survives overlays and timing.
@@ -9742,6 +9983,35 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
             except Exception as e:
                 failure_action_error = e
                 cb(f"      type failed: {str(e)[:50]}", "warn"); return None
+        if verb == "scroll_to":
+            # Already loaded by the scroll loop before binding: just bring it into view.
+            return live
+        if verb == "drag":
+            try:
+                if _drag_to(driver, live, value):
+                    return live
+                failure_action_error = RuntimeError("drop target '%s' not found" % value)
+            except Exception as e:
+                failure_action_error = e
+            cb(f"      drag onto '{str(value)[:24]}' failed", "warn")
+            return None
+        if verb == "autocomplete":
+            typed, pick = _autocomplete_parts(value)
+            try:
+                live.click()
+            except Exception:
+                pass
+            try:
+                live.clear()
+                live.send_keys(typed or pick)
+            except Exception as e:
+                failure_action_error = e
+                cb(f"      autocomplete typing failed: {str(e)[:50]}", "warn"); return None
+            if _pick_option(driver, pick):
+                return live
+            failure_action_error = RuntimeError("suggestion '%s' did not appear" % pick)
+            cb(f"      autocomplete: suggestion '{pick[:24]}' did not appear", "warn")
+            return None
         if verb == "select":
             from selenium.webdriver.support.ui import Select
             # native <select>
@@ -9771,6 +10041,9 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
             # overlay appended to <body> only after opening).
             self_open = _act(el_dict, "click", "", empty_ok)
             _settle(timeout=3); _t.sleep(0.4)
+            # Exact visible option text first (same rule the generated code uses).
+            if _pick_option(driver, value, timeout=4):
+                return live
             want = _norm(value)
             want_toks = [t for t in want.split(" ") if len(t) > 1]
             best = None
@@ -10111,6 +10384,15 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                 n_ass = sum(1 for it in intents if it["role"] == "assertion")
                 cb(f"    compiled \u2192 {n_act} action(s), {n_ass} assertion(s), "
                    f"{len(intents) - n_act - n_ass} precondition(s)", "dim")
+                # Data-driven case: walk with the FIRST data row's values; the
+                # saved plan keeps the {{placeholders}} (restored below).
+                _data_vals, _data_cache = _first_data_row(tc), {}
+                _intents_fill_data(intents, _data_vals, _data_cache)
+                if any(it.get("_data_orig") for it in intents):
+                    _rows = tc.get("data") or []
+                    cb(f"    data-driven: inspecting with "
+                       f"{(_rows[0].get('name') if _rows else 'generated values')}"
+                       f"{f' (1 of {len(_rows)} data rows)' if len(_rows) > 1 else ''}", "dim")
 
                 # start page — login-page cases (incl. negative-login) walk on a
                 # FRESH logged-out login page, where the language dropdown exists;
@@ -10181,6 +10463,34 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                                 steps[n - 1]["locator_src"] = "precondition"
                         continue
 
+                    if role == "assertion" and (it.get("check") or "") in ("table", "download"):
+                        # Checked on the page / download folder, not on one element.
+                        _settle(timeout=4)
+                        if it["check"] == "table":
+                            row, col, want = _table_parts(it.get("value"))
+                            ok, _end = False, time.time() + 10
+                            while not ok and time.time() < _end:
+                                try:
+                                    ok = bool(driver.execute_script(_TABLE_CELL_JS, row, col, want))
+                                except Exception:
+                                    ok = False
+                                if not ok:
+                                    time.sleep(0.5)
+                            what = f'row "{row}" / column "{col}" shows "{want}"'
+                        else:
+                            ok = _find_download(it.get("value"), last_action_at[0])
+                            what = f'file "{it.get("value")}" downloaded'
+                        if ok:
+                            it["inspection_source"] = "context"
+                            assign(fs, None, "context", intent=it)
+                            cb(f"      \u2713 {what}", "ok")
+                        else:
+                            it["inspection_source"] = "guess"
+                            it["inspection_unresolved"] = "context"
+                            assign(fs, None, "guess", intent=it)
+                            cb(f"      \u2717 {what} — not confirmed", "warn")
+                            _todo(story, tc, fs, it.get("target"), "context")
+                        continue
                     if role == "assertion":
                         # STAGE 2 (assert) — bind by DOM-diff: prefer elements that
                         # newly appeared/changed since the last action (the menu that
@@ -10383,10 +10693,40 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                         continue
                     active_capture.update({"step": min(fs) if fs else None,
                                            "phase": "before-action"})
+                    if verb == "scroll_to":
+                        # Infinite scroll / lazy load: keep scrolling until an
+                        # element showing the wanted text exists, then bind it.
+                        want_txt = _norm(it.get("value") or it.get("target") or "")
+                        found = False
+                        for _n in range(_SCROLL_MAX):
+                            if want_txt and any(want_txt in _norm(e.get("text") or "")
+                                                for e in _harvest_dom(driver)):
+                                found = True
+                                break
+                            try:
+                                driver.execute_script(_SCROLL_STEP_JS)
+                            except Exception:
+                                pass
+                            _t.sleep(1.2)
+                        if not found:
+                            it["inspection_source"] = "guess"
+                            it["inspection_unresolved"] = "scroll"
+                            assign(fs, None, "guess", intent=it)
+                            cb(f"      scroll: '{want_txt[:30]}' never appeared after "
+                               f"{_SCROLL_MAX} scrolls", "warn")
+                            _todo(story, tc, fs, it.get("target"), "guess")
+                            continue
                     cur = snapshot(tag="before action", with_errors=is_neg)
                     last_before = set(_el_key(e) for e in cur)
                     last_before_elements = cur
                     preferred = preferred_capture(it, cur)
+                    if verb == "scroll_to" and not preferred:
+                        # Bind the element that shows the wanted text (tightest text wins).
+                        want_txt = _norm(it.get("value") or it.get("target") or "")
+                        hits = sorted((e for e in cur if want_txt and
+                                       want_txt in _norm(e.get("text") or "")),
+                                      key=lambda e: len(e.get("text") or ""))
+                        preferred = (hits[0], "live") if hits else None
                     el, src = preferred if preferred else bind_target(it, cur)
                     if abort_credit:
                         break
@@ -10422,6 +10762,7 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                         elif any(token in field_hint for token in ("password", "passcode", "كلمه المرور", "كلمة المرور")):
                             typed_value = login.get("password", "")
                     failure_action_error = None
+                    last_action_at[0] = time.time()
                     acted = _act(el, verb, typed_value, empty_ok=empty_ok)
                     if acted is None:
                         # A selector is not verified merely because it was
@@ -10464,6 +10805,7 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                 # credential that may have been used to walk an explicit login
                 # flow. Login actions are emitted through the generated
                 # runtime helper and obtain APP_USER/APP_PASS from .env.
+                _intents_restore_data(intents)
                 plan_intents = json.loads(json.dumps(intents, ensure_ascii=False))
                 for plan_intent in plan_intents:
                     if plan_intent.get("verb") == "type":
@@ -10711,15 +11053,41 @@ import io.github.bonigarcia.wdm.WebDriverManager;
 import org.openqa.selenium.WebDriver;
 import org.openqa.selenium.chrome.ChromeDriver;
 import org.openqa.selenium.chrome.ChromeOptions;
+import java.io.File;
+import java.util.HashMap;
+import java.util.Map;
 
 public final class DriverFactory {{
     private DriverFactory() {{}}
+
+    // Selenium warns "Unable to find CDP implementation matching <version>" when
+    // Chrome is newer than the Selenium release; it only affects DevTools-only
+    // features (not used here), so keep those lines out of the run log. The
+    // static reference stops the JDK from dropping the logger setting.
+    private static final java.util.logging.Logger SELENIUM_LOG = quiet();
+    private static java.util.logging.Logger quiet() {{
+        java.util.logging.Logger l = java.util.logging.Logger.getLogger("org.openqa.selenium");
+        l.setLevel(java.util.logging.Level.SEVERE);
+        return l;
+    }}
+
+    /** Downloads land here; download steps check for the file in this folder. */
+    public static final File DOWNLOADS = new File("target/downloads").getAbsoluteFile();
 
     public static WebDriver create() {{
         WebDriverManager.chromedriver().setup();
         ChromeOptions options = new ChromeOptions();
         // options.addArguments("--headless=new");
         options.addArguments("--start-maximized");
+        DOWNLOADS.mkdirs();
+        // Start each browser with an empty download folder, so a download check
+        // only ever sees files this run saved.
+        File[] old = DOWNLOADS.listFiles();
+        if (old != null) for (File f : old) f.delete();
+        Map<String, Object> prefs = new HashMap<>();
+        prefs.put("download.default_directory", DOWNLOADS.getPath());
+        prefs.put("download.prompt_for_download", false);
+        options.setExperimentalOption("prefs", prefs);
         return new ChromeDriver(options);
     }}
 }}
@@ -12337,7 +12705,8 @@ def sequence_verified_inspection_plans(stories_payload, log=None, allow_unverifi
             cases.append({"tc": tc, "title": tc.get("title", ""), "ctype": ctype,
                           "page_context": pctx, "bucket": bucket,
                           "intents": intents, "needs_review": False,
-                          "explicit_login_flow": explicit_login})
+                          "explicit_login_flow": explicit_login,
+                          "data": tc.get("data") or []})
         if cases:
             cases.sort(key=lambda case: case["bucket"])
             for index, case in enumerate(cases):
@@ -12350,6 +12719,118 @@ def sequence_verified_inspection_plans(stories_payload, log=None, allow_unverifi
         return None
     log("Generating directly from the verified live inspection plan (no second AI compile).", "ok")
     return out
+
+
+# ── Data-driven test cases ──────────────────────────────────────────────────
+# A step may hold {{name}} placeholders; the case's data rows (a Data sheet, a
+# "<file>-data.csv" or Azure DevOps parameters) give each run its values, and
+# {{random.email}}, {{random.number}}, {{random.text}}, {{today}}, {{today+3d}}
+# and {{now}} are generated per run. Inspection and replay use the FIRST row
+# (locators do not depend on data); generated scripts run once per row.
+_DATA_TOKEN_RE = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
+_CREDENTIAL_TOKENS = {"app_user", "app_pass"}
+
+
+def _data_key(name):
+    return re.sub(r"[^0-9a-z]+", "_", str(name or "").lower()).strip("_")
+
+
+def _data_generated(name, cache):
+    key = str(name).strip().lower().replace(" ", "")
+    if key in cache:
+        return cache[key]
+    import datetime as _dt
+    import random as _rnd
+    import string as _str
+    val = None
+    if key == "random.email":
+        val = "qa.%d%04d@example.com" % (int(time.time()), _rnd.randint(0, 9999))
+    elif key == "random.number":
+        val = str(_rnd.randint(100000, 999999))
+    elif key == "random.text":
+        val = "QA " + "".join(_rnd.choice(_str.ascii_lowercase) for _ in range(6))
+    elif key == "now":
+        val = str(int(time.time() * 1000))
+    else:
+        m = re.match(r"^today(?:([+-])(\d+)d)?$", key)
+        if m:
+            days = int(m.group(2) or 0) * (-1 if m.group(1) == "-" else 1)
+            val = (_dt.date.today() + _dt.timedelta(days=days)).isoformat()
+    if val is not None:
+        cache[key] = val
+    return val
+
+
+def _data_fill(text, values=None, cache=None, login=None):
+    """Replace {{name}} placeholders with the row's values (and generated ones).
+    Unknown placeholders stay as they are."""
+    if text is None or "{{" not in str(text):
+        return text
+    values = {_data_key(k): v for k, v in (values or {}).items()}
+    cache = cache if cache is not None else {}
+    login = login or {}
+
+    def sub(m):
+        raw = m.group(1)
+        key = _data_key(raw)
+        if key == "app_user" and login.get("user"):
+            return login["user"]
+        if key == "app_pass" and login.get("password"):
+            return login["password"]
+        if key in values:
+            return str(values[key])
+        gen = _data_generated(raw, cache)
+        return gen if gen is not None else m.group(0)
+    return _DATA_TOKEN_RE.sub(sub, str(text))
+
+
+def _has_data_tokens(text):
+    return any(_data_key(t) not in _CREDENTIAL_TOKENS for t in _DATA_TOKEN_RE.findall(str(text or "")))
+
+
+_DATA_FIELDS = ("value", "target", "expected")
+
+
+def _intents_fill_data(intents, values, cache):
+    """Fill placeholders IN PLACE for the inspection walk; the original text is
+    kept in intent["_data_orig"] so the saved plan keeps the placeholders."""
+    for it in intents:
+        orig = {}
+        for f in _DATA_FIELDS:
+            if _has_data_tokens(it.get(f)):
+                orig[f] = it[f]
+                it[f] = _data_fill(it[f], values, cache)
+        kws = it.get("keywords") or []
+        if any(_has_data_tokens(k) for k in kws):
+            orig["keywords"] = list(kws)
+            it["keywords"] = [_data_fill(k, values, cache) for k in kws]
+        if orig:
+            it["_data_orig"] = orig
+
+
+def _intents_restore_data(intents):
+    for it in intents:
+        orig = it.pop("_data_orig", None)
+        if orig:
+            it.update(orig)
+
+
+def _data_view(intent, values, cache):
+    """A filled copy of one intent (replay); the original is left untouched."""
+    if not any(_has_data_tokens(intent.get(f)) for f in _DATA_FIELDS) and \
+            not any(_has_data_tokens(k) for k in intent.get("keywords") or []):
+        return intent
+    view = dict(intent)
+    for f in _DATA_FIELDS:
+        if view.get(f) is not None:
+            view[f] = _data_fill(view[f], values, cache)
+    view["keywords"] = [_data_fill(k, values, cache) for k in intent.get("keywords") or []]
+    return view
+
+
+def _first_data_row(tc):
+    rows = (tc or {}).get("data") or []
+    return dict(rows[0].get("values") or {}) if rows else {}
 
 
 # Runtime credential placeholders. A saved inspection plan never holds the real
@@ -12396,6 +12877,179 @@ _REPLAY_SUBMIT = "#kc-login,button[type=submit],input[type=submit]"
 
 # Sets a date/time/range/color input's value the way a user's edit does
 # (native setter, so React/Vue/Angular see it), then fires input + change.
+# ── Batch 2 runtime helpers (shared by inspection, replay and generated code) ──
+# Visible option/suggestion whose text equals (then starts with) the wanted text:
+# custom dropdowns and autocomplete lists render their options outside the
+# trigger (often appended to <body>), so they are found by text after opening.
+_PICK_OPTION_FN = (
+    "function(want){"
+    "function norm(s){return String(s||'').toLowerCase().replace(/\\s+/g,' ').trim();}"
+    "function vis(e){var r=e.getBoundingClientRect();if(!r.width||!r.height)return false;"
+    "var cs=getComputedStyle(e);return cs.visibility!=='hidden'&&cs.display!=='none';}"
+    "var w=norm(want);if(!w)return null;"
+    "var sels=['[role=option]','[role=menuitem]','[role=treeitem]','li','[class*=option]',"
+    "'[id*=option]','[class*=item]','[class*=suggest]'];"
+    "for(var pass=0;pass<2;pass++){for(var i=0;i<sels.length;i++){"
+    "var list=document.querySelectorAll(sels[i]);for(var j=0;j<list.length;j++){var e=list[j];"
+    "if(!vis(e))continue;var t=norm(e.innerText||e.textContent);"
+    "if(pass===0?t===w:(t.indexOf(w)===0&&t.length<=w.length+40))return e;}}}"
+    "return null;}")
+_PICK_OPTION_JS = "return (" + _PICK_OPTION_FN + ")(arguments[0]);"
+# Shadow DOM locator: "host css >>> inner css" (one ">>>" per shadow root).
+_SHADOW_FIND_FN = (
+    "function(chain){var parts=String(chain).split(' >>> ');var roots=[document];"
+    "for(var i=0;i<parts.length-1;i++){var next=[];roots.forEach(function(r){"
+    "r.querySelectorAll(parts[i]).forEach(function(h){if(h.shadowRoot)next.push(h.shadowRoot);});});"
+    "roots=next;}var out=[];roots.forEach(function(r){"
+    "r.querySelectorAll(parts[parts.length-1]).forEach(function(e){out.push(e);});});return out;}")
+_SHADOW_FIND_JS = "return (" + _SHADOW_FIND_FN + ")(arguments[0]);"
+_SCROLL_STEP_JS = "window.scrollTo(0, document.documentElement.scrollHeight);"
+_SCROLL_MAX = 25
+
+
+def _autocomplete_parts(value):
+    """'Ja=>JavaScript' -> ('Ja', 'JavaScript'); a single value is both."""
+    raw = str(value or "")
+    typed, _, pick = raw.partition("=>")
+    typed, pick = typed.strip(), pick.strip()
+    return typed, (pick or typed)
+
+
+def _find_shadow(driver, chain):
+    try:
+        return list(driver.execute_script(_SHADOW_FIND_JS, chain) or [])
+    except Exception:
+        return []
+
+
+def _pick_option(driver, text, timeout=6):
+    """Click the visible option/suggestion showing `text`; True when clicked."""
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            opt = driver.execute_script(_PICK_OPTION_JS, text)
+        except Exception:
+            opt = None
+        if opt is not None:
+            try:
+                opt.click()
+            except Exception:
+                driver.execute_script("arguments[0].click();", opt)
+            return True
+        time.sleep(0.25)
+    return False
+
+
+# ── Batch 3: drag & drop, table cells, downloads ─────────────────────────────
+# Drop target by its visible text: the outermost visible element whose own text
+# equals the wanted text (a drop zone usually holds just its label).
+_DROP_TARGET_FN = (
+    "function(want){"
+    "function norm(s){return String(s||'').toLowerCase().replace(/\\s+/g,' ').trim();}"
+    "function vis(e){var r=e.getBoundingClientRect();return r.width>0&&r.height>0;}"
+    "var w=norm(want);if(!w)return null;var all=document.body.querySelectorAll('*');"
+    "for(var i=0;i<all.length;i++){var e=all[i];"
+    "if(vis(e)&&norm(e.innerText)===w)return e;}"
+    "for(var i=0;i<all.length;i++){var e=all[i];var t=norm(e.innerText);"
+    "if(vis(e)&&t.indexOf(w)===0&&t.length<=w.length+30)return e;}"
+    "return null;}")
+_DROP_TARGET_JS = "return (" + _DROP_TARGET_FN + ")(arguments[0]);"
+# HTML5 drag & drop (draggable=true): WebDriver mouse moves never fire dragstart/
+# drop, so the events are dispatched with a shared DataTransfer.
+_HTML5_DRAG_JS = (
+    "var s=arguments[0],t=arguments[1],dt=new DataTransfer();"
+    "function fire(el,type){var r=el.getBoundingClientRect();"
+    "el.dispatchEvent(new DragEvent(type,{bubbles:true,cancelable:true,dataTransfer:dt,"
+    "clientX:r.left+r.width/2,clientY:r.top+r.height/2}));}"
+    "fire(s,'dragstart');fire(t,'dragenter');fire(t,'dragover');fire(t,'drop');fire(s,'dragend');")
+# Table cell: in a row containing `row`, the column headed `col` contains `want`.
+_TABLE_CELL_FN = (
+    "function(row,col,want){"
+    "function n(s){return String(s||'').toLowerCase().replace(/\\s+/g,' ').trim();}"
+    "var r=n(row),c=n(col),w=n(want);"
+    "var tables=document.querySelectorAll('table,[role=table],[role=grid]');"
+    "for(var i=0;i<tables.length;i++){var tb=tables[i];"
+    "var hs=tb.querySelectorAll('thead th,thead td,[role=columnheader]');"
+    "if(!hs.length){var fr=tb.querySelector('tr');hs=fr?fr.querySelectorAll('th,td'):[];}"
+    "var idx=-1;for(var h=0;h<hs.length;h++){if(n(hs[h].innerText)===c){idx=h;break;}}"
+    "if(idx<0){for(var h=0;h<hs.length;h++){if(c&&n(hs[h].innerText).indexOf(c)>-1){idx=h;break;}}}"
+    "if(idx<0)continue;"
+    "var rows=tb.querySelectorAll('tbody tr,[role=row]');"
+    "for(var k=0;k<rows.length;k++){var tr=rows[k];"
+    "var cells=tr.querySelectorAll('td,th,[role=cell],[role=gridcell]');"
+    "if(cells.length<=idx||n(tr.innerText).indexOf(r)<0)continue;"
+    "if(n(cells[idx].innerText).indexOf(w)>-1)return true;}}"
+    "return false;}")
+_TABLE_CELL_JS = "return (" + _TABLE_CELL_FN + ")(arguments[0],arguments[1],arguments[2]);"
+
+
+def _table_parts(value):
+    """'Jason|Due|$100.00' -> ('Jason', 'Due', '$100.00')."""
+    parts = (str(value or "").split("|") + ["", "", ""])[:3]
+    return tuple(p.strip() for p in parts)
+
+
+def _download_dir():
+    """Where inspection/replay Chrome saves downloads (checked by download steps)."""
+    d = os.path.join(os.path.expanduser("~"), ".qastudio", "downloads")
+    try:
+        os.makedirs(d, exist_ok=True)
+    except Exception:
+        pass
+    return d
+
+
+def _find_download(name, since, timeout=20):
+    """True when a finished download whose name contains `name` appeared after
+    `since` (epoch seconds) in _download_dir()."""
+    want = str(name or "").strip().lower()
+    stem, ext = os.path.splitext(want)
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            for fn in os.listdir(_download_dir()):
+                low = fn.lower()
+                if low.endswith((".crdownload", ".tmp", ".part")):
+                    continue
+                # A repeat download is saved as "file_1 (1).txt": match the
+                # name and the extension separately.
+                if want and stem in low and low.endswith(ext) and \
+                        os.path.getmtime(os.path.join(_download_dir(), fn)) >= since - 2:
+                    return True
+        except Exception:
+            pass
+        time.sleep(0.5)
+    return False
+
+
+def _drag_to(driver, source, target_text):
+    """Drag `source` onto the element showing `target_text`; True when done."""
+    tgt = None
+    end = time.time() + 6
+    while tgt is None and time.time() < end:
+        try:
+            tgt = driver.execute_script(_DROP_TARGET_JS, target_text)
+        except Exception:
+            tgt = None
+        if tgt is None:
+            time.sleep(0.25)
+    if tgt is None:
+        return False
+    draggable = False
+    try:
+        draggable = (source.get_attribute("draggable") or "").lower() == "true"
+    except Exception:
+        pass
+    if draggable:
+        driver.execute_script(_HTML5_DRAG_JS, source, tgt)
+    else:
+        from selenium.webdriver.common.action_chains import ActionChains
+        ActionChains(driver).click_and_hold(source).pause(0.2).move_to_element(tgt) \
+            .pause(0.2).release(tgt).perform()
+    time.sleep(0.4)
+    return True
+
+
 _RIGHT_CLICK_JS = (
     # Fire the page's right-click handlers WITHOUT the browser's native menu,
     # which WebDriver/CDP cannot close and which stays open over the page.
@@ -12502,6 +13156,8 @@ def replay_sequenced(sequenced, base_url, login, make_driver, By, cb=None,
                 return getattr(By, _REPLAY_BY.get(key, "CSS_SELECTOR"))
 
             def find_all(key, value):
+                if key == "shadow":
+                    return _find_shadow(driver, value)
                 try:
                     return list(driver.find_elements(by(key), value))
                 except Exception:
@@ -12574,6 +13230,18 @@ def replay_sequenced(sequenced, base_url, login, make_driver, By, cb=None,
                     return "", False
                 locs = locs_for(intent, app_page)
                 kind = (intent.get("kind") or "").lower()
+                if role == "assertion" and (intent.get("check") or "") == "table":
+                    row, col, want = _table_parts(intent.get("value"))
+                    def _cell_ok():
+                        try:
+                            return bool(driver.execute_script(_TABLE_CELL_JS, row, col, want))
+                        except Exception:
+                            return False
+                    ok = poll(_cell_ok, min(wait, 10))
+                    return ("" if ok else "table-cell-mismatch"), False
+                if role == "assertion" and (intent.get("check") or "") == "download":
+                    ok = _find_download(intent.get("value"), case_ctx.get("last_action_at", 0))
+                    return ("" if ok else "not-downloaded"), False
                 if role == "assertion":
                     if intent.get("assert_before_action"):
                         if not locs:
@@ -12602,6 +13270,20 @@ def replay_sequenced(sequenced, base_url, login, make_driver, By, cb=None,
                     if check == "invalid" and driver.execute_script(
                             "return arguments[0].checkValidity ? arguments[0].checkValidity() : true;", el):
                         return "not-invalid", idx > 0
+                    if check == "value":
+                        want = _replay_norm(str(intent.get("value") or ""))
+                        got = ""
+                        for _n in range(20):   # a picked suggestion may fill in a moment later
+                            # An input's value, or a custom dropdown's shown text.
+                            # A native <select> compares its selected option's
+                            # TEXT ("Option 1"), not its value attribute ("1").
+                            got = _replay_norm(driver.execute_script(
+                                "var n=arguments[0]; if (n.tagName==='SELECT') return Array.from(n.selectedOptions).map(function(o){return o.text+' '+o.value;}).join(' '); return n.value || n.innerText || '';", el) or el.text or "")
+                            if want and want in got:
+                                break
+                            time.sleep(0.25)
+                        if not (want and want in got):
+                            return "wrong-value", idx > 0
                     return "", idx > 0
                 verb = intent.get("verb") or "click"
                 value = str(intent.get("value") or "")
@@ -12642,6 +13324,19 @@ def replay_sequenced(sequenced, base_url, login, make_driver, By, cb=None,
                     return "", False
                 if not locs:
                     return "unresolved", False
+                if verb == "scroll_to":
+                    # Infinite scroll: scroll until a saved locator matches a
+                    # visible element (never longer than _SCROLL_MAX scrolls).
+                    for _n in range(_SCROLL_MAX):
+                        for i, (key, val) in enumerate(locs):
+                            hits = [h for h in find_all(key, val) if _displayed(h)]
+                            if hits:
+                                driver.execute_script(
+                                    "arguments[0].scrollIntoView({block:'center'});", hits[0])
+                                return "", i > 0
+                        driver.execute_script(_SCROLL_STEP_JS)
+                        time.sleep(1.2)
+                    return "not-found-after-scrolling", False
                 el, idx, why = find(locs)
                 if el is not None and verb == "frame":
                     try:
@@ -12655,7 +13350,12 @@ def replay_sequenced(sequenced, base_url, login, make_driver, By, cb=None,
                     driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
                 except Exception:
                     pass
+                case_ctx["last_action_at"] = time.time()
                 try:
+                    if verb == "drag":
+                        if not _drag_to(driver, el, value):
+                            return "drop-target-not-found", idx > 0
+                        return "", idx > 0
                     if verb == "type":
                         el.clear()
                         typed = _replay_value(value, login)
@@ -12671,7 +13371,17 @@ def replay_sequenced(sequenced, base_url, login, make_driver, By, cb=None,
                             for part in parts:
                                 sel.select_by_visible_text(part)
                         except Exception:
+                            # Custom dropdown: open it, then pick the option by text.
                             el.click()
+                            if not _pick_option(driver, value):
+                                return "option-not-found", idx > 0
+                    elif verb == "autocomplete":
+                        typed, pick = _autocomplete_parts(value)
+                        el.click()
+                        el.clear()
+                        el.send_keys(typed or pick)
+                        if not _pick_option(driver, pick):
+                            return "suggestion-not-found", idx > 0
                     elif verb == "hover":
                         from selenium.webdriver.common.action_chains import ActionChains
                         ActionChains(driver).move_to_element(el).perform()
@@ -12727,13 +13437,16 @@ def replay_sequenced(sequenced, base_url, login, make_driver, By, cb=None,
                 except Exception as exc:
                     row.update(passed=False, reason=str(exc) or "login-failed")
                 app_page = bucket == 3 or explicit
+                # Data-driven: replay with the first data row (as inspected).
+                _rvals = dict(((case.get("data") or [{}])[0] or {}).get("values") or {})
+                _rcache = {}
                 for intent in (case.get("intents") or []) if row["passed"] else []:
                     intent.pop("replay_failed", None)
                     if (bucket == 2 and intent.get("role") == "action") or (
                             explicit and _is_login_flow_action(intent)):
                         continue
                     try:
-                        reason, used_fb = run_intent(intent, app_page)
+                        reason, used_fb = run_intent(_data_view(intent, _rvals, _rcache), app_page)
                     except Exception as exc:
                         reason, used_fb = "error: %s" % type(exc).__name__, False
                     row["fallbacks_used"] += 1 if used_fb else 0
@@ -12796,6 +13509,9 @@ def replay_verify(stories_payload, login, site_url, cb=None, should_stop=None,
             "profile.password_manager_enabled": False,
             "profile.password_manager_leak_detection": False,
             "profile.default_content_setting_values.notifications": 2,
+            "download.default_directory": _download_dir(),
+            "download.prompt_for_download": False,
+            "safebrowsing.enabled": True,
         })
         opts.set_capability("unhandledPromptBehavior", "ignore")
         drv = webdriver.Chrome(options=opts)
@@ -12931,6 +13647,8 @@ def _sh_pom(group_id, artifact_id):
     <dependency><groupId>org.seleniumhq.selenium</groupId><artifactId>selenium-java</artifactId><version>4.21.0</version></dependency>
     <dependency><groupId>org.testng</groupId><artifactId>testng</artifactId><version>7.10.2</version></dependency>
     <dependency><groupId>io.github.bonigarcia</groupId><artifactId>webdrivermanager</artifactId><version>5.9.2</version></dependency>
+    <!-- silences "SLF4J: Failed to load class org.slf4j.impl.StaticLoggerBinder" -->
+    <dependency><groupId>org.slf4j</groupId><artifactId>slf4j-nop</artifactId><version>1.7.36</version></dependency>
     <dependency><groupId>com.fasterxml.jackson.core</groupId><artifactId>jackson-databind</artifactId><version>2.17.1</version></dependency>
     <!-- emails the run report (ReportMailer) -->
     <dependency><groupId>org.eclipse.angus</groupId><artifactId>angus-mail</artifactId><version>2.0.3</version></dependency>
@@ -13245,6 +13963,8 @@ import org.openqa.selenium.support.ui.Select;
 import org.openqa.selenium.support.ui.WebDriverWait;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
 /** Finds elements with runtime self-healing. Order per step key:
@@ -13268,6 +13988,76 @@ public final class Healer {
         + "setTimeout(function(){el.dispatchEvent(new MouseEvent('mousedown',o));"
         + "el.dispatchEvent(new MouseEvent('mouseup',o));"
         + "el.dispatchEvent(new MouseEvent('contextmenu',o));},0);";
+
+    // Custom dropdown / autocomplete option by its visible text, and the
+    // shadow DOM finder ("host >>> inner") — same scripts QA Studio inspected with.
+    private static final String PICK_OPTION_JS = __PICK_OPTION_JS__;
+    private static final String SHADOW_FIND_JS = __SHADOW_FIND_JS__;
+    private static final int SCROLL_MAX = __SCROLL_MAX__;
+    // Drag & drop target by its text, HTML5 drag events, and table-cell check.
+    private static final String DROP_TARGET_JS = __DROP_TARGET_JS__;
+    private static final String HTML5_DRAG_JS = __HTML5_DRAG_JS__;
+    private static final String TABLE_CELL_JS = __TABLE_CELL_JS__;
+
+    // ---- data-driven runs: {{name}} placeholders take the current row's value;
+    // {{random.email}}, {{random.number}}, {{random.text}}, {{today}}, {{today+3d}}
+    // and {{now}} are generated once per test. Unknown placeholders stay as written.
+    private Map<String, String> data = new java.util.HashMap<>();
+    private final Map<String, String> dataCache = new java.util.HashMap<>();
+    private static final java.util.regex.Pattern DATA_TOKEN =
+        java.util.regex.Pattern.compile("\\\\{\\\\{\\\\s*([^{}]+?)\\\\s*\\\\}\\\\}");
+
+    private static String dataKey(String n) {
+        return n == null ? "" : n.toLowerCase().replaceAll("[^0-9a-z]+", "_").replaceAll("^_+|_+$", "");
+    }
+
+    public void useData(Map<String, String> values) {
+        data = new java.util.HashMap<>();
+        if (values != null) values.forEach((k, v) -> data.put(dataKey(k), v));
+        dataCache.clear();
+    }
+
+    /** Builds one data row: Healer.row("username", "tom", "password", "x"). */
+    public static Map<String, String> row(String... kv) {
+        Map<String, String> m = new java.util.LinkedHashMap<>();
+        for (int i = 0; i + 1 < kv.length; i += 2) m.put(kv[i], kv[i + 1]);
+        return m;
+    }
+
+    public String fill(String text) {
+        if (text == null || !text.contains("{{")) return text;
+        java.util.regex.Matcher m = DATA_TOKEN.matcher(text);
+        StringBuffer out = new StringBuffer();
+        while (m.find()) {
+            String raw = m.group(1), key = dataKey(raw), v = null;
+            if ("app_user".equals(key)) v = Config.USER;
+            else if ("app_pass".equals(key)) v = Config.PASS;
+            else if (data.containsKey(key)) v = data.get(key);
+            else v = generated(raw.toLowerCase().replace(" ", ""));
+            m.appendReplacement(out, java.util.regex.Matcher.quoteReplacement(v == null ? m.group(0) : v));
+        }
+        m.appendTail(out);
+        return out.toString();
+    }
+
+    private String generated(String g) {
+        if (dataCache.containsKey(g)) return dataCache.get(g);
+        String v = null;
+        java.util.Random r = new java.util.Random();
+        if (g.equals("random.email")) v = "qa." + System.currentTimeMillis() + r.nextInt(10000) + "@example.com";
+        else if (g.equals("random.number")) v = String.valueOf(100000 + r.nextInt(900000));
+        else if (g.equals("random.text")) v = "QA " + Long.toString(Math.abs(r.nextLong()), 36).substring(0, 6);
+        else if (g.equals("now")) v = String.valueOf(System.currentTimeMillis());
+        else {
+            java.util.regex.Matcher t = java.util.regex.Pattern.compile("^today(?:([+-])(\\\\d+)d)?$").matcher(g);
+            if (t.matches()) {
+                long days = t.group(2) == null ? 0 : Long.parseLong(t.group(2)) * ("-".equals(t.group(1)) ? -1 : 1);
+                v = java.time.LocalDate.now().plusDays(days).toString();
+            }
+        }
+        if (v != null) dataCache.put(g, v);
+        return v;
+    }
 
     public Healer(WebDriver driver) {
         this.driver = driver;
@@ -13307,6 +14097,7 @@ public final class Healer {
 
     public void act(String key, String verb, By seed, String intentJson, String value) {
         if ("navigate".equals(verb) || "wait".equals(verb)) return;
+        if ("scroll_to".equals(verb)) { scrollTo(key, seed, intentJson); return; }
         WebElement el = find(key, seed, intentJson);
         ((JavascriptExecutor) driver).executeScript(
             "arguments[0].scrollIntoView({block:'center'});", el);
@@ -13320,8 +14111,34 @@ public final class Healer {
                     if (opts.length > 1 && sel.isMultiple()) sel.deselectAll();
                     for (String o : opts) sel.selectByVisibleText(o.trim());
                 }
-                catch (Exception ignored) { el.click(); } // custom dropdown trigger
+                catch (Exception notNative) {
+                    // Custom dropdown: open the trigger, then pick the option by text.
+                    el.click();
+                    pickOption(value);
+                }
                 break;
+            case "drag": {
+                // Drop target = the element showing `value` (found when the step runs).
+                WebElement target = wait.until(d -> (WebElement) ((JavascriptExecutor) d)
+                    .executeScript(DROP_TARGET_JS, value));
+                if ("true".equalsIgnoreCase(el.getAttribute("draggable"))) {
+                    ((JavascriptExecutor) driver).executeScript(HTML5_DRAG_JS, el, target);
+                } else {
+                    new Actions(driver).clickAndHold(el).pause(Duration.ofMillis(200))
+                        .moveToElement(target).pause(Duration.ofMillis(200)).release(target).perform();
+                }
+                break;
+            }
+            case "autocomplete": {
+                String typed = value == null ? "" : value, pick = typed;
+                int arrow = typed.indexOf("=>");
+                if (arrow >= 0) { pick = typed.substring(arrow + 2).trim(); typed = typed.substring(0, arrow).trim(); }
+                el.click();
+                el.clear();
+                el.sendKeys(typed.isEmpty() ? pick : typed);
+                pickOption(pick);
+                break;
+            }
             case "hover":
                 new Actions(driver).moveToElement(el).perform(); break;
             case "double_click":
@@ -13391,6 +14208,52 @@ public final class Healer {
             : driver.getWindowHandles().iterator().next();
         if (closeCurrent && !driver.getWindowHandle().equals(target)) driver.close();
         driver.switchTo().window(target);
+    }
+
+    /** In a table row containing `row`, the column headed `column` shows `expected`. */
+    public boolean assertTableCell(String row, String column, String expected) {
+        try {
+            return new WebDriverWait(driver, Duration.ofSeconds(10)).until(d ->
+                Boolean.TRUE.equals(((JavascriptExecutor) d).executeScript(
+                    TABLE_CELL_JS, row, column, expected)));
+        } catch (Exception e) { return false; }
+    }
+
+    /** A file whose name contains `name` finished downloading (DriverFactory.DOWNLOADS). */
+    public boolean assertDownloaded(String name) {
+        String want = name == null ? "" : name.toLowerCase();
+        // A repeat download is saved as "file_1 (1).txt": match name and extension separately.
+        int dot = want.lastIndexOf('.');
+        String stem = dot > 0 ? want.substring(0, dot) : want, ext = dot > 0 ? want.substring(dot) : "";
+        long end = System.currentTimeMillis() + 20000;
+        while (System.currentTimeMillis() < end) {
+            java.io.File[] files = DriverFactory.DOWNLOADS.listFiles();
+            if (files != null) {
+                for (java.io.File f : files) {
+                    String n = f.getName().toLowerCase();
+                    if (!n.endsWith(".crdownload") && !n.endsWith(".tmp")
+                            && n.contains(stem) && n.endsWith(ext)) return true;
+                }
+            }
+            try { Thread.sleep(500); } catch (InterruptedException ie) { return false; }
+        }
+        return false;
+    }
+
+    /** The field's own value contains `expected` (waits briefly for it). */
+    public boolean assertValue(String key, By seed, String intentJson, String expected) {
+        try {
+            WebElement el = find(key, seed, intentJson);
+            String want = normText(expected);
+            // An input's value, or the text a custom dropdown shows.
+            // A native <select> compares its selected option's text, not its value.
+            return new WebDriverWait(driver, Duration.ofSeconds(5)).until(d -> {
+                Object v = ((JavascriptExecutor) driver).executeScript(
+                    "var n=arguments[0]; if (n.tagName==='SELECT') return Array.from(n.selectedOptions).map(function(o){return o.text+' '+o.value;}).join(' '); return n.value || n.innerText || '';", el);
+                String shown = v == null ? "" : v.toString();
+                return normText(shown.isEmpty() ? el.getText() : shown).contains(want);
+            });
+        } catch (Exception e) { return false; }
     }
 
     /** The field is flagged by the browser's own validation (required, type, pattern…). */
@@ -13490,6 +14353,47 @@ public final class Healer {
         return false;
     }
 
+    /** Clicks the visible option/suggestion showing `text` (waits up to the full timeout). */
+    public void pickOption(String text) {
+        WebElement opt = wait.until(d -> (WebElement) ((JavascriptExecutor) d)
+            .executeScript(PICK_OPTION_JS, text));
+        try { opt.click(); }
+        catch (Exception e) { ((JavascriptExecutor) driver).executeScript("arguments[0].click();", opt); }
+    }
+
+    /** Infinite scroll / lazy load: scroll down until the step's element is shown. */
+    public void scrollTo(String key, By seed, String intentJson) {
+        By cached = store.get(key);
+        for (int i = 0; i < SCROLL_MAX; i++) {
+            for (By by : new By[]{cached, seed}) {
+                if (by == null) continue;
+                WebElement e = tryFind(by, probe);
+                if (e != null) {
+                    ((JavascriptExecutor) driver).executeScript(
+                        "arguments[0].scrollIntoView({block:'center'});", e);
+                    return;
+                }
+            }
+            ((JavascriptExecutor) driver).executeScript(
+                "window.scrollTo(0, document.documentElement.scrollHeight);");
+            try { Thread.sleep(1200); } catch (InterruptedException ie) { return; }
+        }
+        find(key, seed, intentJson);   // last chance: AI healing, or a clear failure
+    }
+
+    /** Shadow DOM locator: "host css >>> inner css". */
+    static final class ByShadow extends By {
+        private final String chain;
+        ByShadow(String chain) { this.chain = chain; }
+        @Override
+        @SuppressWarnings("unchecked")
+        public List<WebElement> findElements(SearchContext ctx) {
+            Object r = ((JavascriptExecutor) ctx).executeScript(SHADOW_FIND_JS, chain);
+            return r instanceof List ? (List<WebElement>) r : new ArrayList<>();
+        }
+        @Override public String toString() { return "By.shadow: " + chain; }
+    }
+
     private WebElement tryFind(By by, WebDriverWait w) {
         try { return w.until(ExpectedConditions.visibilityOfElementLocated(by)); }
         catch (Exception e) { return null; }
@@ -13531,11 +14435,18 @@ public final class Healer {
             case "xpath":       return By.xpath(value);
             case "linkText":    return By.linkText(value);
             case "className":   return By.className(value);
+            case "shadow":      return new ByShadow(value);
             default:            return By.cssSelector(value);
         }
     }
 }
-""".replace("__PKG__", pkg))
+""".replace("__PKG__", pkg)
+            .replace("__PICK_OPTION_JS__", json.dumps(_PICK_OPTION_JS))
+            .replace("__SHADOW_FIND_JS__", json.dumps(_SHADOW_FIND_JS))
+            .replace("__SCROLL_MAX__", str(_SCROLL_MAX))
+            .replace("__DROP_TARGET_JS__", json.dumps(_DROP_TARGET_JS))
+            .replace("__HTML5_DRAG_JS__", json.dumps(_HTML5_DRAG_JS))
+            .replace("__TABLE_CELL_JS__", json.dumps(_TABLE_CELL_JS)))
 
 
 def _sh_base_test(pkg):
@@ -13706,6 +14617,13 @@ e.g. Anthropic, NVIDIA, Groq, OpenAI, Gemini). Only the API KEY is read from the
 environment — healing runs as a SEPARATE process here, so it needs its own key
 (QA Studio isn't running when `mvn test` executes).
 
+## Quick start (IntelliJ)
+Open this folder in IntelliJ IDEA: it loads `pom.xml` and downloads the dependencies.
+Then pick **Run tests** in the run-configuration list (top-right) and click ▶. It uses
+IntelliJ's bundled Maven, so Maven does not have to be installed. **Download
+dependencies** fetches and compiles everything without running the tests. The summary
+report (`target/qa-studio-report.html`) opens when the run finishes.
+
 ## Run
 1. Configure the environment: copy `config.properties.example` → `config.properties`
    and set `app.base.url`, `app.login.url` (optionally `ai.provider`, `ai.base.url`,
@@ -13744,6 +14662,68 @@ def _java_ident(s, fallback):
     return out[:60]
 
 
+_JAVA_STR_RE = re.compile(r'"(?:[^"\\\n]|\\.)*"')
+
+
+def _java_wrap_data_literals(lines):
+    """Wrap Java string literals holding a {{data}} placeholder in heal.fill(...)
+    so each data row's value is used at run time (annotations are left alone)."""
+    def sub(m):
+        lit = m.group(0)
+        return "heal.fill(%s)" % lit if _has_data_tokens(lit[1:-1]) else lit
+    return [ln if ("{{" not in ln or ln.lstrip().startswith("@")) else _JAVA_STR_RE.sub(sub, ln)
+            for ln in lines]
+
+
+def _intent_step_label(intent):
+    """Readable name of one generated step for the detailed reports, e.g.
+    'Step 2 · Select "Fast" in "speed dropdown"' or 'Step 2 · Verify: The file
+    "file_1.txt" is downloaded'. Never shows a credential value."""
+    fs = [n for n in (intent.get("from_steps") or []) if isinstance(n, int)]
+    prefix = ("Step %d · " % min(fs)) if fs else ""
+    role = intent.get("role") or ""
+    verb = (intent.get("verb") or "").lower()
+    tgt = " ".join(str(intent.get("target") or "").split())[:60]
+    val = str(intent.get("value") or "")
+    if role == "precondition":
+        return ""
+    if role == "assertion":
+        exp = " ".join(str(intent.get("expected") or "").split())
+        text = ("Verify: " + exp) if exp else ('Verify "%s"' % tgt)
+        return (prefix + text)[:140]
+    secret = "{{" in val or (intent.get("kind") or "") == "password"
+    shown = "" if secret else " ".join(val.split())[:50]
+    if verb == "autocomplete":
+        typed, pick = _autocomplete_parts(val)
+        text = 'Type "%s" in "%s" and pick "%s"' % (typed, tgt, pick)
+    else:
+        text = {
+            "navigate": "Open %s" % (val or tgt),
+            "click": 'Click "%s"' % tgt,
+            "type": ('Type "%s" into "%s"' % (shown, tgt)) if shown else 'Type into "%s"' % tgt,
+            "select": 'Select "%s" in "%s"' % (shown, tgt),
+            "hover": 'Hover "%s"' % tgt,
+            "double_click": 'Double-click "%s"' % tgt,
+            "right_click": 'Right-click "%s"' % tgt,
+            "key_press": "Press %s" % (shown or tgt),
+            "set_value": 'Set "%s" to "%s"' % (tgt, shown),
+            "upload": 'Upload a file to "%s"' % tgt,
+            "scroll_to": 'Scroll until "%s" appears' % (shown or tgt),
+            "drag": 'Drag "%s" onto "%s"' % (tgt, shown),
+            "check": 'Tick "%s"' % tgt,
+            "uncheck": 'Untick "%s"' % tgt,
+            "frame": 'Enter frame "%s"' % tgt,
+            "frame_exit": "Leave the frame",
+            "dialog_accept": "Accept the browser dialog",
+            "dialog_dismiss": "Dismiss the browser dialog",
+            "window_switch": "Switch to the new window",
+            "window_back": "Return to the original window",
+            "window_close": "Close the window and return",
+            "wait": "Wait for the page",
+        }.get(verb, ('%s "%s"' % (verb.replace("_", " ").capitalize() or "Step", tgt)))
+    return (prefix + text)[:140]
+
+
 def _emit_intent(lines, key, intent, seed_sink=None, app_page=False):
     """Append the Java for one intent to `lines`. When `seed_sink` is provided,
     record {key: {by, value}} for every KEYED step that has a known seed locator,
@@ -13775,6 +14755,19 @@ def _emit_intent(lines, key, intent, seed_sink=None, app_page=False):
     if role == "precondition":
         lines.append('        // precondition (no UI action): %s' % _java_str(target)[:70])
         return
+    if role == "assertion" and (intent.get("check") or "") == "table":
+        row, col, want = _table_parts(intent.get("value"))
+        lines.append('        org.testng.Assert.assertTrue(heal.assertTableCell("%s", "%s", "%s"),'
+                     % (_java_str(row), _java_str(col), _java_str(want)))
+        lines.append('            "expected row %s / %s: %s");'
+                     % (_java_str(row)[:30], _java_str(col)[:30], _java_str(want)[:30]))
+        return
+    if role == "assertion" and (intent.get("check") or "") == "download":
+        name = str(intent.get("value") or "")
+        lines.append('        org.testng.Assert.assertTrue(heal.assertDownloaded("%s"),'
+                     % _java_str(name))
+        lines.append('            "expected download: %s");' % _java_str(name)[:60])
+        return
     if role == "assertion":
         kind = (intent.get("kind") or "").lower()
         kws = [k for k in (intent.get("keywords") or []) if k] or ([target] if target else [])
@@ -13802,6 +14795,13 @@ def _emit_intent(lines, key, intent, seed_sink=None, app_page=False):
             lines.append('        org.testng.Assert.assertTrue(heal.assertInvalid("%s", %s, "%s"),'
                          % (_java_str(key), seed, _java_str(ij)))
             lines.append('            "expected browser validation on: %s");' % _java_str(target)[:60])
+            _seed(key)
+            return
+        if check == "value":
+            want = str(intent.get("value") or intent.get("expected") or "")
+            lines.append('        org.testng.Assert.assertTrue(heal.assertValue("%s", %s, "%s", "%s"),'
+                         % (_java_str(key), seed, _java_str(ij), _java_str(want)))
+            lines.append('            "expected %s to show: %s");' % (_java_str(target)[:40], _java_str(want)[:40]))
             _seed(key)
             return
         if check in ("selected", "selected_value", "value_selected"):
@@ -13872,18 +14872,42 @@ def generate_selfhealing_test_class(story, cases, pkg, seed_sink=None):
     L.append("package %s.tests;" % pkg)
     L.append("")
     L.append("import %s.core.*;" % pkg)
+    L.append("import org.testng.annotations.DataProvider;")
     L.append("import org.testng.annotations.Test;")
     L.append("")
     L.append("/** Story %s — %s */" % (sid, _java_str(story.get("title", ""))))
     L.append("public class %s extends BaseTest {" % cls)
+    # Read by ReportMailer so the reports show the story title, not the class name.
+    L.append('    public static final String QA_STORY = "%s";'
+             % _java_str("Story %s \u2014 %s" % (sid, story.get("title", ""))))
     for ci, c in enumerate(cases):
         bucket = c["bucket"]; pr = c.get("priority", bucket * 100 + ci)
         explicit_login_flow = bool(c.get("explicit_login_flow"))
         mname = "tc_%d_%s" % (pr, _java_ident(c.get("title", ""), "case%d" % ci))
         L.append("")
-        L.append('    @Test(priority = %d, description = "%s")'
-                 % (pr, _java_str(c.get("title", ""))))
-        L.append("    public void %s() {" % mname)
+        drows = c.get("data") or (c.get("tc") or {}).get("data") or []
+        if drows:
+            # Data-driven: TestNG runs the method once per data row.
+            L.append('    @DataProvider(name = "data_%s")' % mname)
+            L.append("    public Object[][] data_%s() {" % mname)
+            L.append("        return new Object[][]{")
+            for ri, r in enumerate(drows):
+                kv = ", ".join('"%s", "%s"' % (_java_str(k), _java_str(str(v)))
+                               for k, v in (r.get("values") or {}).items())
+                L.append('            {"%s", Healer.row(%s)},'
+                         % (_java_str(str(r.get("name") or "Row %d" % (ri + 1))), kv))
+            L.append("        };")
+            L.append("    }")
+            L.append("")
+            L.append('    @Test(priority = %d, description = "%s", dataProvider = "data_%s")'
+                     % (pr, _java_str(c.get("title", "")), mname))
+            L.append("    public void %s(String dataSet, java.util.Map<String, String> data) {" % mname)
+            L.append("        heal.useData(data);")
+        else:
+            L.append('    @Test(priority = %d, description = "%s")'
+                     % (pr, _java_str(c.get("title", ""))))
+            L.append("    public void %s() {" % mname)
+        case_start = len(L)
         L.append('        // [%s · %s-page%s]' % (
             c["ctype"], c["page_context"],
             " · explicit login transition" if explicit_login_flow else ""))
@@ -13891,7 +14915,16 @@ def generate_selfhealing_test_class(story, cases, pkg, seed_sink=None):
             L.append('        // NEEDS REVIEW: AI compile was unavailable for this case '
                      '(e.g. provider rate limit) — this is a placeholder visibility '
                      'check only, verify the real steps manually.')
-        if explicit_login_flow:
+        as_authored = _login_steps_as_authored(c, _is_login_flow_action)
+        if as_authored:
+            # Logged out, then the case's own steps (its navigate + login fields).
+            if _starts_with_absolute_navigate(c):
+                L.append("        resetContext();")
+                L.append("        try { driver.manage().deleteAllCookies(); } catch (Exception ignored) {}")
+            else:
+                L.append("        openLoginPage();")
+            explicit_login_flow = False
+        elif explicit_login_flow:
             L.append("        openLoginPage();")
             L.append("        performLogin();")
         elif bucket < 2:
@@ -13911,14 +14944,25 @@ def generate_selfhealing_test_class(story, cases, pkg, seed_sink=None):
             # A new window is detected by comparing handles, so remember them
             # BEFORE the action that opens it.
             _next = intents[ii + 1] if ii + 1 < len(intents) else {}
+            _label = _intent_step_label(intent)
+            if _label:
+                # Shows in the TestNG reports (Reporter output) and the console.
+                # " - " not " \u00b7 ": a Windows console shows the middle dot as a \ufffd.
+                L.append('        org.testng.Reporter.log("%s", true);'
+                         % _java_str(_label.replace(" \u00b7 ", " - ", 1)))
             if (intent.get("role") == "action" and _next.get("role") == "action"
                     and _next.get("verb") == "window_switch"):
                 L.append("        heal.prepareWindow();")
             _emit_intent(L, "%s.%d.%d" % (sid, ci, ii), intent, seed_sink=seed_sink,
                          app_page=(bucket == 3 or explicit_login_flow))
+        L[case_start:] = _java_wrap_data_literals(L[case_start:])
         L.append("    }")
     L.append("}")
     return "\n".join(L) + "\n", cls
+
+
+_SH_DETAIL_CSS = ":root{--bg:#F3F5F8;--card:#FFFFFF;--ink:#16151C;--ink2:#5D5B69;--ink3:#9896A3;--line:#E4E6EC;--tint:#F8F9FB;--brand:#0E9CC0;--brand2:#0B6E86;--pass:#1F8A52;--pass-s:#E5F4EC;--fail:#D6414A;--fail-s:#FCEBEC;--skip:#8E8C99;--skip-s:#EFEFF3;--flaky:#B7791F;--flaky-s:#FFF4DB;--shadow:0 1px 2px rgba(20,20,40,.05),0 4px 14px rgba(20,20,40,.05)}\n@media (prefers-color-scheme:dark){:root{--bg:#0F1117;--card:#171A22;--ink:#ECEDF2;--ink2:#A9ABB8;--ink3:#737584;--line:#262A35;--tint:#1C202A;--pass:#3DBB78;--pass-s:#15301F;--fail:#F0656D;--fail-s:#3A1A1D;--skip:#9A99A6;--skip-s:#23262F;--flaky:#E2A845;--flaky-s:#382B12;--shadow:none}}\n*{box-sizing:border-box}html{-webkit-text-size-adjust:100%}\nbody{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 'Segoe UI',system-ui,-apple-system,Roboto,Helvetica,Arial,sans-serif}\n.top{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px max(16px,calc((100% - 1040px)/2));background:var(--card);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}\n.brand{display:flex;align-items:center;gap:12px}.brand img{width:36px;height:36px;border-radius:9px}\n.name{font-weight:800;font-size:16px}.sub{font-size:12px;color:var(--ink2)}.when{font-size:12px;color:var(--ink2);text-align:right}\nmain{max-width:1040px;margin:0 auto;padding:20px 16px 8px}\n.hero{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px 22px;box-shadow:var(--shadow);border-top:4px solid var(--pass)}\n.hero.bad{border-top-color:var(--fail)}.hero h1{margin:0;font-size:24px;letter-spacing:-.3px}.hero.ok h1{color:var(--pass)}.hero.bad h1{color:var(--fail)}\n.meta{color:var(--ink2);font-size:13px;margin-top:2px}\n.bar{display:flex;height:10px;border-radius:6px;overflow:hidden;background:var(--skip-s);margin:16px 0}\n.bar span{display:block;height:100%}.bar .pass{background:var(--pass)}.bar .fail{background:var(--fail)}.bar .skip{background:var(--skip)}\n.kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:10px}\n.kpi{background:var(--tint);border:1px solid var(--line);border-radius:10px;padding:10px 12px}\n.kv{font-size:21px;font-weight:800}.kl{font-size:11px;color:var(--ink3);text-transform:uppercase;letter-spacing:.5px}\n.kpi.pass .kv{color:var(--pass)}.kpi.fail .kv{color:var(--fail)}.kpi.flaky .kv{color:var(--flaky)}\n.tools{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:18px 0 6px;position:sticky;top:65px;z-index:4;background:var(--bg);padding:8px 0}\n.chips{display:flex;gap:6px;flex-wrap:wrap}\n.chip,.ghost{font:inherit;font-size:13px;border:1px solid var(--line);background:var(--card);color:var(--ink2);border-radius:999px;padding:6px 12px;cursor:pointer}\n.chip b{color:var(--ink);margin-left:3px}.chip.on{background:var(--brand);border-color:var(--brand);color:#fff}.chip.on b{color:#fff}\n.ghost{border-radius:8px}.chip:hover,.ghost:hover{border-color:var(--brand)}\n#q{flex:1;min-width:180px;font:inherit;font-size:13px;padding:7px 12px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--ink)}\n#q:focus{outline:2px solid var(--brand);outline-offset:-1px}\n.story{margin-top:16px}.sh{display:flex;align-items:baseline;justify-content:space-between;gap:10px;flex-wrap:wrap;margin:0 2px 8px}\n.sh h2{font-size:13px;margin:0;color:var(--brand2);text-transform:uppercase;letter-spacing:.6px}\n@media (prefers-color-scheme:dark){.sh h2{color:var(--brand)}}\n.sc{display:flex;gap:10px;font-size:12px;color:var(--ink3)}.c.pass{color:var(--pass)}.c.fail{color:var(--fail);font-weight:700}\ndetails.t{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--pass);border-radius:10px;margin-bottom:8px;box-shadow:var(--shadow)}\ndetails.t.failed{border-left-color:var(--fail)}details.t.skipped{border-left-color:var(--skip)}\ndetails.t>summary{list-style:none;display:flex;align-items:center;gap:10px;padding:11px 14px;cursor:pointer}\ndetails.t>summary::-webkit-details-marker{display:none}\ndetails.t>summary::after{content:'';width:7px;height:7px;border-right:2px solid var(--ink3);border-bottom:2px solid var(--ink3);transform:rotate(-45deg);transition:transform .15s;margin-left:2px}\ndetails.t[open]>summary::after{transform:rotate(45deg)}\n.dot{width:9px;height:9px;border-radius:50%;background:var(--pass);flex:none}.failed .dot{background:var(--fail)}.skipped .dot{background:var(--skip)}\n.tt{flex:1;font-weight:600;min-width:0}\n.badge{font-size:11px;font-weight:700;border-radius:999px;padding:2px 8px;white-space:nowrap}\n.badge.data{background:var(--tint);color:var(--ink2);border:1px solid var(--line)}\n.badge.flaky,.badge.site{background:var(--flaky-s);color:var(--flaky)}\n.st{font-size:11px;font-weight:700;border-radius:999px;padding:2px 9px}.st.passed{background:var(--pass-s);color:var(--pass)}\n.st.failed{background:var(--fail-s);color:var(--fail)}.st.skipped{background:var(--skip-s);color:var(--skip)}\n.ms{font-size:12px;color:var(--ink3);width:56px;text-align:right;font-variant-numeric:tabular-nums}\n.body{padding:2px 16px 16px 33px;border-top:1px solid var(--line)}\n.lbl{font-size:11px;font-weight:700;color:var(--ink3);text-transform:uppercase;letter-spacing:.5px;margin:14px 0 6px}\n.steps{list-style:none;margin:0;padding:0;border-left:2px solid var(--line);margin-left:9px}\n.steps li{display:flex;align-items:flex-start;gap:10px;padding:4px 0 4px 0;position:relative;left:-10px}\n.n{flex:none;min-width:20px;height:20px;border-radius:10px;background:var(--tint);border:1px solid var(--line);font-size:11px;font-weight:700;color:var(--ink2);display:flex;align-items:center;justify-content:center;padding:0 5px}\n.x{padding-top:1px}.steps li.bad .n{background:var(--fail);border-color:var(--fail);color:#fff}.steps li.bad .x{color:var(--fail);font-weight:600}\n.here{font-size:11px;font-weight:700;color:var(--fail);background:var(--fail-s);border-radius:999px;padding:1px 8px;margin-top:1px}\npre{margin:0;white-space:pre-wrap;word-break:break-word;font:12px/1.5 Consolas,Menlo,monospace}\n.err{color:var(--fail);background:var(--fail-s);padding:10px 12px;border-radius:8px}\n.stack{margin-top:8px}.stack summary{cursor:pointer;font-size:12px;color:var(--ink2)}\n.stack pre{margin-top:6px;color:var(--ink2);background:var(--tint);border:1px solid var(--line);padding:10px 12px;border-radius:8px;max-height:260px;overflow:auto}\n.down{margin-top:12px;background:var(--flaky-s);color:var(--flaky);border-radius:8px;padding:9px 12px;font-size:13px}\n.shot{display:block;max-width:100%;width:560px;border:1px solid var(--line);border-radius:8px;cursor:zoom-in}\n.none{margin-top:12px;color:var(--ink3);font-size:13px}.empty{text-align:center;color:var(--ink3);padding:30px}\n.env{margin-top:22px;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 18px;box-shadow:var(--shadow)}\n.env h2{font-size:13px;margin:0 0 6px;color:var(--ink2);text-transform:uppercase;letter-spacing:.6px}\n.env table{width:100%;border-collapse:collapse;font-size:13px}.env th{text-align:left;color:var(--ink3);font-weight:600;width:120px;padding:6px 0;vertical-align:top}\n.env td{padding:6px 0;word-break:break-word}.env tr+tr th,.env tr+tr td{border-top:1px solid var(--line)}\nfooter{text-align:center;color:var(--ink3);font-size:12px;padding:18px 16px 28px}\n.zoom{position:fixed;inset:0;background:rgba(8,10,16,.82);display:flex;align-items:center;justify-content:center;padding:20px;z-index:10;cursor:zoom-out}\n.zoom img{max-width:100%;max-height:100%;border-radius:8px}\n[hidden]{display:none!important}\n@media (max-width:760px){.kpis{grid-template-columns:repeat(3,1fr)}.top{position:static}.tools{top:0}.ms{display:none}.body{padding-left:16px}.hero h1{font-size:20px}}\n@media print{.tools,.zoom{display:none!important}details.t{break-inside:avoid}.top{position:static}}\n"
+_SH_DETAIL_JS = "(function(){\nvar tests=[].slice.call(document.querySelectorAll('details.t'));\nvar chips=[].slice.call(document.querySelectorAll('.chip'));\nvar q=document.getElementById('q'),empty=document.getElementById('empty'),filter='all';\nfunction apply(){var term=(q.value||'').trim().toLowerCase(),shown=0;\ntests.forEach(function(t){var ok=(filter==='all'||t.getAttribute('data-s')===filter)&&(!term||t.getAttribute('data-q').indexOf(term)>=0);t.hidden=!ok;if(ok)shown++;});\n[].forEach.call(document.querySelectorAll('section.story'),function(s){s.hidden=!s.querySelector('details.t:not([hidden])');});\nempty.hidden=shown>0;}\nchips.forEach(function(c){c.addEventListener('click',function(){chips.forEach(function(x){x.classList.remove('on');});c.classList.add('on');filter=c.getAttribute('data-f');apply();});});\nq.addEventListener('input',apply);\nvar xp=document.getElementById('xp'),open=false;\nxp.addEventListener('click',function(){open=!open;tests.forEach(function(t){if(!t.hidden)t.open=open;});xp.textContent=open?'Collapse all':'Expand all';});\nvar zoom=document.getElementById('zoom'),zimg=zoom.querySelector('img');\ndocument.addEventListener('click',function(e){if(e.target.classList&&e.target.classList.contains('shot')){zimg.src=e.target.src;zoom.hidden=false;}});\nzoom.addEventListener('click',function(){zoom.hidden=true;});\ndocument.addEventListener('keydown',function(e){if(e.key==='Escape')zoom.hidden=true;});\n})();"
 
 
 def _sh_report_mailer(pkg):
@@ -13938,6 +14982,9 @@ import org.openqa.selenium.OutputType;
 import org.openqa.selenium.TakesScreenshot;
 import org.openqa.selenium.WebDriver;
 import org.testng.*;
+import org.testng.annotations.ITestAnnotation;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Method;
 
 import java.awt.Desktop;
 import java.io.File;
@@ -13954,7 +15001,7 @@ import java.util.*;
  *  run environment), opens it and emails it with the TestNG report. Settings:
  *  env vars or config.properties — REPORT_EMAIL_TO, SMTP_USER, SMTP_PASS,
  *  SMTP_HOST (smtp.gmail.com), SMTP_PORT (465), OPEN_REPORT (true). */
-public class ReportMailer implements ISuiteListener, IExecutionListener, ITestListener {
+public class ReportMailer implements ISuiteListener, IExecutionListener, ITestListener, IAnnotationTransformer {
     private static final String QA_VERSION = "__QA_VERSION__";
     private static final File LOGO = new File("src/test/resources/qa-logo.png");
     private static final int MAX_SHOTS = 6;
@@ -13965,17 +15012,122 @@ public class ReportMailer implements ISuiteListener, IExecutionListener, ITestLi
     private static final String FONT = "'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
 
     private static final class T {
-        String title, status, error = "", shot = "", cid = "";
+        String title, status, error = "", shot = "", cid = "", site = "", dataSet = "", fullError = "", stack = "";
+        List<String> steps = new ArrayList<>();
+        boolean flaky;
         long ms;
     }
 
     private final long start = System.currentTimeMillis();
     private final Map<String, List<T>> stories = new LinkedHashMap<>();
-    private int passed, failed, skipped;
+    private int passed, failed, skipped, flaky;
+
+    /** Every test gets one retry (RETRIES=0 turns it off): a site blip shouldn't
+     *  fail the run. A test that passes on the retry is reported as flaky. */
+    @Override
+    @SuppressWarnings("rawtypes")
+    public void transform(ITestAnnotation a, Class testClass, Constructor testConstructor, Method testMethod) {
+        a.setRetryAnalyzer(Retry.class);
+    }
+
+    public static class Retry implements IRetryAnalyzer {
+        private int tries;
+        @Override public boolean retry(ITestResult r) {
+            int max;
+            try { max = Integer.parseInt(cfg("RETRIES", "1")); } catch (Exception e) { max = 1; }
+            if (tries < max) {
+                tries++;
+                System.out.println("[report] retrying " + r.getMethod().getMethodName() + " (" + tries + "/" + max + ")");
+                return true;
+            }
+            return false;
+        }
+    }
+
+    /** Host/server error page instead of the app (Heroku "Application error",
+     *  502/503/504, Chrome's "can't be reached"): the site was down, not the
+     *  test. Only short pages are checked, so a page that merely mentions an
+     *  error isn't mislabelled. Returns the reason, or "". */
+    static String siteDown(WebDriver driver) {
+        try {
+            Object v = ((org.openqa.selenium.JavascriptExecutor) driver).executeScript(
+                "var out=[document.title, document.body ? document.body.innerText : ''];"
+                + "document.querySelectorAll('iframe').forEach(function(f){try{out.push(f.contentDocument.body.innerText);}catch(e){}});"
+                + "return out.join(' ');");
+            String all = v == null ? "" : v.toString();
+            if (all.length() > 2600) return "";
+            String s = all.toLowerCase(Locale.ROOT).replace('\\u2019', '\\'');
+            String[][] rules = {
+                {"application error", "the page showed \\"Application error\\" (the Heroku app is down)"},
+                {"502 bad gateway", "the server answered 502 Bad Gateway"},
+                {"503 service", "the server answered 503 Service Unavailable"},
+                {"service unavailable", "the server answered Service Unavailable"},
+                {"504 gateway", "the server answered 504 Gateway Timeout"},
+                {"gateway time-out", "the server answered 504 Gateway Timeout"},
+                {"internal server error", "the server answered 500 Internal Server Error"},
+                {"this site can't be reached", "the browser could not reach the site"},
+                {"this page isn't working", "the site returned a server error page"},
+                {"err_name_not_resolved", "the site address could not be resolved (DNS)"},
+                {"err_connection_refused", "the site refused the connection"},
+                {"err_connection_timed_out", "the connection to the site timed out"}};
+            for (String[] r : rules) if (s.contains(r[0])) return r[1];
+        } catch (Exception ignored) { }
+        return "";
+    }
     private static final Properties P = new Properties();
     static {
         try (FileInputStream in = new FileInputStream("config.properties")) { P.load(in); }
         catch (Exception ignored) { }
+    }
+
+    /** Where the run was started (IDE, CI or a terminal); QA_IDE overrides it. */
+    private static String ideName;
+    static String ide() {
+        if (ideName != null) return ideName;
+        String forced = cfg("QA_IDE", "");
+        if (!forced.isBlank()) return ideName = forced;
+        Map<String, String> e = System.getenv();
+        if (e.containsKey("GITHUB_ACTIONS")) return ideName = "GitHub Actions";
+        if (e.containsKey("TF_BUILD")) return ideName = "Azure Pipelines";
+        if (e.containsKey("GITLAB_CI")) return ideName = "GitLab CI";
+        if (e.containsKey("JENKINS_URL")) return ideName = "Jenkins";
+        if (e.containsKey("CI")) return ideName = "CI";
+        // An IDE's Run button sets no variable: look at the parent processes
+        // (surefire JVM <- Maven JVM <- idea64.exe, Code.exe, eclipse.exe...).
+        String[][] names = {{"idea", "IntelliJ IDEA"}, {"idea64", "IntelliJ IDEA"}, {"eclipse", "Eclipse"},
+            {"code", "VS Code"}, {"code - insiders", "VS Code"}, {"cursor", "Cursor"}, {"windsurf", "Windsurf"},
+            {"netbeans", "NetBeans"}, {"netbeans64", "NetBeans"}};
+        Optional<ProcessHandle> p = ProcessHandle.current().parent();
+        for (int i = 0; i < 12 && p.isPresent(); i++) {
+            String base = new File(p.get().info().command().orElse("")).getName().toLowerCase().replace(".exe", "");
+            for (String[] n : names) if (base.equals(n[0])) return ideName = n[1];
+            p = p.get().parent();
+        }
+        if ("vscode".equals(e.get("TERM_PROGRAM"))) return ideName = "VS Code";
+        if (e.getOrDefault("TERMINAL_EMULATOR", "").toLowerCase().contains("jetbrains")) return ideName = "JetBrains IDE";
+        return ideName = "Terminal";
+    }
+
+    /** Every site the test classes open (driver.get with a full URL), else the base URL. */
+    static String sites() {
+        LinkedHashSet<String> out = new LinkedHashSet<>();
+        String marker = "driver.get(\\"";
+        try (java.util.stream.Stream<java.nio.file.Path> files =
+                 java.nio.file.Files.walk(java.nio.file.Paths.get("src", "test", "java"))) {
+            for (java.nio.file.Path f : (Iterable<java.nio.file.Path>) files.filter(x -> x.toString().endsWith(".java"))::iterator) {
+                String text = new String(java.nio.file.Files.readAllBytes(f), java.nio.charset.StandardCharsets.UTF_8);
+                for (int i = text.indexOf(marker); i >= 0; i = text.indexOf(marker, i + 1)) {
+                    int start = i + marker.length(), end = text.indexOf('"', start);
+                    if (end < 0) break;
+                    try {
+                        java.net.URI u = java.net.URI.create(text.substring(start, end));
+                        if (u.getScheme() != null && u.getHost() != null) out.add(u.getScheme() + "://" + u.getHost());
+                    } catch (Exception ignored) { }
+                }
+            }
+        } catch (Exception ignored) { }
+        if (out.isEmpty()) return cfg("APP_BASE_URL", P.getProperty("app.base.url", ""));
+        return String.join(", ", out);
     }
 
     private static String cfg(String key, String d) {
@@ -13986,7 +15138,16 @@ public class ReportMailer implements ISuiteListener, IExecutionListener, ITestLi
 
     // ---- collect ----
     @Override
-    public void onTestFailure(ITestResult r) {
+    public void onTestFailure(ITestResult r) { shoot(r); }
+
+    /** Passed tests get a screenshot too (set QA_SCREENSHOTS=failed to skip them). */
+    @Override
+    public void onTestSuccess(ITestResult r) {
+        if (!"failed".equalsIgnoreCase(cfg("QA_SCREENSHOTS", "all"))) shoot(r);
+    }
+
+    /** Screenshot of the test's browser, kept on the result and shown in the TestNG reports. */
+    private void shoot(ITestResult r) {
         try {
             WebDriver driver = null;
             for (Class<?> c = r.getInstance().getClass(); c != null && driver == null; c = c.getSuperclass()) {
@@ -14001,9 +15162,19 @@ public class ReportMailer implements ISuiteListener, IExecutionListener, ITestLi
             File dir = new File("target/qa-screenshots");
             dir.mkdirs();
             File out = new File(dir, (r.getTestClass().getRealClass().getSimpleName() + "_"
-                + r.getMethod().getMethodName()).replaceAll("[^A-Za-z0-9_.-]", "_") + ".png");
+                + r.getMethod().getMethodName() + "-" + System.nanoTime()).replaceAll("[^A-Za-z0-9_.-]", "_") + ".png");
             Files.write(out.toPath(), ((TakesScreenshot) driver).getScreenshotAs(OutputType.BYTES));
             r.setAttribute("qa.shot", out.getAbsolutePath());
+            if (r.getStatus() == ITestResult.FAILURE) {
+                String why = siteDown(driver);
+                if (!why.isEmpty()) r.setAttribute("qa.site", why);
+            }
+            // TestNG reports live in target/surefire-reports — link the image from there.
+            ITestResult prev = Reporter.getCurrentTestResult();
+            Reporter.setCurrentTestResult(r);
+            Reporter.log("<a href=\\"../qa-screenshots/" + out.getName() + "\\" target=\\"_blank\\"><img src=\\"../qa-screenshots/"
+                + out.getName() + "\\" alt=\\"Screenshot\\" style=\\"max-width:420px;border:1px solid #ccc;border-radius:4px\\"></a>");
+            Reporter.setCurrentTestResult(prev);
         } catch (Exception e) { System.out.println("[report] screenshot failed: " + e.getMessage()); }
     }
 
@@ -14019,10 +15190,19 @@ public class ReportMailer implements ISuiteListener, IExecutionListener, ITestLi
             all.addAll(c.getSkippedTests().getAllResults());
         }
         all.sort(Comparator.comparingLong(ITestResult::getStartMillis));
+        Set<String> retried = new HashSet<>();
+        for (ITestResult r : all) if (r.wasRetried()) retried.add(key(r));
         for (ITestResult r : all) {
+            if (r.wasRetried()) continue;          // an attempt that was run again
             T t = new T();
             String d = r.getMethod().getDescription();
             t.title = (d == null || d.isEmpty()) ? r.getMethod().getMethodName() : d;
+            // Data-driven run: name the row ("Pick a suggestion · Python").
+            Object[] params = r.getParameters();
+            if (params != null && params.length > 0 && params[0] instanceof String) {
+                t.dataSet = (String) params[0];
+                t.title += " · " + params[0];
+            }
             t.status = r.getStatus() == ITestResult.SUCCESS ? "passed"
                 : r.getStatus() == ITestResult.FAILURE ? "failed" : "skipped";
             t.ms = Math.max(0, r.getEndMillis() - r.getStartMillis());
@@ -14033,18 +15213,33 @@ public class ReportMailer implements ISuiteListener, IExecutionListener, ITestLi
                 for (int i = 0; i < lines.length && i < 6; i++) if (!lines[i].isBlank()) b.append(lines[i]).append('\\n');
                 t.error = b.toString().trim();
                 if (t.error.length() > 900) t.error = t.error.substring(0, 900);
-                Object shot = r.getAttribute("qa.shot");
-                if (shot != null) t.shot = shot.toString();
+            }
+            Object shot = r.getAttribute("qa.shot");
+            if (shot != null) t.shot = shot.toString();
+            Object site = r.getAttribute("qa.site");
+            if (site != null && "failed".equals(t.status)) t.site = site.toString();
+            t.flaky = "passed".equals(t.status) && retried.contains(key(r));
+            if (t.flaky) flaky++;
+            for (String line : Reporter.getOutput(r)) if (line != null && line.startsWith("Step ")) t.steps.add(line);
+            if ("failed".equals(t.status) && r.getThrowable() != null) {
+                Throwable th = r.getThrowable();
+                t.fullError = String.valueOf(th.getMessage());
+                if (t.fullError.length() > 4000) t.fullError = t.fullError.substring(0, 4000) + " ...";
+                StringBuilder sb = new StringBuilder(th.getClass().getName()).append('\\n');
+                int n = 0;
+                for (StackTraceElement e : th.getStackTrace()) { if (n++ >= 14) break; sb.append("    at ").append(e).append('\\n'); }
+                t.stack = sb.toString();
             }
             if ("passed".equals(t.status)) passed++; else if ("failed".equals(t.status)) failed++; else skipped++;
-            stories.computeIfAbsent(r.getTestClass().getRealClass().getSimpleName(), k -> new ArrayList<>()).add(t);
+            stories.computeIfAbsent(storyName(r.getTestClass().getRealClass()), k -> new ArrayList<>()).add(t);
         }
     }
 
     @Override
     public void onExecutionFinish() {
         if (passed + failed + skipped == 0) return;
-        File detail = findReport();
+        File detail = writeDetailed();
+        if (detail == null) detail = findReport();
         File summary = new File("target/qa-studio-report.html").getAbsoluteFile();
         try {
             summary.getParentFile().mkdirs();
@@ -14114,7 +15309,7 @@ public class ReportMailer implements ISuiteListener, IExecutionListener, ITestLi
         if (!logo.isEmpty()) h.append("<td width=\\"46\\" valign=\\"middle\\"><img src=\\"").append(logo)
             .append("\\" width=\\"38\\" height=\\"38\\" alt=\\"QA Studio\\" style=\\"display:block;border:0\\"></td>");
         h.append("<td valign=\\"middle\\"><div style=\\"font-size:17px;font-weight:800;color:").append(INK).append("\\">QA Studio</div>")
-         .append("<div style=\\"font-size:12px;color:").append(INK2).append("\\">Selenium automation run</div></td>")
+         .append("<div style=\\"font-size:12px;color:").append(INK2).append("\\">Selenium automation run").append(" · run from <b>" + esc(ide()) + "</b>").append("</div></td>")
          .append("<td valign=\\"middle\\" align=\\"right\\" style=\\"font-size:12px;color:").append(INK2).append("\\">")
          .append(new SimpleDateFormat("d MMM yyyy, HH:mm").format(new Date(start))).append("</td></tr></table></td></tr>");
         int rate = total == 0 ? 0 : Math.round(passed * 100f / total);
@@ -14153,6 +15348,8 @@ public class ReportMailer implements ISuiteListener, IExecutionListener, ITestLi
                      .append(";border-radius:6px;padding:12px 14px;margin-bottom:12px\\">")
                      .append("<div style=\\"font-size:14px;font-weight:700;color:").append(INK).append("\\">").append(esc(t.title)).append("</div>")
                      .append("<div style=\\"font-size:11px;color:").append(INK3).append(";margin-top:2px\\">").append(esc(s.getKey())).append("</div>");
+                if (!t.site.isEmpty()) fails.append("<div style=\\"font-size:12px;font-weight:700;color:#8A5A00;background:#FFF4DB;border:1px solid #F1D9A6;border-radius:5px;padding:6px 9px;margin-top:8px\\">Site unavailable \\u2014 ")
+                     .append(esc(t.site)).append("</div>");
                 if (!t.error.isEmpty()) fails.append("<pre style=\\"white-space:pre-wrap;word-break:break-word;font-family:Consolas,Menlo,monospace;font-size:12px;color:")
                      .append(RED).append(";background:").append(RED_SOFT).append(";padding:8px 10px;border-radius:5px;margin:8px 0 0\\">").append(esc(t.error)).append("</pre>");
                 fails.append(img).append("</div>");
@@ -14179,32 +15376,32 @@ public class ReportMailer implements ISuiteListener, IExecutionListener, ITestLi
             for (Map.Entry<String, List<T>> s : stories.entrySet()) {
                 list.append("<div style=\\"font-size:13px;font-weight:700;color:").append(INK).append(";margin:8px 0 4px\\">")
                     .append(esc(s.getKey())).append("</div><table width=\\"100%\\" cellpadding=\\"0\\" cellspacing=\\"0\\">");
-                for (T t : s.getValue()) list.append("<tr><td ").append(TD).append(">").append(esc(t.title)).append("</td><td ")
+                for (T t : s.getValue()) {
+                    // Passed tests: a small screenshot linked to the full one (failures show theirs above).
+                    String thumb = "";
+                    if ("passed".equals(t.status) && !t.shot.isEmpty() && new File(t.shot).isFile()) {
+                        String src = "qa-screenshots/" + new File(t.shot).getName();
+                        thumb = "<a href=\\"" + src + "\\" target=\\"_blank\\"><img src=\\"" + src
+                            + "\\" alt=\\"Screenshot\\" style=\\"display:block;width:220px;max-width:100%;margin-top:6px;border:1px solid " + LINE + ";border-radius:5px\\"></a>";
+                    }
+                    list.append("<tr><td ").append(TD).append(">").append(esc(t.title)).append(thumb).append("</td><td ")
                     .append(TD).append(" width=\\"80\\">").append(pill(t.status)).append("</td><td ").append(TD)
                     .append(" width=\\"60\\" align=\\"right\\" nowrap>").append(secs(t.ms)).append("</td></tr>");
+                }
                 list.append("</table>");
             }
             h.append(section("All tests", list.toString()));
         }
 
-        String host = "";
-        try { host = InetAddress.getLocalHost().getHostName(); } catch (Exception ignored) { }
-        String[][] env = {
-            {"Framework", "Selenium + TestNG"},
-            {"Browser", "Chrome"},
-            {"Mode", "true".equalsIgnoreCase(cfg("HEADLESS", "false")) ? "Headless" : "Headed (browser visible)"},
-            {"Site", cfg("APP_BASE_URL", P.getProperty("app.base.url", ""))},
-            {"OS", System.getProperty("os.name") + " " + System.getProperty("os.version")},
-            {"Machine", host},
-            {"Runtime", "Java " + System.getProperty("java.version")}};
+        String[][] env = envInfo();
         StringBuilder er = new StringBuilder();
         for (String[] r : env) if (r[1] != null && !r[1].isBlank()) er.append("<tr><td ").append(TD).append(" width=\\"110\\">")
             .append(r[0]).append("</td><td ").append(TD).append(">").append(esc(r[1])).append("</td></tr>");
         h.append(section("Environment", "<table width=\\"100%\\" cellpadding=\\"0\\" cellspacing=\\"0\\">" + er + "</table>"));
 
         String detail = !email && detailRel != null && !detailRel.isEmpty()
-            ? "<a href=\\"" + esc(detailRel) + "\\" style=\\"color:" + BRAND + ";font-weight:700\\">Open the detailed TestNG report</a>."
-            : "Attached: <b>qa-studio-report.html</b> (this summary with screenshots) and the detailed TestNG report.";
+            ? "<a href=\\"" + esc(detailRel) + "\\" style=\\"color:" + BRAND + ";font-weight:700\\">Open the detailed report</a> (every test with its steps and screenshot)."
+            : "Attached: <b>qa-studio-report.html</b> (this summary with screenshots) and <b>qa-studio-detailed.html</b> (every test with its steps and screenshot).";
         h.append("<tr><td style=\\"padding:22px 28px 24px\\"><div style=\\"font-size:12px;color:").append(INK2)
          .append(";margin-bottom:12px\\">").append(detail).append("</div><div style=\\"font-size:11.5px;font-weight:600;color:")
          .append(INK3).append(";border-top:1px solid ").append(LINE).append(";padding-top:12px\\">Generated by QA Studio")
@@ -14217,6 +15414,161 @@ public class ReportMailer implements ISuiteListener, IExecutionListener, ITestLi
         if (email) return body;
         return "<!doctype html><html><head><meta charset=\\"utf-8\\"><meta name=\\"viewport\\" content=\\"width=device-width,initial-scale=1\\">"
             + "<title>QA Studio — Selenium report</title></head><body style=\\"margin:0;background:" + PAPER + "\\">" + body + "</body></html>";
+    }
+
+    private String[][] envInfo() {
+        String host = "";
+        try { host = InetAddress.getLocalHost().getHostName(); } catch (Exception ignored) { }
+        return new String[][]{
+            {"Run from", ide()},
+            {"Framework", "Selenium + TestNG"},
+            {"Browser", "Chrome"},
+            {"Mode", "true".equalsIgnoreCase(cfg("HEADLESS", "false")) ? "Headless" : "Headed (browser visible)"},
+            {"Retries", cfg("RETRIES", "1")},
+            {"Sites", sites()},
+            {"OS", System.getProperty("os.name") + " " + System.getProperty("os.version")},
+            {"Machine", host},
+            {"Runtime", "Java " + System.getProperty("java.version")}};
+    }
+
+    /** The story title the generator put on the test class (QA_STORY), else the class name. */
+    private static String storyName(Class<?> c) {
+        try {
+            Object v = c.getField("QA_STORY").get(null);
+            if (v != null && !v.toString().isBlank()) return v.toString();
+        } catch (Exception ignored) { }
+        return c.getSimpleName();
+    }
+
+    private static String key(ITestResult r) {
+        return r.getTestClass().getRealClass().getName() + "#" + r.getMethod().getMethodName()
+            + Arrays.toString(r.getParameters());
+    }
+
+    // ---- detailed report: target/qa-studio-detailed.html ----
+    private static final String DETAIL_CSS = __DETAIL_CSS__;
+    private static final String DETAIL_JS = __DETAIL_JS__;
+
+    private File writeDetailed() {
+        File out = new File("target/qa-studio-detailed.html").getAbsoluteFile();
+        try {
+            out.getParentFile().mkdirs();
+            Files.write(out.toPath(), detailedHtml().getBytes(StandardCharsets.UTF_8));
+            return out;
+        } catch (Exception e) {
+            System.out.println("[report] could not write the detailed report: " + e.getMessage());
+            return null;
+        }
+    }
+
+    private static String cap(String s) { return s.isEmpty() ? s : Character.toUpperCase(s.charAt(0)) + s.substring(1); }
+    private static String dur(long ms) { return ms < 1000 ? ms + " ms" : secs(ms); }
+    private static String kpiCard(String label, Object v, String cls) {
+        return "<div class='kpi " + cls + "'><div class='kv'>" + esc(String.valueOf(v)) + "</div><div class='kl'>" + label + "</div></div>";
+    }
+    private static String seg(String cls, int n, int total) {
+        return n <= 0 ? "" : "<span class='" + cls + "' style='width:" + (n * 100.0 / total) + "%' title='" + n + " " + cls + "'></span>";
+    }
+
+    private String detailedHtml() {
+        int total = passed + failed + skipped;
+        long ran = System.currentTimeMillis() - start;
+        int rate = total == 0 ? 0 : Math.round(passed * 100f / total);
+        long budget = 8L * 1024 * 1024;   // screenshots are embedded up to this size, then linked
+        StringBuilder b = new StringBuilder(64 * 1024);
+        b.append("<!doctype html><html lang='en'><head><meta charset='utf-8'>")
+         .append("<meta name='viewport' content='width=device-width,initial-scale=1'>")
+         .append("<title>QA Studio - Selenium detailed report</title><style>").append(DETAIL_CSS).append("</style></head><body>");
+        b.append("<header class='top'><div class='brand'>");
+        if (LOGO.isFile()) b.append("<img src='").append(dataUri(LOGO)).append("' alt=''>");
+        b.append("<div><div class='name'>QA Studio</div><div class='sub'>Selenium detailed report &middot; run from <b>")
+         .append(esc(ide())).append("</b></div></div></div><div class='when'>")
+         .append(new SimpleDateFormat("EEE d MMM yyyy, HH:mm").format(new Date(start))).append("</div></header><main>");
+
+        b.append("<section class='hero ").append(failed == 0 ? "ok" : "bad").append("'><div class='verdict'><h1>")
+         .append(failed == 0 ? "All " + total + " tests passed" : failed + " of " + total + " tests failed")
+         .append("</h1><div class='meta'>").append(stories.size()).append(stories.size() == 1 ? " story" : " stories")
+         .append(" &middot; ").append(secs(ran)).append(" &middot; Chrome</div></div><div class='bar'>")
+         .append(seg("pass", passed, total)).append(seg("fail", failed, total)).append(seg("skip", skipped, total))
+         .append("</div><div class='kpis'>")
+         .append(kpiCard("Pass rate", rate + "%", failed == 0 ? "pass" : ""))
+         .append(kpiCard("Passed", passed, "pass")).append(kpiCard("Failed", failed, failed > 0 ? "fail" : ""))
+         .append(kpiCard("Skipped", skipped, "")).append(kpiCard("Flaky", flaky, flaky > 0 ? "flaky" : ""))
+         .append(kpiCard("Duration", secs(ran), "")).append("</div></section>");
+
+        b.append("<div class='tools'><div class='chips'>")
+         .append("<button class='chip on' data-f='all'>All <b>").append(total).append("</b></button>")
+         .append("<button class='chip' data-f='failed'>Failed <b>").append(failed).append("</b></button>")
+         .append("<button class='chip' data-f='passed'>Passed <b>").append(passed).append("</b></button>")
+         .append("<button class='chip' data-f='skipped'>Skipped <b>").append(skipped).append("</b></button>")
+         .append("</div><input id='q' type='search' placeholder='Search tests, steps or errors'>")
+         .append("<button class='ghost' id='xp' type='button'>Expand all</button></div>");
+
+        for (Map.Entry<String, List<T>> s : stories.entrySet()) {
+            int p = 0, f = 0, k = 0; long ms = 0;
+            for (T t : s.getValue()) { ms += t.ms; if ("passed".equals(t.status)) p++; else if ("failed".equals(t.status)) f++; else k++; }
+            b.append("<section class='story'><div class='sh'><h2>").append(esc(s.getKey())).append("</h2><div class='sc'>")
+             .append("<span class='c pass'>").append(p).append(" passed</span>");
+            if (f > 0) b.append("<span class='c fail'>").append(f).append(" failed</span>");
+            if (k > 0) b.append("<span class='c skip'>").append(k).append(" skipped</span>");
+            b.append("<span class='c'>").append(secs(ms)).append("</span></div></div>");
+            for (T t : s.getValue()) {
+                String search = (t.title + " " + String.join(" ", t.steps) + " " + t.fullError).toLowerCase(Locale.ROOT);
+                b.append("<details class='t ").append(t.status).append("' data-s='").append(t.status)
+                 .append("' data-q='").append(esc(search)).append("'").append("failed".equals(t.status) ? " open" : "").append(">")
+                 .append("<summary><span class='dot'></span><span class='tt'>")
+                 .append(esc(t.dataSet.isEmpty() ? t.title : t.title.substring(0, Math.max(0, t.title.length() - t.dataSet.length() - 3))))
+                 .append("</span>");
+                if (!t.dataSet.isEmpty()) b.append("<span class='badge data'>").append(esc(t.dataSet)).append("</span>");
+                if (t.flaky) b.append("<span class='badge flaky'>Passed on retry</span>");
+                if (!t.site.isEmpty()) b.append("<span class='badge site'>Site unavailable</span>");
+                b.append("<span class='st ").append(t.status).append("'>").append(cap(t.status)).append("</span>")
+                 .append("<span class='ms'>").append(dur(t.ms)).append("</span></summary><div class='body'>");
+                if (!t.site.isEmpty()) b.append("<div class='down'><b>Site unavailable</b> &mdash; ").append(esc(t.site))
+                    .append(". The site was down or erroring, not a test problem &mdash; run it again later.</div>");
+                if (!t.steps.isEmpty()) {
+                    b.append("<div class='lbl'>Steps</div><ol class='steps'>");
+                    for (int i = 0; i < t.steps.size(); i++) {
+                        String line = t.steps.get(i);
+                        int dot = line.indexOf(" · ");
+                        if (dot < 0) dot = line.indexOf(" - ");
+                        String num = dot > 5 ? line.substring(5, dot) : String.valueOf(i + 1);
+                        String text = dot > 5 ? line.substring(dot + 3) : line;
+                        boolean bad = "failed".equals(t.status) && i == t.steps.size() - 1;
+                        b.append("<li").append(bad ? " class='bad'" : "").append("><span class='n'>").append(esc(num))
+                         .append("</span><span class='x'>").append(esc(text)).append("</span>")
+                         .append(bad ? "<span class='here'>Failed here</span>" : "").append("</li>");
+                    }
+                    b.append("</ol>");
+                }
+                if (!t.fullError.isEmpty()) {
+                    b.append("<div class='lbl'>Error</div><pre class='err'>").append(esc(t.fullError)).append("</pre>");
+                    if (!t.stack.isEmpty()) b.append("<details class='stack'><summary>Stack trace</summary><pre>")
+                        .append(esc(t.stack)).append("</pre></details>");
+                }
+                File shot = t.shot.isEmpty() ? null : new File(t.shot);
+                if (shot != null && shot.isFile()) {
+                    String src;
+                    if (shot.length() <= budget) { src = dataUri(shot); budget -= shot.length(); }
+                    else src = "qa-screenshots/" + shot.getName();
+                    b.append("<div class='lbl'>Screenshot</div><img class='shot' loading='lazy' alt='Screenshot' src='")
+                     .append(src).append("'>");
+                }
+                if (t.steps.isEmpty() && t.fullError.isEmpty() && (shot == null || !shot.isFile()))
+                    b.append("<div class='none'>No steps or screenshot were recorded for this test.</div>");
+                b.append("</div></details>");
+            }
+            b.append("</section>");
+        }
+        b.append("<div class='empty' id='empty' hidden>No tests match.</div>");
+
+        b.append("<section class='env'><h2>Environment</h2><table>");
+        for (String[] r : envInfo()) if (r[1] != null && !r[1].isBlank())
+            b.append("<tr><th>").append(esc(r[0])).append("</th><td>").append(esc(r[1])).append("</td></tr>");
+        b.append("</table></section></main><footer>Generated by QA Studio")
+         .append(QA_VERSION.startsWith("__") ? "" : " v" + QA_VERSION).append(" &middot; Selenium + TestNG</footer>")
+         .append("<div class='zoom' id='zoom' hidden><img alt=''></div><script>").append(DETAIL_JS).append("</script></body></html>");
+        return b.toString();
     }
 
     private void mail(File summary, File detail) {
@@ -14242,7 +15594,7 @@ public class ReportMailer implements ISuiteListener, IExecutionListener, ITestLi
             m.setFrom(new InternetAddress(user, "QA Studio"));
             m.setRecipients(Message.RecipientType.TO, InternetAddress.parse(to.replace(';', ',')));
             int total = passed + failed + skipped;
-            m.setSubject((failed > 0 ? "✗ " : "✓ ") + "QA Studio — Selenium run: " + passed + "/" + total + " passed"
+            m.setSubject((failed > 0 ? "✗ " : "✓ ") + "QA Studio — Selenium run from " + ide() + ": " + passed + "/" + total + " passed"
                 + (failed > 0 ? ", " + failed + " failed" : "") + (skipped > 0 ? ", " + skipped + " skipped" : ""), "UTF-8");
             MimeMultipart related = new MimeMultipart("related");
             MimeBodyPart body = new MimeBodyPart();
@@ -14256,7 +15608,7 @@ public class ReportMailer implements ISuiteListener, IExecutionListener, ITestLi
             Multipart mixed = new MimeMultipart("mixed");
             mixed.addBodyPart(relatedPart);
             long budget = 20L * 1024 * 1024;
-            for (Object[] a : new Object[][]{{summary, "qa-studio-report.html"}, {detail, "testng-report.html"}}) {
+            for (Object[] a : new Object[][]{{summary, "qa-studio-report.html"}, {detail, detail != null && detail.getName().startsWith("qa-studio") ? "qa-studio-detailed.html" : "testng-report.html"}}) {
                 File f = (File) a[0];
                 if (f != null && f.isFile() && f.length() < budget) {
                     MimeBodyPart att = new MimeBodyPart();
@@ -14284,7 +15636,9 @@ public class ReportMailer implements ISuiteListener, IExecutionListener, ITestLi
     }
 }
 """.replace("__PKG__", pkg)
-            .replace("__QA_VERSION__", ver if ver and ver != "0.0.0" else "__QA_VERSION__"))
+            .replace("__QA_VERSION__", ver if ver and ver != "0.0.0" else "__QA_VERSION__")
+            .replace("__DETAIL_CSS__", json.dumps(_SH_DETAIL_CSS))
+            .replace("__DETAIL_JS__", json.dumps(_SH_DETAIL_JS)))
 
 
 def _sh_write_testng(out_dir, pkg, m):
@@ -14350,7 +15704,10 @@ def _prune_generated_orphans(out_dir, pkg, m, cb=None):
     core_dir = os.path.join(out_dir, "src", "main", "java", pkg_path, "core")
     tests_dir = os.path.join(out_dir, "src", "test", "java", pkg_path, "tests")
     core_owned = {"DriverFactory", "Config", "LocatorStore", "AiClient", "Healer"}
-    tests_owned = {"BaseTest"} | {r.get("test_class")
+    # ReportMailer is framework-owned too (testng.xml lists it as a listener);
+    # leaving it out made this prune delete it, and every run then failed with
+    # "Listener …ReportMailer was not found in project's classpath".
+    tests_owned = {"BaseTest", "ReportMailer"} | {r.get("test_class")
                                   for r in (m.get("stories") or {}).values()
                                   if r.get("test_class")}
     removed = []
@@ -14408,6 +15765,82 @@ def _guarded_write_test_class(path, content, prev_hash, cb=None):
     return True, new_hash
 
 
+def _idea_maven_config(name, goals):
+    """IntelliJ Maven run configuration (.run/*.run.xml, shared with the project)."""
+    goal_xml = "".join('              <option value="%s" />\n' % g for g in goals)
+    return ('<component name="ProjectRunConfigurationManager">\n'
+            '  <configuration default="false" name="%s" type="MavenRunConfiguration" '
+            'factoryName="Maven">\n'
+            '    <MavenSettings>\n'
+            '      <option name="myGeneralSettings" />\n'
+            '      <option name="myRunnerSettings" />\n'
+            '      <option name="myRunnerParameters">\n'
+            '        <MavenRunnerParameters>\n'
+            '          <option name="cmdOptions" />\n'
+            '          <option name="profiles">\n            <set />\n          </option>\n'
+            '          <option name="goals">\n            <list>\n%s            </list>\n'
+            '          </option>\n'
+            '          <option name="multimoduledir" />\n'
+            '          <option name="pomFileName" />\n'
+            '          <option name="profilesMap">\n            <map />\n          </option>\n'
+            '          <option name="projectsCmdOptionValues">\n            <list />\n'
+            '          </option>\n'
+            '          <option name="resolveToWorkspace" value="false" />\n'
+            '          <option name="workingDirPath" value="$PROJECT_DIR$" />\n'
+            '        </MavenRunnerParameters>\n'
+            '      </option>\n'
+            '    </MavenSettings>\n'
+            '    <method v="2" />\n'
+            '  </configuration>\n'
+            '</component>\n') % (name, goal_xml)
+
+
+def maven_prefetch(out_dir, cb=None, should_stop=None, timeout=900):
+    """Download the Selenium project's dependencies and compile it once, so it
+    opens ready to run (the Maven twin of npm install). Needs Maven on PATH;
+    without it IntelliJ's own Maven does the same on first open."""
+    import shutil
+    import subprocess
+    cb = cb or (lambda *a, **k: None)
+    should_stop = should_stop or (lambda: False)
+    mvn = shutil.which("mvn")
+    if not mvn:
+        cb("Maven isn't installed on this PC, which is fine: open the folder in IntelliJ — "
+           "it downloads the dependencies itself — then click 'Run tests' (top-right).", "info")
+        return False
+    if not shutil.which("java"):
+        cb("Java (JDK 17+) not found on PATH — IntelliJ's 'Run tests' still works with its "
+           "own JDK.", "warn")
+        return False
+    cb("Downloading dependencies and compiling (mvn test-compile) — the first time can take "
+       "a few minutes…", "info")
+    try:
+        proc = subprocess.Popen([mvn, "-B", "-q", "test-compile"], cwd=out_dir,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, encoding="utf-8", errors="replace",
+                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except Exception as ex:
+        cb("Couldn't start Maven: %s" % str(ex)[:160], "warn")
+        return False
+    start, tail = time.time(), []
+    for line in proc.stdout:
+        line = line.rstrip()
+        if line:
+            tail = (tail + [line])[-6:]
+        if should_stop() or time.time() - start > timeout:
+            proc.kill()
+            cb("Maven stopped — run 'Download dependencies' from IntelliJ later.", "warn")
+            return False
+    proc.wait()
+    if proc.returncode != 0:
+        cb("mvn test-compile failed (exit %s): %s" % (proc.returncode, " | ".join(tail)[-300:]),
+           "warn")
+        return False
+    cb("Dependencies downloaded and the project compiles — open it in IntelliJ and click "
+       "'Run tests'.", "ok")
+    return True
+
+
 def build_selfhealing_project(out_dir, sequenced, base_url, login=None,
                               group_id="com.qastudio", artifact_id="automation-tests",
                               cb=None, should_stop=lambda: False, orig_tcs=None):
@@ -14450,6 +15883,12 @@ def build_selfhealing_project(out_dir, sequenced, base_url, login=None,
     _w(os.path.join(out_dir, "pom.xml"), _sh_pom(group_id, artifact_id))
     _w(os.path.join(out_dir, ".gitignore"), _sh_gitignore())
     _w(os.path.join(out_dir, "README.md"), _sh_readme(base_url, login_url))
+    # One-click run in IntelliJ: Maven run configurations use IntelliJ's own
+    # bundled Maven, so nothing has to be installed on the PC.
+    os.makedirs(os.path.join(out_dir, ".run"), exist_ok=True)
+    for _name, _goals in (("Run tests", ["test"]),
+                          ("Download dependencies", ["dependency:resolve", "test-compile"])):
+        _w(os.path.join(out_dir, ".run", _name + ".run.xml"), _idea_maven_config(_name, _goals))
     _w(os.path.join(src_main, "DriverFactory.java"), _driver_factory(pkg))
     _w(os.path.join(src_main, "Config.java"),
        _sh_config(pkg, base_url, login_url, _ai_prov, _ai_base, _ai_model))
@@ -14547,8 +15986,9 @@ def automation_done_message(target, todo, provider="your AI provider"):
     """Final 'Done' line. The AI key is only asked for when TODO locators are
     left for runtime healing; with 0 TODOs it is optional."""
     if target == "selenium":
-        run = ("In IntelliJ set APP_USER and APP_PASS, then run `mvn test` "
-               "(report: target/surefire-reports).")
+        run = ("Open the folder in IntelliJ and click 'Run tests' (top-right; it uses "
+               "IntelliJ's own Maven, nothing to install) — or `mvn test`. Set APP_USER and "
+               "APP_PASS if the site needs a login (report: target/qa-studio-report.html).")
     else:
         rep = ("npx playwright show-report" if target == "playwright"
                else "open cypress/reports/index.html")
@@ -14622,6 +16062,9 @@ def generate_and_push_selfhealing(out_dir, stories_payload, base_url, login=None
             # Ready to run: dependencies (and the browser) installed in the folder.
             automation_targets.install_dependencies(out_dir, cb=cb, should_stop=should_stop)
         return written
-    return build_selfhealing_project(out_dir, sequenced, base_url, login,
-                                     group_id, artifact_id, cb, should_stop,
-                                     orig_tcs=_orig_tcs)
+    written = build_selfhealing_project(out_dir, sequenced, base_url, login,
+                                        group_id, artifact_id, cb, should_stop,
+                                        orig_tcs=_orig_tcs)
+    if written is not None and not should_stop():
+        maven_prefetch(out_dir, cb=cb, should_stop=should_stop)
+    return written

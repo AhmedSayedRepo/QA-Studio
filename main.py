@@ -371,8 +371,12 @@ class QAStudio:
         self.auto_login_pass = self.creds.get("auto_login_pass", "")
         self.auto_live_inspection = bool(self.creds.get("auto_live_inspection", True))   # on unless turned off
         self.auto_allow_unverified = bool(self.creds.get("auto_allow_unverified", False))
-        self.auto_regenerate = bool(self.creds.get("auto_regenerate", False))
-        self.auto_reinspect_all = bool(self.creds.get("auto_reinspect_all", False))
+        # What Generate does with stories already in the output folder:
+        # "update" (rewrite scripts, re-check only new/changed/failed cases),
+        # "recheck" (rewrite and re-check every case) or "keep" (add new only).
+        self.set_existing_mode(self.creds.get("auto_existing_mode") or
+                               ("recheck" if self.creds.get("auto_reinspect_all") else "update"),
+                               save=False)
         self.auto_only_automation = bool(self.creds.get("auto_only_automation", False))
         self.auto_env_creds = bool(self.creds.get("auto_env_creds", False))
         # Email footers name the ACTIVE backend (read live, so a backend switch
@@ -5183,6 +5187,20 @@ class QAStudio:
                    spacing=4, tight=compact),
             padding=4, bgcolor=T.CARD_2, border_radius=T.R, border=ft.Border.all(1, T.BORDER))
 
+    def set_existing_mode(self, mode, save=True):
+        """One choice for stories already in the output folder; derives the
+        worker's regenerate / re-inspect-all flags from it."""
+        mode = mode if mode in ("update", "recheck", "keep") else "update"
+        self.auto_existing_mode = mode
+        self.auto_regenerate = mode != "keep"
+        self.auto_reinspect_all = mode == "recheck"
+        if save:
+            try:
+                self.creds["auto_existing_mode"] = mode
+                store.save(self.creds)
+            except Exception:
+                pass
+
     def _case_style_segment(self):
         """Manual / Automation test-case style for the generator. Saved at once
         and updated in place (no render)."""
@@ -9083,11 +9101,15 @@ class QAStudio:
                                 t.value = str(c.get(k, 0)); t.update()
                             except Exception:
                                 pass
+                finally:
                     # Cleared under the SAME lock the coalescing check above
                     # uses, so the flip from "one is in flight" back to "none
-                    # scheduled" can't race a concurrent append.
+                    # scheduled" can't race a concurrent append. In `finally`
+                    # so a failed col.update() (e.g. the column was detached by
+                    # a re-render after switching framework) can't leave the
+                    # flag stuck True — that silently blocked every later log
+                    # line until the app restarted.
                     self._auto_log_upd_pending = False
-                finally:
                     if lock is not None:
                         lock.release()
             except Exception:
@@ -10278,6 +10300,22 @@ class QAStudio:
                         (self.auto_test_case_file or "").strip())
                     _local_story = _file_payload[0]["story"]
                     _local_cases = _file_payload[0]["test_cases"]
+                    # Data-driven: say which data file was imported (or that none was).
+                    _dd_src = _file_payload[0].get("data_source") or ""
+                    _dd_cases = [c for c in _local_cases if c.get("data")]
+                    if _dd_src and _dd_cases:
+                        cb("Data file imported: %s \u2014 %d data row(s) for %d test case(s)."
+                           % (_dd_src, sum(len(c["data"]) for c in _dd_cases), len(_dd_cases)), "ok")
+                    elif _dd_src:
+                        cb("Data file %s was found, but none of its rows matched a test case "
+                           "(check the Test Case ID / Title column)." % _dd_src, "warn")
+                    elif any("{{" in (st.get("action", "") + st.get("expected", ""))
+                             for c in _local_cases for st in c.get("steps", [])):
+                        _stem = _os.path.splitext(_os.path.basename(
+                            (self.auto_test_case_file or "").strip()))[0]
+                        cb("No data file found \u2014 {{placeholders}} without a value use generated "
+                           "data or stay as typed. Add %s-data.csv next to the file "
+                           "(or a 'Data' sheet in Excel)." % _stem, "warn")
                     _local_case_by_id = {str(case["id"]): case for case in _local_cases}
 
                     class _LocalFileOps:
@@ -10299,6 +10337,10 @@ class QAStudio:
                         def case_detail(self, case_id):
                             case = _local_case_by_id.get(str(case_id), {})
                             return case.get("title", ""), case.get("steps", [])
+
+                        def case_data(self, case_id):
+                            # Data rows from the companion -data.csv / Data sheet.
+                            return list(_local_case_by_id.get(str(case_id), {}).get("data") or [])
 
                     _ops = _LocalFileOps()
                     _source_label = "the local test-case file"
@@ -10413,9 +10455,19 @@ class QAStudio:
                     try:
                         t, st = (E.fetch_test_case_detail(tcid) if _ops is None
                                  else _ops.case_detail(tcid))
+                        # Azure DevOps parameterized case: its data rows, and
+                        # @param in the steps becomes a {{param}} placeholder.
+                        # A local file's rows come with the file (ops.case_data).
+                        _case_data = getattr(_ops, "case_data", None)
+                        rows = (E.fetch_test_case_data(tcid) if _ops is None
+                                else (_case_data(tcid) if callable(_case_data) else []))
+                        if rows:
+                            E.azure_params_to_placeholders(st, rows)
+                        data_map[tcid] = rows
                         return tcid, t, st
                     except Exception:
                         return tcid, "", []
+                data_map = {}
                 if _all_tcids:
                     with _cf.ThreadPoolExecutor(max_workers=min(16, len(_all_tcids))) as _ex:
                         for _tcid, _title, _st in _ex.map(_detail, _all_tcids):
@@ -10456,7 +10508,8 @@ class QAStudio:
                         total_steps += len(steps)
                         tcs.append({"id": tc["id"],
                                     "title": (tc.get("title") or title_map.get(tc["id"], "")),
-                                    "steps": steps})
+                                    "steps": steps,
+                                    "data": data_map.get(tc["id"]) or []})
                     _story_prep.append((sid, title, criteria, tcs))
 
                 # Duplicate test cases already sitting in the suite (same
@@ -10531,6 +10584,10 @@ class QAStudio:
                     # kept (fresh output goes to <Class>.new).
                     reeval = set(grew_ids) | set(done_ids)
                     cb(strings.t("auto_regen_log", n=len(reeval)), "info")
+                elif (grew_ids or done_ids) and getattr(self, "auto_existing_mode", "") == "keep":
+                    # Standing choice: leave existing stories' scripts alone and
+                    # only add new stories / new cases.
+                    cb(strings.t("auto_keep_log", n=len(set(grew_ids) | set(done_ids))), "info")
                 elif grew_ids or done_ids:
                     ev = threading.Event()
                     decision = {"reeval": set(), "cancel": False}
@@ -10628,9 +10685,11 @@ class QAStudio:
                         self.auto_site_url.strip(), cb=cb,
                         should_stop=lambda: self._auto_stop, headless=False)
                     E.write_verification_report(project_dir, _replay)
-                    # Remember what passed (and forget what failed) for next time.
-                    E.save_verified_cases(walk_payload, project_dir,
-                                          self.auto_site_url.strip(), _login_url)
+                    # Remember what passed (and forget what failed) for next time —
+                    # only when the replay actually ran: a skipped replay proves nothing.
+                    if _replay:
+                        E.save_verified_cases(walk_payload, project_dir,
+                                              self.auto_site_url.strip(), _login_url)
                     if _replay:
                         _rp, _rf = int(_replay.get("passed") or 0), int(_replay.get("failed") or 0)
                         _rp += _reused
