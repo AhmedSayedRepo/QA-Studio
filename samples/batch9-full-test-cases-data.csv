@@ -1,0 +1,3 @@
+﻿Test Case ID,Data Set,email,password,message
+EA06,invalid email,not-an-email,Passw0rd!,A valid email address is required
+EA06,short password,qa@example.com,123,Password must be between 6 and 30 characters

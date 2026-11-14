@@ -3982,6 +3982,12 @@ Test Case ID,Test Case Title,Step,Action,Expected Result,Element Type,Preferred 
    - Storage: Set local storage \"token\" to \"abc\" / Set session storage \"cart\" to \"2\" / Clear local storage / Clear local and session storage   (checks: Local storage \"token\" is \"abc\" / contains \"ab\" / is removed; the same with Session storage)
    - Protected pages: Open \"/admin\" with basic auth \"{{APP_USER}}\" / \"{{APP_PASS}}\"   (or: with digest auth …)
    - Refresh the page / Go back / Go forward
+15. API steps, two-factor login and accessibility — exact phrasings (no element needed):
+   - API call (Action): Send a GET request to \"/api/notes\"   (POST / PUT / PATCH / DELETE; a full https:// address also works; add: with body {\"title\": \"Milk\"} and/or with header \"Authorization: Bearer {{token}}\"). The browser's login cookies go along.
+   - API checks (Expected Result of that step): The response status is 201 / The response contains \"success\" / The response field \"data.id\" exists / The response field \"data.title\" is \"Milk\"
+   - Reuse a response value: Action: Save the response field \"data.id\" as {{noteId}} — then use \"{{noteId}}\" in later steps (UI or API)
+   - Two-factor login: Type \"{{OTP}}\" in the \"Code\" field   (the current authenticator code; the secret is set as OTP_SECRET in .env, never in the case)
+   - Accessibility (Expected Result): The page has no accessibility violations   (serious and critical issues fail; or: no critical accessibility violations)
 
 Now write the CSV."""
 
@@ -8058,6 +8064,45 @@ def _opens_login_url(tc):
     return False
 
 
+_LOGIN_PATH_WORDS = ("login", "log-in", "log_in", "signin", "sign-in", "sign_in", "logon")
+
+
+def _no_element_action(intent):
+    """API calls, page actions and remember steps never touch a login form, even
+    when their body mentions "email" / "password"."""
+    verb = str(intent.get("verb") or "")
+    return verb == "remember" or verb in _PAGE_ACTIONS
+
+
+_LOGIN_URL = {"url": ""}     # the run's configured login URL (set per inspection / replay / generate)
+
+
+def _set_login_url(url):
+    _LOGIN_URL["url"] = str(url or "").strip()
+
+
+def _url_key(url):
+    from urllib.parse import urlsplit
+    p = urlsplit(str(url or "").strip())
+    return (p.netloc.lower(), p.path.rstrip("/").lower())
+
+
+def _login_navigation(intent, text):
+    """A navigate step that opens the login page. With a full URL and a known
+    login URL it must BE that page (or a /login-style path): "Open
+    https://x/totpChallenge/" on another site is a real navigation even when the
+    step calls it a login page. Otherwise the wording decides."""
+    words = any(key in text for key in ("login", "log in", "sign in", "signin", "تسجيل الدخول"))
+    url = str(intent.get("value") or "").strip()
+    if re.match(r"https?://", url, re.I) and _LOGIN_URL["url"]:
+        from urllib.parse import urlsplit
+        if _url_key(url) == _url_key(_LOGIN_URL["url"]):
+            return True
+        same_host = urlsplit(url).netloc.lower() == urlsplit(_LOGIN_URL["url"]).netloc.lower()
+        return same_host and any(k in urlsplit(url).path.lower() for k in _LOGIN_PATH_WORDS)
+    return words
+
+
 def _case_has_explicit_login_flow(intents):
     """True when the authored scenario itself performs username/password login.
 
@@ -8069,7 +8114,7 @@ def _case_has_explicit_login_flow(intents):
     text = " ".join(" ".join([
         str(intent.get("target") or ""),
         " ".join(str(k) for k in (intent.get("keywords") or [])),
-    ]) for intent in intents if intent.get("role") == "action")
+    ]) for intent in intents if intent.get("role") == "action" and not _no_element_action(intent))
     normalized = _norm(text)
     has_user = any(key in normalized for key in
                    ("username", "user name", "email", "e-mail", "اسم المستخدم", "البريد"))
@@ -8081,13 +8126,15 @@ def _case_has_explicit_login_flow(intents):
 
 def _is_login_flow_action(intent):
     """Whether an action is performed by ``performLogin`` for a transition case."""
-    if intent.get("role") != "action":
+    if intent.get("role") != "action" or _no_element_action(intent):
         return False
     text = _norm(" ".join([
         str(intent.get("target") or ""),
         " ".join(str(k) for k in (intent.get("keywords") or [])),
     ]))
     verb = str(intent.get("verb") or "")
+    if verb == "navigate":
+        return _login_navigation(intent, text)
     is_user_field = any(key in text for key in
                         ("username", "user name", "email", "e-mail", "اسم المستخدم", "البريد"))
     is_password_field = any(key in text for key in
@@ -8720,7 +8767,14 @@ def _page_text_phrase(intent, steps=None):
             authored += _quoted_phrases((steps[n - 1] or {}).get("expected"))
     by_norm = {_norm(p): p for p in authored if p.strip()}
     for cand in [intent.get("target")] + list(intent.get("keywords") or []):
-        hit = by_norm.get(_norm(str(cand or "")))
+        c = _norm(str(cand or ""))
+        hit = by_norm.get(c)
+        if not hit and len(c) >= 4:
+            # The model may split one quoted sentence into fragments ("Success!",
+            # "logged in"): the bound element must still show the whole sentence
+            # ("Sorry -- you have not successfully logged in" is not a match).
+            whole = [p for k, p in by_norm.items() if c in k]
+            hit = whole[0] if len(whole) == 1 else None
         if hit and len(hit) >= 2:
             return hit
     return None
@@ -9930,7 +9984,9 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
 
     NOTE: this performs REAL clicks/typing on the target site. Use a TEST env.
     """
+    _set_login_url((login or {}).get("url") or site_url)
     cb = cb or (lambda *a, **k: None)
+    _set_run_otp(login, cb, stories_payload)
     should_stop = should_stop or (lambda: False)
     from selenium import webdriver
     from selenium.webdriver.chrome.options import Options
@@ -10911,6 +10967,8 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                             it["inspection_source"] = "guess"
                             it["inspection_unresolved"] = "context"
                             assign(fs, None, "guess", intent=it)
+                            if it["check"] == "a11y" and _A11Y_LAST.get(id(driver)):
+                                what += ": " + _A11Y_LAST[id(driver)][:160]
                             cb(f"      \u2717 {what} — not confirmed", "warn")
                             _todo(story, tc, fs, it.get("target"), "context")
                         continue
@@ -11141,7 +11199,7 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                         got, _end = "", time.time() + 10
                         while not got and time.time() < _end:
                             try:
-                                got = str(driver.execute_script(_REMEMBER_JS, str(it.get("value") or "")) or "")
+                                got = _remember_read(driver, it.get("value"))
                             except Exception:
                                 got = ""
                             if not got:
@@ -14322,6 +14380,8 @@ def _data_fill(text, values=None, cache=None, login=None):
             return login["password"]
         if key in values:
             return str(values[key])
+        if key == "otp":
+            return _totp(_otp_secret(login)) or m.group(0)
         gen = _data_generated(raw, cache)
         return gen if gen is not None else m.group(0)
     return _DATA_TOKEN_RE.sub(sub, str(text))
@@ -14355,11 +14415,12 @@ def _needs_data_file(cases):
     """True when some {{placeholder}} needs a data row: not a generated value
     ({{random.email}}, {{today}}…), the test account, or a value a Remember
     step reads off the page."""
-    generated = re.compile(r"^(random\.(email|number|text)|now|today([+-]\d+d)?|app_user|app_pass)$")
+    generated = re.compile(r"^(random\.(email|number|text)|now|today([+-]\d+d)?|app_user|app_pass|otp)$")
     for c in cases or []:
         steps = c.get("steps") or []
         remembered = {_data_key(m.group(2)) for st in steps
-                      for m in [_REMEMBER_RE.search(str(st.get("action") or ""))] if m}
+                      for rx in (_REMEMBER_RE, _API_REMEMBER_RE)
+                      for m in [rx.search(str(st.get("action") or ""))] if m}
         for st in steps:
             for m in _DATA_TOKEN_RE.finditer(str(st.get("action") or "") + " " + str(st.get("expected") or "")):
                 key = _data_key(m.group(1))
@@ -14951,7 +15012,8 @@ def _fill_tokens(value, login=None):
     login = login or {}
     v = "" if value is None else str(value)
     v = re.sub(r"\{\{\s*app_user\s*\}\}", lambda m: login.get("user", "") or m.group(0), v, flags=re.I)
-    return re.sub(r"\{\{\s*app_pass\s*\}\}", lambda m: login.get("password", "") or m.group(0), v, flags=re.I)
+    v = re.sub(r"\{\{\s*app_pass\s*\}\}", lambda m: login.get("password", "") or m.group(0), v, flags=re.I)
+    return re.sub(r"\{\{\s*otp\s*\}\}", lambda m: _totp(_otp_secret(login)) or m.group(0), v, flags=re.I)
 
 
 def _auth_url(url, user, password, current=""):
@@ -14986,6 +15048,12 @@ def _page_check_ok(driver, check, value):
         if check == "cookie":
             c = driver.get_cookie(str(value or "").split("|")[0].strip())
             return _cookie_ok(None if c is None else c.get("value", ""), value)
+        if check in ("api_status", "api_body"):
+            last = _API_LAST.get(id(driver))
+            return bool(last) and bool(driver.execute_script(_API_JS, last["status"], last["body"],
+                                                             check, str(value or "")))
+        if check == "a11y":
+            return not _a11y_failures(driver, value)
         return bool(driver.execute_script(_PAGE_CHECK_JS, check, str(value or "")))
     except Exception:
         return False
@@ -15044,7 +15112,7 @@ def _page_action_in(action):
     'Close "Close" if it is shown' / 'Dismiss the cookie banner if present'."""
     a = str(action or "").strip()
     low = a.lower()
-    got = _batch68_action_in(a, low)
+    got = _api_action_in(a) or _batch68_action_in(a, low)
     if got:
         return got
     if re.search(r"\bif\s+(?:it\s+is\s+|it's\s+|one\s+is\s+|any\s+is\s+|they\s+are\s+)?"
@@ -15100,6 +15168,10 @@ def _page_action_label(verb, value=""):
         return '%s storage: set "%s" to "%s"' % (p[0].capitalize() or "Local", p[1], p[2])
     if verb == "clear_storage":
         return "Clear %s storage" % ({"all": "local and session"}.get(v, v or "local"))
+    if verb == "api_call":
+        parts = v.split("|")
+        p = parts + ["", ""]
+        return 'Send %s request to "%s"%s' % (p[0] or "GET", p[1], " with a body" if "|".join(parts[3:]).strip() else "")
     if verb == "auth_open":
         p = (v.split("|") + ["", ""])[:2]
         # Never print the password (logs, reports, generated comments).
@@ -15178,6 +15250,8 @@ def _run_page_action(driver, verb, value="", wait=4, login=None):
             return '%s storage "%s" set' % (p[0] or "local", p[1])
         driver.execute_script(_STORAGE_JS, "clear", p[0] or "all", "", "")
         return "%s storage cleared" % (p[0] or "all")
+    if verb == "api_call":
+        return _api_request(driver, value, login)
     if verb == "auth_open":
         p = (_fill_tokens(value, login).split("|") + ["", "", ""])
         cur = ""
@@ -15212,6 +15286,664 @@ def _run_page_action(driver, verb, value="", wait=4, login=None):
 
 _Q_TEXT = r'["“]([^"”]+)["”]'
 _COUNT_OP = r'(at\s+least\s+|at\s+most\s+|exactly\s+|only\s+)?'
+
+
+# ---- Batch 9: API steps, one-time codes (TOTP) and accessibility checks ----
+#   api_call    'GET|/notes/api/health-check|Header: v\nOther: v|{"title": "x"}'
+#               (a URL relative to the open page; the browser's cookies go along)
+#   remember    'api:data.id' keeps a field of the last API response ({{name}})
+#   api_status  '200' or '2xx'
+#   api_body    'contains|text'  or  'field|data.id|is|5'  (is / contains / exists / absent)
+#   a11y        'serious' fails on serious + critical axe-core violations
+#               ('critical' only, or 'moderate' / 'minor' for a stricter check)
+#   {{OTP}}     the current 6-digit authenticator code from OTP_SECRET (Base32)
+_PAGE_ACTIONS = _PAGE_ACTIONS + ("api_call",)
+_PAGE_CHECKS = _PAGE_CHECKS + ("api_status", "api_body", "a11y")
+_A11Y_LEVELS = ("critical", "serious", "moderate", "minor")
+# One rule for every framework: check == 'field' returns that field of the JSON
+# body (string, or null when missing); 'api_status' / 'api_body' return a bool.
+_API_FN = r"""function(status, body, check, spec) {
+  function field(raw, path) {
+    var o;
+    try { o = JSON.parse(String(raw)); } catch (e) { return null; }
+    var p = String(path || '').trim().replace(/^\$\.?/, '');
+    var parts = p ? p.replace(/\[(\d+)\]/g, '.$1').split('.').filter(function (x) { return x !== ''; }) : [];
+    for (var i = 0; i < parts.length; i++) {
+      if (o === null || typeof o !== 'object' || !(parts[i] in o)) return null;
+      o = o[parts[i]];
+    }
+    if (o === undefined) return null;
+    if (o === null) return 'null';
+    return typeof o === 'object' ? JSON.stringify(o) : String(o);
+  }
+  var s = String(spec == null ? '' : spec);
+  if (check === 'field') return field(body, s);
+  if (check === 'api_status') {
+    var want = s.trim().toLowerCase();
+    return /^\dxx$/.test(want) ? String(status).charAt(0) === want.charAt(0) : String(status) === want;
+  }
+  var p = s.split('|');
+  if (p[0] === 'contains') {
+    return String(body == null ? '' : body).toLowerCase().indexOf(p.slice(1).join('|').toLowerCase()) >= 0;
+  }
+  if (p[0] === 'field') {
+    var v = field(body, p[1] || ''), op = p[2] || 'exists', w = p.slice(3).join('|');
+    if (op === 'absent') return v === null;
+    if (v === null) return false;
+    if (op === 'exists') return true;
+    if (op === 'is') return v.trim() === w.trim();
+    return v.toLowerCase().indexOf(w.toLowerCase()) >= 0;
+  }
+  return false;
+}"""
+_API_JS = "return (" + _API_FN + ")(arguments[0], arguments[1], arguments[2], arguments[3]);"
+# RFC 6238 code (SHA-1, 30 s, 6 digits) from a Base32 secret - synchronous, so a
+# Cypress spec can type it; Java and Python compute the same code natively.
+_TOTP_FN = r"""function(secret, nowMs) {
+  var alpha = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567', bits = '', key = [], msg = [], i;
+  var s = String(secret || '').toUpperCase().replace(/[^A-Z2-7]/g, '');
+  if (!s) return '';
+  for (i = 0; i < s.length; i++) bits += ('00000' + alpha.indexOf(s.charAt(i)).toString(2)).slice(-5);
+  for (i = 0; i + 8 <= bits.length; i += 8) key.push(parseInt(bits.substr(i, 8), 2));
+  var t = Math.floor((nowMs == null ? Date.now() : nowMs) / 30000);
+  for (i = 7; i >= 0; i--) { msg[i] = t % 256; t = Math.floor(t / 256); }
+  function sha1(bytes) {
+    var h = [0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0];
+    var m = bytes.slice(), len = bytes.length * 8, w = [], j, x;
+    m.push(0x80);
+    while (m.length % 64 !== 56) m.push(0);
+    for (j = 7; j >= 0; j--) m.push(j >= 4 ? 0 : (len >>> (j * 8)) & 255);
+    for (var off = 0; off < m.length; off += 64) {
+      for (x = 0; x < 16; x++) {
+        w[x] = (m[off + 4 * x] << 24) | (m[off + 4 * x + 1] << 16) | (m[off + 4 * x + 2] << 8) | m[off + 4 * x + 3];
+      }
+      for (x = 16; x < 80; x++) { var r = w[x - 3] ^ w[x - 8] ^ w[x - 14] ^ w[x - 16]; w[x] = (r << 1) | (r >>> 31); }
+      var a = h[0], b = h[1], c = h[2], d = h[3], e = h[4];
+      for (x = 0; x < 80; x++) {
+        var f, k;
+        if (x < 20) { f = (b & c) | (~b & d); k = 0x5A827999; }
+        else if (x < 40) { f = b ^ c ^ d; k = 0x6ED9EBA1; }
+        else if (x < 60) { f = (b & c) | (b & d) | (c & d); k = 0x8F1BBCDC; }
+        else { f = b ^ c ^ d; k = 0xCA62C1D6; }
+        var tmp = (((a << 5) | (a >>> 27)) + f + e + k + w[x]) | 0;
+        e = d; d = c; c = (b << 30) | (b >>> 2); b = a; a = tmp;
+      }
+      h[0] = (h[0] + a) | 0; h[1] = (h[1] + b) | 0; h[2] = (h[2] + c) | 0; h[3] = (h[3] + d) | 0; h[4] = (h[4] + e) | 0;
+    }
+    var out = [];
+    for (j = 0; j < 5; j++) out.push((h[j] >>> 24) & 255, (h[j] >>> 16) & 255, (h[j] >>> 8) & 255, h[j] & 255);
+    return out;
+  }
+  if (key.length > 64) key = sha1(key);
+  while (key.length < 64) key.push(0);
+  var ipad = key.map(function (v) { return v ^ 0x36; }), opad = key.map(function (v) { return v ^ 0x5c; });
+  var mac = sha1(opad.concat(sha1(ipad.concat(msg)))), o = mac[19] & 15;
+  var code = (((mac[o] & 127) << 24) | (mac[o + 1] << 16) | (mac[o + 2] << 8) | mac[o + 3]) % 1000000;
+  return ('000000' + code).slice(-6);
+}"""
+# axe-core in the page: run it, then keep the violations at or above `level`.
+_A11Y_RUN_FN = r"""function(done) {
+  if (!window.axe) { done('ERR:axe-core is not loaded'); return; }
+  window.axe.run(document, { resultTypes: ['violations'] }).then(function (r) {
+    done(JSON.stringify(r.violations.map(function (v) {
+      return { id: v.id, impact: v.impact || 'minor', nodes: v.nodes.length, help: v.help };
+    })));
+  }, function (e) { done('ERR:' + e); });
+}"""
+_A11Y_FAILS_FN = r"""function(json, level) {
+  var rank = { minor: 1, moderate: 2, serious: 3, critical: 4 }, list;
+  var min = rank[String(level || 'serious').toLowerCase()] || 3;
+  if (String(json).indexOf('ERR:') === 0) return 'accessibility scan failed: ' + String(json).slice(4, 160);
+  try { list = JSON.parse(String(json)); } catch (e) { return 'accessibility scan failed'; }
+  return list.filter(function (v) { return (rank[v.impact] || 1) >= min; }).map(function (v) {
+    return v.id + ' (' + v.impact + ', ' + v.nodes + ' element' + (v.nodes === 1 ? '' : 's') + ')';
+  }).join(', ');
+}"""
+_A11Y_RUN_JS = "(" + _A11Y_RUN_FN + ")(arguments[arguments.length - 1]);"
+_A11Y_FAILS_JS = "return (" + _A11Y_FAILS_FN + ")(arguments[0], arguments[1]);"
+_AXE_VERSION = "4.10.2"
+_AXE_CDN = "https://cdn.jsdelivr.net/npm/axe-core@%s/axe.min.js" % _AXE_VERSION
+_API_LAST = {}      # id(driver) -> {"status": int, "body": str} (last API call)
+_A11Y_LAST = {}     # id(driver) -> failing rules of the last accessibility scan
+
+_API_METHOD = r"(GET|POST|PUT|PATCH|DELETE|HEAD)"
+_API_CALL_RE = re.compile(r"\b(?:send|make|call|do|issue|perform|fire)\b[^\"“]*?\b" + _API_METHOD
+                          + r"\b[^\"“]*?" + r'["“]([^"”]+)["”]'
+                          r"|^\s*" + _API_METHOD + r"\s+(?:request\s+)?(?:to\s+)?" + r'["“]([^"”]+)["”]', re.I)
+_API_BODY_RE = re.compile(r"\bwith\s+(?:the\s+)?(?:json\s+)?(?:body|payload|data|json)\s*:?\s*", re.I)
+_API_HEADER_RE = re.compile(r"\bheader\s+[\"“]([^\"”:]+:[^\"”]*)[\"”]", re.I)
+_API_REMEMBER_RE = re.compile(r"\b(?:remember|save|store|keep|capture)\s+(?:the\s+)?(?:api\s+)?response(?:'s)?\s+"
+                              r"(?:json\s+)?(?:field|value|property|key)\s+" + _Q_TEXT
+                              + r"\s+as\s+\{\{\s*([^{}]+?)\s*\}\}", re.I)
+_OTP_PHRASE_RE = re.compile(r"\b(?:otp|totp|2fa|mfa|one[\s-]time|authenticator|two[\s-]factor|verification)\b"
+                            r"[^\"“]{0,25}?\b(?:code|token|password|pin)\b|\{\{\s*otp\s*\}\}", re.I)
+
+
+def _api_body_after(a, start):
+    """The request body that follows 'with body': a balanced {...} / [...] JSON
+    value, else the first quoted text."""
+    rest = a[start:].lstrip()
+    if rest[:1] in "{[":
+        open_c, close_c = rest[0], "}" if rest[0] == "{" else "]"
+        depth, in_str, esc = 0, False, False
+        for i, ch in enumerate(rest):
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch == open_c:
+                depth += 1
+            elif ch == close_c:
+                depth -= 1
+                if depth == 0:
+                    return rest[:i + 1]
+        return rest
+    m = re.match(r"[\"“'](.*?)[\"”'](?:\s|$|[.,;])", rest + " ", re.S)
+    return m.group(1) if m else ""
+
+
+def _api_action_in(a):
+    """'Send a GET request to "/api/x"', 'POST "/api/notes" with body {...}',
+    'Call the API DELETE "url" with header "Authorization: Bearer {{token}}"'."""
+    m = _API_CALL_RE.search(a) or (re.search(r"\bapi\b", a, re.I) and re.search(
+        r"\b" + _API_METHOD + r"\b[^\"“]*?[\"“]([^\"”]+)[\"”]", a))
+    if not m:
+        return None
+    g = [x for x in m.groups() if x]
+    method, url = g[0].upper(), g[1].strip()
+    if not (url.startswith("/") or re.match(r"https?://", url, re.I) or "{{" in url):
+        return None
+    headers = [h.strip() for h in _API_HEADER_RE.findall(a)]
+    bm = _API_BODY_RE.search(a, m.end())
+    body = _api_body_after(a, bm.end()) if bm else ""
+    return "api_call", "%s|%s|%s|%s" % (method, url, "\n".join(headers), body)
+
+
+def _api_checks_in(t, add):
+    for m in re.finditer(r"\b(?:response|status(?:\s+code)?|api|request)\b[^.\"“]{0,30}?"
+                         r"\b(?:status(?:\s+code)?\s+)?(?:is|equals|should\s+be|returns?|returned|was|of)\s+"
+                         r"(?:http\s+)?([1-5](?:\d\d|xx))\b", t, re.I):
+        add(m, "api_status", m.group(1).lower())
+    for m in re.finditer(r"\bresponse(?:'s)?\s+(?:json\s+)?(?:field|value|property|key)\s+" + _Q_TEXT
+                         + r"\s+(?:(is\s+present|is\s+missing|is\s+absent|is\s+not\s+present|exists|is|equals|contains|includes)"
+                         r"(?:\s+" + _Q_TEXT + r")?|has\s+(?:the\s+)?value\s+" + _Q_TEXT + r")", t, re.I):
+        word = _norm(m.group(2) or "is")
+        want = m.group(3) or m.group(4) or ""
+        op = ("exists" if word in ("exists", "is present") else "absent" if word in ("is missing", "is absent", "is not present")
+              else "contains" if word in ("contains", "includes") else "is")
+        add(m, "api_body", "field|%s|%s|%s" % (m.group(1), op, want), (m.group(1), want) if want else m.group(1))
+    for m in re.finditer(r"\bresponse(?:\s+body)?\s+(?:contains|includes|has|shows)\s+(?!(?:the\s+)?(?:field|value|property|key)\b)"
+                         + _Q_TEXT, t, re.I):
+        add(m, "api_body", "contains|" + m.group(1), m.group(1))
+
+
+def _a11y_checks_in(t, add):
+    for m in re.finditer(r"\b(?:no|zero|without(?:\s+any)?)\s+(?:(critical|serious|moderate|minor)\s+(?:or\s+\w+\s+)?)?"
+                         r"(?:accessibility|a11y|wcag)\s+(?:violations?|issues?|errors?|problems?|failures?)"
+                         r"|\b(?:passes|meets)\s+(?:the\s+)?(?:accessibility|a11y|wcag)\b", t, re.I):
+        add(m, "a11y", (m.group(1) or "serious").lower())
+
+
+_OTP_RUN = {"secret": ""}    # the Automation screen's secret for this inspection / replay
+
+
+def _otp_secret(login=None):
+    """Authenticator secret: the OTP_SECRET environment variable, else the one
+    the app passed in (Automation screen field or the project's .env)."""
+    return str(os.environ.get("OTP_SECRET") or (login or {}).get("otp_secret")
+               or _OTP_RUN["secret"] or "").strip()
+
+
+def _set_run_otp(login, cb=None, payload=None):
+    """Keep the run's secret for {{OTP}} fills that have no login dict, and warn
+    once when a case types {{OTP}} but there is no secret at all."""
+    _OTP_RUN["secret"] = str((login or {}).get("otp_secret") or "").strip()
+    if cb and not _otp_secret(login) and re.search(r"\{\{\s*otp\s*\}\}", json.dumps(payload or [], default=str), re.I):
+        cb("{{OTP}} steps need the authenticator secret: fill \"Authenticator secret\" on the Automation "
+           "screen (or OTP_SECRET in the project's .env), otherwise the code typed is wrong.", "warn")
+
+
+def _totp(secret, at=None, digits=6, step=30):
+    """RFC 6238 code from a Base32 secret ('' when there is no secret)."""
+    import hashlib
+    import hmac
+    import struct
+    s = re.sub(r"[^A-Z2-7]", "", str(secret or "").upper())
+    if not s:
+        return ""
+    bits = "".join(format("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567".index(ch), "05b") for ch in s)
+    key = bytes(int(bits[i:i + 8], 2) for i in range(0, len(bits) - 7, 8))
+    counter = int((time.time() if at is None else at) // step)
+    mac = hmac.new(key, struct.pack(">Q", counter), hashlib.sha1).digest()
+    o = mac[-1] & 15
+    return str((struct.unpack(">I", mac[o:o + 4])[0] & 0x7FFFFFFF) % (10 ** digits)).zfill(digits)
+
+
+def read_env_value(out_dir, key):
+    """One value from the project's .env ('' when missing)."""
+    try:
+        with open(os.path.join(out_dir or "", ".env"), "r", encoding="utf-8") as f:
+            for line in f:
+                k, sep, v = line.strip().partition("=")
+                if sep and k.strip() == key and not k.strip().startswith("#"):
+                    v = v.strip()
+                    return v[1:-1] if len(v) >= 2 and v[0] == v[-1] and v[0] in "'\"" else v
+    except Exception:
+        pass
+    return ""
+
+
+def _api_request(driver, value, login=None):
+    """Inspection / replay: send the request (the browser's cookies and user
+    agent go along) and keep status + body for the checks after it."""
+    import urllib.error
+    import urllib.request
+    from urllib.parse import urljoin, urlsplit
+    p = _fill_tokens(value, login).split("|")
+    method = (p[0] or "GET").strip().upper()
+    url = (p[1] if len(p) > 1 else "").strip()
+    body = "|".join(p[3:]) if len(p) > 3 else ""
+    cur = ""
+    try:
+        cur = driver.current_url or ""
+    except Exception:
+        pass
+    full = url if re.match(r"https?://", url, re.I) else urljoin(cur if cur.startswith("http") else "", url)
+    if not re.match(r"https?://", full, re.I):
+        raise ValueError('"%s" is not a full address and no page is open yet' % url)
+    hdrs = {}
+    for line in (p[2] if len(p) > 2 else "").split("\n"):
+        k, sep, v = line.partition(":")
+        if sep and k.strip():
+            hdrs[k.strip()] = v.strip()
+    low = {k.lower() for k in hdrs}
+    data = None
+    if body.strip():
+        data = body.encode("utf-8")
+        if "content-type" not in low:
+            hdrs["Content-Type"] = "application/json" if body.strip()[:1] in "{[" else "text/plain"
+    try:
+        host = urlsplit(full).hostname or ""
+        jar = [c for c in driver.get_cookies() if host.endswith(str(c.get("domain") or host).lstrip("."))]
+        if jar and "cookie" not in low:
+            hdrs["Cookie"] = "; ".join("%s=%s" % (c["name"], c["value"]) for c in jar)
+        if "user-agent" not in low:
+            hdrs["User-Agent"] = str(driver.execute_script("return navigator.userAgent") or "QA Studio")
+    except Exception:
+        pass
+    hdrs.setdefault("Accept", "application/json, */*")
+    req = urllib.request.Request(full, data=data, headers=hdrs, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            status, raw = r.status, r.read()
+    except urllib.error.HTTPError as e:
+        status, raw = e.code, e.read()
+    _API_LAST[id(driver)] = {"status": int(status), "body": raw.decode("utf-8", "replace")}
+    return "%s %s -> %d" % (method, urlsplit(full).path or full, status)
+
+
+def _remember_read(driver, pattern):
+    """What a remember step keeps: 'api:<field>' from the last API response,
+    else the first page text matching the pattern."""
+    pat = str(pattern or "")
+    if pat.startswith("api:"):
+        return _api_field(driver, pat[4:])
+    return str(driver.execute_script(_REMEMBER_JS, pat) or "")
+
+
+def _api_field(driver, path):
+    """A field of the last API response ('' when there is none)."""
+    last = _API_LAST.get(id(driver))
+    if not last:
+        return ""
+    try:
+        v = driver.execute_script(_API_JS, last["status"], last["body"], "field", str(path or ""))
+    except Exception:
+        return ""
+    return "" if v is None else str(v)
+
+
+def _axe_source():
+    """axe-core's script: AXE_SOURCE (file or URL), a cached copy, else the CDN."""
+    import urllib.request
+    want = os.environ.get("AXE_SOURCE", "").strip()
+    if want and os.path.isfile(want):
+        with open(want, "r", encoding="utf-8") as f:
+            return f.read()
+    cache = os.path.join(os.path.expanduser("~"), ".qastudio", "axe-%s.min.js" % _AXE_VERSION)
+    if not want and os.path.isfile(cache):
+        with open(cache, "r", encoding="utf-8") as f:
+            return f.read()
+    with urllib.request.urlopen(want or _AXE_CDN, timeout=30) as r:
+        src = r.read().decode("utf-8")
+    if not want:
+        try:
+            os.makedirs(os.path.dirname(cache), exist_ok=True)
+            with open(cache, "w", encoding="utf-8") as f:
+                f.write(src)
+        except Exception:
+            pass
+    return src
+
+
+def _a11y_failures(driver, level):
+    """'' when the page passes the accessibility check, else the failing rules."""
+    try:
+        if not driver.execute_script("return !!window.axe"):
+            driver.execute_script(_axe_source() + "\n;return true;")
+        try:
+            driver.set_script_timeout(60)
+        except Exception:
+            pass
+        raw = driver.execute_async_script(_A11Y_RUN_JS)
+        got = str(driver.execute_script(_A11Y_FAILS_JS, raw, str(level or "serious")) or "")
+    except Exception as exc:
+        got = "accessibility scan failed: %s" % str(exc).splitlines()[0][:120] if str(exc) else \
+            "accessibility scan failed: " + type(exc).__name__
+    _A11Y_LAST[id(driver)] = got
+    return got
+
+
+# ---- API steps -> Postman collection (imports into Postman, Insomnia, Bruno,
+# Hoppscotch, Thunder Client...; runs headless with Newman) ----
+_POSTMAN_SCHEMA = "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+# Not "postman/": Postman's Local Mode (opening the project folder in Postman)
+# owns that folder for its own v3 YAML files and flags any JSON in it.
+_POSTMAN_DIR = "api-tests"
+_POSTMAN_COLLECTION = "qa-studio-api.postman_collection.json"
+_POSTMAN_ENV = "qa-studio.postman_environment.json"
+_POSTMAN_DYNAMIC = {"random.email": "{{random.email}}", "random.number": "{{random.number}}",
+                    "random.text": "{{random.text}}", "app_user": "{{APP_USER}}", "app_pass": "{{APP_PASS}}",
+                    "otp": "{{OTP}}"}
+
+
+def _postman_text(text):
+    """QA Studio placeholders -> Postman variables ({{app_user}} -> {{APP_USER}},
+    {{today+3d}} -> {{today_plus_3d}}); {{random.*}} are set once per test case
+    by the pre-request script, so "register" and "log in" use the same email."""
+    def sub(m):
+        raw = m.group(1).strip()
+        key = raw.lower().replace(" ", "")
+        if key in _POSTMAN_DYNAMIC:
+            return _POSTMAN_DYNAMIC[key]
+        tm = re.match(r"^today(?:([+-])(\d+)d)?$", key)
+        if tm:
+            return "{{today%s}}" % ("" if not tm.group(1) else ("_plus_" if tm.group(1) == "+" else "_minus_")
+                                    + tm.group(2) + "d")
+        if key == "now":
+            return "{{now}}"
+        return "{{%s}}" % raw
+    return _DATA_TOKEN_RE.sub(sub, str(text or ""))
+
+
+def _postman_url(url, base_origin, page_url):
+    """'/api/x' -> '{{baseUrl}}/api/x' when it resolves on the base origin;
+    other hosts keep their full address."""
+    from urllib.parse import urljoin, urlsplit
+    if re.match(r"https?://", url, re.I) or "{{" in url.split("/")[0]:
+        full = url
+    else:
+        full = urljoin(page_url or base_origin or "", url) if (page_url or base_origin) else url
+    if base_origin and full.lower().startswith(base_origin.lower()):
+        rest = full[len(base_origin):]
+        return "{{baseUrl}}" + (rest if rest.startswith("/") else "/" + rest)
+    if not re.match(r"https?://", full, re.I):
+        return "{{baseUrl}}" + (full if full.startswith("/") else "/" + full)
+    return full
+
+
+def _postman_tests(checks, remember):
+    """pm.test(...) lines for the API checks / saved fields after one request."""
+    js = ["const _ = require('lodash');",
+          "const qaField = (path) => { try { const v = _.get(pm.response.json(), String(path).replace(/^\\$\\.?/, '')); "
+          "return v === undefined ? undefined : (v !== null && typeof v === 'object' ? JSON.stringify(v) : String(v)); } "
+          "catch (e) { return undefined; } };"]
+    for check, value in checks:
+        v = _postman_text(value)
+        if check == "api_status":
+            want = v.strip().lower()
+            if re.match(r"^\dxx$", want):
+                js.append("pm.test(pm.variables.replaceIn(%s), () => pm.expect(Math.floor(pm.response.code / 100)).to.eql(%s));"
+                          % (json.dumps("Status is " + want), want[0]))
+            else:
+                js.append("pm.test(pm.variables.replaceIn(%s), () => pm.response.to.have.status(%s));"
+                          % (json.dumps("Status is " + want), int(want) if want.isdigit() else json.dumps(want)))
+            continue
+        p = v.split("|")
+        if p[0] == "contains":
+            want = "|".join(p[1:])
+            js.append("pm.test(pm.variables.replaceIn(%s), () => pm.expect(pm.response.text().toLowerCase()).to.include(pm.variables.replaceIn(%s).toLowerCase()));"
+                      % (json.dumps('Response contains "%s"' % want), json.dumps(want)))
+        elif p[0] == "field":
+            path, op, want = (p + ["", ""])[1], (p + ["", "", ""])[2] or "exists", "|".join(p[3:])
+            label = _page_check_label("api_body", value)
+            if op == "exists":
+                body = "pm.expect(qaField(%s)).to.not.equal(undefined)" % json.dumps(path)
+            elif op == "absent":
+                body = "pm.expect(qaField(%s)).to.equal(undefined)" % json.dumps(path)
+            elif op == "contains":
+                body = ("pm.expect(String(qaField(%s)).toLowerCase()).to.include(pm.variables.replaceIn(%s).toLowerCase())"
+                        % (json.dumps(path), json.dumps(want)))
+            else:
+                body = "pm.expect(String(qaField(%s)).trim()).to.eql(pm.variables.replaceIn(%s).trim())" % (
+                    json.dumps(path), json.dumps(want))
+            js.append("pm.test(pm.variables.replaceIn(%s), () => %s);" % (json.dumps(label), body))
+    for field, name in remember:
+        js.append("pm.test(pm.variables.replaceIn(%s), () => { const v = qaField(%s); pm.expect(v, %s).to.not.equal(undefined); "
+                  "pm.collectionVariables.set(%s, v); });"
+                  % (json.dumps('Save response field "%s" as %s' % (field, name)), json.dumps(field),
+                     json.dumps("response field " + field), json.dumps(name)))
+    return js if len(js) > 2 else []
+
+
+def _postman_request(name, spec, base_origin, page_url):
+    parts = str(spec or "").split("|")
+    p = parts + ["", "", ""]
+    method, url, body = (p[0] or "GET").strip().upper(), p[1].strip(), "|".join(parts[3:])
+    headers = []
+    for line in p[2].split("\n"):
+        k, sep, val = line.partition(":")
+        if sep and k.strip():
+            headers.append({"key": k.strip(), "value": _postman_text(val.strip())})
+    req = {"method": method, "header": headers, "url": _postman_url(_postman_text(url), base_origin, page_url)}
+    if body.strip():
+        is_json = body.strip()[:1] in "{["
+        req["body"] = {"mode": "raw", "raw": _postman_text(body),
+                       "options": {"raw": {"language": "json" if is_json else "text"}}}
+        if is_json and not any(h["key"].lower() == "content-type" for h in headers):
+            headers.append({"key": "Content-Type", "value": "application/json"})
+    return {"name": name, "request": req}
+
+
+_POSTMAN_PREREQUEST = r"""// QA Studio: values the generated UI tests compute at run time.
+// {{OTP}}: the current authenticator code from OTP_SECRET (environment).
+const totp = __TOTP_FN__;
+const secret = pm.environment.get('OTP_SECRET') || pm.collectionVariables.get('OTP_SECRET') || '';
+if (secret) pm.variables.set('OTP', totp(secret));
+// {{random.email}} / {{random.number}} / {{random.text}}: new values at each test
+// case's first request, then the same values for the rest of that case.
+if (/^1\. /.test(pm.info.requestName) || !pm.collectionVariables.get('random.email')) {
+  const n = Date.now() + '' + Math.floor(Math.random() * 1e4);
+  pm.collectionVariables.set('random.email', 'qa.' + n + '@example.com');
+  pm.collectionVariables.set('random.number', String(100000 + Math.floor(Math.random() * 900000)));
+  pm.collectionVariables.set('random.text', 'QA ' + Math.random().toString(36).slice(2, 8));
+}
+// {{today}}, {{today_plus_3d}}, {{today_minus_1d}} (yyyy-mm-dd) and {{now}} (ms).
+const day = (n) => new Date(Date.now() + n * 86400000).toISOString().slice(0, 10);
+pm.variables.set('today', day(0));
+pm.variables.set('now', String(Date.now()));
+for (let n = 1; n <= 31; n++) { pm.variables.set('today_plus_' + n + 'd', day(n)); pm.variables.set('today_minus_' + n + 'd', day(-n)); }
+"""
+
+_POSTMAN_README = """# API tests (Postman collection)
+
+QA Studio wrote every API step of the generated test cases here, so the same
+requests and checks run in any API tool:
+
+- `__COLLECTION__`: one folder per story, one folder per test case, one request
+  per API step. Each request's **Tests** tab holds the checks from the test case
+  (status, response text, JSON fields); "Save the response field ... as {{name}}"
+  steps set a collection variable that the next requests use.
+- `__ENV__`: `baseUrl` plus the secrets the requests need. Fill them in after
+  importing (QA Studio never writes real credentials).
+
+## Import
+- **Postman**: Import (Ctrl+O) > pick both files > choose the "QA Studio" environment.
+  (Opening the project folder in Postman's Local Mode works too: Postman
+  converts the import to its YAML format under its own `postman/` folder.)
+- **Insomnia / Bruno / Hoppscotch / Thunder Client / Apidog**: import the
+  collection file (Postman v2.1 format); set `baseUrl` in that tool.
+
+## Run the tests
+- Postman: right-click the collection > **Run collection**.
+- Command line / CI (Newman):
+
+      npx newman run api-tests/__COLLECTION__ -e api-tests/__ENV__
+
+  Add `--env-var OTP_SECRET=$OTP_SECRET --env-var APP_PASS=$APP_PASS` to pass
+  secrets from CI variables, and `-r cli,junit` for a JUnit report.
+
+## Notes
+- UI steps (clicks, typing, accessibility checks) stay in the UI tests; only
+  API steps are here.
+- In the UI tests an API request shares the browser's login cookies. Postman
+  has its own session: add an `Authorization` header or a login request first
+  when an endpoint needs a signed-in user.
+- `{{OTP}}` is computed from `OTP_SECRET` by the collection's pre-request script.
+- QA Studio rewrites these two files on every generate: duplicate the
+  collection in Postman (or rename the file) before customising it.
+"""
+
+
+def _retire_old_postman_files(out_dir, cb=None):
+    """Earlier versions wrote the export into postman/, which Postman's Local
+    Mode owns (it flags JSON there as "Upgrade files"). Remove only QA Studio's
+    own three files from it; the user's Postman files are never touched."""
+    old = os.path.join(out_dir, "postman")
+    removed = []
+    for fname, marker in ((_POSTMAN_COLLECTION, "Generated by QA Studio"), (_POSTMAN_ENV, '"name": "QA Studio"'),
+                          ("README.md", "QA Studio wrote every API step")):
+        path = os.path.join(old, fname)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                if marker not in f.read():
+                    continue
+            os.remove(path)
+            removed.append(fname)
+        except Exception:
+            continue
+    if removed and cb:
+        cb("Moved the Postman export from postman/ to %s/ (Postman's Local Mode uses postman/ for its own files)."
+           % _POSTMAN_DIR, "info")
+    return removed
+
+
+def write_api_collection(out_dir, sequenced, base_url="", project_name="", cb=None):
+    """Write api-tests/ (collection + environment + README) from the API steps of
+    the sequenced cases. Returns the written relative paths ([] when no case
+    has an API step)."""
+    from urllib.parse import urlsplit
+    base = str(base_url or "").strip()
+    base_origin = ""
+    if re.match(r"https?://", base, re.I):
+        sp = urlsplit(base)
+        base_origin = "%s://%s" % (sp.scheme, sp.netloc)
+    stories, variables, seen_vars = [], {}, set()
+    first_origin = ""
+    for pack in sequenced or []:
+        story = pack.get("story") or {}
+        case_items = []
+        for c in pack.get("cases") or []:
+            intents = c.get("intents") or []
+            if not any(it.get("role") == "action" and it.get("verb") == "api_call" for it in intents):
+                continue
+            rows = c.get("data") or []
+            for k, val in ((rows[0] or {}).get("values") or {}).items() if rows else []:
+                variables.setdefault(str(k), str(val))
+            page_url, requests = "", []
+            for it in intents:
+                role, verb = it.get("role"), it.get("verb") or ""
+                if role == "action" and verb == "navigate" and re.match(r"https?://", str(it.get("value") or ""), re.I):
+                    page_url = str(it.get("value"))
+                    if not first_origin:
+                        sp = urlsplit(page_url)
+                        first_origin = "%s://%s" % (sp.scheme, sp.netloc)
+                elif role == "action" and verb == "api_call":
+                    origin = base_origin or first_origin
+                    label = _page_action_label("api_call", it.get("value"))
+                    requests.append([_postman_request("%d. %s" % (len(requests) + 1, label), it.get("value"),
+                                                      origin, page_url), [], []])
+                elif requests and role == "assertion" and (it.get("check") or "") in ("api_status", "api_body"):
+                    requests[-1][1].append((it["check"], str(it.get("value") or "")))
+                elif requests and role == "action" and verb == "remember" and \
+                        str(it.get("value") or "").startswith("api:"):
+                    requests[-1][2].append((str(it["value"])[4:], str(it.get("remember_as") or "value")))
+                    seen_vars.add(str(it.get("remember_as") or "value"))
+            items = []
+            for item, checks, remember in requests:
+                tests = _postman_tests(checks, remember)
+                if tests:
+                    item["event"] = [{"listen": "test", "script": {"type": "text/javascript", "exec": tests}}]
+                items.append(item)
+            tc = c.get("tc") or {}
+            name = ("%s · %s" % (tc.get("id"), c.get("title") or "")) if tc.get("id") else (c.get("title") or "Test case")
+            case_items.append({"name": name, "item": items})
+        if case_items:
+            sname = ("Story %s · %s" % (story.get("id"), story.get("title") or "")).strip(" ·")
+            stories.append({"name": sname, "item": case_items})
+    _retire_old_postman_files(out_dir, cb)
+    if not stories:
+        return []
+    origin = base_origin or first_origin
+    pre = _POSTMAN_PREREQUEST.replace("__TOTP_FN__", _TOTP_FN)
+    import uuid
+    name = "QA Studio API tests" + (" · " + project_name if project_name else "")
+    collection = {
+        "info": {"_postman_id": str(uuid.uuid5(uuid.NAMESPACE_URL, "qa-studio:" + os.path.abspath(out_dir))),
+                 "name": name, "schema": _POSTMAN_SCHEMA,
+                 "description": "Generated by QA Studio from the API steps of the automation test cases. "
+                                "See api-tests/README.md."},
+        "event": [{"listen": "prerequest", "script": {"type": "text/javascript", "exec": pre.rstrip("\n").split("\n")}}],
+        "variable": [{"key": "baseUrl", "value": origin}]
+                    + [{"key": k, "value": v} for k, v in sorted(variables.items())]
+                    + [{"key": k, "value": ""} for k in sorted(seen_vars) if k not in variables],
+        "item": stories}
+    env = {"id": str(uuid.uuid5(uuid.NAMESPACE_URL, "qa-studio-env:" + os.path.abspath(out_dir))),
+           "name": "QA Studio", "_postman_variable_scope": "environment",
+           "values": [{"key": "baseUrl", "value": origin, "type": "default", "enabled": True},
+                      {"key": "APP_USER", "value": "", "type": "default", "enabled": True},
+                      {"key": "APP_PASS", "value": "", "type": "secret", "enabled": True},
+                      {"key": "OTP_SECRET", "value": "", "type": "secret", "enabled": True}]}
+    folder = os.path.join(out_dir, _POSTMAN_DIR)
+    os.makedirs(folder, exist_ok=True)
+    files = {_POSTMAN_COLLECTION: json.dumps(collection, indent=2, ensure_ascii=False) + "\n",
+             _POSTMAN_ENV: json.dumps(env, indent=2, ensure_ascii=False) + "\n",
+             "README.md": _POSTMAN_README.replace("__COLLECTION__", _POSTMAN_COLLECTION).replace("__ENV__", _POSTMAN_ENV)}
+    written = []
+    for fname, text in files.items():
+        path = os.path.join(folder, fname)
+        if fname == _POSTMAN_ENV and os.path.isfile(path):
+            continue          # keep the secrets the user filled in
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                if f.read() == text:
+                    continue
+        except Exception:
+            pass
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        written.append(_POSTMAN_DIR + "/" + fname)
+    n = sum(len(ci["item"]) for s in stories for ci in s["item"])
+    if cb:
+        cb("API tests for Postman / Newman: %d request(s) in %s/%s" % (n, _POSTMAN_DIR, _POSTMAN_COLLECTION), "info")
+    return written
+
 
 
 def _count_op(word):
@@ -15269,6 +16001,8 @@ def _page_checks_in(text):
                          + r'(?:\s+attribute)?', t, re.I):
         add(m, "attr", "%s|%s|absent|" % (m.group(1), m.group(2)), (m.group(1), m.group(2)))
     _batch68_checks_in(t, add)
+    _api_checks_in(t, add)
+    _a11y_checks_in(t, add)
     found.sort(key=lambda x: x[0])
     return [(c, v, p) for _, c, v, p in found]
 
@@ -15338,6 +16072,18 @@ def _page_check_label(check, value):
         how = {"is": 'is "%s"' % want, "contains": 'contains "%s"' % want,
                "absent": "is not set", "exists": "is set"}.get(op, op)
         return "%s %s" % (what, how)
+    if check == "api_status":
+        return "API response status is %s" % value
+    if check == "api_body":
+        p = (parts + ["", "", "", ""])
+        if p[0] == "contains":
+            return 'API response contains "%s"' % "|".join(parts[1:])
+        how = {"exists": "exists", "absent": "is absent", "contains": 'contains "%s"' % "|".join(p[3:]).rstrip("|")
+               }.get(p[2], 'is "%s"' % "|".join(p[3:]).rstrip("|"))
+        return 'API response field "%s" %s' % (p[1], how)
+    if check == "a11y":
+        lvl = str(value or "serious")
+        return "no %s accessibility violations" % ("critical" if lvl == "critical" else lvl + " or worse")
     if check == "attr":
         p = (parts + ["", "", "", ""])[:4]
         p[3] = "|".join(parts[3:])
@@ -15392,6 +16138,21 @@ def _apply_assertion_pack(clean, raw_steps):
             out.insert(at, {"role": "action", "verb": "remember", "target": "text matching \"%s\"" % rm.group(1),
                             "keywords": [], "kind": "text", "value": rm.group(1), "check": "",
                             "expected": "", "from_steps": [n], "remember_as": rm.group(2).strip()})
+        am = _API_REMEMBER_RE.search(str(step.get("action") or ""))
+        if am:
+            at = first_index(n)
+            out = [it for it in out if not (it.get("role") in ("action", "precondition")
+                                            and n in (it.get("from_steps") or []))]
+            at = min(at, len(out))
+            out.insert(at, {"role": "action", "verb": "remember", "target": 'API response field "%s"' % am.group(1),
+                            "keywords": [], "kind": "text", "value": "api:" + am.group(1), "check": "",
+                            "expected": "", "from_steps": [n], "remember_as": am.group(2).strip()})
+        if _OTP_PHRASE_RE.search(str(step.get("action") or "")):
+            # "Enter the authenticator code in ..." types the current code.
+            for it in out:
+                if it.get("role") == "action" and n in (it.get("from_steps") or []) and \
+                        (it.get("verb") or "") in ("type", "set_value"):
+                    it["value"] = "{{OTP}}"
         expected = str(step.get("expected") or "")
         checks = _page_checks_in(expected)
         if not checks:
@@ -15547,6 +16308,7 @@ def _replay_upload_file():
 def _replay_reset_context(driver, ctx):
     """Start every case like the generated BaseTest: main window, top frame, no
     open dialog. Remembers the window handles a new-window step compares to."""
+    _API_LAST.pop(id(driver), None)        # no API response left from the last case
     try:
         try:
             driver.switch_to.alert.dismiss()
@@ -15716,7 +16478,7 @@ def replay_sequenced(sequenced, base_url, login, make_driver, By, cb=None,
                     got = {"v": ""}
                     def _read():
                         try:
-                            got["v"] = str(driver.execute_script(_REMEMBER_JS, str(intent.get("value") or "")) or "")
+                            got["v"] = _remember_read(driver, intent.get("value"))
                         except Exception:
                             got["v"] = ""
                         return bool(got["v"])
@@ -15990,6 +16752,8 @@ def replay_verify(stories_payload, login, site_url, cb=None, should_stop=None,
     like the generated BaseTest) using saved locators only. Returns the
     replay_sequenced report, or None when the plans are incomplete (generation
     is blocked for those anyway)."""
+    _set_login_url((login or {}).get("url") or site_url)
+    _set_run_otp(login)
     cb = cb or (lambda *a, **k: None)
     sequenced = sequence_verified_inspection_plans(stories_payload)
     if not sequenced:
@@ -16798,6 +17562,11 @@ public final class Healer {
             if ("app_user".equals(key)) v = Config.USER;
             else if ("app_pass".equals(key)) v = Config.PASS;
             else if (data.containsKey(key)) v = data.get(key);
+            else if ("otp".equals(key)) {
+                v = totp(Config.getenv("OTP_SECRET"));
+                if (v == null) throw new IllegalStateException("OTP_SECRET is not set: add the authenticator "
+                    + "secret (Base32) to .env or the run configuration's environment variables.");
+            }
             else v = generated(raw.toLowerCase().replace(" ", ""));
             m.appendReplacement(out, java.util.regex.Matcher.quoteReplacement(v == null ? m.group(0) : v));
         }
@@ -17088,6 +17857,12 @@ public final class Healer {
 
     public boolean assertPage(String check, String value) {
         if ("cookie".equals(check)) return assertCookie(value);
+        if ("api_status".equals(check) || "api_body".equals(check)) return Boolean.TRUE.equals(api(check, value));
+        if ("a11y".equals(check)) {
+            String bad = accessibilityViolations(value);
+            if (!bad.isEmpty()) throw new AssertionError("Accessibility violations: " + bad);
+            return true;
+        }
         try {
             return new WebDriverWait(driver, Duration.ofSeconds(10)).until(d ->
                 Boolean.TRUE.equals(((JavascriptExecutor) d).executeScript(PAGE_CHECK_JS, check, value)));
@@ -17161,6 +17936,7 @@ public final class Healer {
                 break;
             }
             case "auth_open": authOpen(fill(value == null ? "" : value)); break;
+            case "api_call": apiCall(fill(value == null ? "" : value)); break;
             default: throw new IllegalArgumentException("unknown page action " + verb);
         }
         try {
@@ -17169,8 +17945,143 @@ public final class Healer {
         } catch (Exception ignored) { }
     }
 
-    /** Reads the first page text matching `pattern` and keeps it as {{name}} for later steps. */
+    // ---- API steps, one-time codes and accessibility checks ----
+    private static final String API_JS = __API_JS__;
+    private static final String A11Y_RUN_JS = __A11Y_RUN_JS__;
+    private static final String A11Y_FAILS_JS = __A11Y_FAILS_JS__;
+    private static final String AXE_CDN = "__AXE_CDN__";
+    private static String axeSource;
+    private int apiStatus = -1;
+    private String apiBody = null;
+
+    /** 'METHOD|url|Header: v\\nHeader: v|body': sends it with this browser's
+     *  cookies and keeps status + body for the checks after it. */
+    private void apiCall(String spec) {
+        String[] p = (spec == null ? "" : spec).split("[|]", 4);
+        String method = p.length > 0 && !p[0].trim().isEmpty() ? p[0].trim().toUpperCase() : "GET";
+        String url = p.length > 1 ? p[1].trim() : "";
+        String body = p.length > 3 ? p[3] : "";
+        try {
+            String cur = driver.getCurrentUrl();
+            java.net.URI uri = (cur != null && cur.startsWith("http")) ? java.net.URI.create(cur).resolve(url)
+                : java.net.URI.create(url.matches("(?i)^https?://.*") || Config.BASE_URL == null || Config.BASE_URL.isEmpty()
+                    ? url : Config.BASE_URL.replaceAll("/+$", "") + "/" + url.replaceAll("^/+", ""));
+            java.net.http.HttpRequest.Builder rb = java.net.http.HttpRequest.newBuilder(uri)
+                .timeout(Duration.ofSeconds(30));
+            boolean type = false, cookie = false, agent = false;
+            if (p.length > 2) for (String h : p[2].split("\\n")) {
+                int c = h.indexOf(':');
+                if (c <= 0) continue;
+                String k = h.substring(0, c).trim(), v = h.substring(c + 1).trim();
+                rb.header(k, v);
+                type |= k.equalsIgnoreCase("content-type");
+                cookie |= k.equalsIgnoreCase("cookie");
+                agent |= k.equalsIgnoreCase("user-agent");
+            }
+            if (!body.trim().isEmpty() && !type)
+                rb.header("Content-Type", body.trim().startsWith("{") || body.trim().startsWith("[") ? "application/json" : "text/plain");
+            if (!cookie) {
+                StringBuilder jar = new StringBuilder();
+                for (Cookie ck : driver.manage().getCookies())
+                    jar.append(jar.length() == 0 ? "" : "; ").append(ck.getName()).append('=').append(ck.getValue());
+                if (jar.length() > 0 && uri.getHost() != null && cur != null && cur.contains(uri.getHost()))
+                    rb.header("Cookie", jar.toString());
+            }
+            if (!agent) {
+                try { rb.header("User-Agent", String.valueOf(((JavascriptExecutor) driver).executeScript("return navigator.userAgent"))); }
+                catch (Exception ignored) { }
+            }
+            rb.header("Accept", "application/json, */*");
+            rb.method(method, body.trim().isEmpty() ? java.net.http.HttpRequest.BodyPublishers.noBody()
+                : java.net.http.HttpRequest.BodyPublishers.ofString(body));
+            java.net.http.HttpResponse<String> res = java.net.http.HttpClient.newBuilder()
+                .followRedirects(java.net.http.HttpClient.Redirect.NORMAL).build()
+                .send(rb.build(), java.net.http.HttpResponse.BodyHandlers.ofString());
+            apiStatus = res.statusCode();
+            apiBody = res.body();
+            System.out.println("[heal] " + method + " " + uri.getPath() + " -> " + apiStatus);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("API request interrupted: " + method + " " + url);
+        } catch (Exception e) {
+            throw new IllegalStateException("API request failed: " + method + " " + url + " (" + e.getMessage() + ")", e);
+        }
+    }
+
+    private Object api(String check, String spec) {
+        if (apiStatus < 0) return null;
+        return ((JavascriptExecutor) driver).executeScript(API_JS, apiStatus, apiBody == null ? "" : apiBody, check, spec);
+    }
+
+    /** axe-core: AXE_SOURCE (file or URL), else target/axe.min.js, else the CDN. */
+    private static synchronized String axe() throws Exception {
+        if (axeSource != null) return axeSource;
+        String want = Config.getenv("AXE_SOURCE");
+        java.nio.file.Path cache = java.nio.file.Paths.get("target", "axe.min.js");
+        if (want != null && java.nio.file.Files.isRegularFile(java.nio.file.Paths.get(want)))
+            return axeSource = new String(java.nio.file.Files.readAllBytes(java.nio.file.Paths.get(want)), java.nio.charset.StandardCharsets.UTF_8);
+        if (want == null && java.nio.file.Files.isRegularFile(cache))
+            return axeSource = new String(java.nio.file.Files.readAllBytes(cache), java.nio.charset.StandardCharsets.UTF_8);
+        java.net.http.HttpResponse<String> res = java.net.http.HttpClient.newBuilder()
+            .followRedirects(java.net.http.HttpClient.Redirect.NORMAL).build()
+            .send(java.net.http.HttpRequest.newBuilder(java.net.URI.create(want != null ? want : AXE_CDN))
+                .timeout(Duration.ofSeconds(30)).build(), java.net.http.HttpResponse.BodyHandlers.ofString());
+        if (res.statusCode() != 200) throw new IllegalStateException("axe-core download failed (HTTP " + res.statusCode() + ")");
+        if (want == null) {
+            try { java.nio.file.Files.createDirectories(cache.getParent()); java.nio.file.Files.writeString(cache, res.body()); }
+            catch (Exception ignored) { }
+        }
+        return axeSource = res.body();
+    }
+
+    /** "" when the page passes, else the failing rules ("color-contrast (serious, 3 elements)"). */
+    public String accessibilityViolations(String level) {
+        JavascriptExecutor js = (JavascriptExecutor) driver;
+        try {
+            if (!Boolean.TRUE.equals(js.executeScript("return !!window.axe"))) js.executeScript(axe() + "\\n;return true;");
+            driver.manage().timeouts().scriptTimeout(Duration.ofSeconds(60));
+            Object raw = js.executeAsyncScript(A11Y_RUN_JS);
+            Object got = js.executeScript(A11Y_FAILS_JS, String.valueOf(raw), level == null || level.isEmpty() ? "serious" : level);
+            return got == null ? "" : got.toString();
+        } catch (Exception e) {
+            return "accessibility scan failed: " + e.getMessage();
+        }
+    }
+
+    /** The current 6-digit authenticator code (RFC 6238) from OTP_SECRET. */
+    static String totp(String secret) {
+        String s = secret == null ? "" : secret.toUpperCase().replaceAll("[^A-Z2-7]", "");
+        if (s.isEmpty()) return null;
+        String alpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+        java.io.ByteArrayOutputStream key = new java.io.ByteArrayOutputStream();
+        int buf = 0, bits = 0;
+        for (char ch : s.toCharArray()) {
+            buf = (buf << 5) | alpha.indexOf(ch);
+            bits += 5;
+            if (bits >= 8) { key.write((buf >> (bits - 8)) & 255); bits -= 8; }
+        }
+        try {
+            javax.crypto.Mac mac = javax.crypto.Mac.getInstance("HmacSHA1");
+            mac.init(new javax.crypto.spec.SecretKeySpec(key.toByteArray(), "HmacSHA1"));
+            byte[] h = mac.doFinal(java.nio.ByteBuffer.allocate(8).putLong(System.currentTimeMillis() / 30000L).array());
+            int o = h[h.length - 1] & 15;
+            int code = (((h[o] & 127) << 24) | ((h[o + 1] & 255) << 16) | ((h[o + 2] & 255) << 8) | (h[o + 3] & 255)) % 1000000;
+            return String.format("%06d", code);
+        } catch (Exception e) {
+            throw new IllegalStateException("OTP_SECRET is not a valid authenticator secret", e);
+        }
+    }
+
+    /** Reads the first page text matching `pattern` (or 'api:<field>' of the last
+     *  API response) and keeps it as {{name}} for later steps. */
     public void remember(String pattern, String name) {
+        if (pattern != null && pattern.startsWith("api:")) {
+            Object o = api("field", pattern.substring(4));
+            if (o == null) throw new AssertionError("The last API response has no field " + pattern.substring(4) + " to remember as " + name);
+            data.put(dataKey(name), o.toString());
+            System.out.println("[heal] remembered " + name + " = " + o);
+            return;
+        }
         String v = null;
         try {
             v = new WebDriverWait(driver, Duration.ofSeconds(10)).until(d -> {
@@ -17502,6 +18413,10 @@ public final class Healer {
             .replace("__SCROLL_PAGE_JS__", json.dumps(_SCROLL_PAGE_JS))
             .replace("__PAGINATE_JS__", json.dumps(_PAGINATE_JS))
             .replace("__STORAGE_JS__", json.dumps(_STORAGE_JS))
+            .replace("__API_JS__", json.dumps(_API_JS))
+            .replace("__A11Y_RUN_JS__", json.dumps(_A11Y_RUN_JS))
+            .replace("__A11Y_FAILS_JS__", json.dumps(_A11Y_FAILS_JS))
+            .replace("__AXE_CDN__", _AXE_CDN)
             .replace("__SCROLL_SEARCH_STEPS__", str(_SCROLL_SEARCH_STEPS))
             .replace("__PAGINATE_MAX__", str(_PAGINATE_MAX))
             .replace("__READY_WAIT_MS__", str(_READY_WAIT_S * 1000))
@@ -17701,6 +18616,8 @@ report (`target/qa-studio-report.html`) opens when the run finishes.
      locators are used). Provider vars also work as fallbacks: `ANTHROPIC_API_KEY`,
      `OPENAI_API_KEY`, `NVIDIA_API_KEY`, `GROQ_API_KEY`, `GEMINI_API_KEY`.
    - `APP_USER`, `APP_PASS`  (login credentials)
+   - `OTP_SECRET`  (optional: authenticator secret for `{{OTP}}` two-factor steps)
+   - `AXE_SOURCE`  (optional: axe-core file/URL for accessibility checks; default: the CDN)
 3. `mvn test`
 
 ## Browsers and videos
@@ -17791,7 +18708,9 @@ def _intent_step_label(intent):
             "upload": 'Upload a file to "%s"' % tgt,
             "scroll_to": 'Scroll until "%s" appears' % (shown or tgt),
             "drag": 'Drag "%s" onto "%s"' % (tgt, shown),
-            "remember": 'Remember the text matching "%s" as %s' % (val[:40], intent.get("remember_as") or "value"),
+            "remember": ('Remember API response field "%s" as %s' % (val[4:44], intent.get("remember_as") or "value"))
+            if val.startswith("api:") else
+            'Remember the text matching "%s" as %s' % (val[:40], intent.get("remember_as") or "value"),
             "clear": 'Clear "%s"' % tgt,
             "go_back": "Go back", "go_forward": "Go forward", "refresh": "Refresh the page",
             "dismiss_if_present": _page_action_label("dismiss_if_present", val),
@@ -17802,6 +18721,7 @@ def _intent_step_label(intent):
             "set_storage": _page_action_label("set_storage", val),
             "clear_storage": _page_action_label("clear_storage", val),
             "auth_open": _page_action_label("auth_open", val),
+            "api_call": _page_action_label("api_call", val),
             "check": 'Tick "%s"' % tgt,
             "uncheck": 'Untick "%s"' % tgt,
             "frame": 'Enter frame "%s"' % tgt,
@@ -19210,7 +20130,8 @@ def build_selfhealing_project(out_dir, sequenced, base_url, login=None,
     # git-ignored .env, refreshed on every generate.
     _write_dotenv(out_dir, {"APP_USER": (login or {}).get("env_user", ""),
                             "APP_PASS": (login or {}).get("env_pass", ""),
-                            "SMTP_PASS": (login or {}).get("smtp_pass", "")})
+                            "SMTP_PASS": (login or {}).get("smtp_pass", ""),
+                            "OTP_SECRET": (login or {}).get("env_otp", "")})
 
     test_classes = []
     seed_sink = {}                      # generation-time locators → committed locators.json
@@ -19338,6 +20259,7 @@ def generate_and_push_selfhealing(out_dir, stories_payload, base_url, login=None
     project. (Push is done separately via push_to_git, as today.)
     on_error/gate enable pause-on-error and manual pause (see
     validate_and_sequence_suite)."""
+    _set_login_url((login or {}).get("url") or base_url)
     cb = cb or (lambda *a, **k: None)
     has_inspection_plan = any(
         isinstance(tc.get("inspection_plan"), dict)
@@ -19376,6 +20298,7 @@ def generate_and_push_selfhealing(out_dir, stories_payload, base_url, login=None
                # opted in on the Automation screen (empty otherwise).
                "app_user": (login or {}).get("env_user", ""),
                "app_pass": (login or {}).get("env_pass", ""),
+               "otp_secret": (login or {}).get("env_otp", ""),
                # Report email after each run of the generated project.
                "report_email_to": (login or {}).get("report_to", ""),
                "smtp_user": (login or {}).get("smtp_user", ""),
@@ -19384,12 +20307,220 @@ def generate_and_push_selfhealing(out_dir, stories_payload, base_url, login=None
                                            _seed_locator_for_intent, _HARVEST_JS,
                                            cb=cb, should_stop=should_stop, orig_tcs=_orig_tcs)
         if written is not None and not should_stop():
+            written = list(written) + _api_collection_safe(out_dir, sequenced, base_url, cb)
             # Ready to run: dependencies (and the browser) installed in the folder.
-            automation_targets.install_dependencies(out_dir, cb=cb, should_stop=should_stop)
+            if not _remote_run():
+                automation_targets.install_dependencies(out_dir, cb=cb, should_stop=should_stop)
         return written
     written = build_selfhealing_project(out_dir, sequenced, base_url, login,
                                         group_id, artifact_id, cb, should_stop,
                                         orig_tcs=_orig_tcs)
     if written is not None and not should_stop():
-        maven_prefetch(out_dir, cb=cb, should_stop=should_stop)
+        written = list(written) + _api_collection_safe(out_dir, sequenced, base_url, cb)
+        if not _remote_run():
+            maven_prefetch(out_dir, cb=cb, should_stop=should_stop)
     return written
+
+
+# ---- Remote automation: the GitHub Actions worker (run_worker.py) runs the
+# same pipeline as the Automation screen, started from the phone ----
+def _remote_run():
+    """True inside the remote worker: no IDE, so dependency installs that only
+    make a local folder ready-to-run are skipped."""
+    return os.environ.get("QA_REMOTE_RUN") == "1"
+
+
+def git_clone_for_push(repo_dir, remote_url, token, branch="main", cb=None):
+    """Clone `branch` into the empty `repo_dir` so a remote run adds a commit on
+    top of the project's history. A new/empty repo or a missing branch starts
+    an empty folder (the first push creates it). The token goes in a one-shot
+    http.extraheader (never the URL, never .git/config). Returns (ok, message)."""
+    import base64
+    import subprocess
+    cb = cb or (lambda *a, **k: None)
+    os.makedirs(repo_dir, exist_ok=True)
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+    if str(remote_url).startswith("https://") and token:
+        env.update({"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "http.extraheader",
+                    "GIT_CONFIG_VALUE_0": "AUTHORIZATION: basic " + base64.b64encode(
+                        ("x-access-token:%s" % token).encode()).decode()})
+    try:
+        p = subprocess.run(["git", "clone", "--branch", branch, "--single-branch", remote_url, repo_dir],
+                           capture_output=True, text=True, env=env, timeout=600)
+    except Exception as exc:
+        return False, "git clone failed: %s" % exc
+    out = (p.stdout or "") + (p.stderr or "")
+    if token:
+        out = out.replace(token, "***")
+    if p.returncode == 0:
+        cb("Cloned %s (%s) — the run adds a commit on top." % (remote_url, branch), "dim")
+        return True, ""
+    if re.search(r"not found in upstream|Remote branch .* not found|empty repository", out, re.I):
+        for name in os.listdir(repo_dir):
+            if name == ".git":
+                import shutil
+                shutil.rmtree(os.path.join(repo_dir, name), ignore_errors=True)
+        cb("Branch %s doesn't exist yet — it is created by the first push." % branch, "dim")
+        return True, ""
+    return False, out.strip().splitlines()[-1][:200] if out.strip() else "git clone failed"
+
+
+def load_automation_payload(project, selection, cb=None, should_stop=None, only_automation=False):
+    """Azure DevOps stories -> stories_payload, the same way the Automation
+    screen loads them: suites per plan, each story's test cases and steps,
+    parameter rows as {{placeholders}}, duplicates skipped.
+    selection = [{"id": story_id, "title": ..., "plan_id": ...}]."""
+    import concurrent.futures as cf
+    cb = cb or (lambda *a, **k: None)
+    should_stop = should_stop or (lambda: False)
+    cb("Connecting to Azure DevOps...", "dim")
+    connect_azure_sdk(project)
+    story_ids = [int(s["id"]) for s in selection or []]
+    story_plan = {int(s["id"]): s.get("plan_id") for s in selection or []}
+    by_plan = {}
+    for s in selection or []:
+        by_plan.setdefault(s.get("plan_id"), set()).add(int(s["id"]))
+    smap = {}
+    for pid, sids in by_plan.items():
+        if not pid:
+            continue
+        try:
+            smap.update(discover_suites_for_stories(project, pid, sids, create_missing=False))
+        except Exception as exc:
+            cb("Couldn't read suites for plan %s: %s" % (pid, str(exc)[:120]), "warn")
+    stories = fetch_stories(story_ids)
+    cb("Fetching test cases and steps for %d stor%s..." % (len(stories), "y" if len(stories) == 1 else "ies"), "dim")
+
+    def story_tcs(s):
+        out = []
+        suite_id = smap.get(s.id)
+        if suite_id:
+            try:
+                for tc in fetch_test_cases_for_suite(project, story_plan.get(s.id), suite_id):
+                    wi = tc.get("workItem", {})
+                    if wi.get("id"):
+                        out.append({"id": wi["id"], "title": wi.get("name", "")})
+            except Exception:
+                pass
+        return s.id, out
+    by_story = {}
+    if stories:
+        with cf.ThreadPoolExecutor(max_workers=min(8, len(stories))) as ex:
+            for sid, out in ex.map(story_tcs, stories):
+                by_story[sid] = out
+    if only_automation:
+        try:
+            labels = fetch_case_labels([tc["id"] for lst in by_story.values() for tc in lst])
+            by_story, kept, total = filter_cases_by_label(by_story, labels)
+            cb("Only cases tagged automation: %d of %d" % (kept, total), "info" if kept else "warn")
+        except Exception as exc:
+            cb("Couldn't read case tags: %s" % str(exc)[:120], "warn")
+    details, data_map = {}, {}
+
+    def detail(tcid):
+        try:
+            title, steps = fetch_test_case_detail(tcid)
+            rows = fetch_test_case_data(tcid)
+            if rows:
+                azure_params_to_placeholders(steps, rows)
+            return tcid, title, steps, rows
+        except Exception:
+            return tcid, "", [], []
+    ids = [tc["id"] for lst in by_story.values() for tc in lst]
+    if ids:
+        with cf.ThreadPoolExecutor(max_workers=min(16, len(ids))) as ex:
+            for tcid, title, steps, rows in ex.map(detail, ids):
+                details[tcid] = (title, steps)
+                data_map[tcid] = rows
+    cb("Checking for duplicate test cases...", "dim")
+    payload, total_tc, total_steps = [], 0, 0
+    for s in stories:
+        if should_stop():
+            break
+        title = s.fields.get("System.Title", "")
+        cb("Story %s · %s" % (s.id, title), "story")
+        tcs = [{"id": tc["id"], "title": tc.get("title") or details.get(tc["id"], ("", []))[0],
+                "steps": details.get(tc["id"], ("", []))[1], "data": data_map.get(tc["id"]) or []}
+               for tc in by_story.get(s.id, [])]
+        if len(tcs) > 1:
+            try:
+                tcs = dedupe_case_list(tcs, log=cb, should_stop=should_stop, story_title=title)
+            except Exception as exc:
+                cb("Dedup check failed for story %s: %s — keeping all its test case(s)." % (s.id, exc), "warn")
+        total_tc += len(tcs)
+        total_steps += sum(len(t["steps"]) for t in tcs)
+        payload.append({"story": {"id": s.id, "title": title,
+                                  "criteria": s.fields.get("Microsoft.VSTS.Common.AcceptanceCriteria", "")},
+                        "test_cases": tcs})
+    cb("Loaded %d story/stories - %d test case(s) - %d step(s) from Azure DevOps." % (len(payload), total_tc, total_steps), "ok")
+    return payload
+
+
+def run_automation_pipeline(project_dir, stories_payload, opts, cb=None, should_stop=None,
+                            gate=None, on_error=None):
+    """Inspection (headless) -> no-healing replay -> generation, the Automation
+    screen's pipeline for a run with no screen (remote worker). Every selected
+    story is regenerated. opts: site_url, login_url, login_user, login_pass,
+    otp_secret, target, browsers, allow_unverified, report_to.
+    Returns {"status": generated|blocked|stopped|nothing, "summary", "stats"}."""
+    cb = cb or (lambda *a, **k: None)
+    should_stop = should_stop or (lambda: False)
+    gate = gate or (lambda: not should_stop())
+    target = opts.get("target") or "selenium"
+    site = resolve_site_url(opts.get("site_url") or "", stories_payload)
+    login_url = resolve_site_url(opts["login_url"]) if (opts.get("login_url") or "").strip() else site
+    login = {"url": login_url, "user": opts.get("login_user") or "",
+             "password": opts.get("login_pass") or "", "otp_secret": opts.get("otp_secret") or ""}
+    n_cases = sum(len(p.get("test_cases") or []) for p in stories_payload)
+    stats = {"Stories": len(stories_payload), "Test cases": n_cases}
+    if not stories_payload or not n_cases:
+        return {"status": "nothing", "summary": "No test cases to automate.", "stats": stats}
+    classify_selection(project_dir, stories_payload)      # manifest bookkeeping
+    to_walk, reused = split_cached_cases(stories_payload, project_dir, site, login_url)
+    if reused:
+        cb("Reusing %d case(s) verified in an earlier run." % reused, "ok")
+    replay = None
+    if to_walk:
+        cb("Live inspection (headless Chrome on the runner)…", "info")
+        inspection = explore_and_map(to_walk, login, site, cb=cb, should_stop=lambda: not gate(), headless=True)
+        if inspection.get("config_error"):
+            return {"status": "blocked", "stats": stats,
+                    "summary": "Fix the Target site URL / Login URL (one full https:// address) and run again."}
+        to_walk = inspection.get("stories_payload") or to_walk
+        apply_inspection_screens(to_walk, write_inspection_screens(project_dir, inspection, cb=cb))
+        st = inspection.get("stats") or {}
+        stats["Proven"] = int(st.get("verified") or 0)
+        if should_stop():
+            return {"status": "stopped", "summary": "Stopped after live inspection.", "stats": stats}
+        replay = replay_verify(to_walk, login, site, cb=cb, should_stop=lambda: not gate(), headless=True)
+        write_verification_report(project_dir, replay)
+        if replay:
+            save_verified_cases(stories_payload, project_dir, site, login_url)
+            stats["Replay"] = "%d/%d" % (int(replay.get("passed") or 0) + reused,
+                                         int(replay.get("passed") or 0) + reused + int(replay.get("failed") or 0))
+    if should_stop():
+        return {"status": "stopped", "summary": "Stopped.", "stats": stats}
+    gen_login = {"url": login_url, "report_to": opts.get("report_to") or "", "smtp_user": GMAIL_SENDER}
+    cb("Generating self-healing automation for %d story(ies)…" % len(stories_payload), "info")
+    generated = generate_and_push_selfhealing(
+        project_dir, stories_payload, site, login=gen_login, cb=cb, should_stop=should_stop,
+        on_error=on_error, gate=gate, target=target, allow_unverified=bool(opts.get("allow_unverified")))
+    if generated is None:
+        return {"status": "blocked", "stats": stats,
+                "summary": "Generation blocked: live inspection did not verify every required locator (see the log)."}
+    try:
+        apply_run_browsers(project_dir, target, opts.get("browsers") or ["chrome"], cb=cb)
+    except Exception as exc:
+        cb("Couldn't save the browser choice: %s" % exc, "warn")
+    stats["Files"] = len(generated or [])
+    return {"status": "generated", "stats": stats,
+            "summary": "Generated %s tests for %d story(ies)." % (target.capitalize(), len(stories_payload))}
+
+
+def _api_collection_safe(out_dir, sequenced, base_url, cb):
+    """The Postman export never fails a generate."""
+    try:
+        return write_api_collection(out_dir, sequenced, base_url, os.path.basename(os.path.normpath(out_dir)), cb)
+    except Exception as exc:
+        cb("Postman collection skipped: %s" % exc, "warn")
+        return []

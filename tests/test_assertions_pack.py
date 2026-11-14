@@ -74,7 +74,8 @@ def test_all_frameworks_emit_page_checks_and_remember():
 def test_pending_note_in_all_languages():
     import release_notes as R
     import strings as S
-    assert "upd_note_assertions_pack" in R.PENDING_RELEASE_NOTE_KEYS
+    released = {k for keys in R.RELEASE_NOTE_KEYS.values() for k in keys}
+    assert "upd_note_assertions_pack" in set(R.PENDING_RELEASE_NOTE_KEYS) | released
     for lang in ("en", "ar", "fr", "tr", "es", "de", "nl"):
         assert S._STRINGS[lang].get("upd_note_assertions_pack")
 

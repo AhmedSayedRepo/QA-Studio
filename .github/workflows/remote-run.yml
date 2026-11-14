@@ -34,17 +34,16 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        # engine.py's Azure DevOps calls (E.run_titles/E.run_steps) lazily
-        # import azure.devops.* — this bare `pip install requests` never
-        # pulled that in, so every remote run crashed immediately with
-        # "ModuleNotFoundError: No module named 'azure'" inside run_worker's
-        # try/except, which caught it, wrote status='error' to the row, and
-        # let the process exit 0 — the job showed green ("succeeded") with
-        # nothing actually generated and no visible failure signal anywhere.
-        # Confirmed live: every remote_runs row so far has this exact error
-        # as its summary. Pinned to the same versions as the desktop build's
-        # requirements.txt for consistency.
-        run: pip install --quiet requests azure-core==1.41.0 azure-devops==7.1.0b4 msrest==0.7.1
+        # engine.py's Azure DevOps calls lazily import azure.devops.* (pinned
+        # to the desktop build's requirements.txt). selenium + openpyxl:
+        # Automation runs (live inspection in the runner's preinstalled
+        # Google Chrome; CSV/XLSX uploads).
+        run: pip install --quiet requests azure-core==1.41.0 azure-devops==7.1.0b4 msrest==0.7.1 selenium==4.45.0 openpyxl==3.1.5
+
+      - name: Git identity for Automation pushes
+        run: |
+          git config --global user.name "QA Studio Remote Run"
+          git config --global user.email "qa-studio-remote@users.noreply.github.com"
 
       - name: Execute run
         env:

@@ -45,6 +45,18 @@ def has_automation():
     return not is_mobile()
 
 
+def has_automation_screen():
+    """The Automation screen is shown everywhere: on a phone it queues the run
+    for the GitHub Actions worker instead of generating locally."""
+    return True
+
+
+def automation_is_remote():
+    """Phone: Automation runs remotely (headless Chrome on the runner, project
+    pushed to Git) — there is no local folder or toolchain."""
+    return is_mobile()
+
+
 def has_self_update():
     """Zipball-over-install self-update: Windows desktop only. Forbidden by
     App Store policy on iOS and replaced by store distribution on mobile."""

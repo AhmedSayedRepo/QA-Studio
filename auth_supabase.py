@@ -1718,6 +1718,85 @@ def enqueue_remote_run(kind, project, plan_id, story_ids, existing_mode="skip",
         return True, ""
 
 
+def enqueue_automation_run(project, params, email_recipients=None):
+    """INSERT an Automation remote run (kind='automation') AS the signed-in
+    user. `params` holds the run options (framework, browsers, URLs, Git repo,
+    story selection or the uploaded test-case file) — never secrets: those are
+    in Vault (sync_automation_secrets). Returns (ok, run_id_or_error)."""
+    if not configured():
+        return False, "Supabase isn't configured."
+    tok = access_token()
+    uid = user_id()
+    if not tok or not uid:
+        return False, "Not signed in."
+    project_id = resolve_current_org_project(project) if project else None
+    if project and current_org_id() and project_id == "":
+        return False, ("This project is not configured for your organization. "
+                       "An organization manager must add it and assign you first.")
+    _plans = [str(x.get("plan_id")) for x in (params or {}).get("selection") or []
+              if str(x.get("plan_id", "")).isdigit()]
+    row = {"kind": "automation", "project": str(project or ""),
+           "plan_id": int(_plans[0]) if _plans else 0,      # NOT NULL; 0 = uploaded file
+           "story_ids": [int(s.get("id")) for s in (params or {}).get("selection") or []
+                         if str(s.get("id", "")).isdigit()],
+           "email_recipients": [e.strip() for e in (email_recipients or []) if e.strip()],
+           "created_by": uid, "project_id": project_id or None, "params": params or {}}
+    try:
+        r = _client().post(f"{SUPABASE_URL}/rest/v1/remote_runs",
+                           headers={"Authorization": f"Bearer {tok}",
+                                    "Prefer": "return=representation"},
+                           json=row, timeout=_TIMEOUT)
+    except Exception as ex:
+        if _diag: _diag.log("auth_supabase.enqueue_automation_run", ex)
+        return False, f"Network error: {str(ex)[:120]}"
+    if r.status_code not in (200, 201):
+        return False, _friendly(r)
+    try:
+        return True, (r.json() or [{}])[0].get("id", "")
+    except Exception:
+        return True, ""
+
+
+def sync_automation_secrets(git_token="", app_pass="", otp_secret=""):
+    """Store the Automation secrets in Supabase Vault (rpc
+    set_my_automation_secrets). Empty values leave the stored one unchanged.
+    Returns (ok, error_message)."""
+    if not configured():
+        return False, "Supabase isn't configured."
+    tok = access_token()
+    if not tok:
+        return False, "Not signed in."
+    try:
+        r = _client().post(f"{SUPABASE_URL}/rest/v1/rpc/set_my_automation_secrets",
+                           headers={"Authorization": f"Bearer {tok}"},
+                           json={"p_git_token": git_token or None, "p_app_pass": app_pass or None,
+                                 "p_otp_secret": otp_secret or None}, timeout=_TIMEOUT)
+    except Exception as ex:
+        if _diag: _diag.log("auth_supabase.sync_automation_secrets", ex)
+        return False, f"Network error: {str(ex)[:120]}"
+    return (True, "") if r.status_code in (200, 204) else (False, _friendly(r))
+
+
+def automation_secrets_status():
+    """{has_git_token, has_app_pass, has_otp_secret, updated_at} — never the
+    values. None when signed out / nothing stored / on error."""
+    if not configured():
+        return None
+    tok = access_token()
+    if not tok:
+        return None
+    try:
+        r = _client().post(f"{SUPABASE_URL}/rest/v1/rpc/get_my_automation_secrets_status",
+                           headers={"Authorization": f"Bearer {tok}"}, json={}, timeout=_TIMEOUT)
+        if r.status_code != 200:
+            return None
+        rows = r.json()
+        return rows[0] if isinstance(rows, list) and rows else None
+    except Exception as ex:
+        if _diag: _diag.log("auth_supabase.automation_secrets_status", ex)
+        return None
+
+
 def list_remote_runs(limit=30):
     """The signed-in user's own remote runs, newest first — RLS already
     scopes this to created_by = auth.uid() (remote_runs_select policy), so

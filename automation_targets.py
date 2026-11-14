@@ -61,6 +61,12 @@ def _with_batch2_js(text):
                 .replace("__SCROLL_PAGE_FN__", json.dumps(_E._SCROLL_PAGE_FN))
                 .replace("__PAGINATE_FN__", json.dumps(_E._PAGINATE_FN))
                 .replace("__STORAGE_FN__", json.dumps(_E._STORAGE_FN))
+                .replace("__API_FN__", json.dumps(_E._API_FN))
+                .replace("__TOTP_FN__", json.dumps(_E._TOTP_FN))
+                .replace("__A11Y_RUN_FN__", json.dumps(_E._A11Y_RUN_FN))
+                .replace("__A11Y_FAILS_FN__", json.dumps(_E._A11Y_FAILS_FN))
+                .replace("__AXE_CDN__", _E._AXE_CDN)
+                .replace("__AXE_VER__", _E._AXE_VERSION)
                 .replace("__SCROLL_SEARCH_STEPS__", str(_E._SCROLL_SEARCH_STEPS))
                 .replace("__PAGINATE_MAX__", str(_E._PAGINATE_MAX))
                 .replace("__READY_LIMITS__", json.dumps({"wait": _E._READY_WAIT_S * 1000,
@@ -180,7 +186,7 @@ _PKG_JSON = """{
     "report:detail": "playwright show-report"
   },
   "engines": { "node": ">=18" },
-  "devDependencies": { "@playwright/test": "^1.48.0", "cross-env": "^7.0.3" },
+  "devDependencies": { "@playwright/test": "^1.48.0", "axe-core": "^4.10.2", "cross-env": "^7.0.3" },
   "dependencies": { "dotenv": "^16.4.5", "nodemailer": "^6.9.14" }
 }
 """
@@ -829,6 +835,8 @@ APP_BASE_URL=https://your-app.example.com
 APP_LOGIN_URL=https://your-login.example.com/realms/.../protocol/openid-connect/auth
 APP_USER=
 APP_PASS=
+# Two-factor login: the authenticator secret (Base32) that {{OTP}} steps use.
+OTP_SECRET=
 # Login-page language (ui_locales) — must match the generated tests' expected-
 # message language (e.g. ar for Arabic test cases). Baked at generation time.
 APP_UI_LOCALE=ar
@@ -856,6 +864,9 @@ VIDEO=on
 BROWSER=
 # Browsers run at the same time (true) or one after another (false).
 PARALLEL=true
+# Accessibility checks load axe-core from the axe-core package (npm install) or
+# the CDN; set a file path or URL here for offline / internal networks.
+# AXE_SOURCE=
 # Live progress window while tests run in the IDE (on/off; never on CI).
 PROGRESS=on
 # Shown in the report as "Run from" (detected automatically: IntelliJ IDEA,
@@ -1106,6 +1117,14 @@ const TABLE_FN = __TABLE_CELL_FN__;
 // Page-level checks (URL, title, counts, sort, pattern) and remember-and-reuse.
 const PAGE_FN = __PAGE_CHECK_FN__;
 const REMEMBER_FN = __REMEMBER_FN__;
+// API steps, one-time codes ({{OTP}}) and accessibility checks (axe-core).
+const API_FN = __API_FN__;
+const TOTP_FN = __TOTP_FN__;
+const A11Y_RUN_FN = __A11Y_RUN_FN__;
+const A11Y_FAILS_FN = __A11Y_FAILS_FN__;
+const qaApiFn = (...a) => (new Function('return ' + API_FN)())(...a);
+const qaTotp = (secret) => (new Function('return ' + TOTP_FN)())(secret);
+const qaA11yFails = (raw, level) => (new Function('return ' + A11Y_FAILS_FN)())(raw, level);
 // "Close X if it is shown" (pop-ups, ads, cookie banners).
 const DISMISS_FN = __DISMISS_FN__;
 // Wait-and-scroll before every action, pagination and storage steps (the same
@@ -1169,6 +1188,14 @@ function qaDataFill(text, values, cache) {
     if (key === 'app_user') return process.env.APP_USER || all;
     if (key === 'app_pass') return process.env.APP_PASS || all;
     if (Object.prototype.hasOwnProperty.call(vals, key)) return String(vals[key]);
+    if (key === 'otp') {
+      // The current authenticator code, computed when the value is typed.
+      const secret = (typeof Cypress !== 'undefined' && Cypress.env('OTP_SECRET')) ||
+        (typeof process !== 'undefined' && process.env && process.env.OTP_SECRET) || '';
+      const code = qaTotp(secret);
+      if (!code) throw new Error('OTP_SECRET is not set: add the authenticator secret (Base32) to .env.');
+      return code;
+    }
     const g = String(raw).toLowerCase().replace(/\\s+/g, '');
     if (cache[g] != null) return cache[g];
     let v = null;
@@ -1184,6 +1211,26 @@ function qaDataFill(text, values, cache) {
     cache[g] = v;
     return v;
   });
+}
+
+// axe-core for accessibility checks: AXE_SOURCE (file or URL), the axe-core
+// package (npm install), a cached download, else the CDN.
+let __qaAxeSrc = null;
+async function qaAxeSource() {
+  if (__qaAxeSrc) return __qaAxeSrc;
+  const fs = require('fs'), path = require('path'), os = require('os');
+  const want = String(process.env.AXE_SOURCE || '').trim();
+  const cache = path.join(os.tmpdir(), 'qa-axe-__AXE_VER__.min.js');
+  if (want && fs.existsSync(want)) return (__qaAxeSrc = fs.readFileSync(want, 'utf8'));
+  if (!want) {
+    try { return (__qaAxeSrc = fs.readFileSync(require.resolve('axe-core/axe.min.js'), 'utf8')); } catch (e) { /* not installed */ }
+    if (fs.existsSync(cache)) return (__qaAxeSrc = fs.readFileSync(cache, 'utf8'));
+  }
+  const res = await fetch(want || '__AXE_CDN__');
+  if (!res.ok) throw new Error('axe-core download failed (HTTP ' + res.status + ')');
+  __qaAxeSrc = await res.text();
+  if (!want) { try { fs.writeFileSync(cache, __qaAxeSrc); } catch (e) { /* read-only temp */ } }
+  return __qaAxeSrc;
 }
 
 class Healer {
@@ -1445,6 +1492,14 @@ class Healer {
   /** URL / title / row or text count / column sort / text pattern, retried for 10 s. */
   async assertPage(check, value) {
     const end = Date.now() + 10000;
+    if (check === 'api_status' || check === 'api_body') {
+      return !!this.lastApi && !!qaApiFn(this.lastApi.status, this.lastApi.body, check, String(value));
+    }
+    if (check === 'a11y') {
+      const bad = await this.accessibilityViolations(value);
+      if (bad) throw new Error('Accessibility violations: ' + bad);
+      return true;
+    }
     if (check === 'cookie') {
       // Read through the browser context, so HttpOnly cookies count too.
       const name = String(value).split('|')[0].trim();
@@ -1560,6 +1615,29 @@ class Healer {
       console.log('[heal] opened ' + u.origin + u.pathname + ' with HTTP authentication');
       return;
     }
+    if (verb === 'api_call') {
+      // An API request in the same browser session (its cookies go along).
+      const p = String(this.fill(value) || '').split('|');
+      const method = (p[0] || 'GET').trim().toUpperCase(), body = p.slice(3).join('|');
+      const cur = this.page.url();
+      const u = new URL((p[1] || '').trim(), /^https?:/i.test(cur) ? cur : (process.env.APP_BASE_URL || undefined));
+      const headers = {};
+      String(p[2] || '').split('\\n').forEach((h) => {
+        const i = h.indexOf(':');
+        if (i > 0) headers[h.slice(0, i).trim()] = h.slice(i + 1).trim();
+      });
+      const opts = { method, headers, failOnStatusCode: false, timeout: 30000 };
+      if (body.trim()) {
+        if (!Object.keys(headers).some((k) => k.toLowerCase() === 'content-type')) {
+          headers['Content-Type'] = /^[\\[{]/.test(body.trim()) ? 'application/json' : 'text/plain';
+        }
+        opts.data = body;
+      }
+      const res = await this.page.context().request.fetch(u.toString(), opts);
+      this.lastApi = { status: res.status(), body: await res.text() };
+      console.log('[heal] ' + method + ' ' + u.pathname + ' -> ' + this.lastApi.status);
+      return;
+    }
     if (verb === 'go_back') { await this.page.goBack(); return; }
     if (verb === 'go_forward') { await this.page.goForward(); return; }
     if (verb === 'refresh') { await this.page.reload(); return; }
@@ -1574,7 +1652,24 @@ class Healer {
     console.log(got ? '[heal] closed "' + got + '"' : '[heal] nothing to close (not shown)');
   }
 
+  /** '' when the page passes, else the failing rules ("label (critical, 2 elements)"). */
+  async accessibilityViolations(level) {
+    try {
+      if (!(await this.page.evaluate(() => !!window.axe))) await this.page.evaluate(await qaAxeSource());
+      const raw = await this.page.evaluate('new Promise((done) => (' + A11Y_RUN_FN + ')(done))');
+      return String(qaA11yFails(raw, String(level || 'serious')) || '');
+    } catch (e) { return 'accessibility scan failed: ' + e.message; }
+  }
+
   async remember(pattern, name) {
+    if (String(pattern).indexOf('api:') === 0) {
+      const field = String(pattern).slice(4);
+      const v = this.lastApi ? qaApiFn(this.lastApi.status, this.lastApi.body, 'field', field) : null;
+      if (v == null) throw new Error('The last API response has no field ' + field + ' to remember as ' + name);
+      this.data = Object.assign({}, this.data || {}, { [name]: v });
+      console.log('[heal] remembered ' + name + ' = ' + v);
+      return;
+    }
     const end = Date.now() + 10000;
     let v = '';
     do {
@@ -1880,8 +1975,11 @@ def _starts_with_absolute_navigate(case):
 
 def _is_login_transition_action(intent):
     """Whether an authored action is fulfilled by the shared login helper."""
-    if intent.get("role") != "action":
+    import engine as _E
+    if intent.get("role") != "action" or _E._no_element_action(intent):
         return False
+    if str(intent.get("verb") or "") == "navigate":
+        return _E._login_navigation(intent, str(intent.get("target") or "").lower())
     text = " ".join([
         str(intent.get("target") or "").lower(),
         " ".join(str(k).lower() for k in (intent.get("keywords") or [])),
@@ -2959,6 +3057,7 @@ def _prepare_env(out_dir, cfg, written):
                      "APP_LOGIN_URL": cfg.get("login_url", ""),
                      "APP_USER": cfg.get("app_user", ""),
                      "APP_PASS": cfg.get("app_pass", ""),
+                     "OTP_SECRET": cfg.get("otp_secret", ""),
                      # Report email after every run (recipients = QA Studio's).
                      "REPORT_EMAIL_TO": cfg.get("report_email_to", ""),
                      "SMTP_USER": cfg.get("smtp_user", ""),
@@ -3150,6 +3249,7 @@ _CY_PKG_JSON = """{
   },
   "engines": { "node": ">=18" },
   "devDependencies": {
+    "axe-core": "^4.10.2",
     "cypress": "^13.15.0",
     "cypress-mochawesome-reporter": "^3.8.2"
   },
@@ -3472,6 +3572,7 @@ module.exports = defineConfig({
         saveLocator: tasks.saveLocator,
         pickLocator: tasks.pickLocator,
         qaDigestHeader: tasks.qaDigestHeader,
+        qaAxeSource: tasks.qaAxeSource,
         // Download steps: is there a finished file whose name contains `name`?
         findDownload(name) {
           const fs = require('fs');
@@ -3493,6 +3594,7 @@ module.exports = defineConfig({
         APP_LOGIN_URL: process.env.APP_LOGIN_URL || '',
         APP_USER: process.env.APP_USER || '',
         APP_PASS: process.env.APP_PASS || '',
+        OTP_SECRET: process.env.OTP_SECRET || '',
       });
       return config;
     },
@@ -3598,6 +3700,26 @@ async function _pick(intent, dom) {
   return null;
 }
 
+// axe-core for accessibility checks: AXE_SOURCE (file or URL), the axe-core
+// package (npm install), a cached download, else the CDN.
+let __qaAxeSrc = null;
+async function qaAxeSource() {
+  if (__qaAxeSrc) return __qaAxeSrc;
+  const fs = require('fs'), path = require('path'), os = require('os');
+  const want = String(process.env.AXE_SOURCE || '').trim();
+  const cache = path.join(os.tmpdir(), 'qa-axe-__AXE_VER__.min.js');
+  if (want && fs.existsSync(want)) return (__qaAxeSrc = fs.readFileSync(want, 'utf8'));
+  if (!want) {
+    try { return (__qaAxeSrc = fs.readFileSync(require.resolve('axe-core/axe.min.js'), 'utf8')); } catch (e) { /* not installed */ }
+    if (fs.existsSync(cache)) return (__qaAxeSrc = fs.readFileSync(cache, 'utf8'));
+  }
+  const res = await fetch(want || '__AXE_CDN__');
+  if (!res.ok) throw new Error('axe-core download failed (HTTP ' + res.status + ')');
+  __qaAxeSrc = await res.text();
+  if (!want) { try { fs.writeFileSync(cache, __qaAxeSrc); } catch (e) { /* read-only temp */ } }
+  return __qaAxeSrc;
+}
+
 module.exports = {
   loadLocators() { return _load(); },
   saveLocator({ key, spec }) {
@@ -3610,6 +3732,7 @@ module.exports = {
     return null;
   },
   async pickLocator({ intent, dom }) { return (await _pick(intent, dom)) || null; },
+  qaAxeSource() { return qaAxeSource(); },
   // HTTP Digest answer (RFC 7616, MD5, qop=auth) for one request: Cypress
   // itself only sends Basic credentials. The password never leaves Node.
   qaDigestHeader({ url, method, user, pass, challenge }) {
@@ -3983,6 +4106,14 @@ function qaDataFill(text, values, cache) {
     if (key === 'app_user') return process.env.APP_USER || all;
     if (key === 'app_pass') return process.env.APP_PASS || all;
     if (Object.prototype.hasOwnProperty.call(vals, key)) return String(vals[key]);
+    if (key === 'otp') {
+      // The current authenticator code, computed when the value is typed.
+      const secret = (typeof Cypress !== 'undefined' && Cypress.env('OTP_SECRET')) ||
+        (typeof process !== 'undefined' && process.env && process.env.OTP_SECRET) || '';
+      const code = qaTotp(secret);
+      if (!code) throw new Error('OTP_SECRET is not set: add the authenticator secret (Base32) to .env.');
+      return code;
+    }
     const g = String(raw).toLowerCase().replace(/\\s+/g, '');
     if (cache[g] != null) return cache[g];
     let v = null;
@@ -4013,6 +4144,14 @@ const TABLE_FN = __TABLE_CELL_FN__;
 // Page-level checks (URL, title, counts, sort, pattern) and remember-and-reuse.
 const PAGE_FN = __PAGE_CHECK_FN__;
 const REMEMBER_FN = __REMEMBER_FN__;
+// API steps, one-time codes ({{OTP}}) and accessibility checks (axe-core).
+const API_FN = __API_FN__;
+const TOTP_FN = __TOTP_FN__;
+const A11Y_RUN_FN = __A11Y_RUN_FN__;
+const A11Y_FAILS_FN = __A11Y_FAILS_FN__;
+const qaApiFn = (...a) => (new Function('return ' + API_FN)())(...a);
+const qaTotp = (secret) => (new Function('return ' + TOTP_FN)())(secret);
+const qaA11yFails = (raw, level) => (new Function('return ' + A11Y_FAILS_FN)())(raw, level);
 // "Close X if it is shown" (pop-ups, ads, cookie banners).
 const DISMISS_FN = __DISMISS_FN__;
 // Wait-and-scroll before every action, pagination and storage steps (the same
@@ -4227,7 +4366,25 @@ Cypress.Commands.add('exitFrame', () => { __frame = null; });
 Cypress.Commands.add('backToOriginalWindow', () => { __frame = null; cy.go('back'); });
 // In a table row containing `row`, the column headed `column` shows `expected`.
 // URL / title / row or text count / column sort / text pattern.
+let __qaApi = null;   // the last API step's { status, body }
 Cypress.Commands.add('healAssertPage', (check, value) => {
+  if (check === 'api_status' || check === 'api_body') {
+    return cy.then(() => {
+      const ok = !!__qaApi && !!qaApiFn(__qaApi.status, __qaApi.body, check, String(value));
+      expect(ok, check + ' ' + value).to.equal(true);
+    });
+  }
+  if (check === 'a11y') {
+    // axe-core in the page (the script comes from Node: cy-tasks.js).
+    return cy.task('qaAxeSource', null, { log: false, timeout: 60000 }).then((src) =>
+      cy.window({ log: false }).then({ timeout: 60000 }, (w) => {
+        if (!w.axe) w.eval(src);
+        return new Cypress.Promise((done) => w.eval('(' + A11Y_RUN_FN + ')')(done));
+      })).then((raw) => {
+      const bad = qaA11yFails(raw, String(value || 'serious'));
+      expect(bad, 'accessibility violations').to.equal('');
+    });
+  }
   if (check === 'cookie') {
     // Read through Cypress, so HttpOnly cookies count too; retried for 10 s.
     const name = String(value).split('|')[0].trim();
@@ -4309,6 +4466,30 @@ Cypress.Commands.add('healPageAction', (verb, value) => {
       });
     });
   }
+  if (verb === 'api_call') {
+    // cy.request shares the browser session's cookies.
+    const p = filled.split('|');
+    const method = (p[0] || 'GET').trim().toUpperCase(), body = p.slice(3).join('|');
+    const headers = {};
+    String(p[2] || '').split('\\n').forEach((h) => {
+      const i = h.indexOf(':');
+      if (i > 0) headers[h.slice(0, i).trim()] = h.slice(i + 1).trim();
+    });
+    return cy.url({ log: false }).then((cur) => {
+      const url = new URL((p[1] || '').trim(), /^https?:/i.test(cur) ? cur : (Cypress.config('baseUrl') || undefined)).toString();
+      const opts = { method, url, headers, failOnStatusCode: false, timeout: 30000, log: false };
+      if (body.trim()) {
+        if (!Object.keys(headers).some((k) => k.toLowerCase() === 'content-type')) {
+          headers['Content-Type'] = /^[\\[{]/.test(body.trim()) ? 'application/json' : 'text/plain';
+        }
+        opts.body = body;
+      }
+      cy.request(opts).then((res) => {
+        __qaApi = { status: res.status, body: typeof res.body === 'string' ? res.body : JSON.stringify(res.body) };
+        Cypress.log({ name: 'api', message: method + ' ' + new URL(url).pathname + ' -> ' + res.status });
+      });
+    });
+  }
   if (verb === 'go_back') return cy.go('back');
   if (verb === 'go_forward') return cy.go('forward');
   if (verb === 'refresh') return cy.reload();
@@ -4323,6 +4504,17 @@ Cypress.Commands.add('healPageAction', (verb, value) => {
 // Reads the first page text matching `pattern`; later steps use it as {{name}}
 // (the spec runs those steps inside cy.then, after this value is known).
 Cypress.Commands.add('healRemember', (pattern, name) => {
+  if (String(pattern).indexOf('api:') === 0) {
+    const field = String(pattern).slice(4);
+    return cy.then(() => {
+      const v = __qaApi ? qaApiFn(__qaApi.status, __qaApi.body, 'field', field) : null;
+      expect(v, 'API response field ' + field).to.not.equal(null);
+      const values = Object.assign({}, Cypress.env('QA_DATA') || {});
+      values[name] = v;
+      Cypress.env('QA_DATA', values);
+      Cypress.log({ name: 'remember', message: name + ' = ' + v });
+    });
+  }
   const read = (doc) => doc.defaultView.eval('(' + REMEMBER_FN + ')')(String(pattern), doc);
   _scopeDoc().should((doc) => {
     expect(read(doc), 'page text matching ' + pattern).to.not.equal('');
@@ -4657,8 +4849,8 @@ def build_cypress_project(out_dir, sequenced, cfg, seed_fn, harvest_js,
     _wif(os.path.join(out_dir, "package.json"), _CY_PKG_JSON, written, out_dir)
     _wif(os.path.join(out_dir, "cypress.config.js"), _CY_CONFIG, written, out_dir)
     _wif(os.path.join(out_dir, "cy-tasks.js"),
-         _CY_TASKS_JS.replace("__PROVIDER__", prov)
-                     .replace("__AI_BASE__", aibase).replace("__MODEL__", model),
+         _with_batch2_js(_CY_TASKS_JS.replace("__PROVIDER__", prov)
+                         .replace("__AI_BASE__", aibase).replace("__MODEL__", model)),
          written, out_dir)
     _wif(os.path.join(out_dir, ".gitignore"), _CY_GITIGNORE, written, out_dir)
     _wif(os.path.join(out_dir, ".env.example"), _PW_ENV_EXAMPLE, written, out_dir)

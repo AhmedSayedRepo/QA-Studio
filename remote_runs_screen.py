@@ -105,6 +105,8 @@ def _refresh_list(app):
 
 
 def _kind_label(kind):
+    if kind == "automation":
+        return strings.t("rr_kind_automation")
     return strings.t("rr_kind_steps") if kind == "steps" else strings.t("rr_kind_titles")
 
 

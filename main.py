@@ -372,6 +372,9 @@ class QAStudio:
         self.auto_login_url = self.creds.get("auto_login_url", "")
         self.auto_login_user = self.creds.get("auto_login_user", "")
         self.auto_login_pass = self.creds.get("auto_login_pass", "")
+        # Authenticator secret for {{OTP}} steps (live inspection; written to the
+        # project's .env only with the "save to .env" opt-in).
+        self.auto_otp_secret = self.creds.get("auto_otp_secret", "")
         self.auto_live_inspection = bool(self.creds.get("auto_live_inspection", True))   # on unless turned off
         self.auto_allow_unverified = bool(self.creds.get("auto_allow_unverified", False))
         # What Generate does with stories already in the output folder:
@@ -1539,6 +1542,7 @@ class QAStudio:
         try:
             _map = {"auto_site_url": "auto_site_url", "auto_login_url": "auto_login_url",
                     "auto_login_user": "auto_login_user", "auto_login_pass": "auto_login_pass",
+                    "auto_otp_secret": "auto_otp_secret",
                     "auto_git_url": "git_url", "auto_git_branch": "git_branch",
                     "auto_git_token": "git_token", "auto_local_path": "auto_local_path"}
             for _attr, _key in _map.items():
@@ -1970,7 +1974,7 @@ class QAStudio:
             # Platform gating (mobile Phase 0): same skip mechanism as the
             # per-user capability gate above, keyed on what the PLATFORM can
             # do — Automation needs a desktop filesystem/toolchain.
-            if n["id"] == "automation" and not platform_caps.has_automation():
+            if n["id"] == "automation" and not platform_caps.has_automation_screen():
                 continue
             st = self.nav_state.get(n["id"], "")
             is_active = (n["id"] == self.active)
@@ -2616,7 +2620,7 @@ class QAStudio:
         for n in T.NAV:
             if not self.can_open_screen(n["id"]):
                 continue
-            if n["id"] == "automation" and not platform_caps.has_automation():
+            if n["id"] == "automation" and not platform_caps.has_automation_screen():
                 continue
             # "Run" is the LOCAL execution screen — on mobile it's a dead
             # end for anyone using this app the way the mobile flow was
@@ -3155,7 +3159,7 @@ class QAStudio:
             ("Go to Regression Plan", _ic("CHECKLIST","LAYERS_OUTLINED"), "regression plan effort", nav("regression")),
             ("Go to Sprint Plan", _ic("EVENT_NOTE_OUTLINED","DESCRIPTION_OUTLINED"), "sprint plan capacity", nav("testplan")),
             *((("Go to Automation", ft.Icons.CODE, "automation selenium tests",
-                nav("automation")),) if platform_caps.has_automation() else ()),
+                nav("automation")),) if platform_caps.has_automation_screen() else ()),
             ("Go to Performance", getattr(ft.Icons, "SPEED", ft.Icons.CIRCLE),
              "performance load test jmeter", nav("performance")),
             ("Go to Useful Links", _ic("BOOKMARK_BORDER","BOOKMARKS"), "links bookmarks", nav("links")),
@@ -9402,6 +9406,7 @@ class QAStudio:
             self.creds["auto_login_url"] = self.auto_login_url
             self.creds["auto_login_user"] = self.auto_login_user
             self.creds["auto_login_pass"] = self.auto_login_pass
+            self.creds["auto_otp_secret"] = self.auto_otp_secret
             self.creds["auto_live_inspection"] = bool(self.auto_live_inspection)
             self.creds["auto_source_mode"] = self.auto_source_mode
             self.creds["auto_test_case_file"] = self.auto_test_case_file
@@ -10189,6 +10194,9 @@ class QAStudio:
                 or getattr(self, "_cp_stories_loading", False)):
             self._toast(strings.t("main_plan_generating"))
             return
+        if platform_caps.automation_is_remote():
+            self._start_remote_automation()
+            return
         # Field-level validation: red borders + inline helpers on the required
         # fields, while keeping the toast (per the rest of the app's pattern).
         self._auto_invalid = set()
@@ -10715,7 +10723,11 @@ class QAStudio:
                     inspection = E.explore_and_map(
                         _to_walk,
                         {"url": _login_url, "user": self.auto_login_user,
-                         "password": self.auto_login_pass},
+                         "password": self.auto_login_pass,
+                         # {{OTP}} steps: the authenticator secret from the
+                         # environment or the project's .env (never saved).
+                         "otp_secret": (getattr(self, "auto_otp_secret", "") or "").strip()
+                         or E.read_env_value(project_dir, "OTP_SECRET")},
                         self.auto_site_url.strip(), cb=cb,
                         # Pause blocks here between test cases (the browser
                         # stays open); Stop ends the walk.
@@ -10754,7 +10766,11 @@ class QAStudio:
                     _replay = E.replay_verify(
                         _to_walk,
                         {"url": _login_url, "user": self.auto_login_user,
-                         "password": self.auto_login_pass},
+                         "password": self.auto_login_pass,
+                         # {{OTP}} steps: the authenticator secret from the
+                         # environment or the project's .env (never saved).
+                         "otp_secret": (getattr(self, "auto_otp_secret", "") or "").strip()
+                         or E.read_env_value(project_dir, "OTP_SECRET")},
                         self.auto_site_url.strip(), cb=cb,
                         # Pause blocks here between test cases (the browser
                         # stays open); Stop ends the walk.
@@ -10798,6 +10814,10 @@ class QAStudio:
                     # …and the report sender, so the project emails its report.
                     if E.ensure_sender_creds():
                         login["smtp_pass"] = E.GMAIL_APP_PASS
+                if (getattr(self, "auto_env_creds", False)
+                        and (getattr(self, "auto_otp_secret", "") or "").strip()):
+                    login = dict(login or {})
+                    login["env_otp"] = self.auto_otp_secret.strip()
                 # Report recipients + sender address (not secret) go to the
                 # project's .env / config.properties so its after-run email is
                 # ready to use.
@@ -10870,6 +10890,131 @@ class QAStudio:
                 self.ui_safe(lambda: automation.refresh_run_ui(self) or self.render())
 
         self._bg(work)
+
+    def _remote_automation_params(self, file_mode):
+        """Run options for a remote Automation run (remote_runs.params) — never
+        secrets: those go to Supabase Vault."""
+        import base64 as _b64
+        params = {"target": getattr(self, "_auto_target", "selenium"),
+                  "browsers": list(self.creds.get("auto_browsers") or ["chrome"]),
+                  "site_url": (self.auto_site_url or "").strip(),
+                  "login_url": (self.auto_login_url or "").strip(),
+                  "login_user": (self.auto_login_user or "").strip(),
+                  "git_url": (self.auto_git_url or "").strip(),
+                  "git_branch": (self.auto_git_branch or "main").strip() or "main",
+                  "allow_unverified": bool(getattr(self, "auto_allow_unverified", False)),
+                  "only_automation": bool(getattr(self, "auto_only_automation", False))}
+        if file_mode:
+            up = getattr(self, "_auto_upload", None) or {}
+            params["file"] = {"name": up.get("name") or "test-cases.csv",
+                              "content_b64": _b64.b64encode(up.get("content") or b"").decode()}
+            if up.get("data"):
+                params["file"].update(data_name=up.get("data_name") or "",
+                                      data_b64=_b64.b64encode(up["data"]).decode())
+        else:
+            params["selection"] = [{"id": s.get("id"), "title": s.get("title", ""), "plan_id": s.get("plan_id")}
+                                   for s in (self._auto_selected or [])]
+        return params
+
+    def _start_remote_automation(self):
+        """Phone: queue the Automation run for the GitHub Actions worker
+        (REMOTE_RUNS.md) — the same pipeline with headless Chrome on the runner;
+        the project is pushed to the Git repository. The Git token, test
+        password and authenticator secret go to Supabase Vault first."""
+        self._auto_invalid = set()
+        self._auto_invalid_msgs = {}
+        self._auto_inspection_confirm_invalid = False
+
+        def _mark(attr, msg):
+            self._auto_invalid.add(attr)
+            self._auto_invalid_msgs[attr] = msg
+        file_mode = backend_setup.automation_uses_file_source(self)
+        if file_mode:
+            if not (getattr(self, "_auto_upload", None) or {}).get("content"):
+                _mark("auto_test_case_file", strings.t("auto_file_required"))
+        elif not (self._auto_selected and self.project):
+            self._toast(strings.t("au_msg_pick_plan_stories"))
+            return
+        if not (self.auto_site_url or "").strip():
+            _mark("auto_site_url", "Enter the target site URL.")
+        if not (self.auto_git_url or "").strip():
+            _mark("auto_git_url", strings.t("auto_remote_need_git"))
+        if (self.auto_login_user or "").strip() and not (self.auto_login_pass or "").strip():
+            _mark("auto_login_pass", strings.t("auto_err_test_pass"))
+        if not getattr(self, "_auto_live_confirm", False):
+            self._auto_inspection_confirm_invalid = True
+        if self._auto_invalid or self._auto_inspection_confirm_invalid:
+            self._toast(self._auto_invalid_msgs[next(iter(self._auto_invalid))] if self._auto_invalid
+                        else strings.t("auto_err_test_confirm"))
+            self.render()
+            return
+        _flush = (getattr(self, "_email_flushers", None) or {}).get("auto_emails")
+        if _flush:
+            try:
+                _flush()
+            except Exception:
+                pass
+        self._save_git_creds()
+        import re as _re
+        emails = [a.strip() for a in _re.split(r"[,\s;]+", getattr(self, "_auto_email_to", "") or "") if a.strip()]
+
+        def work():
+            try:
+                st = auth.remote_credentials_status() or {}
+                if not st.get("has_key") or (not file_mode and not st.get("has_pat")):
+                    self._unbusy()
+                    self._err(strings.t("main_sync_creds_first"))
+                    return
+                ok, err = auth.sync_automation_secrets(
+                    (self.auto_git_token or "").strip(), self.auto_login_pass or "",
+                    (getattr(self, "auto_otp_secret", "") or "").strip())
+                if not ok:
+                    self._unbusy()
+                    self._err(strings.t("main_remote_queue_failed", err=err))
+                    return
+                if not (auth.automation_secrets_status() or {}).get("has_git_token"):
+                    self._unbusy()
+                    self._err(strings.t("auto_remote_need_token"))
+                    return
+                ok, res = auth.enqueue_automation_run("" if file_mode else self.project,
+                                                      self._remote_automation_params(file_mode), emails)
+                self._unbusy()
+                if not ok:
+                    self._err(strings.t("main_remote_queue_failed", err=res))
+                    return
+                self._toast(strings.t("main_remote_queued", id=str(res)[:8]))
+
+                def _open():
+                    self.active = "remote_runs"
+                    remote_runs_screen._open_run(self, res)
+                self.ui_safe(_open)
+            except Exception as ex:
+                self._unbusy()
+                self._err(strings.t("main_remote_queue_failed", err=str(ex)[:120]))
+        self._busy(strings.t("main_queuing"))
+        self._bg(work)
+
+    def _set_auto_upload(self, name, content, data=False):
+        """Phone: the picked CSV / XLSX (or its -data file) kept in memory and
+        sent with the remote run."""
+        if not content:
+            self._toast(strings.t("file_picker_unavailable"))
+            return
+        up = dict(getattr(self, "_auto_upload", None) or {})
+        if data:
+            up.update(data=content, data_name=name)
+        else:
+            up.update(name=name, content=content)
+            self._auto_invalid = set(getattr(self, "_auto_invalid", set())) - {"auto_test_case_file"}
+        self._auto_upload = up
+        self.ui_safe(self.render)
+
+    def _browse_auto_upload(self, e=None, data=False):
+        import image_assets
+        image_assets.choose_file_data(
+            self, "Select a CSV or Excel " + ("data file" if data else "test-case file"), ["csv", "xlsx"],
+            lambda name, content: self._set_auto_upload(name, content, data=data),
+            on_error=lambda: self._toast(strings.t("file_picker_unavailable")))
 
     def _set_auto_local_path(self, p):
         if not p:

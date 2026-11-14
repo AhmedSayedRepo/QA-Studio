@@ -274,9 +274,7 @@ FEATURES = [
      "blurb": "Turns your Azure test cases into a ready-to-run, self-healing UI "
               "test project — Selenium, Playwright, or Cypress — and pushes it to Git.",
      "details": [
-         "Automation is DESKTOP ONLY: it generates a real project into a local "
-         "folder and pushes it with git, which needs a desktop filesystem and "
-         "toolchain — so the screen isn't shown on mobile at all.",
+         "Automation generates a real project: on a desktop into a local folder (and pushes it with git); on a phone, Run remotely does the same on GitHub Actions and pushes the project to your Git repository.",
          "Automation has its own Source & stories section (A) — pick one or more "
          "test plans and stories right here. It's independent of Setup's own "
          "selection, so the screen unlocks as soon as you're connected to a "
@@ -330,6 +328,9 @@ FEATURES = [
          "pinned there regardless of how far you've scrolled.",
          "Running the generated tests: with more than one browser picked, the browsers run at the same time. One line in the project's .env switches it: PARALLEL=true (default) or PARALLEL=false for one browser after another. While tests run from the IDE a small progress window shows the current test, browser, counts and time left; its clock stops at 100%, it says when the report is being written and closes by itself. PROGRESS=off in .env hides it (never shown on CI).",
          "Steps can wait, scroll, page and set up the browser with no extra code: every action waits for its element and scrolls to find it; steps can go to the next page or page 3, set or delete cookies and local / session storage, open a page behind basic or digest auth, and check an element's attribute. Copy AI prompt lists every phrasing an outside AI should use in the CSV.",
+         "API, two-factor and accessibility steps: a step can send a GET / POST / PUT / PATCH / DELETE request (the browser's login cookies go along), check the response status, text or a JSON field, and save a field as {{name}} for later steps. Type \"{{OTP}}\" for the current authenticator code (secret: OTP_SECRET in .env). \"The page has no accessibility violations\" runs an axe-core scan (serious and critical issues fail).",
+         "API tests for Postman and other API tools: when test cases have API steps, Generate also writes a api-tests/ folder: a Postman v2.1 collection (one folder per story and test case, one request per API step, the case's checks as Tests, saved response fields as variables, {{OTP}} computed by a pre-request script) and an environment with baseUrl and empty secrets. Import it into Postman, Insomnia, Bruno, Hoppscotch or Thunder Client, or run it on CI with: npx newman run api-tests/qa-studio-api.postman_collection.json -e api-tests/qa-studio.postman_environment.json",
+         "Automation on a phone: tap Run remotely to run the same pipeline on GitHub Actions (headless Chrome inspection, replay, generation) and push the project to your Git repository. Test cases come from your Azure plans/stories or an uploaded CSV / Excel file (plus its optional data file). The Git token, test password and authenticator secret are saved encrypted in Supabase Vault. Follow the run live in Remote Runs.",
      ],
      "points": [
          "Own Source & stories picker (section A) — unlocks with just a "
@@ -358,6 +359,9 @@ FEATURES = [
          "always visible above the scrolling log.",
          'One .env line runs browsers in parallel (PARALLEL=true, default) or one by one (PARALLEL=false); PROGRESS=off hides the IDE progress window.',
          'Built-in waiting and scrolling, pagination, cookies, local / session storage, basic / digest auth and attribute checks; Copy AI prompt teaches an outside AI the exact phrasings.',
+         "API requests and response checks, {{OTP}} two-factor codes from OTP_SECRET, and axe-core accessibility checks in all three frameworks.",
+         "API steps are also exported as a Postman collection (api-tests/) that imports into any API tool and runs with Newman.",
+         "On a phone, Run remotely generates the project on GitHub Actions and pushes it to Git; follow it in Remote Runs.",
      ]},
     {"key": "links", "icon": ft.Icons.BOOKMARK_BORDER, "title": "Useful Links",
      "blurb": "Save links to the boards and apps you use, and open them in one click.",
@@ -537,7 +541,7 @@ FEATURES = [
 PLATFORM_OF = {
     "setup": "both", "run": "desktop", "report": "desktop",
     "remote_runs": "both", "regression": "both", "testplan": "both",
-    "titles": "both", "task_manager": "both", "automation": "desktop",
+    "titles": "both", "task_manager": "both", "automation": "both",
     "links": "both", "organizations": "both", "users": "both", "settings": "both", "providers": "both",
 }
 

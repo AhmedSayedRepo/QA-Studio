@@ -9,6 +9,7 @@ import theme as T
 import regression
 import strings
 import backend_setup
+import platform_caps
 from ui import card, empty_state, sec_head, _btn_shadow, primary_btn, green_btn, ghost_btn
 
 
@@ -61,6 +62,11 @@ def _build_action_buttons(app, ready):
         _pr_w = ft.Container(_pr_btn, border_radius=T.R,
                              shadow=_btn_shadow(_pr_col, 0.55), expand=True)
         gen_btn = ft.Row([_stop_w, _pr_w], spacing=10)
+    elif platform_caps.automation_is_remote():
+        # Phone: queue the run for the GitHub Actions worker (no local push).
+        return ft.Column([ft.Row([primary_btn(
+            strings.t("auto_run_remote"), icon=ft.Icons.CLOUD_UPLOAD_OUTLINED, expand=True,
+            disabled=gen_disabled, on_click=lambda e: app._start_automation())], spacing=0)])
     else:
         gen_btn = primary_btn(
             strings.t("auto_generate"),
@@ -263,11 +269,18 @@ def screen(app):
         regression._auto_init(app)
         # ── left: config form ──
         file_source = backend_setup.automation_uses_file_source(app)
-        ready = bool((app.auto_test_case_file or "").strip()) if file_source else bool(
+        remote = platform_caps.automation_is_remote()
+        if remote:
+            # A phone's run always inspects (headless Chrome on the runner).
+            app.auto_live_inspection = True
+        ready = (bool((getattr(app, "_auto_upload", None) or {}).get("content")) if remote
+                 else bool((app.auto_test_case_file or "").strip())) if file_source else bool(
             app._auto_plans_selected and app._auto_selected)
 
         def _auto_refresh_gen_btn():
-            app._auto_buttons_ready = (bool((app.auto_test_case_file or "").strip())
+            app._auto_buttons_ready = (bool((getattr(app, "_auto_upload", None) or {}).get("content")
+                                            if platform_caps.automation_is_remote()
+                                            else (app.auto_test_case_file or "").strip())
                                         if backend_setup.automation_uses_file_source(app)
                                         else bool(app._auto_plans_selected and app._auto_selected))
             _refresh_auto_state(app)
@@ -330,7 +343,8 @@ def screen(app):
                 tooltip=(None if enabled else strings.t("auto_source_needs_connect")))
 
         if file_source:
-            selected_file = (getattr(app, "auto_test_case_file", "") or "").strip()
+            selected_file = ((getattr(app, "_auto_upload", None) or {}).get("name", "") if remote
+                             else (getattr(app, "auto_test_case_file", "") or "")).strip()
             file_name = os.path.basename(selected_file) if selected_file else strings.t("auto_file_none")
             source_details = ft.Column([
                 ft.Text(strings.t("auto_file_label"), size=12.5, weight=ft.FontWeight.BOLD,
@@ -341,10 +355,18 @@ def screen(app):
                                 no_wrap=True)], spacing=8),
                 ft.Container(height=8),
                 ft.Row([ghost_btn(strings.t("auto_file_browse"), icon=ft.Icons.UPLOAD_FILE,
-                                  on_click=app._browse_auto_test_case_file),
+                                  on_click=(app._browse_auto_upload if remote
+                                            else app._browse_auto_test_case_file)),
+                        *([ghost_btn(strings.t("auto_data_browse"), icon=ft.Icons.TABLE_CHART_OUTLINED,
+                                     on_click=lambda e: app._browse_auto_upload(e, data=True))]
+                          if remote else []),
                         ghost_btn(strings.t("auto_copy_prompt"), icon=ft.Icons.CONTENT_COPY,
                                   on_click=app._copy_external_case_prompt)],
                        spacing=8, wrap=True),
+                *([ft.Container(height=5),
+                   ft.Text(strings.t("auto_data_file", name=(getattr(app, "_auto_upload", None) or {}).get("data_name")),
+                           size=11, color=T.INK_3)]
+                  if remote and (getattr(app, "_auto_upload", None) or {}).get("data_name") else []),
                 ft.Container(height=7),
                 ft.Text(strings.t("auto_file_hint"), size=10.5, color=T.INK_3,
                         weight=ft.FontWeight.W_500),
@@ -514,7 +536,8 @@ def screen(app):
             return c
 
         inspection_enabled = bool(getattr(app, "auto_live_inspection", True))
-        inspection_controls = [
+        inspection_controls = [ft.Text(strings.t("auto_remote_note"), size=11.5, color=T.VIOLET_INK,
+                                       weight=ft.FontWeight.W_600)] if remote else [
             ft.Row([
                 ft.Switch(value=inspection_enabled, active_color=T.VIOLET, scale=0.8,
                           on_change=_flip_inspection),
@@ -535,7 +558,13 @@ def screen(app):
                 ft.Container(height=10),
                 app._auto_field(strings.t("auto_lbl_test_pass"), "auto_login_pass",
                                 "", password=True),
+                ft.Container(height=10),
+                app._auto_field(strings.t("auto_lbl_otp_secret"), "auto_otp_secret",
+                                "JBSWY3DPEHPK3PXP", password=True),
                 ft.Container(height=4),
+                ft.Text(strings.t("auto_otp_note"), size=11, color=T.INK_3,
+                        weight=ft.FontWeight.W_500),
+                ft.Container(height=10),
                 ft.Text(strings.t("auto_creds_optional"), size=11, color=T.INK_3,
                         weight=ft.FontWeight.W_500),
                 ft.Container(height=10),
@@ -555,13 +584,13 @@ def screen(app):
                     ft.Text(strings.t("auto_allow_unverified"), size=11.5,
                             color=T.INK_2, expand=True),
                 ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.START),
-                ft.Container(height=6),
-                ft.Row([
+                # The generated project's .env stays on the runner: no use on a phone.
+                *([] if remote else [ft.Container(height=6), ft.Row([
                     ft.Checkbox(value=bool(getattr(app, "auto_env_creds", False)),
                                 active_color=T.VIOLET, on_change=_flip_env_creds),
                     ft.Text(strings.t("auto_env_creds"), size=11.5,
                             color=T.INK_2, expand=True),
-                ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.START),
+                ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.START)]),
             ], spacing=0, visible=inspection_enabled)
         inspection_controls.append(inspection_details)
         inspection_card = card(ft.Column([
@@ -571,7 +600,7 @@ def screen(app):
         ], spacing=0))
 
         git_card = card(ft.Column([
-            sec_head("E", strings.t("auto_sec_git_optional")),
+            sec_head("E", strings.t("auto_sec_git_required" if remote else "auto_sec_git_optional")),
             ft.Container(height=10),
             app._auto_field(strings.t("auto_lbl_repo_url"), "auto_git_url",
                              "https://github.com/you/automation-tests.git"),
@@ -584,7 +613,7 @@ def screen(app):
                                  on_info=lambda e: app._show_help("git_pat")), expand=1),
             ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.START),
             ft.Container(height=4),
-            ft.Text(strings.t("auto_git_note"),
+            ft.Text(strings.t("auto_git_note_remote" if remote else "auto_git_note"),
                     size=11, color=T.INK_3, weight=ft.FontWeight.W_500),
         ], spacing=0))
 
@@ -634,7 +663,8 @@ def screen(app):
             site_card,
             inspection_card,
             git_card,
-            local_card,
+            # Phone: no local folder — the runner clones and pushes the Git repo.
+            *([] if remote else [local_card]),
             email_card,
             ft.Container(
                 ft.Row([ft.Icon(ft.Icons.HELP_OUTLINE, size=15, color=T.VIOLET_INK),

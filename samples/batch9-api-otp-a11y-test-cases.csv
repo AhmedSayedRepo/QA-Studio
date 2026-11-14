@@ -1,0 +1,15 @@
+﻿Test Case ID,Test Case Title,Step,Action,Expected Result,Element Type,Preferred Locator,Frame Context,Automation Note
+EB01,API health check,1,Open https://practice.expandtesting.com/notes/app,"The page title contains ""Notes""",,,,
+EB01,API health check,2,"Send a GET request to ""/notes/api/health-check""","The response status is 200 and the response field ""message"" is ""Notes API is Running""",,,,
+EB02,API login with a wrong password is refused,1,Open https://practice.expandtesting.com/notes/app,"The page title contains ""Notes""",,,,
+EB02,API login with a wrong password is refused,2,"Send a POST request to ""/notes/api/users/login"" with body {""email"": ""nobody@example.com"", ""password"": ""wrongpass1""}","The response status is 401 and the response contains ""Incorrect email address or password""",,,,
+EB03,Reuse a value from an API response,1,Open https://practice.expandtesting.com/notes/app,"The page title contains ""Notes""",,,,
+EB03,Reuse a value from an API response,2,"Send a GET request to ""/notes/api/health-check""","The response field ""status"" exists",,,,
+EB03,Reuse a value from an API response,3,"Save the response field ""message"" as {{apiMessage}}",,,,,
+EB03,Reuse a value from an API response,4,"Send a GET request to ""/notes/api/health-check""","The response field ""message"" is ""{{apiMessage}}""",,,,
+EB04,Two-factor login with an authenticator code,1,Open https://authenticationtest.com/totpChallenge/,"""Enter your MFA Code:"" is shown",,,,Set OTP_SECRET=I65VU7K5ZQL7WB4E in .env (the site's public demo secret)
+EB04,Two-factor login with an authenticator code,2,"Type ""totp@authenticationtest.com"" in the ""E-Mail Address"" field",,,,,
+EB04,Two-factor login with an authenticator code,3,"Type ""pa$$w0rd"" in the ""Password"" field",,password input,,,
+EB04,Two-factor login with an authenticator code,4,"Type ""{{OTP}}"" in the ""Enter your MFA Code:"" field",,,,,
+EB04,Two-factor login with an authenticator code,5,"Click the ""Log In"" button","The URL contains ""/loginSuccess"" and ""Success! You are now logged in!"" is shown",,,,
+EB05,Login page has no critical accessibility issues,1,Open https://practice.expandtesting.com/login,No critical accessibility violations,,,,Serious issues (color contrast) exist on this page; this check fails only on critical ones

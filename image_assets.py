@@ -7,6 +7,7 @@ the same safety and sizing contract on Windows and mobile.
 """
 import base64
 import io
+import os
 import math
 import warnings
 
@@ -94,6 +95,34 @@ def choose_file(app, title, extensions, on_ready, on_error=None):
             path = str(getattr(files[0], "path", "") or "") if files else ""
             if path:
                 on_ready(path)
+        except Exception:
+            if callable(on_error):
+                on_error()
+    try:
+        app.page.run_task(_choose)
+    except Exception:
+        if callable(on_error):
+            on_error()
+
+
+def choose_file_data(app, title, extensions, on_ready, on_error=None):
+    """Choose one file and hand over (name, bytes): a phone's picker gives the
+    content (with_data), a desktop's a path that is read here."""
+    async def _choose():
+        try:
+            files = await _file_picker(app).pick_files(
+                dialog_title=title,
+                file_type=ft.FilePickerFileType.CUSTOM if extensions else ft.FilePickerFileType.ANY,
+                allowed_extensions=list(extensions or []), allow_multiple=False, with_data=True)
+            if not files:
+                return
+            f = files[0]
+            data = getattr(f, "bytes", None)
+            path = str(getattr(f, "path", "") or "")
+            if not data and path:
+                with open(path, "rb") as fh:
+                    data = fh.read()
+            on_ready(str(getattr(f, "name", "") or os.path.basename(path) or "test-cases.csv"), data or b"")
         except Exception:
             if callable(on_error):
                 on_error()

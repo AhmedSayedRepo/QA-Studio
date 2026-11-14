@@ -119,7 +119,7 @@ def _append_log_line(kind, payload):
             _log_lines.append({"tone": "dim", "indent": True, "msg": payload["detail"]})
 
 
-def _apply_credentials(E, run):
+def _apply_credentials(E, run, need_azure=True):
     """Per-user credentials (Supabase Vault, service-role-only RPC) when the
     run carries created_by; env-var fallback otherwise (local debugging).
     Also applies Gmail sender/app-password (worker_get_credentials now
@@ -138,11 +138,12 @@ def _apply_credentials(E, run):
         rows = _sb("POST", "rpc/worker_get_credentials", payload={
             "p_user_id": uid, "p_project_id": run.get("project_id") or None}) or []
         c = rows[0] if rows else None
-        if (not c or not (c.get("azure_pat") or "").strip()
+        if (not c or (need_azure and not (c.get("azure_pat") or "").strip())
                 or not (c.get("ai_api_key") or "").strip()):
             raise SystemExit(f"user {uid} has no complete credentials on file — "
                              "set the Azure PAT and AI key in the app first")
-        E.reset_session_credentials(c.get("azure_org") or "", c["azure_pat"])
+        if (c.get("azure_pat") or "").strip():
+            E.reset_session_credentials(c.get("azure_org") or "", c["azure_pat"])
         E.set_credentials(provider=c.get("ai_provider") or "anthropic",
                           api_key=c["ai_api_key"],
                           model=(c.get("ai_model") or "") or None,
@@ -155,6 +156,84 @@ def _apply_credentials(E, run):
                       api_key=os.environ.get("QA_AI_API_KEY", ""),
                       model=os.environ.get("QA_AI_MODEL", "") or None)
     return "environment credentials (no created_by on the run)"
+
+
+def _automation_secrets(run):
+    """Git token / test-account password / authenticator secret for an
+    automation run: Supabase Vault via the service-role-only
+    worker_get_automation_secrets RPC (never in the run row or the logs)."""
+    uid = str(run.get("created_by") or "").strip()
+    if not uid:
+        return {"git_token": os.environ.get("QA_GIT_TOKEN", ""), "app_pass": os.environ.get("APP_PASS", ""),
+                "otp_secret": os.environ.get("OTP_SECRET", "")}
+    rows = _sb("POST", "rpc/worker_get_automation_secrets", payload={"p_user_id": uid}) or []
+    return rows[0] if rows else {}
+
+
+def _payload_from_upload(work, f):
+    """The CSV / XLSX (and optional -data file) uploaded with the run ->
+    stories_payload, read by the same loader as a local file."""
+    import base64
+    import automation_file_source as FS
+    name = os.path.basename(str(f.get("name") or "test-cases.csv")) or "test-cases.csv"
+    path = os.path.join(work, name)
+    with open(path, "wb") as fh:
+        fh.write(base64.b64decode(f.get("content_b64") or ""))
+    if f.get("data_b64"):
+        stem, ext = os.path.splitext(name)
+        data_name = os.path.basename(str(f.get("data_name") or "")) or (stem + "-data.csv")
+        if not data_name.lower().startswith(stem.lower() + "-data"):
+            data_name = stem + "-data" + os.path.splitext(data_name)[1]
+        with open(os.path.join(work, data_name), "wb") as fh:
+            fh.write(base64.b64decode(f["data_b64"]))
+    return FS.load_stories_payload(path)
+
+
+def _run_automation(E, run, cb):
+    """kind='automation': cases (Azure selection or uploaded file) -> clone the
+    Git repo -> headless inspection + replay + generation -> push. Returns the
+    pipeline result dict."""
+    import tempfile
+    p = run.get("params") or {}
+    os.environ["QA_REMOTE_RUN"] = "1"
+    sec = _automation_secrets(run)
+
+    def acb(msg, tone="dim", *a, **k):
+        if tone == "meta":
+            return
+        cb("log", {"msg": str(msg), "tone": "info" if tone == "story" else tone})
+    work = tempfile.mkdtemp(prefix="qa-auto-")
+    if p.get("file"):
+        acb("Loading test cases from the uploaded file…")
+        payload = _payload_from_upload(work, p["file"])
+    else:
+        payload = E.load_automation_payload(run.get("project") or "", p.get("selection") or [], acb,
+                                            should_stop=_should_stop,
+                                            only_automation=bool(p.get("only_automation")))
+    git_url = (p.get("git_url") or "").strip()
+    branch = (p.get("git_branch") or "main").strip() or "main"
+    token = (sec.get("git_token") or "").strip()
+    if not git_url or not token:
+        raise SystemExit("Automation runs push the project to Git: set the repository URL and "
+                         "save the access token (Automation screen) first.")
+    proj = os.path.join(work, "project")
+    ok, msg = E.git_clone_for_push(proj, git_url, token, branch, cb=acb)
+    if not ok:
+        raise SystemExit("Couldn't clone %s: %s" % (git_url, msg))
+    result = E.run_automation_pipeline(
+        proj, payload, {"site_url": p.get("site_url"), "login_url": p.get("login_url"),
+                        "login_user": p.get("login_user"), "login_pass": sec.get("app_pass") or "",
+                        "otp_secret": sec.get("otp_secret") or "", "target": p.get("target"),
+                        "browsers": p.get("browsers"), "allow_unverified": p.get("allow_unverified"),
+                        "report_to": ",".join(run.get("email_recipients") or [])},
+        cb=acb, should_stop=_should_stop, gate=_gate, on_error=_on_ai_error)
+    if result.get("status") == "generated" and not _should_stop():
+        ok, msg = E.push_to_git(proj, git_url, token, branch,
+                                message="QA Studio remote run: %s" % result.get("summary", ""), cb=acb)
+        result["pushed"] = bool(ok)
+        if not ok:
+            result.update(status="error", summary="Generated, but the push failed: %s" % str(msg)[:200])
+    return result
 
 
 # ── event feed: buffered, batched, never allowed to kill the run ────────────
@@ -343,6 +422,20 @@ def _email_report(E, run, status, summary, rpt):
                     "msg": "No email sent — Gmail App Password not synced "
                            "(Settings → Remote runs → Sync now)."})
         return
+    if run.get("kind") == "automation":
+        try:
+            rpt = rpt or {}
+            stats = dict(rpt.get("stats") or {})
+            stats["Result"] = status
+            html = E.build_report_email("Automation (remote)", rpt.get("summary") or summary or status, stats,
+                                        [], [], log_lines=[{"msg": ln.get("msg", ""), "tone": ln.get("tone", "dim")}
+                                                           for ln in _log_lines if ln.get("msg")])
+            ok, err = E.send_report(to, "QA Studio — Automation report", html)
+            _cb("log", {"tone": "ok" if ok else "warn",
+                        "msg": ("Report emailed to %s" % ", ".join(to)) if ok else "Report not emailed — %s" % err})
+        except Exception as ex:
+            _cb("log", {"tone": "warn", "msg": f"Report email failed: {str(ex)[:160]}"})
+        return
     try:
         tool_name = "Test Case Steps" if run.get("kind") == "steps" else "Test Case Titles"
         rpt = rpt or {}
@@ -418,11 +511,17 @@ def main():
         _ENGINE, _RUN = E, run
         E.set_output_lang(run.get("output_lang") or "ar")
         E.set_case_style(run.get("case_style") or "manual")
-        cred_src = _apply_credentials(E, run)
+        _auto_file = run["kind"] == "automation" and bool((run.get("params") or {}).get("file"))
+        cred_src = _apply_credentials(E, run, need_azure=not _auto_file)
         _cb("log", {"msg": f"Remote run starting — credentials: {cred_src}", "tone": "dim"})
         E.clear_stop()
         story_ids = [int(s) for s in (run.get("story_ids") or [])]
-        if run["kind"] == "titles":
+        if run["kind"] == "automation":
+            res = _run_automation(E, run, cb)
+            done_box.update(res)
+            if res.get("status") in ("blocked", "error"):
+                status = "error"
+        elif run["kind"] == "titles":
             E.run_titles(run["project"], run["plan_id"], story_ids, cb,
                          should_stop=_should_stop, on_ai_error=_on_ai_error,
                          gate=_gate)
