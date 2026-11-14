@@ -82,7 +82,7 @@ class GeneratorTests(unittest.TestCase):
                      "heal.assertInvalid("):
             self.assertIn(line, java)
         h = E._sh_healer("com.q")
-        for m in ("doubleClick(el)", "executeScript(RIGHT_CLICK_JS, el)", 'case "set_value":', "deselectAll()",
+        for m in ("doubleClick(VideoRecorder.raw(el))", "executeScript(RIGHT_CLICK_JS, el)", 'case "set_value":', "deselectAll()",
                   "public void exitFrame()", "public void backToOriginalWindow(boolean closeCurrent)",
                   "public boolean assertInvalid(", "a.sendKeys(text)"):
             self.assertIn(m, h)

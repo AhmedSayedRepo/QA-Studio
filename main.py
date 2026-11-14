@@ -68,6 +68,9 @@ import threading, traceback, time
 import flet as ft
 
 import theme as T
+
+# Pause / Resume lines in the Automation log (works on light and dark).
+_PAUSE_COLOR = "#8B5CF6"
 import store
 import strings
 import engine as E
@@ -7676,6 +7679,8 @@ class QAStudio:
         return ft.Column([remote_row, btn], spacing=0)
 
     def _start_run(self):
+        # A typed report address (no Enter) counts, and is remembered.
+        regression.flush_typed_emails(self, "setup_emails")
         # Belt-and-suspenders: the button above is already disabled while a
         # run is active, but _start_run can in principle still be invoked
         # directly (e.g. a stray double-click event queued before the button
@@ -8745,8 +8750,11 @@ class QAStudio:
         # VIOLET_INK — so a case's own group of lines visually stands apart
         # from connection/retry/status noise around it, instead of blending
         # into "dim" gray like everything else did before.
+        # "pause": your own Pause / Resume, in purple so it stands apart from
+        # warnings (amber) and progress (cyan); it isn't an issue.
         cmap = {"ok": T.GREEN, "err": T.RED, "warn": T.AMBER, "story": T.VIOLET_INK,
-                "info": T.VIOLET_INK, "case": T.STORY, "dim": T.INK_3, "review": T.AMBER}
+                "info": T.VIOLET_INK, "case": T.STORY, "dim": T.INK_3, "review": T.AMBER,
+                "pause": _PAUSE_COLOR}
         color = cmap.get(tone, T.INK_2)
         stripped = (msg or "").lstrip(" ")
         indent = len(msg or "") - len(stripped)
@@ -8773,7 +8781,7 @@ class QAStudio:
         # right-aligned RTL too, which garbled the English prefix/suffix
         # around the title.
         is_ar = bool(body_part) and ("\u0600" <= body_part[0] <= "\u06ff")
-        weight = ft.FontWeight.BOLD if tone in ("story", "ok") else ft.FontWeight.W_500
+        weight = ft.FontWeight.BOLD if tone in ("story", "ok", "pause") else ft.FontWeight.W_500
         # A heartbeat line ("\u23f1 0:25") already carries its own leading glyph
         # (in its meta half, or \u2014 for older/unsplit lines \u2014 at the very start
         # of the string) \u2014 giving it a second symbol in front doubled up
@@ -8794,6 +8802,9 @@ class QAStudio:
             sym = ft.Text("\u26a0", size=12, color=T.AMBER, weight=ft.FontWeight.BOLD)
         elif tone == "review":
             sym = ft.Text("\u2691", size=12, color=T.AMBER, weight=ft.FontWeight.BOLD)
+        elif tone == "pause":
+            sym = ft.Icon(ft.Icons.PAUSE_CIRCLE_OUTLINE if stripped.startswith("Paused")
+                          else ft.Icons.PLAY_CIRCLE_OUTLINE, size=13, color=_PAUSE_COLOR)
         elif tone == "story":
             sym = ft.Text("\u25b8", size=13, color=T.VIOLET_INK, weight=ft.FontWeight.BOLD)
         elif tone == "info":
@@ -8900,6 +8911,38 @@ class QAStudio:
         except Exception:
             pass
 
+    def _auto_refresh_progress(self):
+        """Update the toolbar's case counter IN PLACE (no row added, so the
+        Activity log keeps its height)."""
+        ctl = getattr(self, "_auto_case_ctr", None)
+        if ctl is None:
+            return
+        txt = getattr(self, "_auto_progress_text", "") if getattr(self, "_auto_running", False) else ""
+        try:
+            label = getattr(self, "_auto_case_txt", None)   # the text inside the chip
+            if label is not None:
+                label.value = txt
+            else:
+                ctl.value = txt
+            ctl.visible = bool(txt)
+            ctl.update()
+        except Exception:
+            pass
+
+    def _auto_track_progress(self, msg):
+        try:
+            import run_progress as _rp
+            st = getattr(self, "_auto_prog", None)
+            if st is None:
+                st = self._auto_prog = _rp.new_state()
+            if _rp.update(st, msg):
+                new = _rp.text(st)
+                if new != getattr(self, "_auto_progress_text", ""):
+                    self._auto_progress_text = new
+                    self.ui_safe(self._auto_refresh_progress)
+        except Exception:
+            pass
+
     def _auto_logmsg(self, msg, tone="dim"):
         import re as _re
         # 'TODO_LIVE: N' is a HIDDEN control line — update the TODO counter in place
@@ -8936,6 +8979,7 @@ class QAStudio:
                         pass
             self.ui_safe(_upd_skipped)
             return
+        self._auto_track_progress(msg)
         # drop consecutive duplicate lines (e.g. repeated "Paused…" notices).
         # Guarded by the same lock upd() uses below for the UI-sync read —
         # now that Automation's compile/dedupe loops call this from multiple
@@ -9269,7 +9313,10 @@ class QAStudio:
         self._copy_text_to_clipboard(text, ok_msg=strings.t("auto_copy_prompt_done"))
 
     def _copy_auto_log(self, e=None):
-        self._copy_log_text([ln.get("msg", "") for ln in getattr(self, "_auto_log", [])])
+        # Copy follows the tab: the Issues tab copies only the issue lines.
+        lines = log_view.lines_to_copy(getattr(self, "_auto_log", []),
+                                       bool(getattr(self, "_auto_log_issues", False)))
+        self._copy_log_text([ln.get("msg", "") for ln in lines])
 
     def _copy_run_log(self, e=None):
         self._copy_log_text([ln.get("msg", "") for ln in getattr(self, "_log_lines", [])])
@@ -9373,27 +9420,35 @@ class QAStudio:
             self._auto_cond.notify_all()
         self._auto_logmsg("Stopping after the current step…", "warn")
 
+    def _auto_refresh_buttons(self):
+        """Swap Pause <-> Resume (and Stop) in place: only the action buttons
+        are rebuilt, so the Activity log keeps its scroll position. Falls back
+        to a full render when the Automation screen isn't showing."""
+        try:
+            if getattr(self, "active", None) == "automation" and automation._refresh_auto_state(self):
+                return
+        except Exception:
+            pass
+        try:
+            self.render()
+        except Exception:
+            pass
+
     def _pause_automation(self):
         """Pause the run at the next safe point (between test cases)."""
         with self._auto_cond:
             self._auto_paused = True
         self._auto_logmsg("Paused. Switch the AI provider in Setup if needed, "
-                          "then Resume — or Stop to abort.", "warn")
-        try:
-            self.render()
-        except Exception:
-            pass
+                          "then Resume — or Stop to abort.", "pause")
+        self._auto_refresh_buttons()
 
     def _resume_automation(self):
         """Resume a paused run (e.g. after switching provider)."""
         with self._auto_cond:
             self._auto_paused = False
             self._auto_cond.notify_all()
-        self._auto_logmsg(strings.t("main_resuming"), "info")
-        try:
-            self.render()
-        except Exception:
-            pass
+        self._auto_logmsg(strings.t("main_resuming"), "pause")
+        self._auto_refresh_buttons()
 
     def _auto_gate(self):
         """Block while paused; return False if we're stopping (so the engine
@@ -9413,10 +9468,7 @@ class QAStudio:
                           "Resume — or Stop to abort.", "warn")
         with self._auto_cond:
             self._auto_paused = True
-        try:
-            self.render()
-        except Exception:
-            pass
+        self._auto_refresh_buttons()
         with self._auto_cond:
             while self._auto_paused and not self._auto_stop:
                 self._auto_cond.wait()
@@ -10205,6 +10257,10 @@ class QAStudio:
         self._auto_result = None     # end-of-run banner: (kind, detail)
         self._auto_log_toggles = {}  # user expand/collapse per case group
         self._auto_run_start = time.time()
+        # Live "Inspecting 3 / 31" counter in the log toolbar (run_progress.py).
+        import run_progress as _rp
+        self._auto_prog = _rp.new_state()
+        self._auto_progress_text = ""
         # In place: buttons, spinner, cards, banner and an emptied log — no
         # full render (keeps the form's scroll position and focus).
         if not automation.refresh_run_ui(self, starting=True):
@@ -10309,8 +10365,7 @@ class QAStudio:
                     elif _dd_src:
                         cb("Data file %s was found, but none of its rows matched a test case "
                            "(check the Test Case ID / Title column)." % _dd_src, "warn")
-                    elif any("{{" in (st.get("action", "") + st.get("expected", ""))
-                             for c in _local_cases for st in c.get("steps", [])):
+                    elif E._needs_data_file(_local_cases):
                         _stem = _os.path.splitext(_os.path.basename(
                             (self.auto_test_case_file or "").strip()))[0]
                         cb("No data file found \u2014 {{placeholders}} without a value use generated "
@@ -10622,6 +10677,15 @@ class QAStudio:
                 # live captures. Generation consumes that exact plan once, rather
                 # than compiling the spreadsheet a second time.
                 # The local screen JSON is diagnostic-only and git-ignored.
+                # A site URL typed without https:// (or left empty when the steps
+                # open full URLs) is fixed once here, so inspection, replay and the
+                # generated project all get the same valid URL.
+                _fixed_site = E.resolve_site_url(self.auto_site_url, walk_payload or stories_payload)
+                if _fixed_site and _fixed_site != (self.auto_site_url or "").strip():
+                    self.auto_site_url = _fixed_site
+                    cb("Target site URL: " + _fixed_site.split("?")[0], "info")
+                if (self.auto_login_url or "").strip():
+                    self.auto_login_url = E.resolve_site_url(self.auto_login_url)
                 _login_url = self.auto_login_url.strip() or self.auto_site_url.strip()
                 # Cases verified AND passed in an earlier run of this folder (same
                 # content, same site) reuse their saved plan; only new, changed or
@@ -10653,7 +10717,16 @@ class QAStudio:
                         {"url": _login_url, "user": self.auto_login_user,
                          "password": self.auto_login_pass},
                         self.auto_site_url.strip(), cb=cb,
-                        should_stop=lambda: self._auto_stop, headless=False)
+                        # Pause blocks here between test cases (the browser
+                        # stays open); Stop ends the walk.
+                        should_stop=lambda: not self._auto_gate(), headless=False)
+                    if inspection.get("config_error"):
+                        # Nothing was inspected: stop instead of generating
+                        # scripts with unverified locators.
+                        self._auto_result = ("blocked", "")
+                        cb("Stopped before generation: fix the Target site URL / Login URL "
+                           "(one full https:// address) and run again.", "err")
+                        return
                     _to_walk = inspection.get("stories_payload") or _to_walk
                     _inspection_report = E.write_inspection_screens(project_dir, inspection, cb=cb)
                     # The local report is the durable hand-off between visible
@@ -10683,7 +10756,9 @@ class QAStudio:
                         {"url": _login_url, "user": self.auto_login_user,
                          "password": self.auto_login_pass},
                         self.auto_site_url.strip(), cb=cb,
-                        should_stop=lambda: self._auto_stop, headless=False)
+                        # Pause blocks here between test cases (the browser
+                        # stays open); Stop ends the walk.
+                        should_stop=lambda: not self._auto_gate(), headless=False)
                     E.write_verification_report(project_dir, _replay)
                     # Remember what passed (and forget what failed) for next time —
                     # only when the replay actually ran: a skipped replay proves nothing.
@@ -10714,8 +10789,8 @@ class QAStudio:
                 login = {"url": _login_url} if _login_url else None
                 # Opt-in: put the test account in the JS project's git-ignored
                 # .env so the scripts run straight from the IDE.
+                # (Selenium reads the same git-ignored .env via Config.getenv.)
                 if (getattr(self, "auto_env_creds", False)
-                        and getattr(self, "_auto_target", "selenium") != "selenium"
                         and (self.auto_login_user or "").strip()):
                     login = dict(login or {})
                     login["env_user"] = (self.auto_login_user or "").strip()
@@ -10752,6 +10827,13 @@ class QAStudio:
                 else:
                     self._auto_result = ("nothing", "")
                     cb("Nothing new to generate — existing tests are kept as-is.", "ok")
+                # Browsers picked on the Framework card go into the project's
+                # config (also when no script changed), so runs need no IDE setup.
+                try:
+                    E.apply_run_browsers(project_dir, getattr(self, "_auto_target", "selenium"),
+                                         self.creds.get("auto_browsers"), cb=cb)
+                except Exception as _browser_err:
+                    cb(f"Couldn't save the browser choice: {_browser_err}", "warn")
 
                 self._auto_out_dir = project_dir
                 self.creds["auto_local_path"] = (self.auto_local_path or "").strip()

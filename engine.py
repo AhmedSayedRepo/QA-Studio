@@ -194,17 +194,42 @@ PRICING = {
         "claude-haiku-4-5-20251001":  {"in": 1.0,   "out": 5.0},
     },
     "openai": {
-        "gpt-4o":        {"in": 2.5,  "out": 10.0},
-        "gpt-4o-mini":   {"in": 0.15, "out": 0.6},
-        "gpt-4.1":       {"in": 2.0,  "out": 8.0},
-        "gpt-4.1-mini":  {"in": 0.4,  "out": 1.6},
-        "gpt-4.1-nano":  {"in": 0.1,  "out": 0.4},
-        # GPT-5.6 rates below are standard direct-API, short-context, uncached
-        # pricing. Usage events do not retain cache, processing-mode, or
-        # long-context metadata, so those variants cannot be priced exactly.
-        "gpt-5.6-sol":    {"in": 5.0,  "out": 30.0},
+        # Standard direct-API, short-context, uncached rates from OpenAI's
+        # pricing page (reviewed 2026-11). Usage events do not retain cache,
+        # processing-mode, or long-context metadata, so those variants cannot
+        # be priced exactly. Dated ids (gpt-4o-2024-08-06) use their base rate.
+        "gpt-6-astra":    {"in": 10.0, "out": 50.0},
+        "gpt-6.1-sol":    {"in": 2.0,  "out": 10.0},
+        "gpt-6.1-terra":  {"in": 1.0,  "out": 5.0},
+        "gpt-6-sol":      {"in": 2.0,  "out": 10.0},
+        "gpt-6-luna":     {"in": 0.1,  "out": 0.5},
+        "gpt-5.6-sol":    {"in": 4.0,  "out": 20.0},
         "gpt-5.6-terra":  {"in": 2.0,  "out": 12.0},
         "gpt-5.6-luna":   {"in": 0.2,  "out": 1.2},
+        "gpt-5.5":        {"in": 5.0,  "out": 30.0},
+        "gpt-5.5-pro":    {"in": 30.0, "out": 180.0},
+        "gpt-5.4":        {"in": 2.5,  "out": 15.0},
+        "gpt-5.4-pro":    {"in": 30.0, "out": 180.0},
+        "gpt-5.4-mini":   {"in": 0.75, "out": 4.5},
+        "gpt-5.4-nano":   {"in": 0.2,  "out": 1.25},
+        "gpt-5.3-codex":  {"in": 1.75, "out": 14.0},
+        "gpt-5.2":        {"in": 1.75, "out": 14.0},
+        "gpt-5.2-pro":    {"in": 21.0, "out": 168.0},
+        "gpt-5.1":        {"in": 1.25, "out": 10.0},
+        "gpt-5":          {"in": 1.25, "out": 10.0},
+        "gpt-5-mini":     {"in": 0.25, "out": 2.0},
+        "gpt-5-nano":     {"in": 0.05, "out": 0.4},
+        "gpt-5-pro":      {"in": 15.0, "out": 120.0},
+        "gpt-5-search-api": {"in": 1.25, "out": 10.0},
+        "chat-latest":    {"in": 5.0,  "out": 30.0},
+        "gpt-4.1":        {"in": 2.0,  "out": 8.0},
+        "gpt-4.1-mini":   {"in": 0.4,  "out": 1.6},
+        "gpt-4.1-nano":   {"in": 0.1,  "out": 0.4},
+        "gpt-4o":         {"in": 2.5,  "out": 10.0},
+        "gpt-4o-mini":    {"in": 0.15, "out": 0.6},
+        "o3-pro":         {"in": 20.0, "out": 80.0},
+        "o3":             {"in": 2.0,  "out": 8.0},
+        "o4-mini":        {"in": 1.1,  "out": 4.4},
     },
     "azure_openai": {
         # Azure invoices can differ by region, service tier, and deployment
@@ -214,6 +239,9 @@ PRICING = {
         "gpt-4o-mini":   {"in": 0.15, "out": 0.6},
         "gpt-4.1":       {"in": 2.0,  "out": 8.0},
         "gpt-4.1-mini":  {"in": 0.4,  "out": 1.6},
+        "gpt-5":         {"in": 1.25, "out": 10.0},
+        "gpt-5-mini":    {"in": 0.25, "out": 2.0},
+        "gpt-5-nano":    {"in": 0.05, "out": 0.4},
     },
     "gemini": {
         # Gemini Pro has a higher long-context rate. Usage events do not retain
@@ -252,14 +280,30 @@ PRICING = {
 }
 
 
+_DATED_MODEL_RE = re.compile(r"-(?:\d{4}-\d{2}-\d{2}|\d{8})$")
+
+
 def price_for(provider, model):
     """$/1M-token rate for one provider+model, or None if we don't have a
-    confident published price for it (never guessed from a similar model)."""
+    confident published price for it (never guessed from a similar model).
+    The same model under another spelling still matches: any letter case, a
+    dated snapshot id (gpt-4o-2024-08-06, claude-haiku-4-5-20251001) and an
+    "openai/" style prefix on the provider's own model."""
     provider = str(provider or "").strip().lower()
     model = str(model or "").strip()
     if provider == "ollama" or (provider == "openrouter" and model.lower().endswith(":free")):
         return {"in": 0.0, "out": 0.0}
-    return (PRICING.get(provider) or {}).get(model)
+    table = PRICING.get(provider) or {}
+    if model in table:
+        return table[model]
+    lower = {k.lower(): v for k, v in table.items()}
+    name = model.lower()
+    if provider in ("openai", "azure_openai") and name.startswith("openai/"):
+        name = name[len("openai/"):]
+    for cand in (name, _DATED_MODEL_RE.sub("", name)):
+        if cand in lower:
+            return lower[cand]
+    return None
 
 
 def _call_cost(provider, model, input_tokens, output_tokens):
@@ -3920,9 +3964,24 @@ Test Case ID,Test Case Title,Step,Action,Expected Result,Element Type,Preferred 
    - checkbox, native select, link, button, text input, password input → optional, only when the label alone is ambiguous
    - Built-in browser validation (the "Please fill out this field" bubble) is not page text: write the Expected Result as: The \"<field label>\" field is flagged as invalid
 9. Preferred Locator (optional): a CSS selector you are SURE of (e.g. #file-upload); QA Studio still verifies it on the live page.
-10. Automation Note (optional): timing hints such as "wait up to 10 seconds for the loading bar".
+10. No Wait or Scroll steps: QA Studio waits for each element to be visible, enabled and not covered (about 8 seconds) and scrolls the page to find it. Automation Note (optional): only for longer waits, such as "wait up to 30 seconds for the report to be generated".
 11. Data-driven cases (the same steps with several sets of values): write each changing value as a placeholder in double curly braces inside the quotes, e.g. Type "{{username}}" in the "Username" field / Expected Result: The message "{{message}}" is shown. Then, AFTER the CSV, output a second CSV block titled DATA with the columns: Test Case ID,Data Set,<one column per placeholder> — one row per run (Data Set is a short name such as "valid user"). Save it next to the cases file as <cases file name>-data.csv (or as a sheet named Data in the same Excel file).
    - Generated values need no data row: {{random.email}}, {{random.number}}, {{random.text}}, {{today}}, {{today+3d}}, {{now}}.
+12. Page-level checks — use these exact phrasings in the Expected Result (no element needed):
+   - The URL contains \"/secure\"   (or: The URL is \"https://…\")
+   - The page title is \"Dashboard\"   (or: The page title contains \"Dash\")
+   - The table has 4 rows   (also: at least 2 rows / at most 10 rows)
+   - \"Delete\" appears 3 times   (an exact text shown that many times)
+   - The \"Last Name\" column is sorted ascending   (or descending)
+   - The page shows text matching \"ORD-\\d+\"   (a regular expression)
+   Remember a value and reuse it later: Action: Remember the text matching \"ORD-(\\d+)\" as {{order}} — then use \"{{order}}\" in any later step (the part in brackets is kept, otherwise the whole match).
+13. Attribute checks — Expected Result: The \"Home\" link has \"href\" containing \"/home\"   (also: has \"type\" equal to \"submit\" / has no \"disabled\" attribute).
+14. Page actions — use these exact phrasings as the Action (no element needed):
+   - Pagination: Go to the next page / Go to page 3 / Click Next page until \"<exact row text>\" is shown   (check: Page 3 is the current page)
+   - Cookies: Set cookie \"theme\" to \"dark\" / Delete cookie \"theme\" / Delete all cookies   (checks: Cookie \"theme\" is \"dark\" / Cookie \"theme\" exists / Cookie \"theme\" is deleted)
+   - Storage: Set local storage \"token\" to \"abc\" / Set session storage \"cart\" to \"2\" / Clear local storage / Clear local and session storage   (checks: Local storage \"token\" is \"abc\" / contains \"ab\" / is removed; the same with Session storage)
+   - Protected pages: Open \"/admin\" with basic auth \"{{APP_USER}}\" / \"{{APP_PASS}}\"   (or: with digest auth …)
+   - Refresh the page / Go back / Go forward
 
 Now write the CSV."""
 
@@ -6836,6 +6895,36 @@ def build_report_email(tool, summary, stats, action_items=None, skipped_items=No
 </table>
 </td></tr></table></center></body></html>"""
 
+def _automation_preheader(status, stats):
+    """Hidden first line of the automation email: what a phone notification or
+    inbox list shows ("Completed · 9/9 replay passed · 4 proven locators · 0
+    need review") instead of the metric table read as one run-on line."""
+    stats = stats or {}
+
+    def num(key):
+        v = stats.get(key)
+        return None if v in (None, "") else str(v).strip()
+
+    parts = [str(status or "").strip()]
+    if num("Replay passed"):
+        parts.append("%s replay passed" % num("Replay passed"))
+    elif num("Test cases"):
+        parts.append("%s test cases" % num("Test cases"))
+    if num("Proven locators"):
+        parts.append("%s proven locator%s" % (num("Proven locators"),
+                                              "" if num("Proven locators") == "1" else "s"))
+    if num("Needs review") is not None:
+        parts.append("%s need%s review" % (num("Needs review"),
+                                           "s" if num("Needs review") == "1" else ""))
+    if num("Time"):
+        parts.append(num("Time"))
+    text = " \u00b7 ".join(p for p in parts if p)
+    # The filler keeps the email body from running on after it in the preview.
+    filler = "&#847;&zwnj;&nbsp;" * 60
+    return ("<div style='display:none;max-height:0;overflow:hidden;mso-hide:all;font-size:1px;"
+            "line-height:1px;color:transparent;opacity:0'>%s%s</div>" % (_html.escape(text), filler))
+
+
 def build_automation_report_email(target, summary, stats, project_dir=None, git_url=None,
                                   git_branch=None, log_lines=None, org=None, project=None,
                                   failed=False, stopped=False, source=None, blocked=False):
@@ -7016,10 +7105,12 @@ def build_automation_report_email(target, summary, stats, project_dir=None, git_
         meta_html=(f"<div style='font-family:{MONO};font-size:11px;color:{INK3};margin-top:8px;line-height:1.6'>"
                    f"Org: {_html.escape(str(org))} &middot; Project: {_html.escape(str(project))}</div>"
                    if (org and project) else ""))
+    preheader = _automation_preheader(pill_txt, stats)
 
     return f"""<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
 </head>
 <body style='margin:0;padding:0;background:{PAPER};-webkit-text-size-adjust:100%'>
+{preheader}
 <center style='width:100%;background:{PAPER}'>
 <table role='presentation' width='100%' cellpadding='0' cellspacing='0' style='background:{PAPER}'><tr>
 <td align='center' style='padding:26px 12px 48px'>
@@ -7638,7 +7729,10 @@ function selectorCandidates(el){
   return out.slice(0,5);
 }
 const sel='input,button,a,select,textarea,iframe,frame,[role=button],[role=link],[role=tab],[role=menuitem],[role=option],[role=checkbox],[role=switch],[role=combobox],[contenteditable=true],[draggable=true],.ui-draggable,[data-rbd-draggable-id],[aria-roledescription=draggable],[aria-roledescription=sortable]';
-const textSel='[role=heading],[role=status],[role=alert],h1,h2,h3,h4,h5,h6,.inventory_item_name,.cart_item,.shopping_cart_badge,.title,.flash,.figcaption,.subheader,#result,#uploaded-files,[data-testid]';
+const textSel='[role=heading],[role=status],[role=alert],h1,h2,h3,h4,h5,h6,.inventory_item_name,.cart_item,.shopping_cart_badge,.title,.flash,.figcaption,.subheader,#result,#uploaded-files,[data-testid],'+
+  // Result/response/output areas a page writes into after an action (a JS
+  // dialog's answer, a form echo): matched by id, not one site's exact id.
+  'output,[id*=result i],[id*=response i],[id*=output i],[id$=message i],[id*=status i]';
 function adjacentText(el){
   // Some plain HTML forms put a checkbox's human label in an unwrapped text
   // node immediately after the input (<input> checkbox 1), so no associated
@@ -7840,6 +7934,23 @@ _VOLATILE_ID = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}|_[0-9]+_[0-9]+)", re.I)
 
 
+# Text that changes on every run: a long number (an upload timestamp such as
+# "1794528885455_report.txt") or a GUID. Locators match the stable rest.
+_VOLATILE_TEXT = re.compile(r"\d{8,}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
+
+
+def _stable_text(txt):
+    """'1794528885455_qastudio-upload.txt' -> 'qastudio-upload.txt'; None when
+    the text has no volatile part (or nothing usable is left)."""
+    t = str(txt or "").strip()
+    if not t or not _VOLATILE_TEXT.search(t):
+        return None
+    parts = [p.strip(" _-.:#|/") for p in _VOLATILE_TEXT.split(t)]
+    parts = [p for p in parts if p]
+    best = max(parts, key=len) if parts else ""
+    return best if len(best) >= 4 else None
+
+
 def _xq(s):
     """Quote a string for an XPath literal, handling embedded quotes via concat()."""
     s = s or ""
@@ -7918,6 +8029,8 @@ def _infer_page_context(tc, case_type="interaction"):
     title = _norm(tc.get("title", ""))
     if any(_norm(k) in title for k in _LOGIN_PAGE_KWS):
         return "login"
+    if _opens_login_url(tc):
+        return "login"
     blob = _norm(_tc_blob(tc))
     # a language case described as a DROPDOWN / choose-between is the login page;
     # the in-app control is a single toggle with no dropdown.
@@ -7925,6 +8038,24 @@ def _infer_page_context(tc, case_type="interaction"):
     if lang and any(_norm(k) in blob for k in _DROPDOWN_KWS):
         return "login"
     return "app"
+
+
+_LOGIN_PATH_RE = re.compile(r"/(?:log-?in|sign-?in|signin|auth/login|account/login)(?:[/?#.]|$)", re.I)
+
+
+def _opens_login_url(tc):
+    """The case's FIRST step opens the login page ('Open https://x/login'):
+    it is about that page, so it must run logged out - a logged-in session is
+    sent on to the app and the login form isn't there to check."""
+    for st in (tc.get("steps") or []):
+        if not isinstance(st, dict):
+            continue
+        m = re.search(r"https?://[^\s\"'<>]+", str(st.get("action") or ""))
+        if not m:
+            return False
+        from urllib.parse import urlsplit
+        return bool(_LOGIN_PATH_RE.search(urlsplit(m.group(0).rstrip(".,;)")).path or "/"))
+    return False
 
 
 def _case_has_explicit_login_flow(intents):
@@ -8103,6 +8234,7 @@ _VERB_SYNONYMS = {
     "context click": "right_click", "rightclick": "right_click", "set": "set_value",
     "scroll to": "scroll_to", "scroll": "scroll_to", "autocomplete": "autocomplete",
     "drag": "drag", "drag and drop": "drag",
+    "clear": "clear", "empty": "clear", "erase": "clear",
 }
 _ASSERTION_VERB_WORDS = {"verify", "check", "assert", "expect", "confirm",
                          "تأكد", "تحقق", "يظهر", "تظهر"}
@@ -8110,10 +8242,31 @@ _VALID_ACTION_VERBS = ("navigate", "click", "type", "select", "hover", "wait",
                        "frame", "dialog_accept", "dialog_dismiss", "window_switch",
                        "upload", "key_press", "double_click", "right_click", "set_value",
                        "frame_exit", "window_back", "window_close", "autocomplete",
-                       "scroll_to", "drag")
+                       "scroll_to", "drag", "clear")
 # Browser-context steps that act on the browser, not on a page element.
 _CONTEXT_VERBS = ("dialog_accept", "dialog_dismiss", "window_switch", "frame_exit",
                   "window_back", "window_close")
+
+
+_KEY_NAMES = (r"enter|return|escape|esc|tab|space|backspace|delete|home|end|page\s?up|page\s?down|"
+              r"arrow\s?up|arrow\s?down|arrow\s?left|arrow\s?right")
+_KEY_MODS = r"ctrl|control|shift|alt|option|meta|cmd|command"
+_KEY_PRESS_RE = (r"\bpress\s+(?:the\s+)?(?:(?:%s)\s*\+\s*)*(?:%s|[a-z0-9])\b" % (_KEY_MODS, _KEY_NAMES))
+
+
+def _key_value(text):
+    """'Press Ctrl+A' -> 'CONTROL+A', 'press shift + tab' -> 'SHIFT+TAB',
+    'Press Enter' -> 'ENTER' (one format for every framework)."""
+    m = re.search(r"\bpress\s+(?:the\s+)?((?:(?:%s)\s*\+\s*)*)(%s|[a-z0-9])\b" % (_KEY_MODS, _KEY_NAMES),
+                  str(text or ""), re.I)
+    if not m:
+        return ""
+    mods = {"ctrl": "CONTROL", "control": "CONTROL", "shift": "SHIFT", "alt": "ALT", "option": "ALT",
+            "meta": "META", "cmd": "META", "command": "META"}
+    parts = [mods[p.strip().lower()] for p in re.split(r"\s*\+\s*", m.group(1)) if p.strip()]
+    key = re.sub(r"\s+", "", m.group(2)).upper()
+    key = {"RETURN": "ENTER", "ESC": "ESCAPE"}.get(key, key)
+    return "+".join(parts + [key])
 
 
 def _source_operation_contract(step):
@@ -8212,10 +8365,13 @@ def _source_operation_contract(step):
            not re.search(r"https?://|^\s*(open|navigate|go to|visit)\b", action, re.I) and
            not any(word in source for word in ("button", "link", "page")))):
         verb, kind, value = "upload", "input", "fixtures/qastudio-upload.txt"
-    elif "keyboard" in element_type or re.search(r"\bpress\s+(?:the\s+)?(?:enter|escape|tab|arrow|space)", source):
+    elif not is_verify and re.match(r"\s*(clear|empty|erase)\b", action, re.I) \
+            and not any(t in element_type for t in ("button", "link")):
+        # 'Clear the "Input: Text" field' (not the "Clear" button: that is a click).
+        verb, kind = "clear", "input"
+    elif "keyboard" in element_type or re.search(_KEY_PRESS_RE, source):
         verb, kind = "key_press", "input"
-        match = re.search(r"\b(enter|escape|tab|arrowup|arrowdown|arrowleft|arrowright|space)\b", source)
-        value = (match.group(1).upper() if match else "ENTER")
+        value = _key_value(action) or _key_value(source) or "ENTER"
     # Reviewed control types prevent the compiler from changing a real link
     # into a guessed navigate intent or a submit input into a page/body click.
     # Verification rows deliberately remain assertions rather than becoming
@@ -8433,6 +8589,56 @@ def _normalise_browser_http_url(value, label):
     return urlunsplit((parts.scheme.lower(), parts.netloc, path, query, fragment))
 
 
+def _login_click(driver, el):
+    """Click a login / continue button even when an ad, cookie banner or sticky
+    footer covers it: scroll it to the middle of the window and click; if the
+    browser says something else would receive the click, click it with
+    JavaScript (the button itself, so the form submits normally)."""
+    try:
+        driver.execute_script("arguments[0].scrollIntoView({block:'center',inline:'nearest'});", el)
+    except Exception:
+        pass
+    try:
+        el.click()
+    except Exception as e:
+        name = type(e).__name__
+        if "Intercepted" not in name and "NotInteractable" not in name:
+            raise
+        driver.execute_script("arguments[0].click();", el)
+
+
+def resolve_site_url(value, stories_payload=None):
+    """The Target site URL to use for a run, fixed up before anything starts:
+    `practice.example.com/x` gets https:// (http:// for localhost / an IP), and
+    an empty field falls back to the site of the first "Open https://..." step
+    in the test cases. Anything still invalid is returned unchanged, so the
+    normal check reports it."""
+    from urllib.parse import urlsplit
+    original = (value or "").strip()
+    raw = original.replace("\u200b", "").replace("\ufeff", "").strip()
+    if raw and not re.match(r"(?i)^[a-z][a-z0-9+.-]*://", raw):
+        host = re.match(r"(?i)^(localhost|\d{1,3}(?:\.\d{1,3}){3}|[a-z0-9-]+(?:\.[a-z0-9-]+)+)(?::\d+)?(?:[/?#]|$)", raw)
+        if host:
+            local = host.group(1).lower() == "localhost" or re.match(r"^\d", host.group(1))
+            fixed = ("http://" if local else "https://") + raw
+            try:
+                _normalise_browser_http_url(fixed, "Target site URL")
+                return fixed
+            except ValueError:
+                return original
+    if raw:
+        return original
+    for sp in stories_payload or []:
+        for tc in sp.get("test_cases") or []:
+            for st in tc.get("steps") or []:
+                m = re.search(r"https?://[^\s\"'<>]+", str((st or {}).get("action") or ""))
+                if m:
+                    parts = urlsplit(m.group(0).rstrip(".,;)"))
+                    if parts.hostname and parts.username is None and parts.password is None:
+                        return "%s://%s" % (parts.scheme.lower(), parts.netloc)
+    return raw
+
+
 def _is_negative_assertion(intent):
     """Whether an assertion verifies that a previously visible element vanished."""
     if intent.get("role") != "assertion":
@@ -8489,6 +8695,50 @@ def _quoted_phrases(text):
     return out
 
 
+def _re_literal(text):
+    """A regular expression matching `text` literally (JavaScript syntax;
+    spaces left as they are so labels stay readable)."""
+    return re.sub(r"([.*+?^${}()|\[\]\\/])", r"\\\1", str(text or ""))
+
+
+def _page_text_phrase(intent, steps=None):
+    """The exact authored text a plain "X is shown" check is about, when it
+    can be checked as page text: a text check (not a field value, state,
+    table cell, ...) whose target or keyword is one quoted phrase of its
+    source step's expected result. None otherwise."""
+    if intent.get("role") != "assertion" or _is_negative_assertion(intent):
+        return None
+    # The model names a plain "is shown" check several ways ("text",
+    # "text_visible", "visible"...): all of them are page text here.
+    check = str(intent.get("check") or "").strip().lower()
+    if not (check in ("", "text", "visible", "shown", "displayed", "present")
+            or check.startswith("text")):
+        return None
+    authored = []
+    for n in intent.get("from_steps") or []:
+        if isinstance(n, int) and steps and 1 <= n <= len(steps):
+            authored += _quoted_phrases((steps[n - 1] or {}).get("expected"))
+    by_norm = {_norm(p): p for p in authored if p.strip()}
+    for cand in [intent.get("target")] + list(intent.get("keywords") or []):
+        hit = by_norm.get(_norm(str(cand or "")))
+        if hit and len(hit) >= 2:
+            return hit
+    return None
+
+
+def _holds_authored_text(el, intent, steps=None):
+    """False when a plain text check names exact authored text (a quoted
+    phrase) and the element bound for it doesn't show that text. True when
+    there is no such phrase or the element's text isn't known."""
+    phrase = _page_text_phrase(intent, steps)
+    if not phrase:
+        return True
+    blob = " ".join(str(el.get(k) or "") for k in ("text", "value", "aname", "aria", "placeholder"))
+    if not blob.strip():
+        return True
+    return _norm(phrase) in _norm(blob)
+
+
 def _split_by_quoted_expected(intent, steps=None):
     """Atomic checks from the authored expected result's quoted phrases.
 
@@ -8508,7 +8758,7 @@ def _split_by_quoted_expected(intent, steps=None):
     # value / state, a table cell or a download are not page-text checks.
     if intent.get("split_part") or (intent.get("check") or "") in (
             "value", "table", "download", "invalid", "checked", "unchecked",
-            "enabled", "disabled", "selected"):
+            "enabled", "disabled", "selected") + _PAGE_CHECKS:
         return []
     phrases = _quoted_phrases(intent.get("expected"))
     if len(phrases) < 2 and steps:
@@ -8522,6 +8772,18 @@ def _split_by_quoted_expected(intent, steps=None):
                            if p not in src)
         if len(src) > len(phrases):
             phrases = src
+    # 'The URL contains "/digest-auth". "Congratulations" is shown': the URL
+    # (title, cookie, storage, attribute...) phrase is already its own page
+    # check - don't also look for it as page text.
+    if steps:
+        covered = set()
+        for n in intent.get("from_steps") or []:
+            if isinstance(n, int) and 1 <= n <= len(steps):
+                for _c, _v, _p in _page_checks_in((steps[n - 1] or {}).get("expected")):
+                    for _x in (_p if isinstance(_p, tuple) else (_p,)):
+                        if _x:
+                            covered.add(_norm(_x))
+        phrases = [p for p in phrases if _norm(p) not in covered]
     if not phrases:
         return []
     if len(phrases) == 1 and _norm(phrases[0]) == _norm(str(intent.get("target") or "")):
@@ -8624,7 +8886,7 @@ def compile_test_case(tc, story=None, log=None, case_type="interaction",
         "no commentary. Each <intent> object has exactly these fields:\n"
         '  "role"      : "precondition" | "action" | "assertion"\n'
         '  "verb"      : for role=action one of [navigate,click,type,select,hover,wait,'
-        'double_click,right_click,set_value,autocomplete,scroll_to,drag]; else "" (set_value = date/time/range/color '
+        'double_click,right_click,set_value,autocomplete,scroll_to,drag,clear]; else "" (clear = empty a field; set_value = date/time/range/color '
         'inputs, value in the field\'s own format, e.g. 2026-01-31 or 50)\n'
         '  "target"    : short human name of the element or goal\n'
         '  "keywords"  : 1-6 short tokens — the EXACT visible text/aria-label/placeholder '
@@ -8805,15 +9067,31 @@ def compile_test_case(tc, story=None, log=None, case_type="interaction",
         # normalized ordinary prose, before any locator binding is considered.
         raw_steps = tc.get("steps") or []
         clean = _apply_source_operation_contracts(clean, raw_steps)
+        # Assertions pack: URL / title / count / sort / pattern checks and
+        # remember steps, read from the authored wording.
+        clean = _apply_assertion_pack(clean, raw_steps)
         # Preferred locators from a reviewed local file are verification aids
         # for *both* actions and assertions.  They are used only when Selenium
         # proves the selector exists in the current document/frame; unlike a
         # generated seed they never bypass the live-inspection evidence gate.
+        # A row's Preferred Locator belongs to that row's ACTION ("Click the
+        # Remove button" -> #checkbox-example button). A check on the same row
+        # ('the checkbox disappears', '"Output: Text" shows "xyz"') is about a
+        # different element, so it only takes the locator of a row with no
+        # action of its own ("Check the text field" -> #input-example input).
+        action_rows = {n for it_ in clean if it_.get("role") == "action"
+                       for n in (it_.get("from_steps") or [])}
         for intent in clean:
-            for step_no in intent.get("from_steps") or []:
+            steps_for = list(intent.get("from_steps") or [])
+            is_check = intent.get("role") == "assertion"
+            if is_check:
+                steps_for.reverse()          # the later row holds the expected result
+            for step_no in steps_for:
                 if 1 <= step_no <= len(raw_steps):
                     source_step = raw_steps[step_no - 1] or {}
                     preferred = str(source_step.get("preferred_locator") or "").strip()
+                    if is_check and step_no in action_rows:
+                        preferred = ""
                     if preferred and not intent.get("preferred_locator"):
                         intent["preferred_locator"] = preferred
                     frame_context = str(source_step.get("frame_context") or "").strip()
@@ -9277,6 +9555,8 @@ def _to_locator(el):
             else (el.get("css") or "")
         return {"by": "shadow", "value": el["shadow"].strip() + " >>> " + inner}
     tid = (el.get("testid") or "").strip()
+    if tid and _VOLATILE_TEXT.search(tid) and _stable_text(el.get("text")):
+        tid = ""                    # run-specific (upload timestamp): see below
     if tid:
         return {"by": "css", "value": '[data-testid="%s"]' % tid}
     svg = (el.get("svgicon") or "").strip()
@@ -9295,6 +9575,10 @@ def _to_locator(el):
     if aria:
         return {"by": "xpath", "value": "//*[@aria-label=%s]" % _xq(aria)}
     txt = (el.get("text") or "").strip()
+    stable = _stable_text(txt)
+    if stable:
+        return {"by": "xpath", "value": "(//%s[contains(normalize-space(), %s)])[last()]"
+                % (el.get("tag") or "*", _xq(stable))}
     if txt and len(txt) <= 40:
         return {"by": "xpath",
                 "value": "//%s[normalize-space()=%s]" % (el.get("tag", "*"), _xq(txt))}
@@ -9302,6 +9586,13 @@ def _to_locator(el):
     if css and not _VOLATILE_ID.search(css):
         return {"by": "css", "value": css}
     return {"by": "xpath", "value": el.get("xpath", "")}
+
+
+def _positional(sel, text):
+    """A selector that only works by list position (nth-of-type / nth-child)
+    or that spells out run-specific text."""
+    return bool(re.search(r":nth-(?:of-type|child)\(", sel or "")) or \
+        bool(_VOLATILE_TEXT.search(sel or "") and (_VOLATILE_TEXT.search(text or "")))
 
 
 def _locator_candidates(el):
@@ -9318,7 +9609,18 @@ def _locator_candidates(el):
         if value and not any(c["by"] == by and c["value"] == value for c in out):
             out.append({"by": by, "value": value})
 
+    txt_all = (el.get("text") or "").strip()
+    stable = _stable_text(txt_all)
+    if stable:
+        # Run-specific text (an upload timestamp): the exact text and the list
+        # position both point at a different item next run. Match the stable
+        # part; [last()] / [1] make it unique (newest at either end of a list).
+        expr = "//%s[contains(normalize-space(), %s)]" % (el.get("tag") or "*", _xq(stable))
+        add("xpath", "(%s)[last()]" % expr)
+        add("xpath", "(%s)[1]" % expr)
     tid = (el.get("testid") or "").strip()
+    if tid and stable and _VOLATILE_TEXT.search(tid):
+        tid = ""
     if tid:
         # The harvest's `testid` comes from data-testid OR data-test OR data-cy
         # (SauceDemo uses data-test); offer all three — the proof keeps the
@@ -9336,17 +9638,17 @@ def _locator_candidates(el):
     if aria:
         add("xpath", "//*[@aria-label=%s]" % _xq(aria))
     txt = (el.get("text") or "").strip()
-    if txt and len(txt) <= 40:
+    if txt and len(txt) <= 40 and not stable:
         if (el.get("tag") or "").lower() == "input":
             # <input type=submit value="Upload">: the label lives in @value.
             add("xpath", "//input[@value=%s]" % _xq(txt))
         else:
             add("xpath", "//%s[normalize-space()=%s]" % (el.get("tag") or "*", _xq(txt)))
     for sel in (el.get("selectorCandidates") or []):
-        if sel and not _VOLATILE_ID.search(sel):
+        if sel and not _VOLATILE_ID.search(sel) and not (stable and _positional(sel, txt_all)):
             add("css", sel)
     css = el.get("css") or ""
-    if css and not _VOLATILE_ID.search(css):
+    if css and not _VOLATILE_ID.search(css) and not (stable and _positional(css, txt_all)):
         add("css", css)
     chain = (el.get("shadow") or "").strip()
     if chain:
@@ -9418,6 +9720,20 @@ def _prove_locator(driver, el, By, max_fallbacks=2):
             if len(proven) > max_fallbacks:
                 break
     if not proven:
+        # Run-specific text (several "<timestamp>_report.txt" links): the step
+        # means "a link with this name", not that exact upload. Accept the
+        # stable [last()] locator when it resolves to exactly one such link.
+        stable = _stable_text(el.get("text"))
+        if stable:
+            for cand in _locator_candidates(el)[:2]:
+                hits = find(cand["by"], cand["value"])
+                if hits is not None and len(hits) == 1:
+                    try:
+                        txt = hits[0].text or hits[0].get_attribute("textContent") or ""
+                    except Exception:
+                        txt = ""
+                    if _norm(stable) in _norm(txt):
+                        return dict(cand, verified=True, fallbacks=[])
         return unverified("not-unique")
     return dict(proven[0], verified=True, fallbacks=proven[1:1 + max_fallbacks])
 
@@ -9632,8 +9948,10 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
             (login or {}).get("url") or site_url, "Login URL")
     except ValueError as exc:
         cb(f"Automation configuration error: {exc}", "err")
+        # config_error stops the run: nothing was inspected, so generating
+        # would only produce unverified locators.
         return {"stories_payload": stories_payload, "dom_snapshot": [],
-                "screen_captures": [],
+                "screen_captures": [], "config_error": str(exc),
                 "stats": {"live": 0, "snapshot": 0, "guess": 0}}
 
     opts = Options()
@@ -9641,7 +9959,8 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
         opts.add_argument("--headless=new")
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
-    opts.add_argument("--window-size=1440,900")
+    for arg in _inspection_window_args(headless):
+        opts.add_argument(arg)
     opts.add_argument("--disable-gpu")
     # Inspection uses a dedicated Chrome session with test credentials. Chrome's
     # password-save/breach UI is browser chrome, not page DOM, so Selenium cannot
@@ -9664,6 +9983,7 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
 
     cb("Launching Chrome…", "dim")
     driver = webdriver.Chrome(options=opts)
+    _fit_inspection_window(driver, headless)
     driver.set_page_load_timeout(45)
     wait = WebDriverWait(driver, 20)
     all_snapshots = []   # union of every element seen (for fallback)
@@ -9900,6 +10220,17 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
         Returns the live element acted on (or None)."""
         nonlocal failure_action_error
         live = find_live(el_dict)
+        if live is None or not _displayed(live):
+            # Not rendered yet (slow page) or lazy-loaded further down: wait,
+            # then scroll down the page until it shows.
+            _end = time.time() + 6
+            while (live is None or not _displayed(live)) and time.time() < _end:
+                time.sleep(0.3)
+                live = find_live(el_dict)
+            if live is None or not _displayed(live):
+                _hit = _scroll_search(driver, lambda: (lambda e: e if e is not None and _displayed(e) else None)(
+                    find_live(el_dict)))
+                live = _hit or live
         if live is None:
             return None
         _flash(live)
@@ -9908,6 +10239,8 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
         except Exception:
             pass
         _settle(timeout=4)
+        if verb != "frame":
+            _wait_ready(driver, live, verb, cb)
         # type / select don't need topmost; clicks do
         if verb == "frame":
             try:
@@ -9933,13 +10266,18 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                 return None
         if verb == "key_press":
             try:
-                from selenium.webdriver.common.keys import Keys
-                key = getattr(Keys, str(value or "ENTER").upper(), Keys.ENTER)
-                live.send_keys(key)
+                live.send_keys(*_selenium_keys(value))
                 return live
             except Exception as e:
                 failure_action_error = e
                 cb(f"      key press failed: {str(e)[:50]}", "warn"); return None
+        if verb == "clear":
+            try:
+                _clear_field(live)
+                return live
+            except Exception as e:
+                failure_action_error = e
+                cb(f"      clear failed: {str(e)[:50]}", "warn"); return None
         if verb in ("double_click", "right_click"):
             try:
                 from selenium.webdriver.common.action_chains import ActionChains
@@ -10154,7 +10492,7 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                     if p is None:
                         nxt = find_first("button[type=submit],#kc-login,button,input[type=submit]", timeout=5)
                         if nxt is not None:
-                            nxt.click(); wait_dom_ready()
+                            _login_click(driver, nxt); wait_dom_ready()
                         p = find_first(pass_sel, timeout=15)
                     if p is None:
                         raise RuntimeError("password field did not appear")
@@ -10165,7 +10503,7 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                     if btn is None:
                         p.submit()
                     else:
-                        btn.click()
+                        _login_click(driver, btn)
                     cb("Submitted login \u2014 verifying\u2026", "dim")
                     try:
                         WebDriverWait(driver, 20).until(
@@ -10272,6 +10610,33 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                     live = next((item for item in matches if item.is_displayed()), None)
                     if live is None:
                         continue
+                    # A text check ('"Please enter your Contact name." is shown')
+                    # may inherit the preferred locator of a neighbouring field
+                    # step; that field doesn't hold the text, so don't bind it.
+                    want = str(intent.get("target") or "").strip()
+                    if (intent.get("role") == "assertion" and want
+                            and (intent.get("kind") == "text" or intent.get("split_part"))
+                            and (intent.get("check") or "") not in (
+                                "value", "table", "download", "invalid", "checked",
+                                "unchecked", "enabled", "disabled", "selected") + _PAGE_CHECKS):
+                        try:
+                            shown = (live.text or "") + " " + (live.get_attribute("value") or "")
+                        except Exception:
+                            shown = ""
+                        if _norm(want) not in _norm(shown):
+                            continue
+                    # '"Output: Text" shows "xyz"' after clicking a button: the
+                    # row's preferred locator is that button. Don't bind a value
+                    # check to an element that doesn't hold the value.
+                    want_val = str(intent.get("value") or "").strip()
+                    if (intent.get("role") == "assertion" and want_val and "{{" not in want_val
+                            and (intent.get("check") or "") in ("value", "")):
+                        try:
+                            shown = (live.text or "") + " " + (live.get_attribute("value") or "")
+                        except Exception:
+                            shown = ""
+                        if _norm(want_val) not in _norm(shown):
+                            continue
                     # Prefer harvested metadata (it has testid/name/type), but
                     # retain the verified selector when the element is not in
                     # the generic harvest set.
@@ -10285,6 +10650,57 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                              "css": selector, "xpath": "", "visible": True}, "live")
                 except Exception:
                     continue
+            return None
+
+        def label_capture(intent, pool):
+            """'"Output: Text" shows "xyz"': the check names a LABEL. Bind the
+            element that <label for=...> (or aria-labelledby) points at - only
+            when it shows the expected value, if one is known."""
+            phrases = []
+            for n in intent.get("from_steps") or []:
+                rows = tc.get("steps") or []
+                if 1 <= n <= len(rows):
+                    phrases += _quoted_phrases(str((rows[n - 1] or {}).get("expected") or ""))
+            tgt = re.sub(r"\s+(?:field|value|box|text\s*box|output|label)$", "",
+                         str(intent.get("target") or "").strip(), flags=re.I)
+            if tgt:
+                phrases.append(tgt)
+            want = str(intent.get("value") or "").strip()
+            if not want and len(phrases) >= 2:
+                want = phrases[1]
+            for phrase in phrases:
+                if not phrase or len(phrase) > 60:
+                    continue
+                try:
+                    hit = driver.execute_script(
+                        "var p=arguments[0].replace(/\\s+/g,' ').trim().toLowerCase();"
+                        "var labs=[].slice.call(document.querySelectorAll('label,[id]'));"
+                        "for(var i=0;i<labs.length;i++){var l=labs[i];"
+                        "var t=(l.textContent||'').replace(/\\s+/g,' ').trim().toLowerCase().replace(/:$/,'');"
+                        "if(t!==p.replace(/:$/,''))continue;"
+                        "var el=null;"
+                        "if(l.tagName==='LABEL'&&l.htmlFor)el=document.getElementById(l.htmlFor);"
+                        "if(!el&&l.id)el=document.querySelector('[aria-labelledby~=\"'+l.id+'\"]');"
+                        "if(el&&el.getClientRects().length)return el;}return null;", phrase)
+                except Exception:
+                    hit = None
+                if hit is None:
+                    continue
+                try:
+                    shown = (hit.text or "") + " " + (hit.get_attribute("value") or "")
+                    eid = hit.get_attribute("id") or ""
+                    tag = (hit.tag_name or "").lower()
+                except Exception:
+                    continue
+                if want and "{{" not in want and _norm(want) not in _norm(shown) \
+                        and (intent.get("check") or "") not in ("enabled", "disabled", "checked", "unchecked"):
+                    continue
+                known = next((e for e in pool if eid and e.get("id") == eid), None)
+                if known:
+                    return known, "live"
+                if eid:
+                    return ({"idx": -1, "tag": tag, "id": eid, "name": "", "css": "#" + eid,
+                             "xpath": "", "visible": True, "text": hit.text or ""}, "live")
             return None
 
         def context_result_capture(pool):
@@ -10463,10 +10879,17 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                                 steps[n - 1]["locator_src"] = "precondition"
                         continue
 
-                    if role == "assertion" and (it.get("check") or "") in ("table", "download"):
+                    if role == "assertion" and (it.get("check") or "") in ("table", "download") + _PAGE_CHECKS:
                         # Checked on the page / download folder, not on one element.
                         _settle(timeout=4)
-                        if it["check"] == "table":
+                        if it["check"] in _PAGE_CHECKS:
+                            ok, _end = False, time.time() + 10
+                            while not ok and time.time() < _end:
+                                ok = _page_check_ok(driver, it["check"], it.get("value"))
+                                if not ok:
+                                    time.sleep(0.5)
+                            what = _page_check_label(it["check"], it.get("value"))
+                        elif it["check"] == "table":
                             row, col, want = _table_parts(it.get("value"))
                             ok, _end = False, time.time() + 10
                             while not ok and time.time() < _end:
@@ -10508,11 +10931,28 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                         # preceding screen, then assert that same locator is
                         # hidden. Binding from the after-screen used to select
                         # an unrelated cart link as proof of removal.
+                        # A field's own state (invalid, value, checked...) is checked
+                        # on a field that was already there, so it must not be
+                        # limited to elements that newly appeared.
+                        _state_check = (it.get("check") or "") in (
+                            "invalid", "value", "checked", "unchecked", "enabled",
+                            "disabled", "selected")
                         assertion_pool = (last_before_elements if is_negative
-                                          and last_before_elements else (new_pool or after))
+                                          and last_before_elements
+                                          else (after if _state_check else (new_pool or after)))
                         preferred = preferred_capture(it, assertion_pool)
                         context_result = context_result_capture(assertion_pool) if it.get("context_result") else None
                         el, src = (preferred if preferred else context_result) or bind_target(it, assertion_pool)
+                        # '"John Doe" is shown' bound to the pager's "3" link (a
+                        # keyword of the merged step): an element that doesn't
+                        # hold the authored text proves nothing about it.
+                        if el is not None and src == "live" and not is_negative \
+                                and not _holds_authored_text(el, it, tc.get("steps") or []):
+                            el, src = None, None
+                        if (el is None or src != "live") and not is_negative:
+                            _lc = label_capture(it, assertion_pool)
+                            if _lc:
+                                el, src = _lc
                         # One outcome naming two exact texts held by two elements
                         # ('"Your Cart" page shows "Fleece Jacket"') can't bind to
                         # a single element. Only then split it on the authored
@@ -10532,20 +10972,58 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                         # Content that appears after loading ('Hello World!' a
                         # few seconds after Start, async API results): keep
                         # re-reading the page for up to 10 s before giving up.
+                        def _page_shows_phrase():
+                            # The authored text is already on the page (a table
+                            # cell no harvested element holds): no need to wait.
+                            _p = _page_text_phrase(it, tc.get("steps") or [])
+                            if not _p:
+                                return False
+                            try:
+                                return _p in str(driver.execute_script(
+                                    "return document.body ? document.body.innerText : '';") or "")
+                            except Exception:
+                                return False
                         if (el is None or src != "live") and not is_negative:
                             _deadline = time.time() + 10
-                            while (el is None or src != "live") and time.time() < _deadline:
+                            while (el is None or src != "live") and time.time() < _deadline \
+                                    and not _page_shows_phrase():
                                 time.sleep(1)
                                 after = snapshot(with_errors=True)
                                 new_pool = ([e for e in after if _el_key(e) not in last_before]
                                             if last_before is not None else after)
                                 for assertion_pool in ([new_pool, after] if new_pool else [after]):
                                     el, src = (preferred_capture(it, assertion_pool)
+                                               or label_capture(it, assertion_pool)
                                                or bind_target(it, assertion_pool))
+                                    if el is not None and src == "live" and \
+                                            not _holds_authored_text(el, it, tc.get("steps") or []):
+                                        el, src = None, None
                                     if el is not None and src == "live":
                                         break
                             if el is not None and src == "live":
                                 cb("    \u21b3 appeared after waiting", "dim")
+                        # Authored text that no collected element holds (a cell of a
+                        # scripted table, a long paragraph): when that exact text is
+                        # on the page, check it as page text instead of binding an
+                        # unrelated element from an older snapshot.
+                        if el is not None and src == "live" and not is_negative \
+                                and not _holds_authored_text(el, it, tc.get("steps") or []):
+                            el, src = None, None
+                        if (el is None or src != "live") and not is_negative:
+                            _pt = _page_text_phrase(it, tc.get("steps") or [])
+                            if _pt:
+                                try:
+                                    _body = str(driver.execute_script(
+                                        "return document.body ? document.body.innerText : '';") or "")
+                                except Exception:
+                                    _body = ""
+                                if _pt in _body:
+                                    it.update({"check": "pattern", "value": _re_literal(_pt),
+                                               "kind": "text", "target": _page_check_label("pattern", _pt)})
+                                    it["inspection_source"] = "context"
+                                    assign(fs, None, "context", intent=it)
+                                    cb(f'      \u2713 page text shows "{_pt}"', "ok")
+                                    continue
                         # A disappearing target is already gone after the
                         # action, so it can't be proven live here.
                         captured = (to_locator(el, prove=(src == "live" and not is_negative))
@@ -10553,6 +11031,10 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                         it["inspection_source"] = src
                         if is_negative and captured:
                             it["assert_before_action"] = True
+                            if isinstance(captured, dict) and not captured.get("verified"):
+                                # Proven by the replay instead (it checks the
+                                # element is gone), not a missing proof.
+                                captured["reason"] = "disappears"
                         if src == "live" and captured:
                             it["live_locator"] = captured
                         elif src in ("snapshot", "guess"):
@@ -10636,6 +11118,47 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                             assign(fs, None, "guess", intent=it)
                             cb(f"      {verb.replace('_', ' ')} failed: {str(e)[:50]}", "warn")
                             _todo(story, tc, fs, it.get("target"), "context", exception=e)
+                        continue
+                    if verb in _PAGE_ACTIONS and verb != "remember":
+                        try:
+                            msg = _run_page_action(driver, verb, it.get("value") or "", login=login)
+                            _settle(timeout=4)
+                            it["inspection_source"] = "context"
+                            assign(fs, None, "context", intent=it)
+                            cb(f"      {msg}", "ok")
+                            last_before = None
+                            last_before_elements = None
+                        except Exception as e:
+                            it["inspection_source"] = "guess"
+                            it["inspection_unresolved"] = "context"
+                            assign(fs, None, "guess", intent=it)
+                            cb(f"      {verb.replace('_', ' ')} failed: {str(e)[:50]}", "warn")
+                            _todo(story, tc, fs, it.get("target"), "context", exception=e)
+                        continue
+                    if verb == "remember":
+                        # Read a value off the page; later steps use it as {{name}}.
+                        _settle(timeout=4)
+                        got, _end = "", time.time() + 10
+                        while not got and time.time() < _end:
+                            try:
+                                got = str(driver.execute_script(_REMEMBER_JS, str(it.get("value") or "")) or "")
+                            except Exception:
+                                got = ""
+                            if not got:
+                                time.sleep(0.5)
+                        name = str(it.get("remember_as") or "value")
+                        if got:
+                            _data_vals[name] = got
+                            _intents_refill(intents, _data_vals, _data_cache)
+                            it["inspection_source"] = "context"
+                            assign(fs, None, "context", intent=it)
+                            cb(f'      remembered {name} = "{got[:40]}"', "ok")
+                        else:
+                            it["inspection_source"] = "guess"
+                            it["inspection_unresolved"] = "context"
+                            assign(fs, None, "guess", intent=it)
+                            cb(f'      nothing on the page matches "{str(it.get("value"))[:40]}"', "warn")
+                            _todo(story, tc, fs, it.get("target"), "context")
                         continue
                     if verb in ("dialog_accept", "dialog_dismiss"):
                         try:
@@ -10861,6 +11384,13 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
         for _u in proof["unverified"][:40]:
             cb(f"   - story {_u['story']} / {(_u['case'] or '')[:26]} / step {_u['step']} "
                f"[{_u['kind']}] {_u['reason']}", "warn")
+        _rc = proof.get("replay_checked") or []
+        if _rc:
+            # Not a warning: these checks are about an element that is gone
+            # after the action, so the replay (not the proof) confirms them.
+            _cases = sorted({(r["case"] or "")[:40] for r in _rc})
+            cb(f"   {len(_rc)} \"disappears\" check(s) are confirmed by the replay instead "
+               f"(the element is gone after the action): {', '.join(_cases)}", "dim")
         result = {"stories_payload": stories_payload, "dom_snapshot": uniq[:300],
                 "screen_captures": screen_captures,
                 "stats": {"live": live_count, "snapshot": snap_count,
@@ -10881,7 +11411,7 @@ def _proof_summary(stories_payload):
     """Count proven step locators and list every unproven one with its reason.
     'not-proven' = a locator captured without a live proof (snapshot match,
     older run, or an assertion on an element that disappears)."""
-    verified, unverified = 0, []
+    verified, unverified, replay_checked = 0, [], []
     for story_pack in stories_payload or []:
         story_id = (story_pack.get("story") or {}).get("id")
         for tc in story_pack.get("test_cases") or []:
@@ -10892,11 +11422,17 @@ def _proof_summary(stories_payload):
                         continue
                     if loc.get("verified") is True:
                         verified += 1
+                    elif loc.get("reason") == "disappears":
+                        # A "disappears" check: its element is gone after the
+                        # action, so it can't be proven unique there - the
+                        # replay checks it instead.
+                        replay_checked.append({"story": story_id, "case": tc.get("title", ""),
+                                               "step": index, "kind": kind, "reason": "disappears"})
                     else:
                         unverified.append({"story": story_id, "case": tc.get("title", ""),
                                            "step": index, "kind": kind,
                                            "reason": loc.get("reason") or "not-proven"})
-    return {"verified": verified, "unverified": unverified}
+    return {"verified": verified, "unverified": unverified, "replay_checked": replay_checked}
 
 
 def _inspection_step_bindings(stories_payload):
@@ -11047,51 +11583,1036 @@ def write_inspection_screens(out_dir, result, cb=None):
 
 
 def _driver_factory(pkg):
-    return f"""package {pkg}.core;
+    return ("""package __PKG__.core;
 
 import io.github.bonigarcia.wdm.WebDriverManager;
+import org.openqa.selenium.Capabilities;
+import org.openqa.selenium.HasCapabilities;
+import org.openqa.selenium.UnexpectedAlertBehaviour;
 import org.openqa.selenium.WebDriver;
 import org.openqa.selenium.chrome.ChromeDriver;
 import org.openqa.selenium.chrome.ChromeOptions;
+import org.openqa.selenium.chromium.ChromiumOptions;
+import org.openqa.selenium.edge.EdgeDriver;
+import org.openqa.selenium.edge.EdgeOptions;
+import org.openqa.selenium.firefox.FirefoxDriver;
+import org.openqa.selenium.firefox.FirefoxOptions;
 import java.io.File;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.*;
 
-public final class DriverFactory {{
-    private DriverFactory() {{}}
+/** Starts the browser for a test class. Which one: BROWSER = chrome (default),
+ *  edge, firefox, a list (chrome,firefox) or all — from -Dqa.browser=..., the
+ *  BROWSER environment variable or browser= in config.properties. With more
+ *  than one, every test class runs once per browser (ReportMailer splits the
+ *  run). WebDriverManager downloads the matching driver for each browser. */
+public final class DriverFactory {
+    private DriverFactory() {}
 
     // Selenium warns "Unable to find CDP implementation matching <version>" when
     // Chrome is newer than the Selenium release; it only affects DevTools-only
     // features (not used here), so keep those lines out of the run log. The
     // static reference stops the JDK from dropping the logger setting.
     private static final java.util.logging.Logger SELENIUM_LOG = quiet();
-    private static java.util.logging.Logger quiet() {{
+    private static java.util.logging.Logger quiet() {
         java.util.logging.Logger l = java.util.logging.Logger.getLogger("org.openqa.selenium");
         l.setLevel(java.util.logging.Level.SEVERE);
         return l;
-    }}
+    }
 
-    /** Downloads land here; download steps check for the file in this folder. */
+    /** Downloads land in a folder per browser under this one (target/downloads/chrome),
+     *  so browsers running in parallel never see or delete each other's files. */
     public static final File DOWNLOADS = new File("target/downloads").getAbsoluteFile();
+    private static final Map<WebDriver, File> DOWNLOAD_DIRS = Collections.synchronizedMap(new WeakHashMap<>());
+    /** The download folder of this browser (download checks look there). */
+    public static File downloadsOf(WebDriver driver) {
+        File f = driver == null ? null : DOWNLOAD_DIRS.get(driver);
+        return f == null ? DOWNLOADS : f;
+    }
 
-    public static WebDriver create() {{
-        WebDriverManager.chromedriver().setup();
-        ChromeOptions options = new ChromeOptions();
-        // options.addArguments("--headless=new");
-        options.addArguments("--start-maximized");
-        DOWNLOADS.mkdirs();
+    /** Browsers that actually ran, with their versions ("Chrome 131.0.6778.86"), for the reports. */
+    private static final Map<String, String> USED = Collections.synchronizedMap(new LinkedHashMap<>());
+    public static String used() {
+        synchronized (USED) {
+            List<String> out = new ArrayList<>();
+            for (Map.Entry<String, String> e : USED.entrySet())
+                out.add(e.getValue().isEmpty() ? e.getKey() : e.getKey() + " " + e.getValue());
+            return String.join(", ", out);
+        }
+    }
+
+    /** The browsers this run uses, in order (chrome, edge, firefox). */
+    public static List<String> browsers() {
+        String raw = Config.setting("BROWSER", "chrome").toLowerCase(Locale.ROOT).trim();
+        List<String> out = new ArrayList<>();
+        if (raw.isEmpty() || raw.equals("all")) {
+            if (raw.equals("all")) out.addAll(List.of("chrome", "edge", "firefox"));
+        } else {
+            for (String part : raw.split("[,;\\\\s]+")) {
+                String b = id(part);
+                if (b.isEmpty()) System.out.println("[browser] unknown browser \\"" + part + "\\" - use chrome, edge or firefox");
+                else if (!out.contains(b)) out.add(b);
+            }
+        }
+        if (out.isEmpty()) out.add("chrome");
+        return out;
+    }
+    private static String id(String s) {
+        switch (s.trim()) {
+            case "chrome": case "googlechrome": case "chromium": return "chrome";
+            case "edge": case "msedge": case "microsoftedge": return "edge";
+            case "firefox": case "ff": case "mozilla": return "firefox";
+            default: return "";
+        }
+    }
+    public static String label(String b) {
+        return "edge".equals(b) ? "Edge" : "firefox".equals(b) ? "Firefox" : "Chrome";
+    }
+
+    /** The first browser of the run (one-browser runs). */
+    public static WebDriver create() { return create(browsers().get(0)); }
+
+    public static WebDriver create(String browser) {
+        String b = id(browser == null ? "" : browser.toLowerCase(Locale.ROOT));
+        if (b.isEmpty()) b = "chrome";
+        boolean headless = "true".equalsIgnoreCase(Config.setting("HEADLESS", "false"));
+        File downloads = new File(DOWNLOADS, b);
+        downloads.mkdirs();
         // Start each browser with an empty download folder, so a download check
         // only ever sees files this run saved.
-        File[] old = DOWNLOADS.listFiles();
+        File[] old = downloads.listFiles();
         if (old != null) for (File f : old) f.delete();
+        WebDriver driver;
+        if ("firefox".equals(b)) {
+            synchronized (DriverFactory.class) { WebDriverManager.firefoxdriver().setup(); }
+            FirefoxOptions options = new FirefoxOptions();
+            if (headless) options.addArguments("-headless");
+            options.addPreference("browser.download.folderList", 2);
+            options.addPreference("browser.download.dir", downloads.getPath());
+            options.addPreference("browser.download.useDownloadDir", true);
+            options.addPreference("browser.download.manager.showWhenStarting", false);
+            options.addPreference("browser.helperApps.neverAsk.saveToDisk",
+                "application/octet-stream,application/pdf,text/plain,text/csv,application/zip,"
+                + "application/json,application/vnd.ms-excel,"
+                + "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,image/png,image/jpeg");
+            options.addPreference("pdfjs.disabled", true);
+            // Basic/digest auth steps open https://user:pass@host/... without a prompt.
+            options.addPreference("network.http.phishy-userpass-length", 255);
+            options.addPreference("signon.rememberSignons", false);
+            options.setUnhandledPromptBehaviour(UnexpectedAlertBehaviour.IGNORE);
+            driver = start("Firefox", () -> new FirefoxDriver(options));
+            try { driver.manage().window().maximize(); } catch (Exception ignored) { }
+        } else if ("edge".equals(b)) {
+            // Microsoft moved msedgedriver downloads to msedgedriver.microsoft.com;
+            // the old hosts (msedgedriver.azureedge.net, msedgewebdriverstorage
+            // blob storage) now fail. Point both driver managers at the new one.
+            String own = Config.setting("EDGE_DRIVER", "");      // a msedgedriver.exe you downloaded
+            if (!own.isEmpty()) System.setProperty("webdriver.edge.driver", own);
+            System.setProperty("SE_DRIVER_MIRROR_URL", "https://msedgedriver.microsoft.com");
+            System.setProperty("wdm.edgeDownloadUrlPattern", "https://msedgedriver.microsoft.com/%s/edgedriver_%s.zip");
+            if (own.isEmpty()) {
+                try {
+                    synchronized (DriverFactory.class) {
+                        WebDriverManager.edgedriver()
+                            .driverRepositoryUrl(new java.net.URL("https://msedgedriver.microsoft.com/")).setup();
+                    }
+                } catch (Exception e) {
+                    System.out.println("[browser] Edge driver download failed (" + e.getMessage()
+                        + ") - trying Selenium's own driver manager");
+                }
+            }
+            EdgeOptions options = new EdgeOptions();
+            chromium(options, headless, downloads);
+            driver = start("Edge", () -> new EdgeDriver(options));
+        } else {
+            synchronized (DriverFactory.class) { WebDriverManager.chromedriver().setup(); }
+            ChromeOptions options = new ChromeOptions();
+            chromium(options, headless, downloads);
+            driver = start("Chrome", () -> new ChromeDriver(options));
+        }
+        String version = "";
+        try {
+            Capabilities caps = ((HasCapabilities) driver).getCapabilities();
+            version = caps.getBrowserVersion() == null ? "" : caps.getBrowserVersion();
+        } catch (Exception ignored) { }
+        USED.put(label(b), version);
+        WebDriver wrapped = VideoRecorder.wrap(driver);
+        DOWNLOAD_DIRS.put(wrapped, downloads);
+        DOWNLOAD_DIRS.put(driver, downloads);
+        return wrapped;
+    }
+
+    /** Start a browser; a browser that isn't installed fails with a clear message
+     *  (shown in the report) instead of a driver stack trace. */
+    private static WebDriver start(String name, java.util.function.Supplier<WebDriver> make) {
+        try {
+            return make.get();
+        } catch (RuntimeException e) {
+            String m = String.valueOf(e.getMessage()).toLowerCase(Locale.ROOT);
+            if (m.contains("binary") && (m.contains("unable to find") || m.contains("cannot find")
+                    || m.contains("no such file") || m.contains("expected browser binary"))) {
+                throw new IllegalStateException(name + " isn't installed on this PC (or not in its default "
+                    + "location). Install " + name + ", or untick it in QA Studio's Browsers row "
+                    + "(browser= in config.properties).", e);
+            }
+            if (m.contains("unable to obtain") && m.contains("msedgedriver")) {
+                throw new IllegalStateException("Couldn't download msedgedriver (check the network or proxy). "
+                    + "Or download the driver matching your Edge version from "
+                    + "https://developer.microsoft.com/microsoft-edge/tools/webdriver/ and set "
+                    + "edge.driver=C:/path/to/msedgedriver.exe in config.properties.", e);
+            }
+            throw e;
+        }
+    }
+
+    private static void chromium(ChromiumOptions<?> options, boolean headless, File downloads) {
+        if (headless) options.addArguments("--headless=new", "--window-size=1920,1080");
+        else options.addArguments("--start-maximized");
+        // After a login with a known test password Chrome opens its "password
+        // found in a data breach" / save-password dialog. It is browser UI, not
+        // page DOM: Selenium can't see or close it, and it swallows typing and
+        // clicks in every later test. Same settings as QA Studio's inspection.
+        options.addArguments("--disable-features=PasswordLeakDetection,PasswordManagerOnboarding");
         Map<String, Object> prefs = new HashMap<>();
-        prefs.put("download.default_directory", DOWNLOADS.getPath());
+        prefs.put("credentials_enable_service", false);
+        prefs.put("profile.password_manager_enabled", false);
+        prefs.put("profile.password_manager_leak_detection", false);
+        prefs.put("profile.default_content_setting_values.notifications", 2);
+        prefs.put("download.default_directory", downloads.getPath());
         prefs.put("download.prompt_for_download", false);
         options.setExperimentalOption("prefs", prefs);
-        return new ChromeDriver(options);
-    }}
-}}
-"""
+        // Keep a JavaScript alert open until its own accept/dismiss step: the
+        // default would close it as a side effect of the next command (the
+        // recording's screenshot, for example).
+        options.setUnhandledPromptBehaviour(UnexpectedAlertBehaviour.IGNORE);
+    }
+}
+""".replace("__PKG__", pkg))
+
+
+def _progress_window(pkg):
+    """Generated core/ProgressWindow.java: a small always-on-top progress card
+    while tests run from the IDE (mvn test on a desktop) - drag, compact,
+    minimize and hide; never takes keyboard focus by itself."""
+    return r"""package __PKG__.core;
+
+import javax.swing.*;
+import java.awt.*;
+import java.awt.event.*;
+import java.awt.geom.RoundRectangle2D;
+import java.io.File;
+
+/** Live progress while tests run from IntelliJ (or mvn test on a desktop):
+ *  current test and browser, a progress bar split into passed / failed /
+ *  skipped, counts and time left. Drag it by its title bar; it can be shrunk
+ *  to one line (compact), minimized to the taskbar or hidden. It never takes
+ *  keyboard focus by itself, so it can't steal typing from the browser under
+ *  test. progress=off (config.properties, -Dqa.progress=off or the PROGRESS
+ *  environment variable) turns it off; CI and headless machines never show it. */
+public final class ProgressWindow {
+    private static final Color BG = new Color(17, 23, 39), CARD = new Color(28, 36, 58),
+        LINE = new Color(48, 58, 86), INK = new Color(232, 236, 244), INK2 = new Color(164, 173, 192),
+        INK3 = new Color(112, 122, 145), TEAL = new Color(34, 184, 199), GREEN = new Color(63, 185, 80),
+        RED = new Color(248, 81, 73), GREY = new Color(118, 128, 150), HOVER = new Color(40, 50, 76);
+    private static final int W = 430;
+
+    private static JFrame frame;
+    private static JPanel body;
+    private static JLabel status, heading, current, ratio, elapsed;
+    private static Pill browser;
+    private static Chip cPass, cFail, cSkip;
+    private static Bar bar, slim;
+    private static Dot dot;
+    private static IconButton collapseBtn;
+    private static Timer ticker;
+    private static boolean compact, finished, wrapping;
+    private static int total, done, passed, failed, skipped;
+    private static long started, ended;
+    private static volatile boolean enabled;
+    // One row per browser (shown when the run has 2+): total, done, passed, failed, skipped.
+    private static final java.util.LinkedHashMap<String, int[]> LANES = new java.util.LinkedHashMap<>();
+    private static final java.util.HashMap<String, Object[]> LANE_UI = new java.util.HashMap<>();
+    private static JPanel lanes;
+
+    private ProgressWindow() { }
+
+    // ---------------------------------------------------------------- API
+    public static synchronized void start(int expected) {
+        if (enabled) return;                       // one window per run
+        String mode = Config.setting("PROGRESS", "on");
+        enabled = !"off".equalsIgnoreCase(mode) && !"false".equalsIgnoreCase(mode)
+            && System.getenv("CI") == null && !GraphicsEnvironment.isHeadless();
+        if (!enabled) return;
+        total = Math.max(expected, 1);
+        done = passed = failed = skipped = 0;
+        started = System.currentTimeMillis();
+        ended = 0;
+        SwingUtilities.invokeLater(ProgressWindow::build);
+    }
+
+    public static void testStarted(String name, String browserName) {
+        if (!enabled) return;
+        synchronized (ProgressWindow.class) { ended = 0; }    // more tests than expected: the clock runs on
+        SwingUtilities.invokeLater(() -> {
+            if (frame == null) return;
+            fit(current, name, W - 36);
+            browser.set(browserName);
+        });
+    }
+
+    /** status: passed / failed / skipped. */
+    public static void testDone(String result) { testDone(result, ""); }
+
+    /** status: passed / failed / skipped, counted for that browser's row too. */
+    public static void testDone(String result, String browserName) {
+        if (!enabled) return;
+        synchronized (ProgressWindow.class) {
+            done++;
+            if ("passed".equals(result)) passed++;
+            else if ("failed".equals(result)) failed++;
+            else skipped++;
+            if (done > total) total = done;
+            if (done >= total && ended == 0) ended = System.currentTimeMillis();   // 100%: the clock stops
+            if (browserName != null && !browserName.isEmpty()) {
+                int[] l = lane(browserName);
+                l[1]++;
+                l["passed".equals(result) ? 2 : "failed".equals(result) ? 3 : 4]++;
+                if (l[1] > l[0]) l[0] = l[1];
+            }
+        }
+        SwingUtilities.invokeLater(ProgressWindow::refresh);
+    }
+
+    /** How many tests a browser will run: with two or more browsers the window
+     *  shows a progress row for each. */
+    public static void expect(String browserName, int count) {
+        if (browserName == null || browserName.isEmpty()) return;
+        synchronized (ProgressWindow.class) { lane(browserName)[0] = Math.max(count, 0); }
+        if (enabled) SwingUtilities.invokeLater(ProgressWindow::refresh);
+    }
+
+    /** One browser's counts as a whole (the Playwright / Cypress window reads them). */
+    public static void setLane(String browserName, int laneTotal, int p, int f, int s) {
+        if (browserName == null || browserName.isEmpty()) return;
+        synchronized (ProgressWindow.class) {
+            int[] l = lane(browserName);
+            l[1] = p + f + s; l[2] = p; l[3] = f; l[4] = s;
+            l[0] = Math.max(laneTotal, l[1]);
+        }
+        if (enabled) SwingUtilities.invokeLater(ProgressWindow::refresh);
+    }
+
+    private static int[] lane(String name) { return LANES.computeIfAbsent(name, k -> new int[5]); }
+
+    /** Every test ran: the clock stops and the window says the report is being
+     *  written (videos and reports take a few seconds after the last test). */
+    public static void wrapUp() {
+        if (!enabled) return;
+        synchronized (ProgressWindow.class) { if (ended == 0) ended = System.currentTimeMillis(); }
+        SwingUtilities.invokeLater(() -> {
+            if (frame == null) return;
+            wrapping = true;
+            if (ticker != null) ticker.stop();
+            refresh();
+            heading.setText("ALL TESTS RAN");
+            fit(current, "Writing the report...", W - 36);
+        });
+    }
+
+    /** Shows the verdict briefly, then closes by itself: the run does not wait for it. */
+    public static void finish(String verdict) {
+        if (!enabled) return;
+        enabled = false;
+        synchronized (ProgressWindow.class) { if (ended == 0) ended = System.currentTimeMillis(); }
+        try {
+            SwingUtilities.invokeAndWait(() -> {
+                if (frame == null) return;
+                finished = true;
+                if (ticker != null) ticker.stop();
+                refresh();
+                status.setText("Finished");
+                heading.setText("RESULT");
+                fit(current, verdict, W - 36);
+                dot.color = failed > 0 ? RED : GREEN;
+                dot.repaint();
+                Timer close = new Timer(1500, e -> { if (frame != null) { frame.dispose(); frame = null; } });
+                close.setRepeats(false);
+                close.start();
+            });
+        } catch (Exception ignored) { }
+    }
+
+    // ---------------------------------------------------------------- UI
+    private static void build() {
+        try {
+            frame = new JFrame("QA Studio - running tests");
+            frame.setUndecorated(true);
+            frame.setAlwaysOnTop(true);
+            frame.setAutoRequestFocus(false);
+            frame.setFocusableWindowState(false);
+            frame.setDefaultCloseOperation(WindowConstants.HIDE_ON_CLOSE);
+            try {
+                File logo = new File("src/test/resources/qa-logo.png");
+                if (logo.isFile()) frame.setIconImage(new ImageIcon(logo.getPath()).getImage());
+            } catch (Exception ignored) { }
+
+            JPanel root = new JPanel(new BorderLayout()) {
+                @Override protected void paintComponent(Graphics g) {
+                    Graphics2D g2 = aa(g);
+                    g2.setColor(BG);
+                    g2.fillRoundRect(0, 0, getWidth(), getHeight(), 18, 18);
+                    g2.setColor(LINE);
+                    g2.drawRoundRect(0, 0, getWidth() - 1, getHeight() - 1, 18, 18);
+                }
+            };
+            root.setOpaque(false);
+            root.add(header(), BorderLayout.NORTH);
+
+            body = new JPanel();
+            body.setOpaque(false);
+            body.setLayout(new BoxLayout(body, BoxLayout.Y_AXIS));
+            body.setBorder(BorderFactory.createEmptyBorder(2, 18, 16, 18));
+            heading = label("NOW RUNNING", Font.BOLD, 10f, INK3);
+            current = label("Starting the browser...", Font.BOLD, 14f, INK);
+            browser = new Pill();
+            ratio = label("0 / " + total, Font.BOLD, 12f, INK2);
+            JPanel meta = row();
+            meta.add(browser, BorderLayout.WEST);
+            meta.add(ratio, BorderLayout.EAST);
+            bar = new Bar(10);
+            cPass = new Chip(GREEN, "passed");
+            cFail = new Chip(RED, "failed");
+            cSkip = new Chip(GREY, "skipped");
+            JPanel chips = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
+            chips.setOpaque(false);
+            chips.add(cPass);
+            chips.add(Box.createHorizontalStrut(8));
+            chips.add(cFail);
+            chips.add(Box.createHorizontalStrut(8));
+            chips.add(cSkip);
+            elapsed = label(" ", Font.PLAIN, 11f, INK3);
+            lanes = new JPanel();
+            lanes.setOpaque(false);
+            lanes.setLayout(new BoxLayout(lanes, BoxLayout.Y_AXIS));
+            lanes.setVisible(false);
+            JLabel lanesTitle = label("BROWSERS", Font.BOLD, 10f, INK3);
+            lanesTitle.setAlignmentX(0f);
+            lanes.add(Box.createVerticalStrut(12));
+            lanes.add(lanesTitle);
+            for (JComponent c : new JComponent[] {heading, current, meta, bar, chips, lanes, elapsed}) c.setAlignmentX(0f);
+            body.add(heading);
+            body.add(Box.createVerticalStrut(4));
+            body.add(current);
+            body.add(Box.createVerticalStrut(10));
+            body.add(meta);
+            body.add(Box.createVerticalStrut(8));
+            body.add(bar);
+            body.add(Box.createVerticalStrut(12));
+            body.add(chips);
+            body.add(lanes);
+            body.add(Box.createVerticalStrut(10));
+            body.add(elapsed);
+            root.add(body, BorderLayout.CENTER);
+
+            slim = new Bar(4);
+            slim.setBorder(BorderFactory.createEmptyBorder(0, 14, 10, 14));
+            slim.setVisible(false);
+            root.add(slim, BorderLayout.SOUTH);
+
+            frame.setContentPane(root);
+            frame.addWindowListener(new WindowAdapter() {
+                @Override public void windowDeiconified(WindowEvent e) { frame.setAlwaysOnTop(true); }
+            });
+            frame.pack();
+            frame.setSize(W, frame.getHeight());
+            Rectangle s = GraphicsEnvironment.getLocalGraphicsEnvironment().getMaximumWindowBounds();
+            frame.setLocation(s.x + s.width - W - 20, s.y + s.height - frame.getHeight() - 20);
+            round();
+            frame.setVisible(true);
+            ticker = new Timer(500, e -> refresh());
+            ticker.start();
+            refresh();
+        } catch (Throwable t) {
+            enabled = false;
+            frame = null;
+        }
+    }
+
+    private static JPanel header() {
+        JPanel h = new JPanel(new BorderLayout());
+        h.setOpaque(false);
+        h.setBorder(BorderFactory.createEmptyBorder(10, 16, 8, 8));
+        JPanel left = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
+        left.setOpaque(false);
+        dot = new Dot();
+        left.add(dot);
+        left.add(label("QA Studio", Font.BOLD, 13f, INK));
+        status = label("Running tests", Font.PLAIN, 12f, INK2);
+        left.add(status);
+        JPanel right = new JPanel(new FlowLayout(FlowLayout.RIGHT, 2, 0));
+        right.setOpaque(false);
+        collapseBtn = new IconButton("collapse", "Compact view", e -> toggleCompact());
+        right.add(collapseBtn);
+        right.add(new IconButton("min", "Minimize to the taskbar", e -> minimize()));
+        right.add(new IconButton("close", "Hide until the run ends", e -> frame.setVisible(false)));
+        h.add(left, BorderLayout.WEST);
+        h.add(right, BorderLayout.EAST);
+        MouseAdapter drag = new MouseAdapter() {
+            private Point from;
+            @Override public void mousePressed(MouseEvent e) { from = e.getPoint(); }
+            @Override public void mouseDragged(MouseEvent e) {
+                if (from == null) return;
+                Point p = frame.getLocation();
+                frame.setLocation(p.x + e.getX() - from.x, p.y + e.getY() - from.y);
+            }
+            @Override public void mouseClicked(MouseEvent e) { if (e.getClickCount() == 2) toggleCompact(); }
+        };
+        h.addMouseListener(drag);
+        h.addMouseMotionListener(drag);
+        return h;
+    }
+
+    private static void minimize() {
+        // A window that can't take focus has no taskbar button on Windows, so
+        // it vanished when minimized. Rebuild the native window as a focusable
+        // one first (dispose keeps all the content), shown straight minimized.
+        if (!frame.getFocusableWindowState()) {
+            frame.setFocusableWindowState(true);
+            frame.dispose();
+            frame.setExtendedState(Frame.ICONIFIED);
+            frame.setVisible(true);
+            round();
+        } else {
+            frame.setExtendedState(Frame.ICONIFIED);
+        }
+    }
+
+    private static void toggleCompact() {
+        compact = !compact;
+        body.setVisible(!compact);
+        slim.setVisible(compact);
+        collapseBtn.kind = compact ? "expand" : "collapse";
+        collapseBtn.setToolTipText(compact ? "Full view" : "Compact view");
+        repack();
+        refresh();
+    }
+
+    /** New size for the content, keeping the bottom-right corner where it is. */
+    private static void repack() {
+        int right = frame.getX() + frame.getWidth(), bottom = frame.getY() + frame.getHeight();
+        frame.pack();
+        frame.setSize(W, frame.getHeight());
+        frame.setLocation(right - frame.getWidth(), bottom - frame.getHeight());
+        round();
+    }
+
+    /** One row per browser: name, its own bar, done / total. */
+    private static void refreshLanes() {
+        String[] names;
+        int[][] vals;
+        synchronized (ProgressWindow.class) {
+            names = LANES.keySet().toArray(new String[0]);
+            vals = new int[names.length][];
+            for (int i = 0; i < names.length; i++) vals[i] = LANES.get(names[i]).clone();
+        }
+        boolean show = names.length >= 2, grew = false;
+        for (String n : names) {
+            if (LANE_UI.containsKey(n)) continue;
+            JPanel r = row();
+            r.setAlignmentX(0f);
+            Pill pill = new Pill();
+            pill.set(n);
+            JPanel west = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
+            west.setOpaque(false);
+            west.setPreferredSize(new Dimension(78, 22));
+            west.add(pill);
+            Bar laneBar = new Bar(6);
+            laneBar.setBorder(BorderFactory.createEmptyBorder(8, 4, 8, 10));
+            JLabel count = label("0 / 0", Font.BOLD, 11f, INK2);
+            count.setHorizontalAlignment(SwingConstants.RIGHT);
+            count.setPreferredSize(new Dimension(54, 22));
+            r.add(west, BorderLayout.WEST);
+            r.add(laneBar, BorderLayout.CENTER);
+            r.add(count, BorderLayout.EAST);
+            lanes.add(Box.createVerticalStrut(6));
+            lanes.add(r);
+            LANE_UI.put(n, new Object[] {laneBar, count});
+            grew = true;
+        }
+        if (lanes.isVisible() != show) { lanes.setVisible(show); grew = true; }
+        for (int i = 0; i < names.length; i++) {
+            Object[] ui = LANE_UI.get(names[i]);
+            int[] v = vals[i];
+            ((Bar) ui[0]).set(Math.max(v[0], 1), v[2], v[3], v[4]);
+            ((JLabel) ui[1]).setText(v[1] + " / " + v[0]);
+        }
+        if (grew && !compact) repack();
+    }
+
+    private static void round() {
+        try { frame.setShape(new RoundRectangle2D.Double(0, 0, frame.getWidth(), frame.getHeight(), 18, 18)); }
+        catch (Throwable ignored) { }
+    }
+
+    private static void refresh() {
+        if (frame == null) return;
+        int t, d, p, f, s;
+        long end;
+        synchronized (ProgressWindow.class) { t = total; d = done; p = passed; f = failed; s = skipped; end = ended; }
+        int pct = (int) Math.round(100.0 * d / Math.max(t, 1));
+        ratio.setText(d + " / " + t + "   " + pct + "%");
+        bar.set(t, p, f, s);
+        slim.set(t, p, f, s);
+        cPass.set(p);
+        cFail.set(f);
+        cSkip.set(s);
+        refreshLanes();
+        long ms = (end > 0 ? end : System.currentTimeMillis()) - started;
+        String left = "";
+        if (!finished && end == 0 && d > 0 && d < t) left = "   \u00b7   about " + clock((ms / d) * (t - d)) + " left";
+        elapsed.setText("Elapsed " + clock(ms) + left);
+        if (wrapping && !finished) status.setText(compact ? "Writing the report..." : "All tests ran");
+        else if (!finished && end > 0) status.setText(compact ? d + " / " + t + "  \u00b7  wrapping up" : "Wrapping up");
+        else if (!finished) status.setText(compact ? d + " / " + t + (f > 0 ? "  \u00b7  " + f + " failed" : "  \u00b7  running") : "Running tests");
+        dot.repaint();
+    }
+
+    private static String clock(long ms) {
+        long sec = ms / 1000;
+        return sec >= 3600 ? String.format("%d:%02d:%02d", sec / 3600, (sec / 60) % 60, sec % 60)
+                           : String.format("%d:%02d", sec / 60, sec % 60);
+    }
+
+    /** Cut a long test name to the width with "..." (no wrapping). */
+    private static void fit(JLabel l, String text, int width) {
+        String s = text == null ? "" : text;
+        FontMetrics fm = l.getFontMetrics(l.getFont());
+        if (fm.stringWidth(s) > width) {
+            while (s.length() > 1 && fm.stringWidth(s + "...") > width) s = s.substring(0, s.length() - 1);
+            s = s + "...";
+        }
+        l.setText(s);
+        l.setToolTipText(text);
+    }
+
+    private static JLabel label(String text, int style, float size, Color color) {
+        JLabel l = new JLabel(text);
+        l.setFont(font(style, size));
+        l.setForeground(color);
+        return l;
+    }
+
+    private static JPanel row() {
+        JPanel p = new JPanel(new BorderLayout());
+        p.setOpaque(false);
+        p.setMaximumSize(new Dimension(Integer.MAX_VALUE, 24));
+        return p;
+    }
+
+    private static Font font(int style, float size) {
+        return new Font("Segoe UI", style, 12).deriveFont(size);
+    }
+
+    private static Graphics2D aa(Graphics g) {
+        Graphics2D g2 = (Graphics2D) g;
+        g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+        g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+        return g2;
+    }
+
+    // ---------------------------------------------------------------- parts
+    /** Progress bar split into passed (green), failed (red) and skipped (grey). */
+    private static final class Bar extends JComponent {
+        private final int h;
+        private int t = 1, p, f, s;
+        Bar(int h) {
+            this.h = h;
+            setPreferredSize(new Dimension(W - 36, h));
+            setMaximumSize(new Dimension(Integer.MAX_VALUE, h));
+        }
+        void set(int t, int p, int f, int s) { this.t = Math.max(t, 1); this.p = p; this.f = f; this.s = s; repaint(); }
+        @Override public Dimension getPreferredSize() {
+            Insets in = getInsets();
+            return new Dimension(W - 36, h + in.top + in.bottom);
+        }
+        @Override protected void paintComponent(Graphics g) {
+            Graphics2D g2 = aa(g.create());
+            Insets in = getInsets();
+            int x = in.left, y = in.top, w = getWidth() - in.left - in.right;
+            Shape track = new RoundRectangle2D.Double(x, y, w, h, h, h);
+            g2.setColor(CARD);
+            g2.fill(track);
+            g2.clip(track);
+            int cx = x;
+            int[] counts = {p, f, s};
+            Color[] colors = {GREEN, RED, GREY};
+            for (int i = 0; i < 3; i++) {
+                int seg = (int) Math.round((double) w * counts[i] / t);
+                g2.setColor(colors[i]);
+                g2.fillRect(cx, y, seg, h);
+                cx += seg;
+            }
+            g2.dispose();
+        }
+    }
+
+    /** "12 passed" with a coloured dot on a rounded background. */
+    private static final class Chip extends JComponent {
+        private final Color color;
+        private final String word;
+        private String text = "";
+        Chip(Color color, String word) { this.color = color; this.word = word; setFont(font(Font.BOLD, 12f)); set(0); }
+        void set(int n) { text = n + " " + word; revalidate(); repaint(); }
+        @Override public Dimension getPreferredSize() {
+            return new Dimension(getFontMetrics(getFont()).stringWidth(text) + 34, 26);
+        }
+        @Override protected void paintComponent(Graphics g) {
+            Graphics2D g2 = aa(g);
+            g2.setColor(CARD);
+            g2.fillRoundRect(0, 0, getWidth(), getHeight(), 13, 13);
+            g2.setColor(color);
+            g2.fillOval(11, getHeight() / 2 - 4, 8, 8);
+            g2.setColor(INK);
+            FontMetrics fm = g2.getFontMetrics();
+            g2.drawString(text, 25, (getHeight() + fm.getAscent() - fm.getDescent()) / 2);
+        }
+    }
+
+    /** Browser name badge (Chrome / Firefox / Edge). */
+    private static final class Pill extends JComponent {
+        private String text = "";
+        private Color color = TEAL;
+        Pill() { setFont(font(Font.BOLD, 11f)); }
+        void set(String name) {
+            text = name == null ? "" : name;
+            String n = text.toLowerCase();
+            color = n.contains("firefox") ? new Color(255, 140, 50) : n.contains("edge") ? new Color(66, 150, 255) : TEAL;
+            revalidate();
+            repaint();
+        }
+        @Override public Dimension getPreferredSize() {
+            return text.isEmpty() ? new Dimension(0, 22) : new Dimension(getFontMetrics(getFont()).stringWidth(text) + 20, 22);
+        }
+        @Override protected void paintComponent(Graphics g) {
+            if (text.isEmpty()) return;
+            Graphics2D g2 = aa(g);
+            g2.setColor(new Color(color.getRed(), color.getGreen(), color.getBlue(), 46));
+            g2.fillRoundRect(0, 0, getWidth(), getHeight(), getHeight(), getHeight());
+            g2.setColor(color);
+            FontMetrics fm = g2.getFontMetrics();
+            g2.drawString(text, 10, (getHeight() + fm.getAscent() - fm.getDescent()) / 2);
+        }
+    }
+
+    /** Status dot: pulses while running, green / red when finished. */
+    private static final class Dot extends JComponent {
+        Color color = TEAL;
+        Dot() { setPreferredSize(new Dimension(12, 18)); }
+        @Override protected void paintComponent(Graphics g) {
+            Graphics2D g2 = aa(g);
+            int cy = getHeight() / 2;
+            if (!finished) {
+                double phase = (System.currentTimeMillis() % 1500) / 1500.0;
+                int a = (int) (90 * (1 - phase));
+                int r = (int) (5 + 4 * phase);
+                g2.setColor(new Color(color.getRed(), color.getGreen(), color.getBlue(), Math.max(a, 0)));
+                g2.fillOval(6 - r, cy - r, 2 * r, 2 * r);
+            }
+            g2.setColor(color);
+            g2.fillOval(2, cy - 4, 8, 8);
+        }
+    }
+
+    /** Title-bar button drawn as a line (minimize), chevron (compact) or cross (hide). */
+    private static final class IconButton extends JButton {
+        String kind;
+        IconButton(String kind, String tip, ActionListener action) {
+            this.kind = kind;
+            setToolTipText(tip);
+            setPreferredSize(new Dimension(28, 24));
+            setFocusable(false);
+            setContentAreaFilled(false);
+            setBorderPainted(false);
+            setRolloverEnabled(true);
+            setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+            addActionListener(action);
+        }
+        @Override protected void paintComponent(Graphics g) {
+            Graphics2D g2 = aa(g);
+            if (getModel().isRollover()) {
+                g2.setColor("close".equals(kind) ? new Color(120, 40, 46) : HOVER);
+                g2.fillRoundRect(0, 0, getWidth(), getHeight(), 8, 8);
+            }
+            g2.setColor(INK2);
+            g2.setStroke(new BasicStroke(1.6f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+            int cx = getWidth() / 2, cy = getHeight() / 2;
+            switch (kind) {
+                case "min": g2.drawLine(cx - 5, cy + 3, cx + 5, cy + 3); break;
+                case "close": g2.drawLine(cx - 4, cy - 4, cx + 4, cy + 4); g2.drawLine(cx - 4, cy + 4, cx + 4, cy - 4); break;
+                case "expand": g2.drawLine(cx - 5, cy + 2, cx, cy - 3); g2.drawLine(cx, cy - 3, cx + 5, cy + 2); break;
+                default: g2.drawLine(cx - 5, cy - 2, cx, cy + 3); g2.drawLine(cx, cy + 3, cx + 5, cy - 2); break;
+            }
+        }
+    }
+}
+""".replace("__PKG__", pkg)
+
+def _video_recorder(pkg):
+    """Selenium has no video recorder: this one keeps a screenshot after every
+    action (and at most ~2 per second while a test waits) and writes each test
+    as an animated GIF with the JDK's own ImageIO, so no extra dependency and it
+    plays in every browser, IntelliJ's preview and email. VIDEO =
+    retain-on-failure (default: only failed tests get a GIF — encoding is the
+    slow part), on (every test) or off."""
+    return ("""package __PKG__.core;
+
+import org.openqa.selenium.*;
+import org.openqa.selenium.support.events.EventFiringDecorator;
+import org.openqa.selenium.support.events.WebDriverListener;
+import org.w3c.dom.Node;
+
+import javax.imageio.*;
+import javax.imageio.metadata.IIOMetadata;
+import javax.imageio.metadata.IIOMetadataNode;
+import javax.imageio.stream.ImageOutputStream;
+import java.awt.Graphics2D;
+import java.awt.RenderingHints;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
+import java.io.File;
+import java.lang.reflect.Method;
+import java.util.*;
+import java.util.concurrent.*;
+
+/** Records each test as an animated GIF (target/qa-videos/*.gif): a frame after
+ *  every action the test performs (click, type, navigate, dialog...) and at most
+ *  one every 500 ms while it waits. Screenshots go through the real driver, so
+ *  recording never shows up as a test step. Settings: VIDEO = retain-on-failure
+ *  (default: a GIF only for failed tests, passed ones skip the slow encoding),
+ *  on (every test) or off. */
+public final class VideoRecorder implements WebDriverListener {
+    public static final File DIR = new File("target/qa-videos").getAbsoluteFile();
+    private static final int MAX_FRAMES = 240, WIDTH = 960;
+    private static final Set<String> ACTIONS = new HashSet<>(Arrays.asList(
+        "click", "sendKeys", "clear", "submit", "get", "to", "back", "forward", "refresh",
+        "accept", "dismiss", "window", "frame", "defaultContent", "parentFrame", "perform",
+        "selectByVisibleText", "selectByValue", "selectByIndex", "executeScript"));
+    private static final Set<String> SKIP = new HashSet<>(Arrays.asList(
+        "getScreenshotAs", "quit", "close", "getWindowHandle", "getWindowHandles", "manage"));
+    private static final ThreadLocal<VideoRecorder> CURRENT = new ThreadLocal<>();
+    private static volatile VideoRecorder last;
+    /** Browsers started from more than one thread (PARALLEL run): no fallback to `last`. */
+    private static volatile Thread lastThread;
+    private static volatile boolean manyThreads;
+    private static final ExecutorService ENCODER = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "qa-video-encoder");
+        t.setDaemon(true);
+        return t;
+    });
+    private static final List<Future<?>> PENDING = Collections.synchronizedList(new ArrayList<>());
+
+    private final WebDriver real;
+    private final List<byte[]> frames = new ArrayList<>();
+    private final List<Long> times = new ArrayList<>();
+    private boolean recording, busy;
+    private long lastFrame, gap = 500;
+
+    private VideoRecorder(WebDriver real) { this.real = real; }
+
+    public static String mode() {
+        String m = Config.setting("VIDEO", "retain-on-failure").toLowerCase(Locale.ROOT).trim();
+        return m.equals("off") || m.equals("false") || m.equals("none") ? "off"
+            : m.startsWith("retain") || m.equals("failed") || m.equals("on-failure") ? "failed" : "on";
+    }
+
+    /** The driver the tests use: the real one, recorded unless VIDEO=off. */
+    public static WebDriver wrap(WebDriver driver) {
+        if ("off".equals(mode()) || !(driver instanceof TakesScreenshot)) return driver;
+        VideoRecorder rec = new VideoRecorder(driver);
+        CURRENT.set(rec);
+        last = rec;
+        Thread me = Thread.currentThread();
+        if (lastThread != null && lastThread != me) manyThreads = true;
+        lastThread = me;
+        try {
+            return new EventFiringDecorator<WebDriver>(rec).decorate(driver);
+        } catch (Exception e) {
+            System.out.println("[video] recording is off: " + e.getMessage());
+            return driver;
+        }
+    }
+
+    /** The real driver / element behind the recorded ones (mouse Actions use these). */
+    public static WebDriver raw(WebDriver d) {
+        return d instanceof WrapsDriver ? ((WrapsDriver) d).getWrappedDriver() : d;
+    }
+    public static WebElement raw(WebElement e) {
+        return e instanceof WrapsElement ? ((WrapsElement) e).getWrappedElement() : e;
+    }
+
+    private static VideoRecorder current() {
+        VideoRecorder r = CURRENT.get();
+        return r != null || manyThreads ? r : last;
+    }
+
+    /** A test starts: frames from here on belong to it. */
+    public static void begin() {
+        VideoRecorder r = current();
+        if (r == null) return;
+        synchronized (r) { r.frames.clear(); r.times.clear(); r.gap = 500; r.lastFrame = 0; r.recording = true; }
+        r.capture(true);
+    }
+
+    /** The test ended: write its GIF in the background. Returns the file, or null. */
+    public static File end(String name, boolean failed) {
+        VideoRecorder r = current();
+        if (r == null) return null;
+        r.capture(true);
+        List<byte[]> f;
+        List<Long> t;
+        synchronized (r) {
+            r.recording = false;
+            f = new ArrayList<>(r.frames);
+            t = new ArrayList<>(r.times);
+            r.frames.clear();
+            r.times.clear();
+        }
+        if (f.isEmpty() || ("failed".equals(mode()) && !failed)) return null;
+        DIR.mkdirs();
+        File out = new File(DIR, name.replaceAll("[^A-Za-z0-9_.-]", "_") + "-" + System.nanoTime() + ".gif");
+        PENDING.add(ENCODER.submit(() -> {
+            try { writeGif(f, t, out); }
+            catch (Exception e) { System.out.println("[video] could not write " + out.getName() + ": " + e.getMessage()); }
+        }));
+        return out;
+    }
+
+    /** A test was skipped or retried: drop its frames. */
+    public static void discard() {
+        VideoRecorder r = current();
+        if (r == null) return;
+        synchronized (r) { r.recording = false; r.frames.clear(); r.times.clear(); }
+    }
+
+    /** Waits (up to 5 minutes) for every GIF to be written, before the reports are. */
+    public static void awaitAll() {
+        List<Future<?>> all;
+        synchronized (PENDING) { all = new ArrayList<>(PENDING); PENDING.clear(); }
+        if (all.isEmpty()) return;
+        System.out.println("[video] writing " + all.size() + " test video(s)...");
+        long end = System.currentTimeMillis() + 300_000;
+        for (Future<?> f : all) {
+            try { f.get(Math.max(1, end - System.currentTimeMillis()), TimeUnit.MILLISECONDS); }
+            catch (Exception ignored) { }
+        }
+    }
+
+    @Override
+    public void afterAnyCall(Object target, Method method, Object[] args, Object result) {
+        String m = method.getName();
+        if (SKIP.contains(m)) return;
+        capture(ACTIONS.contains(m) && !"executeScript".equals(m) || "executeScript".equals(m) && looksLikeAction(args));
+    }
+
+    /** JS clicks/typing (Healer fallbacks) count as actions; polling scripts don't. */
+    private static boolean looksLikeAction(Object[] args) {
+        if (args == null || args.length == 0 || args[0] == null) return false;
+        String js = args[0].toString();
+        return js.contains(".click(") || js.contains(".value") || js.contains("dispatchEvent") || js.contains("scrollIntoView");
+    }
+
+    private void capture(boolean action) {
+        long now = System.currentTimeMillis();
+        synchronized (this) {
+            if (!recording || busy) return;
+            if (!action && now - lastFrame < gap) return;
+            if (action && now - lastFrame < 120) return;
+            busy = true;
+        }
+        byte[] png = null;
+        try {
+            // A screenshot while a JavaScript dialog is open would make the
+            // browser dismiss it (and break the next step): skip that frame.
+            boolean dialog = false;
+            try { real.switchTo().alert(); dialog = true; } catch (NoAlertPresentException ignored) { }
+            catch (Exception ignored) { dialog = true; }
+            if (!dialog) png = ((TakesScreenshot) real).getScreenshotAs(OutputType.BYTES);
+        } catch (Exception ignored) {
+        } finally {
+            synchronized (this) {
+                busy = false;
+                if (png != null && recording) {
+                    frames.add(png);
+                    times.add(now);
+                    lastFrame = now;
+                    if (frames.size() >= MAX_FRAMES) thin();
+                }
+            }
+        }
+    }
+
+    /** Long test: keep every other frame and record half as often from now on. */
+    private void thin() {
+        for (int i = frames.size() - 2; i > 0; i -= 2) { frames.remove(i); times.remove(i); }
+        gap *= 2;
+    }
+
+    private static void writeGif(List<byte[]> pngs, List<Long> times, File out) throws Exception {
+        ImageWriter w = ImageIO.getImageWritersByFormatName("gif").next();
+        try (ImageOutputStream ios = ImageIO.createImageOutputStream(out)) {
+            w.setOutput(ios);
+            w.prepareWriteSequence(null);
+            for (int i = 0; i < pngs.size(); i++) {
+                BufferedImage src = ImageIO.read(new ByteArrayInputStream(pngs.get(i)));
+                if (src == null) continue;
+                BufferedImage img = scale(src);
+                long ms = i + 1 < times.size() ? times.get(i + 1) - times.get(i) : 2500;
+                int cs = (int) Math.max(20, Math.min(300, ms / 10));   // GIF delays are in 1/100 s
+                ImageWriteParam p = w.getDefaultWriteParam();
+                IIOMetadata md = w.getDefaultImageMetadata(ImageTypeSpecifier.createFromRenderedImage(img), p);
+                String fmt = md.getNativeMetadataFormatName();
+                IIOMetadataNode root = (IIOMetadataNode) md.getAsTree(fmt);
+                IIOMetadataNode gce = child(root, "GraphicControlExtension");
+                gce.setAttribute("disposalMethod", "none");
+                gce.setAttribute("userInputFlag", "FALSE");
+                gce.setAttribute("transparentColorFlag", "FALSE");
+                gce.setAttribute("delayTime", String.valueOf(cs));
+                gce.setAttribute("transparentColorIndex", "0");
+                if (i == 0) {
+                    IIOMetadataNode apps = child(root, "ApplicationExtensions");
+                    IIOMetadataNode app = new IIOMetadataNode("ApplicationExtension");
+                    app.setAttribute("applicationID", "NETSCAPE");
+                    app.setAttribute("authenticationCode", "2.0");
+                    app.setUserObject(new byte[]{1, 0, 0});   // loop forever
+                    apps.appendChild(app);
+                }
+                md.setFromTree(fmt, root);
+                w.writeToSequence(new IIOImage(img, null, md), p);
+            }
+            w.endWriteSequence();
+        } finally { w.dispose(); }
+    }
+
+    private static IIOMetadataNode child(IIOMetadataNode root, String name) {
+        for (Node n = root.getFirstChild(); n != null; n = n.getNextSibling())
+            if (n.getNodeName().equalsIgnoreCase(name)) return (IIOMetadataNode) n;
+        IIOMetadataNode node = new IIOMetadataNode(name);
+        root.appendChild(node);
+        return node;
+    }
+
+    private static BufferedImage scale(BufferedImage src) {
+        int w = src.getWidth(), h = src.getHeight();
+        if (w > WIDTH) { h = Math.max(1, h * WIDTH / w); w = WIDTH; }
+        BufferedImage out = new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB);
+        Graphics2D g = out.createGraphics();
+        g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+        g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
+        g.drawImage(src, 0, 0, w, h, null);
+        g.dispose();
+        return out;
+    }
+}
+""".replace("__PKG__", pkg))
 
 # ── Incremental generation: survive prior stories, append only new test cases ──
 def _manifest_path(project_dir):
@@ -12594,7 +14115,12 @@ def split_cached_cases(stories_payload, out_dir, site_url, login_url, force=Fals
         keep = []
         for tc in pack.get("test_cases") or []:
             hit = cache.get(_case_fingerprint(tc, site_url, login_url))
-            if hit and _plan_fully_verified(hit.get("plan")):
+            # A saved locator that spells out run-specific text (an upload
+            # timestamp "1794528885455_report.txt", a GUID) points at an item
+            # the site may have deleted since: inspect that case again, so it
+            # gets a locator on the stable part of the text.
+            if hit and _plan_fully_verified(hit.get("plan")) \
+                    and not _plan_has_volatile_locator(hit.get("plan")):
                 tc["inspection_plan"] = json.loads(json.dumps(hit["plan"], ensure_ascii=False))
                 tc["inspection_reused"] = True
                 reused += 1
@@ -12604,6 +14130,23 @@ def split_cached_cases(stories_payload, out_dir, site_url, login_url, force=Fals
         if keep:
             to_walk.append(dict(pack, test_cases=keep))
     return to_walk, reused
+
+
+def _plan_has_volatile_locator(plan):
+    """True when any saved locator (primary or fallback) in the plan quotes
+    run-specific text: a long number or a GUID inside a quoted value."""
+    quoted = re.compile(r"[\"']([^\"']*)[\"']")
+
+    def walk(node):
+        if isinstance(node, dict):
+            if isinstance(node.get("value"), str) and node.get("by"):
+                if any(_VOLATILE_TEXT.search(q) for q in quoted.findall(node["value"])):
+                    return True
+            return any(walk(v) for v in node.values())
+        if isinstance(node, list):
+            return any(walk(v) for v in node)
+        return False
+    return walk(plan)
 
 
 def save_verified_cases(stories_payload, out_dir, site_url, login_url):
@@ -12808,6 +14351,41 @@ def _intents_fill_data(intents, values, cache):
             it["_data_orig"] = orig
 
 
+def _needs_data_file(cases):
+    """True when some {{placeholder}} needs a data row: not a generated value
+    ({{random.email}}, {{today}}…), the test account, or a value a Remember
+    step reads off the page."""
+    generated = re.compile(r"^(random\.(email|number|text)|now|today([+-]\d+d)?|app_user|app_pass)$")
+    for c in cases or []:
+        steps = c.get("steps") or []
+        remembered = {_data_key(m.group(2)) for st in steps
+                      for m in [_REMEMBER_RE.search(str(st.get("action") or ""))] if m}
+        for st in steps:
+            for m in _DATA_TOKEN_RE.finditer(str(st.get("action") or "") + " " + str(st.get("expected") or "")):
+                key = _data_key(m.group(1))
+                if key not in remembered and not generated.match(str(m.group(1)).strip().lower().replace(" ", "")) \
+                        and key not in ("app_user", "app_pass"):
+                    return True
+    return False
+
+
+def _intents_refill(intents, values, cache):
+    """Fill placeholders that a remember step just made known, keeping each
+    intent's ORIGINAL text in _data_orig (the saved plan keeps placeholders)."""
+    for it in intents:
+        orig = dict(it.get("_data_orig") or {})
+        for f in _DATA_FIELDS:
+            if _has_data_tokens(it.get(f)):
+                orig.setdefault(f, it[f])
+                it[f] = _data_fill(it[f], values, cache)
+        kws = it.get("keywords") or []
+        if any(_has_data_tokens(k) for k in kws):
+            orig.setdefault("keywords", list(kws))
+            it["keywords"] = [_data_fill(k, values, cache) for k in kws]
+        if orig:
+            it["_data_orig"] = orig
+
+
 def _intents_restore_data(intents):
     for it in intents:
         orig = it.pop("_data_orig", None)
@@ -12988,6 +14566,876 @@ def _table_parts(value):
     parts = (str(value or "").split("|") + ["", "", ""])[:3]
     return tuple(p.strip() for p in parts)
 
+
+# ---- Assertions pack: page-level checks + remember-and-reuse ----
+# One script for inspection, replay and every generated framework:
+#   url     'contains|/secure' or 'is|https://…'
+#   title   'is|The Internet' or 'contains|Internet'
+#   count   'rows|4|eq' (rows of a visible table) or 'text|edit|8|gte'
+#           (elements whose own text is exactly that); op eq / gte / lte
+#   sorted  'Last Name|asc' (a table column, by its header text)
+#   pattern a regular expression the page text must match
+#   attr    'Home|href|contains|/' an element named "Home" (its text, label,
+#           alt, title, placeholder, value, id/name, or a CSS selector) whose
+#           attribute contains / is / does not contain a value, or is absent
+_PAGE_CHECKS = ("url", "title", "count", "sorted", "pattern", "attr")
+_PAGE_CHECK_FN = r"""function(check, value, doc, loc) {
+  function norm(s) { return String(s == null ? '' : s).replace(/\s+/g, ' ').trim().toLowerCase(); }
+  function shown(el) {
+    var r = el.getBoundingClientRect(), st = doc.defaultView.getComputedStyle(el);
+    return (r.width > 0 || r.height > 0) && st.visibility !== 'hidden' && st.display !== 'none';
+  }
+  function cmp(n, want, op) { return op === 'gte' ? n >= want : op === 'lte' ? n <= want : n === want; }
+  function bodyRows(tb) {
+    var rows = [];
+    if (tb.tBodies.length) { for (var b = 0; b < tb.tBodies.length; b++) rows = rows.concat([].slice.call(tb.tBodies[b].rows)); }
+    else rows = [].slice.call(tb.rows).slice(1);
+    return rows.filter(function (r) { return shown(r) && !r.querySelector('th'); });
+  }
+  var parts = String(value == null ? '' : value).split('|');
+  if (check === 'url') {
+    var href = String(loc.href), want = parts.slice(1).join('|');
+    if (parts[0] === 'is') return href.replace(/\/+$/, '').toLowerCase() === want.replace(/\/+$/, '').toLowerCase();
+    return href.toLowerCase().indexOf(want.toLowerCase()) >= 0;
+  }
+  if (check === 'title') {
+    var t = norm(doc.title), w = norm(parts.slice(1).join('|'));
+    return parts[0] === 'is' ? t === w : t.indexOf(w) >= 0;
+  }
+  if (check === 'count') {
+    if (parts[0] === 'rows') {
+      var want = parseInt(parts[1], 10), op = parts[2], tables = [].slice.call(doc.querySelectorAll('table')).filter(shown);
+      if (tables.length) return tables.some(function (tb) { return cmp(bodyRows(tb).length, want, op); });
+      var grid = [].slice.call(doc.querySelectorAll('[role=row]')).filter(function (r) { return shown(r) && !r.querySelector('[role=columnheader]'); });
+      return cmp(grid.length, want, op);
+    }
+    var text = norm(parts[1]), n = 0;
+    [].forEach.call(doc.querySelectorAll('body *'), function (el) {
+      if (norm(el.textContent) !== text || !shown(el)) return;
+      for (var c = el.firstElementChild; c; c = c.nextElementSibling) if (norm(c.textContent) === text) return;
+      n++;
+    });
+    return cmp(n, parseInt(parts[2], 10), parts[3]);
+  }
+  if (check === 'sorted') {
+    var col = norm(parts[0]), dir = parts[1] === 'desc' ? -1 : 1, found = false, ok = false;
+    [].forEach.call(doc.querySelectorAll('table'), function (tb) {
+      if (found || !shown(tb)) return;
+      var head = tb.tHead && tb.tHead.rows.length ? tb.tHead.rows[0] : tb.rows[0];
+      if (!head) return;
+      var idx = -1;
+      [].forEach.call(head.cells, function (c, i) { if (idx < 0 && norm(c.textContent).indexOf(col) >= 0) idx = i; });
+      if (idx < 0) return;
+      found = true;
+      var vals = bodyRows(tb).map(function (r) { return r.cells[idx] ? r.cells[idx].textContent.trim() : ''; });
+      var num = vals.length > 0 && vals.every(function (v) { return v !== '' && !isNaN(parseFloat(v.replace(/[^0-9.\-]/g, ''))); });
+      ok = true;
+      for (var i = 1; i < vals.length; i++) {
+        var a = vals[i - 1], b = vals[i];
+        var d = num ? parseFloat(a.replace(/[^0-9.\-]/g, '')) - parseFloat(b.replace(/[^0-9.\-]/g, ''))
+          : a.localeCompare(b, undefined, { sensitivity: 'base', numeric: true });
+        if (d * dir > 0) { ok = false; break; }
+      }
+    });
+    return found && ok;
+  }
+  if (check === 'pattern') {
+    try { return new RegExp(String(value)).test(doc.body ? doc.body.innerText : ''); } catch (e) { return false; }
+  }
+  if (check === 'attr') {
+    var nm = parts[0], attr = parts[1] || '', op = parts[2] || 'contains', wantA = norm(parts.slice(3).join('|'));
+    var cands = [];
+    if (/^[#.\[]/.test(nm)) { try { cands = [].slice.call(doc.querySelectorAll(nm)); } catch (e) { cands = []; } }
+    if (!cands.length) {
+      var key = norm(nm);
+      cands = [].slice.call(doc.querySelectorAll('a,button,img,input,select,textarea,label,option,[role],[id],[name],[title],[aria-label]'))
+        .filter(function (el) {
+          return [el.textContent, el.getAttribute('aria-label'), el.getAttribute('alt'), el.getAttribute('title'),
+                  el.getAttribute('placeholder'), el.getAttribute('value'), el.id, el.getAttribute('name'),
+                  el.labels && el.labels[0] ? el.labels[0].textContent : null]
+            .some(function (x) { return x != null && norm(x) === key; });
+        });
+    }
+    return cands.some(function (el) {
+      var v = el.getAttribute(attr);
+      if (op === 'absent') return v == null;
+      if (op === 'present') return v != null;
+      // No such attribute: a DOM property of that name (naturalWidth, checked…).
+      if (v == null && attr && el[attr] != null && typeof el[attr] !== 'object' && typeof el[attr] !== 'function') v = String(el[attr]);
+      if (v == null) return false;
+      var a = norm(v);
+      return op === 'is' ? a === wantA : op === 'not' ? a.indexOf(wantA) < 0 : a.indexOf(wantA) >= 0;
+    });
+  }
+  if (check === 'page') {
+    // The current page of a pagination bar: aria-current / active item, or ?page=N.
+    var pg = norm(value), boxes = [].slice.call(doc.querySelectorAll(
+      '[class*=paginat i],[class*=pager i],[aria-label*=paginat i],[id*=paginat i],nav,[role=navigation]'));
+    var cur = boxes.some(function (b) {
+      return [].slice.call(b.querySelectorAll('[aria-current],.active,.current,.selected,[class*=active],[class*=current]'))
+        .some(function (el) {
+          if (el.getAttribute('aria-current') === 'false') return false;
+          var t = norm(el.innerText || el.textContent);
+          return t === pg || t === 'page ' + pg || norm(el.getAttribute('aria-label')) === 'page ' + pg;
+        });
+    });
+    return cur || new RegExp('[?&](?:page|p|pg)=' + pg + '(?:&|#|$)', 'i').test(String(loc.href));
+  }
+  if (check === 'storage') {
+    // 'local|token|is|abc', 'session|cart|contains|2', 'local|token|exists', 'local|token|absent'
+    var store = doc.defaultView[parts[0] === 'session' ? 'sessionStorage' : 'localStorage'];
+    var sv = store.getItem(parts[1] || ''), sop = parts[2] || 'exists', swant = norm(parts.slice(3).join('|'));
+    if (sop === 'absent') return sv == null || sv === '';
+    if (sv == null) return false;
+    return sop === 'exists' ? true : sop === 'is' ? norm(sv) === swant : norm(sv).indexOf(swant) >= 0;
+  }
+  if (check === 'cookie') {
+    // Script-visible cookies only; the frameworks read cookies natively (HttpOnly too).
+    var cname = parts[0], cop = parts[1] || 'exists', cwant = norm(parts.slice(2).join('|')), cval = null;
+    String(doc.cookie || '').split(';').forEach(function (c) {
+      var i = c.indexOf('='), k = c.slice(0, i).trim();
+      if (k === cname) cval = decodeURIComponent(c.slice(i + 1).trim());
+    });
+    if (cop === 'absent') return cval == null;
+    if (cval == null) return false;
+    return cop === 'exists' ? true : cop === 'is' ? norm(cval) === cwant : norm(cval).indexOf(cwant) >= 0;
+  }
+  return false;
+}"""
+_PAGE_CHECK_JS = "return (" + _PAGE_CHECK_FN + ")(arguments[0], arguments[1], document, location);"
+_REMEMBER_FN = r"""function(pattern, doc) {
+  try {
+    var m = new RegExp(String(pattern)).exec(doc.body ? doc.body.innerText : '');
+    return m ? String(m[1] !== undefined ? m[1] : m[0]).trim() : '';
+  } catch (e) { return ''; }
+}"""
+_REMEMBER_JS = "return (" + _REMEMBER_FN + ")(arguments[0], document);"
+
+# Steps that act on the page/browser with no element locator (one rule for
+# inspection, replay and every framework): remember a value, browser back /
+# forward / refresh, and "close X if it is shown" (pop-ups, ads, cookie banners).
+_PAGE_ACTIONS = ("remember", "go_back", "go_forward", "refresh", "dismiss_if_present")
+# Clicks the visible control named `name` (text, aria-label, title, value), or -
+# with no name - a close/accept control inside a dialog, pop-up or cookie
+# banner. Returns what it clicked, or "" when nothing is shown (not a failure).
+_DISMISS_FN = r"""function(name, doc) {
+  function norm(s) { return String(s == null ? '' : s).replace(/\s+/g, ' ').trim().toLowerCase(); }
+  function shown(el) {
+    var r = el.getBoundingClientRect(), st = doc.defaultView.getComputedStyle(el);
+    return r.width > 0 && r.height > 0 && st.visibility !== 'hidden' && st.display !== 'none' && st.opacity !== '0';
+  }
+  var want = norm(name);
+  var words = want ? [want] : ['close', 'dismiss', 'no thanks', 'not now', 'accept', 'accept all', 'got it', 'ok', '\u00d7', 'x'];
+  var scope = want ? [doc] : [].slice.call(doc.querySelectorAll(
+    '[role=dialog],[aria-modal=true],.modal,.popup,.overlay,[class*=cookie],[id*=cookie],[class*=consent],[id*=consent],[class*=banner]'))
+    .filter(shown);
+  for (var w = 0; w < words.length; w++) {
+    for (var s = 0; s < scope.length; s++) {
+      var els = [].slice.call(scope[s].querySelectorAll(
+        'button,a,[role=button],input[type=button],input[type=submit],.close,.btn-close,[data-dismiss],[data-bs-dismiss],[aria-label]'));
+      for (var i = 0; i < els.length; i++) {
+        var el = els[i];
+        if (!shown(el)) continue;
+        var labels = [el.innerText || el.textContent, el.getAttribute('aria-label'), el.getAttribute('title'), el.value];
+        if (labels.some(function (x) { return x != null && norm(x) === words[w]; })) {
+          el.click();
+          return String(el.innerText || el.getAttribute('aria-label') || words[w]).trim() || words[w];
+        }
+      }
+    }
+  }
+  return '';
+}"""
+_DISMISS_JS = "return (" + _DISMISS_FN + ")(arguments[0], document);"
+
+# ---- Batch 6-8: pagination, cookies / storage, basic & digest auth ----
+#   next_page      ''  (one page) or 'Jason' (Next until that text is shown)
+#   go_to_page     '3'
+#   set_cookie     'theme=dark'          delete_cookies  '' (all) or 'theme'
+#   set_storage    'local|token|abc'     clear_storage   'local' / 'session' / 'all'
+#   auth_open      'https://x/basic-auth|admin|admin' (or '/basic-auth|{{APP_USER}}|{{APP_PASS}}')
+_PAGE_ACTIONS = _PAGE_ACTIONS + ("next_page", "go_to_page", "set_cookie", "delete_cookies",
+                                 "set_storage", "clear_storage", "auth_open")
+_PAGE_CHECKS = _PAGE_CHECKS + ("page", "storage", "cookie")
+_PAGINATE_MAX = 20
+# Clicks the pagination control: 'next', 'prev' or a page number. Returns what
+# it clicked, 'end' when that control is disabled (last page), '' when none.
+_PAGINATE_FN = r"""function(what, doc) {
+  function norm(s) { return String(s == null ? '' : s).replace(/\s+/g, ' ').trim().toLowerCase(); }
+  function shown(el) {
+    var r = el.getBoundingClientRect(), st = doc.defaultView.getComputedStyle(el);
+    return r.width > 0 && r.height > 0 && st.visibility !== 'hidden' && st.display !== 'none';
+  }
+  function off(el) {
+    var li = el.closest ? el.closest('li') : null;
+    return !!(el.disabled || el.getAttribute('aria-disabled') === 'true' ||
+      /(^|\s)disabled(\s|$)/.test(String(el.className || '') + ' ' + String(li ? li.className : '')));
+  }
+  var w = norm(what);
+  var boxSel = '[class*=paginat i],[class*=pager i],[aria-label*=paginat i],[id*=paginat i],[class*=page-nav i],nav,[role=navigation]';
+  var all = [].slice.call(doc.querySelectorAll('a,button,[role=button],[role=link],input[type=button],input[type=submit]'))
+    .filter(shown);
+  function inBox(el) { try { return !!el.closest(boxSel); } catch (e) { return false; } }
+  function label(el) { return norm(el.innerText || el.textContent || el.value); }
+  var NEXT = ['next', 'next page', 'next ›', 'next »', '›', '»', '>', '→', 'next >', 'older'];
+  var PREV = ['previous', 'prev', 'previous page', '‹ previous', '« previous', '‹', '«', '<', '←', 'newer'];
+  var hits;
+  if (w === 'next' || w === 'prev') {
+    var words = w === 'next' ? NEXT : PREV, rel = w === 'next' ? 'next' : 'prev';
+    hits = all.filter(function (el) {
+      var aria = norm(el.getAttribute('aria-label') || el.getAttribute('title'));
+      return norm(el.getAttribute('rel')) === rel || words.indexOf(label(el)) >= 0 ||
+        (aria && aria.indexOf(w === 'next' ? 'next' : 'prev') >= 0);
+    });
+  } else {
+    hits = all.filter(function (el) { return label(el) === w || norm(el.getAttribute('aria-label')) === 'page ' + w; });
+  }
+  hits.sort(function (a, b) { return (inBox(b) ? 1 : 0) - (inBox(a) ? 1 : 0); });
+  if (!hits.length) return '';
+  var el = hits[0];
+  if (off(el)) return 'end';
+  el.scrollIntoView({ block: 'center' });
+  el.click();
+  return label(el) || w;
+}"""
+_PAGINATE_JS = "return (" + _PAGINATE_FN + ")(arguments[0], document);"
+# Local / session storage write or clear, run in the page.
+_STORAGE_FN = r"""function(op, area, key, value, win) {
+  var areas = area === 'all' ? ['localStorage', 'sessionStorage']
+    : [area === 'session' ? 'sessionStorage' : 'localStorage'];
+  areas.forEach(function (a) {
+    if (op === 'clear') win[a].clear(); else win[a].setItem(key, value);
+  });
+  return true;
+}"""
+_STORAGE_JS = "return (" + _STORAGE_FN + ")(arguments[0], arguments[1], arguments[2], arguments[3], window);"
+
+# ---- Wait and scroll before every action (inspection, replay, every framework) ----
+# Status of the element the next action uses: 'ok|<box>' when it is on screen,
+# enabled and (for clicks) not covered; otherwise hidden / disabled / offscreen
+# (scrolled to the centre) / covered. Two 'ok' polls with the same box = it has
+# stopped moving. mode: 'click' (enabled + not covered), 'input' (enabled), 'view'.
+_READY_FN = r"""function(el, mode) {
+  if (!el || !el.isConnected) return 'gone|';
+  var doc = el.ownerDocument, win = doc.defaultView;
+  var r = el.getBoundingClientRect(), cs = win.getComputedStyle(el);
+  var box = [r.left, r.top, r.width, r.height].map(Math.round).join(',');
+  if (r.width < 1 || r.height < 1 || cs.visibility === 'hidden' || cs.display === 'none') return 'hidden|' + box;
+  if (mode !== 'view' && (el.disabled || el.getAttribute('aria-disabled') === 'true')) return 'disabled|' + box;
+  var vw = win.innerWidth || doc.documentElement.clientWidth, vh = win.innerHeight || doc.documentElement.clientHeight;
+  if (r.bottom <= 0 || r.top >= vh || r.right <= 0 || r.left >= vw) {
+    el.scrollIntoView({ block: 'center', inline: 'nearest' });
+    return 'offscreen|' + box;
+  }
+  if (mode !== 'click') return 'ok|' + box;
+  var x = Math.min(Math.max(r.left + r.width / 2, 0), vw - 1), y = Math.min(Math.max(r.top + r.height / 2, 0), vh - 1);
+  var t = doc.elementFromPoint(x, y);
+  while (t && t.shadowRoot && t.shadowRoot.elementFromPoint) {
+    var inner = t.shadowRoot.elementFromPoint(x, y);
+    if (!inner || inner === t) break;
+    t = inner;
+  }
+  if (t && t !== el && !el.contains(t) && !t.contains(el)) {
+    var lb = el.labels && el.labels.length ? el.labels[0] : null;
+    if (!(lb && (lb === t || lb.contains(t)))) return 'covered|' + box;
+  }
+  return 'ok|' + box;
+}"""
+_READY_JS = "return (" + _READY_FN + ")(arguments[0], arguments[1]);"
+# One scroll step down the page (or its main scrolling panel when the window
+# itself does not scroll): 'moved' / 'end'; reset=true goes back to the top.
+_SCROLL_PAGE_FN = r"""function(reset, doc) {
+  var se = doc.scrollingElement || doc.documentElement, box = se, win = doc.defaultView;
+  if (se.scrollHeight - se.clientHeight < 2) {
+    var best = null, room = 1, all = doc.querySelectorAll('body *');
+    for (var i = 0; i < all.length; i++) {
+      var n = all[i], d = n.scrollHeight - n.clientHeight;
+      if (d > room && n.clientHeight > 100) {
+        var o = win.getComputedStyle(n).overflowY;
+        if (o === 'auto' || o === 'scroll') { best = n; room = d; }
+      }
+    }
+    if (best) box = best;
+  }
+  if (reset) { box.scrollTop = 0; return 'top'; }
+  var before = box.scrollTop;
+  box.scrollTop = before + Math.max(200, Math.round((box === se ? win.innerHeight : box.clientHeight) * 0.85));
+  return box.scrollTop <= before + 1 ? 'end' : 'moved';
+}"""
+_SCROLL_PAGE_JS = "return (" + _SCROLL_PAGE_FN + ")(arguments[0], document);"
+_SCROLL_SEARCH_STEPS = 15
+# How long an action waits for its element to become ready before acting
+# anyway (the action keeps its own fallbacks, e.g. a JavaScript click).
+_READY_WAIT_S = 8
+_READY_DISABLED_S = 10
+_READY_COVERED_S = 3
+
+
+def _ready_mode(verb):
+    """Which readiness an action needs: 'click', 'input', 'view' or None (skip)."""
+    v = (verb or "click").lower()
+    if v in ("upload", "frame", "navigate", "wait", "scroll_to"):
+        return None
+    if v in ("type", "clear", "key_press"):
+        return "input"
+    if v == "set_value":
+        return "view"
+    return "click"
+
+
+def _wait_ready(driver, el, verb, cb=None, wait=None):
+    """Scroll the element to the centre and wait until it is shown, enabled,
+    not moving and (for clicks) not covered. Never raises; returns the last
+    state ('ok', 'covered', 'disabled', …) so the caller can still act."""
+    mode = _ready_mode(verb)
+    if mode is None or el is None:
+        return "ok"
+    start, last, state = time.time(), None, "ok"
+    while True:
+        try:
+            raw = str(driver.execute_script(_READY_JS, el, mode) or "ok|")
+        except Exception:
+            return "gone"
+        state, _, box = raw.partition("|")
+        if state == "gone":
+            return state
+        if state == "ok" and box == last:
+            return "ok"
+        last = box if state == "ok" else None
+        limit = (_READY_DISABLED_S if state == "disabled" else
+                 _READY_COVERED_S if state == "covered" else (wait or _READY_WAIT_S))
+        if time.time() - start > limit:
+            if cb:
+                cb("      element still %s after %ds — acting anyway" % (state, limit), "dim")
+            return state
+        time.sleep(0.15)
+
+
+def _scroll_search(driver, probe, steps=None):
+    """Lazy-loaded content: scroll down step by step until probe() finds the
+    element (returns it), or the page ends. Returns None when not found and
+    puts the page back at the top."""
+    for _ in range(steps or _SCROLL_SEARCH_STEPS):
+        try:
+            moved = driver.execute_script(_SCROLL_PAGE_JS, False)
+        except Exception:
+            return None
+        time.sleep(0.35)
+        got = probe()
+        if got is not None:
+            try:
+                driver.execute_script("arguments[0].scrollIntoView({block:'center'});",
+                                      got[0] if isinstance(got, tuple) else got)
+            except Exception:
+                pass
+            return got
+        if moved == "end":
+            time.sleep(0.8)              # lazy loaders append rows at the bottom
+            got = probe()
+            if got is not None:
+                return got
+            try:
+                if driver.execute_script(_SCROLL_PAGE_JS, False) == "end":
+                    break
+            except Exception:
+                break
+    try:
+        driver.execute_script(_SCROLL_PAGE_JS, True)
+    except Exception:
+        pass
+    return None
+
+
+def _fill_tokens(value, login=None):
+    """{{APP_USER}} / {{APP_PASS}} (any case) -> the login credentials."""
+    login = login or {}
+    v = "" if value is None else str(value)
+    v = re.sub(r"\{\{\s*app_user\s*\}\}", lambda m: login.get("user", "") or m.group(0), v, flags=re.I)
+    return re.sub(r"\{\{\s*app_pass\s*\}\}", lambda m: login.get("password", "") or m.group(0), v, flags=re.I)
+
+
+def _auth_url(url, user, password, current=""):
+    """'https://host/p' + creds -> 'https://user:pass@host/p'; a relative URL
+    ('/basic-auth') is resolved against the current page."""
+    from urllib.parse import urljoin, urlsplit, urlunsplit, quote
+    full = urljoin(current or "", url) if not re.match(r"https?://", url or "", re.I) else url
+    p = urlsplit(full)
+    host = p.netloc.rsplit("@", 1)[-1]
+    cred = quote(user or "", safe="") + ":" + quote(password or "", safe="")
+    return urlunsplit((p.scheme, cred + "@" + host, p.path, p.query, p.fragment))
+
+
+def _cookie_ok(cookie_value, spec):
+    """'name|op|want' against a cookie's value (None = no such cookie)."""
+    parts = (str(spec or "").split("|") + ["", "", ""])
+    op, want = parts[1] or "exists", "|".join(parts[2:]).rstrip("|")
+    if op == "absent":
+        return cookie_value is None
+    if cookie_value is None:
+        return False
+    if op == "exists":
+        return True
+    a, b = _norm(str(cookie_value)), _norm(want)
+    return a == b if op == "is" else b in a
+
+
+def _page_check_ok(driver, check, value):
+    """One poll of a page check in inspection / replay (cookies read natively,
+    so HttpOnly cookies count too)."""
+    try:
+        if check == "cookie":
+            c = driver.get_cookie(str(value or "").split("|")[0].strip())
+            return _cookie_ok(None if c is None else c.get("value", ""), value)
+        return bool(driver.execute_script(_PAGE_CHECK_JS, check, str(value or "")))
+    except Exception:
+        return False
+
+_WINDOW_WORDS = re.compile(r"\b(window|tab|i?frame|editor)\b", re.I)
+
+
+_AUTH_ITEM_RE = re.compile(r'["\u201c]([^"\u201d]+)["\u201d]|(\{\{\s*app_(?:user|pass)\s*\}\})', re.I)
+
+
+def _batch68_action_in(a, low):
+    """Pagination, cookie / storage and HTTP-auth actions (batch 6-8)."""
+    if re.search(r"\b(?:basic|digest|http)[\s-]+auth(?:entication)?\b", low):
+        url_m = re.search(r"https?://[^\s\"\u201c\u201d']+", a)
+        items = [m.group(1) or m.group(2) for m in _AUTH_ITEM_RE.finditer(a)]
+        url = url_m.group(0).rstrip(".,;)") if url_m else next(
+            (q for q in items if q.startswith("/") or re.match(r"https?://", q, re.I)), "")
+        creds = [q for q in items if q.rstrip("/") != url.rstrip("/") and not re.match(r"https?://", q, re.I)]
+        if len(creds) < 2:
+            m = re.search(r"\bauth(?:entication)?\s+(?:as\s+)?([\w.@-]+)\s*[/:]\s*([^\s\"]+)", a, re.I)
+            if m:
+                creds = [m.group(1), m.group(2)]
+        if url and len(creds) >= 2:
+            return "auth_open", "%s|%s|%s" % (url, creds[0], creds[1])
+    m = re.search(r"\b(?:go|navigate|move|jump|switch)\s+to\s+page\s+(?:number\s+)?[\"\u201c]?(\d+)\b", low) or \
+        re.search(r"^\s*(?:click|open|select|press|tap)\s+(?:on\s+)?(?:the\s+)?page\s+(?:number\s+)?[\"\u201c]?(\d+)\b", low)
+    if m:
+        return "go_to_page", m.group(1)
+    if re.search(r"\bnext\s+page\b|\bnext\b[^.]*\bpagination\b|\bpaginat\w*\b[^.]*\bnext\b", low):
+        until = re.search(r"\buntil\s+" + _Q_TEXT, a, re.I)
+        return "next_page", (until.group(1) if until else "")
+    if re.search(r"\b(?:set|add|create|save)\s+(?:a\s+|the\s+)?cookie\b", low):
+        q = _quoted_phrases(a)
+        if len(q) >= 2:
+            return "set_cookie", "%s=%s" % (q[0], q[1])
+        if q and "=" in q[0]:
+            return "set_cookie", q[0]
+    if re.search(r"\b(?:delete|clear|remove|erase)\s+(?:all\s+(?:the\s+)?|the\s+)?(?:browser\s+)?cookies?\b", low):
+        q = _quoted_phrases(a)
+        return "delete_cookies", ("" if re.search(r"\ball\b|\bcookies\b", low) or not q else q[0])
+    m = re.search(r"\b(?:set|add|put|save|store)\s+(?:the\s+|a\s+)?(local|session)\s*storage\b", low)
+    if m:
+        q = _quoted_phrases(a)
+        if len(q) >= 2:
+            return "set_storage", "%s|%s|%s" % (m.group(1), q[0], q[1])
+    m = re.search(r"\b(?:clear|empty|wipe|reset)\s+(?:the\s+|all\s+)?(?:(local|session|browser)\s*(?:and\s+(?:session|local)\s*)?)?storage\b", low)
+    if m:
+        both = re.search(r"\blocal\s+and\s+session|\bsession\s+and\s+local", low)
+        return "clear_storage", ("all" if both or m.group(1) in (None, "browser") else m.group(1))
+    return None
+
+
+def _page_action_in(action):
+    """(verb, value) when an authored action is a page/browser action:
+    'Go back' / 'Click the browser Back button', 'Go forward', 'Refresh the page',
+    'Close "Close" if it is shown' / 'Dismiss the cookie banner if present'."""
+    a = str(action or "").strip()
+    low = a.lower()
+    got = _batch68_action_in(a, low)
+    if got:
+        return got
+    if re.search(r"\bif\s+(?:it\s+is\s+|it's\s+|one\s+is\s+|any\s+is\s+|they\s+are\s+)?"
+                 r"(?:shown|present|visible|displayed|open|there|appears)\b", low) and \
+            re.match(r"\s*(close|dismiss|click|press|accept|tap)\b", low):
+        quoted = _quoted_phrases(a)
+        return "dismiss_if_present", (quoted[0] if quoted else "")
+    if _WINDOW_WORDS.search(low):
+        return None
+    if re.match(r"\s*(?:go|navigate|move)\s+back\b", low) or \
+            re.search(r"\bbrowser'?s?\s+back\b|\bpress\s+(?:the\s+)?back\s+button\b", low):
+        return "go_back", ""
+    if re.match(r"\s*(?:go|navigate|move)\s+forward\b", low) or re.search(r"\bbrowser'?s?\s+forward\b", low):
+        return "go_forward", ""
+    if re.match(r"\s*(?:refresh|reload)\b", low) or re.search(r"\b(?:refresh|reload)\s+the\s+page\b", low):
+        return "refresh", ""
+    return None
+
+
+def _selenium_keys(value):
+    """'CONTROL+A' -> [Keys.CONTROL, 'a', Keys.NULL] for send_keys (Python Selenium)."""
+    from selenium.webdriver.common.keys import Keys
+    alias = {"CTRL": "CONTROL", "CMD": "META", "COMMAND": "META", "ESC": "ESCAPE",
+             "ARROWUP": "ARROW_UP", "ARROWDOWN": "ARROW_DOWN", "ARROWLEFT": "ARROW_LEFT",
+             "ARROWRIGHT": "ARROW_RIGHT", "PAGEUP": "PAGE_UP", "PAGEDOWN": "PAGE_DOWN"}
+    out = []
+    for part in str(value or "ENTER").upper().split("+"):
+        k = alias.get(part.strip(), part.strip())
+        out.append(k.lower() if len(k) == 1 else getattr(Keys, k, Keys.ENTER))
+    return out + ([Keys.NULL] if len(out) > 1 else [])
+
+
+def _clear_field(el):
+    """Empty a field; select-all + delete when clear() is ignored (framework inputs)."""
+    from selenium.webdriver.common.keys import Keys
+    el.clear()
+    if (el.get_attribute("value") or ""):
+        el.send_keys(Keys.CONTROL, "a", Keys.NULL, Keys.DELETE)
+
+
+def _page_action_label(verb, value=""):
+    v = str(value or "")
+    if verb == "next_page":
+        return ('Go to the next page until "%s" is shown' % v) if v else "Go to the next page"
+    if verb == "go_to_page":
+        return "Go to page %s" % v
+    if verb == "set_cookie":
+        return 'Set cookie "%s"' % v
+    if verb == "delete_cookies":
+        return ('Delete cookie "%s"' % v) if v else "Delete all cookies"
+    if verb == "set_storage":
+        p = (v.split("|") + ["", "", ""])[:3]
+        return '%s storage: set "%s" to "%s"' % (p[0].capitalize() or "Local", p[1], p[2])
+    if verb == "clear_storage":
+        return "Clear %s storage" % ({"all": "local and session"}.get(v, v or "local"))
+    if verb == "auth_open":
+        p = (v.split("|") + ["", ""])[:2]
+        # Never print the password (logs, reports, generated comments).
+        return 'Open "%s" with HTTP authentication as "%s"' % (p[0], p[1])
+    return {"go_back": "Go back (browser Back)", "go_forward": "Go forward (browser Forward)",
+            "refresh": "Refresh the page",
+            "dismiss_if_present": ('Close "%s" if it is shown' % value) if value
+            else "Close a pop-up if one is shown"}.get(verb, verb)
+
+
+def _paginate_click(driver, what, wait=4):
+    """Click a pagination control ('next' or a page number), polling `wait` s."""
+    end = time.time() + wait
+    while True:
+        try:
+            got = str(driver.execute_script(_PAGINATE_JS, str(what)) or "")
+        except Exception:
+            got = ""
+        if got or time.time() >= end:
+            return got
+        time.sleep(0.3)
+
+
+def _after_page_change(driver):
+    time.sleep(0.8)
+    end = time.time() + 10
+    while time.time() < end:
+        try:
+            if driver.execute_script("return document.readyState") == "complete":
+                return
+        except Exception:
+            return
+        time.sleep(0.25)
+
+
+def _run_page_action(driver, verb, value="", wait=4, login=None):
+    """Inspection / replay: run a page action with Selenium. Returns a log line."""
+    if verb in ("next_page", "go_to_page"):
+        target = _fill_tokens(value, login).strip()
+        if verb == "go_to_page" or not target:
+            what = target if verb == "go_to_page" else "next"
+            got = _paginate_click(driver, what, wait)
+            if not got:
+                raise ValueError('no "%s" control in the pagination' % what)
+            if got == "end":
+                raise ValueError("already on the last page")
+            _after_page_change(driver)
+            return "went to page %s" % target if verb == "go_to_page" else "went to the next page"
+        for n in range(_PAGINATE_MAX + 1):
+            try:
+                txt = str(driver.execute_script("return document.body ? document.body.innerText : '';") or "")
+            except Exception:
+                txt = ""
+            if _norm(target) in _norm(txt):
+                return 'found "%s" on page %d' % (target, n + 1)
+            got = _paginate_click(driver, "next", wait)
+            if not got or got == "end":
+                raise ValueError('"%s" was not found on any page (%d checked)' % (target, n + 1))
+            _after_page_change(driver)
+        raise ValueError('"%s" was not found within %d pages' % (target, _PAGINATE_MAX))
+    if verb == "set_cookie":
+        name, _, val = _fill_tokens(value, login).partition("=")
+        driver.add_cookie({"name": name.strip(), "value": val.strip()})
+        return 'cookie "%s" set' % name.strip()
+    if verb == "delete_cookies":
+        name = str(value or "").strip()
+        if name:
+            driver.delete_cookie(name)
+            return 'cookie "%s" deleted' % name
+        driver.delete_all_cookies()
+        return "all cookies deleted"
+    if verb in ("set_storage", "clear_storage"):
+        p = (_fill_tokens(value, login).split("|") + ["", "", ""])
+        if verb == "set_storage":
+            driver.execute_script(_STORAGE_JS, "set", p[0] or "local", p[1], "|".join(p[2:]).rstrip("|"))
+            return '%s storage "%s" set' % (p[0] or "local", p[1])
+        driver.execute_script(_STORAGE_JS, "clear", p[0] or "all", "", "")
+        return "%s storage cleared" % (p[0] or "all")
+    if verb == "auth_open":
+        p = (_fill_tokens(value, login).split("|") + ["", "", ""])
+        cur = ""
+        try:
+            cur = driver.current_url or ""
+        except Exception:
+            pass
+        driver.get(_auth_url(p[0].strip(), p[1], p[2], cur if cur.startswith("http") else ""))
+        return 'opened "%s" with HTTP authentication' % p[0].strip()
+    if verb == "go_back":
+        driver.back()
+        return "went back"
+    if verb == "go_forward":
+        driver.forward()
+        return "went forward"
+    if verb == "refresh":
+        driver.refresh()
+        return "page refreshed"
+    if verb == "dismiss_if_present":
+        end = time.time() + wait
+        while True:
+            try:
+                got = str(driver.execute_script(_DISMISS_JS, str(value or "")) or "")
+            except Exception:
+                got = ""
+            if got:
+                return 'closed "%s"' % got[:40]
+            if time.time() >= end:
+                return "nothing to close (not shown)"
+            time.sleep(0.3)
+    raise ValueError("unknown page action " + str(verb))
+
+_Q_TEXT = r'["“]([^"”]+)["”]'
+_COUNT_OP = r'(at\s+least\s+|at\s+most\s+|exactly\s+|only\s+)?'
+
+
+def _count_op(word):
+    w = _norm(word or "")
+    return "gte" if w.startswith("at least") else "lte" if w.startswith("at most") else "eq"
+
+
+def _page_checks_in(text):
+    """Page-level checks an expected result names, in order: [(check, value, phrase)]."""
+    t = str(text or "")
+    found = []
+
+    def add(m, check, value, phrase=""):
+        found.append((m.start(), check, value, phrase))
+    # ('The "Home" link has "href" containing …' is an attribute check, not the URL.)
+    for m in re.finditer(r'(?:\b(?:URL|address)\s+(?:now\s+)?(?:contains|includes|has)|\blink\s+(?:now\s+)?(?:contains|includes))\s+'
+                         + _Q_TEXT, t, re.I):
+        add(m, "url", "contains|" + m.group(1), m.group(1))
+    for m in re.finditer(r'\b(?:URL|address)\s+(?:is|equals|becomes)\s+' + _Q_TEXT, t, re.I):
+        add(m, "url", "is|" + m.group(1), m.group(1))
+    for m in re.finditer(r'\btitle\s+(?:is|equals|becomes)\s+' + _Q_TEXT, t, re.I):
+        add(m, "title", "is|" + m.group(1), m.group(1))
+    for m in re.finditer(r'\btitle\s+(?:contains|includes|has)\s+' + _Q_TEXT, t, re.I):
+        add(m, "title", "contains|" + m.group(1), m.group(1))
+    for m in re.finditer(r'\b(?:table|grid)\s+(?:now\s+)?(?:has|shows|contains|displays|lists)\s+'
+                         + _COUNT_OP + r'(\d+)\s+rows?\b', t, re.I):
+        add(m, "count", "rows|%s|%s" % (m.group(2), _count_op(m.group(1))))
+    for m in re.finditer(r'\b' + _COUNT_OP + r'(\d+)\s+rows?\s+(?:are|is)\s+(?:shown|displayed|listed|visible)',
+                         t, re.I):
+        add(m, "count", "rows|%s|%s" % (m.group(2), _count_op(m.group(1))))
+    for m in re.finditer(_Q_TEXT + r'\s+(?:appears|is\s+shown|is\s+displayed|shows\s+up)\s+'
+                         + _COUNT_OP + r'(\d+)\s+times?\b', t, re.I):
+        add(m, "count", "text|%s|%s|%s" % (m.group(1), m.group(3), _count_op(m.group(2))), m.group(1))
+    for m in re.finditer(_Q_TEXT + r'\s+column\s+is\s+sorted\s+(?:in\s+)?(ascending|descending|a\s*(?:to|-)\s*z|'
+                         r'z\s*(?:to|-)\s*a|low(?:est)?\s+to\s+high(?:est)?|high(?:est)?\s+to\s+low(?:est)?|'
+                         r'smallest\s+to\s+largest|largest\s+to\s+smallest|oldest\s+to\s+newest|newest\s+to\s+oldest)',
+                         t, re.I):
+        d = _norm(m.group(2))
+        desc = d.startswith(("desc", "z", "high", "largest", "newest"))
+        add(m, "sorted", "%s|%s" % (m.group(1), "desc" if desc else "asc"), m.group(1))
+    for m in re.finditer(r'\btext\s+(?:matching|that\s+matches)\s+' + _Q_TEXT, t, re.I):
+        add(m, "pattern", m.group(1), m.group(1))
+    # 'The "Home" link has "href" containing "/"', '... has attribute "type"
+    # equal to "submit"', '... has no "disabled" attribute'.
+    for m in re.finditer(_Q_TEXT + r'\s+(?:[\w-]+\s+){0,2}?(?:has|have|with)\s+(?:an?\s+|the\s+)?'
+                         r'(?:attribute\s+)?' + _Q_TEXT + r'\s+(?:attribute\s+)?'
+                         r'(not\s+containing|does\s+not\s+contain|without|containing|that\s+contains|contains|'
+                         r'including|includes|equal\s+to|equals|set\s+to|that\s+is|is|of|=)\s+' + _Q_TEXT, t, re.I):
+        w = _norm(m.group(3))
+        op = ("not" if w.startswith(("not", "does not", "without")) else
+              "is" if w.startswith(("equal", "set", "is", "that is", "of", "=")) else "contains")
+        add(m, "attr", "%s|%s|%s|%s" % (m.group(1), m.group(2), op, m.group(4)),
+            (m.group(1), m.group(2), m.group(4)))
+    for m in re.finditer(_Q_TEXT + r'\s+(?:[\w-]+\s+){0,2}?(?:has|have)\s+no\s+' + _Q_TEXT
+                         + r'(?:\s+attribute)?', t, re.I):
+        add(m, "attr", "%s|%s|absent|" % (m.group(1), m.group(2)), (m.group(1), m.group(2)))
+    _batch68_checks_in(t, add)
+    found.sort(key=lambda x: x[0])
+    return [(c, v, p) for _, c, v, p in found]
+
+
+def _batch68_checks_in(t, add):
+    """'Page 3 is the current page', 'Cookie "theme" is "dark"' / exists / is
+    deleted, 'Local storage "token" contains "abc"' / exists / is removed."""
+    for m in re.finditer(r'\b(?:current|active|selected)\s+page\s+(?:is|=)\s+(?:now\s+)?(?:page\s+)?["\u201c]?(\d+)\b', t, re.I):
+        add(m, "page", m.group(1), m.group(1))
+    for m in re.finditer(r'\bpage\s+["\u201c]?(\d+)["\u201d]?\s+is\s+(?:now\s+)?(?:the\s+)?'
+                         r'(?:current|active|selected|highlighted)', t, re.I):
+        add(m, "page", m.group(1), m.group(1))
+    subj = (r'\b(?:(?P<area>local|session)\s*storage\s+(?:item\s+|key\s+|value\s+)?|cookie\s+)'
+            + r'["\u201c](?P<name>[^"\u201d]+)["\u201d]\s+')
+    for m in re.finditer(subj + r'(?:value\s+)?(?P<op>is\s+(?:deleted|removed|absent|gone|cleared|empty|not\s+set)|'
+                         r'is\s+(?:set|present|saved|stored|created)|does\s+not\s+exist|no\s+longer\s+exists|'
+                         r'exists|has\s+(?:the\s+)?value|contains|includes|equals|is)(?:\s+' + _Q_TEXT + r')?', t, re.I):
+        w = _norm(m.group("op"))
+        want = m.group(m.lastindex) if m.lastindex and m.lastindex > 3 else None
+        if w.startswith(("is deleted", "is removed", "is absent", "is gone", "is cleared", "is empty",
+                         "is not set", "does not", "no longer")):
+            op, want = "absent", ""
+        elif w.startswith(("exists", "is set", "is present", "is saved", "is stored", "is created")):
+            op, want = "exists", ""
+        elif want is None:
+            continue
+        else:
+            op = "contains" if w.startswith(("contains", "includes")) else "is"
+        name = m.group("name")
+        if m.group("area"):
+            add(m, "storage", "%s|%s|%s|%s" % (m.group("area").lower(), name, op, want), (name, want) if want else name)
+        else:
+            add(m, "cookie", "%s|%s|%s" % (name, op, want), (name, want) if want else name)
+
+
+_REMEMBER_RE = re.compile(r'\bremember\s+(?:the\s+)?(?:\w+\s+){0,2}?(?:matching|that\s+matches)\s+'
+                          + _Q_TEXT + r'\s+as\s+\{\{\s*([^{}]+?)\s*\}\}', re.I)
+
+
+def _page_check_label(check, value):
+    """Readable form of a page check (inspection log and failure messages)."""
+    parts = str(value or "").split("|")
+    if check == "url":
+        return 'URL %s "%s"' % ("is" if parts[0] == "is" else "contains", "|".join(parts[1:]))
+    if check == "title":
+        return 'page title %s "%s"' % ("is" if parts[0] == "is" else "contains", "|".join(parts[1:]))
+    if check == "count":
+        op = {"gte": "at least ", "lte": "at most "}
+        if parts[0] == "rows":
+            return "table has %s%s rows" % (op.get(parts[2] if len(parts) > 2 else "", ""), parts[1] if len(parts) > 1 else "?")
+        return '"%s" appears %s%s times' % (parts[1] if len(parts) > 1 else "",
+                                            op.get(parts[3] if len(parts) > 3 else "", ""),
+                                            parts[2] if len(parts) > 2 else "?")
+    if check == "sorted":
+        return '"%s" column sorted %s' % (parts[0], "descending" if (parts + [""])[1] == "desc" else "ascending")
+    if check == "pattern":
+        return 'page text matches "%s"' % value
+    if check == "page":
+        return "page %s is the current page" % value
+    if check in ("storage", "cookie"):
+        p = (parts + ["", "", "", ""])
+        if check == "storage":
+            what, rest = '%s storage "%s"' % (p[0] or "local", p[1]), p[2:]
+        else:
+            what, rest = 'cookie "%s"' % p[0], p[1:]
+        op, want = rest[0] or "exists", "|".join(rest[1:]).rstrip("|")
+        how = {"is": 'is "%s"' % want, "contains": 'contains "%s"' % want,
+               "absent": "is not set", "exists": "is set"}.get(op, op)
+        return "%s %s" % (what, how)
+    if check == "attr":
+        p = (parts + ["", "", "", ""])[:4]
+        p[3] = "|".join(parts[3:])
+        how = {"is": "is", "not": "does not contain", "absent": "is absent",
+               "present": "is present"}.get(p[2], "contains")
+        return ('"%s" attribute "%s" %s' % (p[0], p[1], how)
+                + ("" if p[2] in ("absent", "present") else ' "%s"' % p[3]))
+    return "%s %s" % (check, value)
+
+
+def _apply_assertion_pack(clean, raw_steps):
+    """Deterministic page checks and remember steps from the AUTHORED wording
+    (the model may drop quotes or mangle a regular expression):
+      'The URL contains "/secure"', 'The page title is "X"', 'The table has 4
+      rows', '"edit" appears 8 times', 'The "Last Name" column is sorted
+      ascending', 'The page shows text matching "ORD-\\d+"', and the action
+      'Remember the text matching "ORD-\\d+" as {{order}}'.
+    An assertion of the same step that only restated one of those phrases is
+    replaced; any other assertion of that step is kept."""
+    out = list(clean)
+
+    def first_index(n, role=None):
+        for i, it in enumerate(out):
+            if n in (it.get("from_steps") or []) and (role is None or it.get("role") == role):
+                return i
+        for i, it in enumerate(out):
+            fs = [x for x in (it.get("from_steps") or []) if isinstance(x, int)]
+            if fs and min(fs) > n:
+                return i
+        return len(out)
+
+    for n, step in enumerate(raw_steps or [], 1):
+        step = step or {}
+        pa = _page_action_in(step.get("action"))
+        if pa:
+            # The step's own action goes FIRST in that step: the model may have
+            # written it as a "precondition" (no UI action), and a check of the
+            # same step placed before it ran before the value was set.
+            at = first_index(n)
+            out = [it for it in out if not (it.get("role") in ("action", "precondition")
+                                            and n in (it.get("from_steps") or []))]
+            at = min(at, len(out))
+            out.insert(at, {"role": "action", "verb": pa[0], "target": _page_action_label(*pa),
+                            "keywords": [], "kind": "any", "value": pa[1], "check": "",
+                            "expected": "", "from_steps": [n]})
+        rm = _REMEMBER_RE.search(str(step.get("action") or ""))
+        if rm:
+            at = first_index(n)
+            out = [it for it in out if not (it.get("role") in ("action", "precondition")
+                                            and n in (it.get("from_steps") or []))]
+            at = min(at, len(out))
+            out.insert(at, {"role": "action", "verb": "remember", "target": "text matching \"%s\"" % rm.group(1),
+                            "keywords": [], "kind": "text", "value": rm.group(1), "check": "",
+                            "expected": "", "from_steps": [n], "remember_as": rm.group(2).strip()})
+        expected = str(step.get("expected") or "")
+        checks = _page_checks_in(expected)
+        if not checks:
+            continue
+        covered = {_norm(x) for _, _, p in checks if p
+                   for x in (p if isinstance(p, tuple) else (p,))}
+        others = [p for p in _quoted_phrases(expected) if _norm(p) not in covered]
+        at = first_index(n, "assertion")
+        keep = []
+        for i, it in enumerate(out):
+            if it.get("role") == "assertion" and n in (it.get("from_steps") or []) and \
+                    (it.get("check") or "") not in ("table", "download"):
+                blob = _norm(" ".join([str(it.get("expected") or ""), str(it.get("target") or "")]
+                                      + [str(k) for k in (it.get("keywords") or [])]))
+                if not any(_norm(p) and _norm(p) in blob for p in others):
+                    continue          # only restated a page check: replaced below
+            keep.append(it)
+        removed_before = sum(1 for it in out[:at] if it not in keep)
+        out = keep
+        at = max(0, min(at - removed_before, len(out)))
+        for k, (check, value, phrase) in enumerate(checks):
+            out.insert(at + k, {"role": "assertion", "verb": "", "target": _page_check_label(check, value),
+                                "keywords": [], "kind": "text", "value": value, "check": check,
+                                "expected": _page_check_label(check, value), "from_steps": [n]})
+    return out
+
+
+
+def _inspection_window_args(headless):
+    """Window size of QA Studio's own inspection/replay Chrome. A visible one
+    opens maximized: a fixed 1440x900 window ran under the taskbar on screens
+    with display scaling (125-150%), cutting off the bottom of the page."""
+    return ["--window-size=1440,900"] if headless else ["--start-maximized"]
+
+
+def _fit_inspection_window(driver, headless):
+    """Make sure a visible inspection browser fills the screen's work area
+    (--start-maximized is ignored by some Chrome builds)."""
+    if headless:
+        return
+    try:
+        driver.maximize_window()
+    except Exception:
+        pass
 
 def _download_dir():
     """Where inspection/replay Chrome saves downloads (checked by download steps)."""
@@ -13177,6 +15625,16 @@ def replay_sequenced(sequenced, base_url, login, make_driver, By, cb=None,
                         return el, i, ""
                     if find_all(key, value):
                         reason = "not-visible"
+
+                def any_hit():
+                    for i, (key, value) in enumerate(locs):
+                        els = find_all(key, value)
+                        if els and _displayed(els[0]):
+                            return els[0], i
+                    return None
+                got = _scroll_search(driver, any_hit)    # lazy-loaded further down
+                if got is not None:
+                    return got[0], got[1], ""
                 return None, -1, reason
 
             def body_text():
@@ -13210,7 +15668,7 @@ def replay_sequenced(sequenced, base_url, login, make_driver, By, cb=None,
                 el, _, why = find([("css", _REPLAY_SUBMIT)])
                 if el is None:
                     raise RuntimeError("login-" + why)
-                el.click()
+                _login_click(driver, el)
                 poll(lambda: driver.current_url != before, wait)
 
             def locs_for(intent, app_page):
@@ -13242,12 +15700,39 @@ def replay_sequenced(sequenced, base_url, login, make_driver, By, cb=None,
                 if role == "assertion" and (intent.get("check") or "") == "download":
                     ok = _find_download(intent.get("value"), case_ctx.get("last_action_at", 0))
                     return ("" if ok else "not-downloaded"), False
+                if role == "assertion" and (intent.get("check") or "") in _PAGE_CHECKS:
+                    def _page_ok():
+                        return _page_check_ok(driver, intent["check"], intent.get("value"))
+                    ok = poll(_page_ok, min(wait, 10))
+                    return ("" if ok else "page-check-failed"), False
+                if role == "action" and (intent.get("verb") or "") in _PAGE_ACTIONS \
+                        and intent.get("verb") != "remember":
+                    try:
+                        _run_page_action(driver, intent["verb"], intent.get("value") or "", login=login)
+                    except Exception as exc:
+                        return "action-failed: %s" % type(exc).__name__, False
+                    return "", False
+                if role == "action" and (intent.get("verb") or "") == "remember":
+                    got = {"v": ""}
+                    def _read():
+                        try:
+                            got["v"] = str(driver.execute_script(_REMEMBER_JS, str(intent.get("value") or "")) or "")
+                        except Exception:
+                            got["v"] = ""
+                        return bool(got["v"])
+                    if not poll(_read, min(wait, 10)):
+                        return "nothing-to-remember", False
+                    case_ctx.setdefault("remembered", {})[str(intent.get("remember_as") or "value")] = got["v"]
+                    return "", False
                 if role == "assertion":
                     if intent.get("assert_before_action"):
                         if not locs:
                             return "unresolved", False
-                        shown = [e for e in find_all(*locs[0]) if _displayed(e)]
-                        return ("still-visible" if shown else ""), False
+                        # Removal is often animated / async (a loading bar first):
+                        # wait for it to disappear instead of checking once.
+                        gone = poll(lambda: not [e for e in find_all(*locs[0]) if _displayed(e)],
+                                    min(wait, 10))
+                        return ("" if gone else "still-visible"), False
                     check = (intent.get("check") or "").lower()
                     if (not locs and not intent.get("inspection_unresolved") and
                             check not in ("checked", "enabled", "disabled", "selected",
@@ -13265,8 +15750,15 @@ def replay_sequenced(sequenced, base_url, login, make_driver, By, cb=None,
                         return why, False
                     if check == "checked" and not el.is_selected():
                         return "not-checked", idx > 0
-                    if check in ("enabled", "disabled") and el.is_enabled() != (check == "enabled"):
-                        return "wrong-enabled-state", idx > 0
+                    if check in ("enabled", "disabled"):
+                        # Often enabled only after a loading bar: wait for it.
+                        def _state_ok():
+                            try:
+                                return el.is_enabled() == (check == "enabled")
+                            except Exception:
+                                return False
+                        if not poll(_state_ok, min(wait, 10)):
+                            return "wrong-enabled-state", idx > 0
                     if check == "invalid" and driver.execute_script(
                             "return arguments[0].checkValidity ? arguments[0].checkValidity() : true;", el):
                         return "not-invalid", idx > 0
@@ -13350,6 +15842,7 @@ def replay_sequenced(sequenced, base_url, login, make_driver, By, cb=None,
                     driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
                 except Exception:
                     pass
+                _wait_ready(driver, el, verb)
                 case_ctx["last_action_at"] = time.time()
                 try:
                     if verb == "drag":
@@ -13399,8 +15892,9 @@ def replay_sequenced(sequenced, base_url, login, make_driver, By, cb=None,
                     elif verb == "set_value":
                         driver.execute_script(_SET_VALUE_JS, el, value)
                     elif verb == "key_press":
-                        from selenium.webdriver.common.keys import Keys
-                        el.send_keys(getattr(Keys, (value or "ENTER").upper(), Keys.ENTER))
+                        el.send_keys(*_selenium_keys(value))
+                    elif verb == "clear":
+                        _clear_field(el)
                     else:
                         try:
                             el.click()
@@ -13418,12 +15912,20 @@ def replay_sequenced(sequenced, base_url, login, make_driver, By, cb=None,
                     break
                 bucket = case.get("bucket", 3)
                 explicit = bool(case.get("explicit_login_flow"))
+                # Verified login steps replay as written (same rule as the
+                # generated test), not through the shared login helper.
+                as_authored = _login_steps_as_authored(case, _is_login_flow_action)
+                if as_authored:
+                    explicit = False
                 row = {"story": story.get("id"), "title": case.get("title", ""),
                        "passed": True, "steps": [], "target": "", "reason": "",
                        "fallbacks_used": 0}
                 _replay_reset_context(driver, case_ctx)
                 try:
-                    if explicit or bucket == 2:
+                    if as_authored:
+                        if not _starts_with_absolute_navigate(case):
+                            open_login_page()
+                    elif explicit or bucket == 2:
                         open_login_page()
                         perform_login()
                     elif bucket < 2:
@@ -13442,13 +15944,15 @@ def replay_sequenced(sequenced, base_url, login, make_driver, By, cb=None,
                 _rcache = {}
                 for intent in (case.get("intents") or []) if row["passed"] else []:
                     intent.pop("replay_failed", None)
-                    if (bucket == 2 and intent.get("role") == "action") or (
+                    if (bucket == 2 and not as_authored and intent.get("role") == "action") or (
                             explicit and _is_login_flow_action(intent)):
                         continue
                     try:
                         reason, used_fb = run_intent(_data_view(intent, _rvals, _rcache), app_page)
                     except Exception as exc:
                         reason, used_fb = "error: %s" % type(exc).__name__, False
+                    # A remember step's value is used by the steps after it ({{name}}).
+                    _rvals.update(case_ctx.pop("remembered", None) or {})
                     row["fallbacks_used"] += 1 if used_fb else 0
                     if reason:
                         intent["replay_failed"] = reason
@@ -13489,9 +15993,23 @@ def replay_verify(stories_payload, login, site_url, cb=None, should_stop=None,
     cb = cb or (lambda *a, **k: None)
     sequenced = sequence_verified_inspection_plans(stories_payload)
     if not sequenced:
-        cb("Replay skipped \u2014 some steps have no verified locator yet "
-           "(listed above); fix those first.", "warn")
-        return None
+        # Some cases still have unverified steps (generation stays blocked).
+        # Replay the fully verified ones anyway, so the ones that pass are
+        # remembered and the next run only re-checks what is still failing.
+        ready = []
+        for pack in stories_payload or []:
+            tcs = [tc for tc in pack.get("test_cases") or []
+                   if _plan_fully_verified(tc.get("inspection_plan"))]
+            if tcs:
+                ready.append(dict(pack, test_cases=tcs))
+        sequenced = sequence_verified_inspection_plans(ready) if ready else None
+        if not sequenced:
+            cb("Replay skipped \u2014 some steps have no verified locator yet "
+               "(listed above); fix those first.", "warn")
+            return None
+        cb("Replaying the %d fully verified case(s) so the ones that pass are kept "
+           "for the next run; the steps listed above still need a verified locator."
+           % sum(len(p["test_cases"]) for p in ready), "warn")
     from selenium import webdriver
     from selenium.webdriver.chrome.options import Options
     from selenium.webdriver.common.by import By
@@ -13500,7 +16018,7 @@ def replay_verify(stories_payload, login, site_url, cb=None, should_stop=None,
         opts = Options()
         if headless:
             opts.add_argument("--headless=new")
-        for arg in ("--no-sandbox", "--disable-dev-shm-usage", "--window-size=1440,900",
+        for arg in ("--no-sandbox", "--disable-dev-shm-usage", *_inspection_window_args(headless),
                     "--disable-gpu",
                     "--disable-features=PasswordLeakDetection,PasswordManagerOnboarding"):
             opts.add_argument(arg)
@@ -13515,6 +16033,7 @@ def replay_verify(stories_payload, login, site_url, cb=None, should_stop=None,
         })
         opts.set_capability("unhandledPromptBehavior", "ignore")
         drv = webdriver.Chrome(options=opts)
+        _fit_inspection_window(drv, headless)
         drv.set_page_load_timeout(45)
         return drv
 
@@ -13615,6 +16134,9 @@ def _count_null_seeds(bucket, intents, explicit_login_flow=False):
             continue
         if explicit_login_flow and _is_login_flow_action(intent):
             continue
+        # Page checks and remember steps read the whole page — no element locator.
+        if (intent.get("verb") or "") in _PAGE_ACTIONS or (intent.get("check") or "") in _PAGE_CHECKS:
+            continue
         _, val, _ = _seed_locator_for_intent(intent, app_page=(bucket == 3))
         if val != "TODO_RESOLVE_AT_RUNTIME":
             continue
@@ -13701,10 +16223,53 @@ public final class Config {
         try (FileInputStream in = new FileInputStream("config.properties")) { P.load(in); }
         catch (Exception ignored) {}
     }
-    public static final String BASE_URL  = val("APP_BASE_URL",  "app.base.url",  "");
-    public static final String LOGIN_URL = val("APP_LOGIN_URL", "app.login.url", "");
+    // QA Studio's opt-in "save this test account" writes APP_USER / APP_PASS (and
+    // SMTP_PASS) to the project's git-ignored .env; a real environment variable
+    // (IntelliJ run configuration, system) still wins over it.
+    private static final java.util.Map<String, String> DOTENV = new java.util.HashMap<>();
+    static {
+        try {
+            for (String line : java.nio.file.Files.readAllLines(java.nio.file.Paths.get(".env"),
+                    java.nio.charset.StandardCharsets.UTF_8)) {
+                String t = line.trim();
+                int eq = t.indexOf('=');
+                if (t.isEmpty() || t.startsWith("#") || eq <= 0) continue;
+                String v = t.substring(eq + 1).trim();
+                char q = v.isEmpty() ? 0 : v.charAt(0);   // strip "quotes" or 'quotes'
+                if (v.length() >= 2 && (q == '"' || q == 39) && v.charAt(v.length() - 1) == q)
+                    v = v.substring(1, v.length() - 1);
+                DOTENV.put(t.substring(0, eq).trim(), v);
+            }
+        } catch (Exception ignored) { }
+    }
+    /** Environment variable, else the project's .env, else null. */
+    public static String getenv(String k) {
+        String v = System.getenv(k);
+        if (v == null || v.isEmpty()) v = DOTENV.get(k);
+        return (v == null || v.isEmpty()) ? null : v;
+    }
+    public static final String BASE_URL  = url(val("APP_BASE_URL",  "app.base.url",  ""));
+    public static final String LOGIN_URL = url(val("APP_LOGIN_URL", "app.login.url", ""));
+    /** "practice.example.com" → "https://practice.example.com" (http:// for
+     *  localhost / an IP): the browser rejects an address without a scheme. */
+    private static String url(String v) {
+        if (v == null || v.isBlank() || v.contains("://")) return v;
+        String h = v.trim();
+        boolean local = h.startsWith("localhost") || Character.isDigit(h.charAt(0));
+        return (local ? "http://" : "https://") + h;
+    }
     public static final String USER      = env("APP_USER",  "");   // secret: env only
     public static final String PASS      = env("APP_PASS",  "");   // secret: env only
+
+    /** A credential a test types: fails right away with a clear message when it
+     *  isn't set (instead of typing "" and failing later on a misleading check). */
+    public static String need(String name) {
+        String v = "APP_USER".equals(name) ? USER : "APP_PASS".equals(name) ? PASS : env(name, "");
+        if (v.isEmpty()) throw new IllegalStateException(name + " is not set: add it to the run "
+            + "configuration's environment variables (IntelliJ: Run > Edit Configurations > "
+            + "Environment variables) or to the system environment, then run again.");
+        return v;
+    }
     // ── AI self-healing (used only when a seed locator fails at run time) ──
     public static final String AI_PROVIDER = val("QA_AI_PROVIDER", "ai.provider", "__PROVIDER__");
     public static final String AI_BASE_URL = val("QA_AI_BASE_URL", "ai.base.url", "__AI_BASE__");
@@ -13714,18 +16279,28 @@ public final class Config {
                                                      "OPENAI_API_KEY", "NVIDIA_API_KEY",
                                                      "GROQ_API_KEY", "GEMINI_API_KEY");
     public static final boolean HEAL      = !API_KEY.isEmpty();
+    /** A run setting (BROWSER, HEADLESS, VIDEO...): -Dqa.browser=... (Maven
+     *  command line / IntelliJ run configuration) → environment variable →
+     *  config.properties (browser=...) → default. Not for secrets. */
+    public static String setting(String key, String d) {
+        String prop = key.toLowerCase(java.util.Locale.ROOT).replace('_', '.');
+        String v = System.getProperty("qa." + prop);
+        if (v == null || v.isBlank()) v = getenv(key);
+        if (v == null || v.isBlank()) v = P.getProperty(prop);
+        return (v == null || v.isBlank()) ? d : v.trim();
+    }
     /** env var → config.properties → default. */
     private static String val(String envKey, String propKey, String d) {
-        String v = System.getenv(envKey);
+        String v = getenv(envKey);
         if (v != null && !v.isEmpty()) return v;
         v = P.getProperty(propKey);
         return (v == null || v.isEmpty()) ? d : v;
     }
     private static String env(String k, String d) {
-        String v = System.getenv(k); return (v == null || v.isEmpty()) ? d : v;
+        String v = getenv(k); return (v == null || v.isEmpty()) ? d : v;
     }
     private static String firstEnv(String... keys) {
-        for (String k : keys) { String v = System.getenv(k);
+        for (String k : keys) { String v = getenv(k);
             if (v != null && !v.isEmpty()) return v; }
         return "";
     }
@@ -13749,7 +16324,173 @@ def _sh_config_properties(base_url, login_url, ai_provider, ai_base_url, ai_mode
         "ai.base.url=%s\n"
         "ai.model=%s\n"
         "# Secrets are ENV-ONLY — never put them here: APP_USER, APP_PASS, QA_AI_API_KEY\n"
-        % (base_url, login_url, ai_provider, ai_base_url, ai_model))
+        % (base_url, login_url, ai_provider, ai_base_url, ai_model)) + _SH_RUN_PROPS
+
+
+# Run settings in config.properties (BROWSER / VIDEO / HEADLESS env vars and
+# -Dqa.browser=... override them).
+_SH_RUN_PROPS = (
+    "# Browser: chrome (default), edge, firefox, a list (chrome,firefox) or all.\n"
+    "# IntelliJ also has 'Run tests (Edge)' etc. run configurations.\n"
+    "browser=chrome\n"
+    "# Test videos (GIF) in the detailed report: retain-on-failure (failed tests\n"
+    "# only - the default; on = every test, slower and much larger) or off.\n"
+    "video=retain-on-failure\n"
+    "headless=false\n")
+
+
+# The video block older versions wrote (video=on by default).
+_OLD_VIDEO_BLOCK = ("# Test videos (GIF) in the detailed report: on, retain-on-failure or off.\n"
+                    "video=on\n")
+
+
+def _migrate_video_default(path):
+    """An existing project still on the OLD untouched default (video=on, with the
+    old comment) moves to the new default, retain-on-failure — no IDE or file
+    editing needed. A value the user changed (or wrote without that comment) stays."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            text = f.read()
+    except Exception:
+        return False
+    norm = text.replace("\r\n", "\n")
+    if _OLD_VIDEO_BLOCK not in norm:
+        return False
+    new_block = ("# Test videos (GIF) in the detailed report: retain-on-failure (failed tests\n"
+                 "# only - the default; on = every test, slower and much larger) or off.\n"
+                 "video=retain-on-failure\n")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(norm.replace(_OLD_VIDEO_BLOCK, new_block, 1))
+    return True
+
+
+def _set_props(path, values):
+    """Set `key=value` lines in config.properties to QA Studio's current values
+    (QA Studio is the source of truth for these): an existing line is replaced,
+    a missing one appended. Empty values leave the file alone."""
+    values = {k: v for k, v in (values or {}).items() if v}
+    if not values:
+        return False
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            text = f.read()
+    except Exception:
+        return False
+    new = text
+    for key, val in values.items():
+        pat = re.compile(r"(?m)^[ \t]*%s[ \t]*=.*$" % re.escape(key))
+        line = "%s=%s" % (key, val)
+        if pat.search(new):
+            new = pat.sub(lambda _m: line, new, count=1)
+        else:
+            new += ("" if not new or new.endswith("\n") else "\n") + line + "\n"
+    if new == text:
+        return False
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(new)
+    return True
+
+
+def _write_dotenv(out_dir, values):
+    """Opt-in: write the test account / report sender to the project's
+    git-ignored .env (Config.getenv reads it; a real env var still wins).
+    Existing keys are updated, other lines kept."""
+    values = {k: v for k, v in (values or {}).items() if v}
+    if not values:
+        return False
+    path = os.path.join(out_dir, ".env")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except Exception:
+        lines = ["# QA Studio — test account and report sender (GIT-IGNORED)."]
+    seen = set()
+    for i, line in enumerate(lines):
+        key = line.partition("=")[0].strip()
+        if key in values and not key.startswith("#"):
+            lines[i] = "%s=%s" % (key, values[key])
+            seen.add(key)
+    lines += ["%s=%s" % (k, v) for k, v in values.items() if k not in seen]
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    return True
+
+
+# Run switches every project gets in its git-ignored .env (added once, never
+# overwritten: the user's own value stays).
+_ENV_RUN_DEFAULTS = (
+    ("PARALLEL", "true",
+     "# Browsers run at the same time (true) or one after another (false)."),
+    ("PROGRESS", "on",
+     "# Live progress window while tests run in the IDE (on/off; never on CI)."),
+)
+
+
+def ensure_env_defaults(out_dir, cb=None):
+    """Add PARALLEL / PROGRESS lines to the project's .env when missing (the
+    file is created if needed). Existing values are kept. Returns the keys added."""
+    path = os.path.join(out_dir, ".env")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            text = f.read()
+    except FileNotFoundError:
+        text = "# QA Studio project settings (GIT-IGNORED). Real environment variables win.\n"
+    except Exception:
+        return []
+    added, extra = [], []
+    for key, value, note in _ENV_RUN_DEFAULTS:
+        if re.search(r"(?m)^[ \t]*#?[ \t]*%s[ \t]*=" % re.escape(key), text):
+            continue
+        extra += [note, "%s=%s" % (key, value)]
+        added.append(key)
+    if not added:
+        return []
+    new = text + ("" if not text or text.endswith("\n") else "\n") + "\n".join(extra) + "\n"
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(new)
+    except Exception:
+        return []
+    if cb:
+        cb("Added %s to the project's .env" % " and ".join(k + "=" + dict((d[0], d[1]) for d in _ENV_RUN_DEFAULTS)[k]
+                                                           for k in added), "info")
+    return added
+
+
+def _repair_url_props(path):
+    """An existing config.properties written from a site URL typed without
+    https:// (app.base.url=practice.example.com) gets the scheme added, once.
+    Values the user wrote with a scheme are left alone."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            text = f.read()
+    except Exception:
+        return False
+    def fix(m):
+        val = m.group(2).strip()
+        if not val or "://" in val:
+            return m.group(0)
+        return m.group(1) + resolve_site_url(val)
+    new = re.sub(r"(?m)^([ \t]*app\.(?:base|login)\.url[ \t]*=[ \t]*)(.*)$", fix, text)
+    if new == text:
+        return False
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(new)
+    return True
+
+
+def _append_run_props(path):
+    """Add the browser/video settings to an existing config.properties once."""
+    _migrate_video_default(path)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            text = f.read()
+    except Exception:
+        return
+    if re.search(r"(?m)^\s*browser\s*=", text):
+        return
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(("" if not text or text.endswith("\n") else "\n") + _SH_RUN_PROPS)
 
 
 def _append_report_props(path, report_to, smtp_user):
@@ -13782,7 +16523,8 @@ def _sh_config_properties_example():
         "ai.provider=anthropic\n"
         "ai.base.url=https://api.anthropic.com\n"
         "ai.model=claude-sonnet-4-6\n"
-        "# Secrets are ENV-ONLY — do NOT put them here: APP_USER, APP_PASS, QA_AI_API_KEY\n")
+        "# Secrets are ENV-ONLY — do NOT put them here: APP_USER, APP_PASS, QA_AI_API_KEY\n"
+        + _SH_RUN_PROPS)
 
 
 def _sh_locator_store(pkg):
@@ -13819,6 +16561,7 @@ public final class LocatorStore {
     }
     /** Save a resolved locator and flush to disk at once (so a crash mid-suite
      *  still keeps everything resolved so far). */
+    @SuppressWarnings("unchecked")
     public void put(String key, String by, String value) {
         Map<String, Object> e = new HashMap<>();
         e.put("by", by);
@@ -13826,7 +16569,16 @@ public final class LocatorStore {
         e.put("resolvedAt", Instant.now().toString());
         e.put("provider", Config.AI_PROVIDER);
         cache.put(key, e);
-        try { M.writerWithDefaultPrettyPrinter().writeValue(FILE, cache); } catch (Exception ignored) {}
+        // Browsers running in parallel share this file: merge with what the
+        // others saved since this store was loaded, one writer at a time.
+        synchronized (LocatorStore.class) {
+            try {
+                Map<String, Map<String, Object>> disk = new HashMap<>();
+                try { if (FILE.exists()) disk = M.readValue(FILE, Map.class); } catch (Exception ignored) {}
+                disk.put(key, e);
+                M.writerWithDefaultPrettyPrinter().writeValue(FILE, disk);
+            } catch (Exception ignored) {}
+        }
     }
     private static String str(Object o) { return o == null ? null : o.toString(); }
 }
@@ -13998,6 +16750,19 @@ public final class Healer {
     private static final String DROP_TARGET_JS = __DROP_TARGET_JS__;
     private static final String HTML5_DRAG_JS = __HTML5_DRAG_JS__;
     private static final String TABLE_CELL_JS = __TABLE_CELL_JS__;
+    private static final String PAGE_CHECK_JS = __PAGE_CHECK_JS__;
+    private static final String REMEMBER_JS = __REMEMBER_JS__;
+    private static final String DISMISS_JS = __DISMISS_JS__;
+    // Wait-and-scroll before actions, pagination, storage (batch 6-8).
+    private static final String READY_JS = __READY_JS__;
+    private static final String SCROLL_PAGE_JS = __SCROLL_PAGE_JS__;
+    private static final String PAGINATE_JS = __PAGINATE_JS__;
+    private static final String STORAGE_JS = __STORAGE_JS__;
+    private static final int SCROLL_SEARCH_STEPS = __SCROLL_SEARCH_STEPS__;
+    private static final int PAGINATE_MAX = __PAGINATE_MAX__;
+    private static final long READY_WAIT_MS = __READY_WAIT_MS__;
+    private static final long READY_DISABLED_MS = __READY_DISABLED_MS__;
+    private static final long READY_COVERED_MS = __READY_COVERED_MS__;
 
     // ---- data-driven runs: {{name}} placeholders take the current row's value;
     // {{random.email}}, {{random.number}}, {{random.text}}, {{today}}, {{today+3d}}
@@ -14076,6 +16841,8 @@ public final class Healer {
             WebElement e = tryFind(seed, wait);
             if (e != null) return e;
         }
+        WebElement scrolled = scrollSearch(cached, seed);   // lazy-loaded further down
+        if (scrolled != null) return scrolled;
         if (Config.HEAL) {
             System.out.println("[heal] resolving '" + key + "' via AI (" + Config.AI_PROVIDER + ")");
             String dom = harvest();
@@ -14101,6 +16868,7 @@ public final class Healer {
         WebElement el = find(key, seed, intentJson);
         ((JavascriptExecutor) driver).executeScript(
             "arguments[0].scrollIntoView({block:'center'});", el);
+        ready(el, verb);
         switch (verb == null ? "click" : verb) {
             case "type":
                 el.clear(); if (value != null && !value.isEmpty()) el.sendKeys(value); break;
@@ -14124,8 +16892,8 @@ public final class Healer {
                 if ("true".equalsIgnoreCase(el.getAttribute("draggable"))) {
                     ((JavascriptExecutor) driver).executeScript(HTML5_DRAG_JS, el, target);
                 } else {
-                    new Actions(driver).clickAndHold(el).pause(Duration.ofMillis(200))
-                        .moveToElement(target).pause(Duration.ofMillis(200)).release(target).perform();
+                    new Actions(VideoRecorder.raw(driver)).clickAndHold(VideoRecorder.raw(el)).pause(Duration.ofMillis(200))
+                        .moveToElement(VideoRecorder.raw(target)).pause(Duration.ofMillis(200)).release(VideoRecorder.raw(target)).perform();
                 }
                 break;
             }
@@ -14140,13 +16908,13 @@ public final class Healer {
                 break;
             }
             case "hover":
-                new Actions(driver).moveToElement(el).perform(); break;
+                new Actions(VideoRecorder.raw(driver)).moveToElement(VideoRecorder.raw(el)).perform(); break;
             case "double_click":
-                new Actions(driver).moveToElement(el).doubleClick(el).perform(); break;
+                new Actions(VideoRecorder.raw(driver)).moveToElement(VideoRecorder.raw(el)).doubleClick(VideoRecorder.raw(el)).perform(); break;
             case "right_click":
                 // Fire the page's right-click handlers without the native browser
                 // menu, which WebDriver cannot close (it stays open over the page).
-                new Actions(driver).moveToElement(el).perform();
+                new Actions(VideoRecorder.raw(driver)).moveToElement(VideoRecorder.raw(el)).perform();
                 ((JavascriptExecutor) driver).executeScript(RIGHT_CLICK_JS, el);
                 try { Thread.sleep(200); } catch (InterruptedException ignored) { }
                 break;
@@ -14161,10 +16929,13 @@ public final class Healer {
             case "upload":
                 el.sendKeys(new java.io.File(value).getAbsolutePath()); break;
             case "key_press":
-                Keys k;
-                try { k = Keys.valueOf(value == null || value.isEmpty() ? "ENTER" : value.toUpperCase()); }
-                catch (Exception e) { k = Keys.ENTER; }
-                el.sendKeys(k); break;
+                el.sendKeys(keyChord(value)); break;
+            case "clear":
+                el.clear();
+                // Some framework inputs ignore clear(): select all + delete.
+                if (el.getAttribute("value") != null && !el.getAttribute("value").isEmpty())
+                    el.sendKeys(Keys.chord(Keys.CONTROL, "a"), Keys.DELETE);
+                break;
             default:
                 try { el.click(); }
                 catch (Exception e) {
@@ -14219,7 +16990,200 @@ public final class Healer {
         } catch (Exception e) { return false; }
     }
 
-    /** A file whose name contains `name` finished downloading (DriverFactory.DOWNLOADS). */
+    /** A page-level check (URL, title, row/text count, column sort, text pattern), retried for 10 s. */
+    /** Clicks a pagination control ('next' or a page number), retried for 4 s. */
+    private String clickPage(String what) {
+        long end = System.currentTimeMillis() + 4000;
+        String got = "";
+        while (true) {
+            try {
+                Object o = ((JavascriptExecutor) driver).executeScript(PAGINATE_JS, what);
+                got = o == null ? "" : o.toString();
+            } catch (Exception e) { got = ""; }
+            if (!got.isEmpty() || System.currentTimeMillis() >= end) return got;
+            try { Thread.sleep(300); } catch (InterruptedException ie) { return got; }
+        }
+    }
+
+    private void afterPageChange() {
+        try { Thread.sleep(800); } catch (InterruptedException ignored) { }
+        settle();
+    }
+
+    private boolean pageHas(String text) {
+        try {
+            Object r = ((JavascriptExecutor) driver).executeScript(
+                "return document.body ? document.body.innerText : '';");
+            return normText(r == null ? "" : r.toString()).contains(normText(text));
+        } catch (Exception e) { return false; }
+    }
+
+    /** Next page (optionally until `value` is shown) or page number `value`. */
+    private void paginate(String verb, String value) {
+        String target = value == null ? "" : value.trim();
+        if ("go_to_page".equals(verb) || target.isEmpty()) {
+            String what = "go_to_page".equals(verb) ? target : "next";
+            String got = clickPage(what);
+            if (got.isEmpty()) throw new NoSuchElementException("No '" + what + "' control in the pagination");
+            if ("end".equals(got)) throw new NoSuchElementException("Already on the last page");
+            afterPageChange();
+            return;
+        }
+        for (int n = 0; n <= PAGINATE_MAX; n++) {
+            if (pageHas(target)) {
+                System.out.println("[heal] found '" + target + "' on page " + (n + 1));
+                return;
+            }
+            String got = clickPage("next");
+            if (got.isEmpty() || "end".equals(got))
+                throw new NoSuchElementException("'" + target + "' was not found on any page (" + (n + 1) + " checked)");
+            afterPageChange();
+        }
+        throw new NoSuchElementException("'" + target + "' was not found within " + PAGINATE_MAX + " pages");
+    }
+
+    private static String enc(String s) {
+        return java.net.URLEncoder.encode(s == null ? "" : s, StandardCharsets.UTF_8).replace("+", "%20");
+    }
+
+    /** Basic / digest auth page: open the URL with the credentials in it
+     *  (the browser answers the auth challenge; the password is never logged). */
+    private void authOpen(String v) {
+        String[] p = (v + "||").split("[|]", -1);
+        String base = driver.getCurrentUrl();
+        if (base == null || !base.startsWith("http")) base = Config.BASE_URL;
+        java.net.URI u = java.net.URI.create(base).resolve(p[0].trim());
+        String host = u.getRawAuthority();
+        if (host == null) throw new IllegalArgumentException("HTTP auth step needs a full URL (or APP_BASE_URL set)");
+        int at = host.lastIndexOf('@');
+        if (at >= 0) host = host.substring(at + 1);
+        String rest = (u.getRawPath() == null ? "" : u.getRawPath())
+            + (u.getRawQuery() == null ? "" : "?" + u.getRawQuery());
+        driver.get(u.getScheme() + "://" + enc(p[1]) + ":" + enc(p[2]) + "@" + host + rest);
+        System.out.println("[heal] opened " + u.getScheme() + "://" + host + rest + " with HTTP authentication");
+    }
+
+    /** 'name|is|value', 'name|contains|x', 'name|exists', 'name|absent' - read
+     *  through WebDriver, so HttpOnly cookies count too. Retried for 10 s. */
+    private boolean assertCookie(String spec) {
+        String[] p = (spec + "||").split("[|]", -1);
+        String op = p[1].isEmpty() ? "exists" : p[1], want = normText(p[2]).trim();
+        long end = System.currentTimeMillis() + 10000;
+        do {
+            Cookie c = null;
+            try { c = driver.manage().getCookieNamed(p[0].trim()); } catch (Exception ignored) { }
+            String val = null;
+            if (c != null) {
+                val = c.getValue();
+                try { val = java.net.URLDecoder.decode(val, StandardCharsets.UTF_8); } catch (Exception ignored) { }
+                val = normText(val).trim();
+            }
+            boolean ok = "absent".equals(op) ? val == null
+                : val != null && ("exists".equals(op) || ("is".equals(op) ? val.equals(want) : val.contains(want)));
+            if (ok) return true;
+            try { Thread.sleep(300); } catch (InterruptedException e) { return false; }
+        } while (System.currentTimeMillis() < end);
+        return false;
+    }
+
+    public boolean assertPage(String check, String value) {
+        if ("cookie".equals(check)) return assertCookie(value);
+        try {
+            return new WebDriverWait(driver, Duration.ofSeconds(10)).until(d ->
+                Boolean.TRUE.equals(((JavascriptExecutor) d).executeScript(PAGE_CHECK_JS, check, value)));
+        } catch (Exception e) { return false; }
+    }
+
+    /** "ENTER", "TAB", "CONTROL+A", "SHIFT+TAB" -> what sendKeys needs. */
+    static CharSequence keyChord(String value) {
+        String[] parts = (value == null || value.isEmpty() ? "ENTER" : value).toUpperCase().split("[+]");
+        java.util.List<CharSequence> keys = new java.util.ArrayList<>();
+        for (String p : parts) {
+            String k = p.trim();
+            switch (k) {
+                case "CTRL": k = "CONTROL"; break;
+                case "CMD": case "COMMAND": k = "META"; break;
+                case "ESC": k = "ESCAPE"; break;
+                case "ARROWUP": k = "ARROW_UP"; break;
+                case "ARROWDOWN": k = "ARROW_DOWN"; break;
+                case "ARROWLEFT": k = "ARROW_LEFT"; break;
+                case "ARROWRIGHT": k = "ARROW_RIGHT"; break;
+                case "PAGEUP": k = "PAGE_UP"; break;
+                case "PAGEDOWN": k = "PAGE_DOWN"; break;
+                default: break;
+            }
+            if (k.length() == 1) { keys.add(k.toLowerCase()); continue; }
+            try { keys.add(Keys.valueOf(k)); } catch (Exception e) { keys.add(Keys.ENTER); }
+        }
+        return keys.size() == 1 ? keys.get(0) : Keys.chord(keys.toArray(new CharSequence[0]));
+    }
+
+    /** Page/browser steps with no element: back, forward, refresh, and
+     *  "close X if it is shown" (pop-ups, ads, cookie banners - not a failure
+     *  when nothing is shown). */
+    public void pageAction(String verb, String value) {
+        switch (verb) {
+            case "go_back": driver.navigate().back(); break;
+            case "go_forward": driver.navigate().forward(); break;
+            case "refresh": driver.navigate().refresh(); break;
+            case "dismiss_if_present": {
+                long end = System.currentTimeMillis() + 4000;
+                String got = "";
+                while (true) {
+                    try {
+                        Object o = ((JavascriptExecutor) driver).executeScript(DISMISS_JS, value == null ? "" : value);
+                        got = o == null ? "" : o.toString();
+                    } catch (Exception ignored) { got = ""; }
+                    if (!got.isEmpty() || System.currentTimeMillis() >= end) break;
+                    try { Thread.sleep(300); } catch (InterruptedException ignored) { }
+                }
+                System.out.println(got.isEmpty() ? "[heal] nothing to close (not shown)" : "[heal] closed '" + got + "'");
+                break;
+            }
+            case "next_page": case "go_to_page": paginate(verb, fill(value)); break;
+            case "set_cookie": {
+                String v = fill(value == null ? "" : value);
+                int eq = v.indexOf('=');
+                String name = (eq < 0 ? v : v.substring(0, eq)).trim();
+                driver.manage().addCookie(new Cookie(name, eq < 0 ? "" : v.substring(eq + 1).trim()));
+                System.out.println("[heal] cookie '" + name + "' set");
+                break;
+            }
+            case "delete_cookies":
+                if (value == null || value.trim().isEmpty()) driver.manage().deleteAllCookies();
+                else driver.manage().deleteCookieNamed(value.trim());
+                break;
+            case "set_storage": case "clear_storage": {
+                String[] p = (fill(value == null ? "" : value) + "||").split("[|]", -1);
+                boolean set = "set_storage".equals(verb);
+                ((JavascriptExecutor) driver).executeScript(STORAGE_JS, set ? "set" : "clear",
+                    p[0].isEmpty() ? (set ? "local" : "all") : p[0], p[1], p[2]);
+                break;
+            }
+            case "auth_open": authOpen(fill(value == null ? "" : value)); break;
+            default: throw new IllegalArgumentException("unknown page action " + verb);
+        }
+        try {
+            new WebDriverWait(driver, Duration.ofSeconds(10)).until(d ->
+                "complete".equals(((JavascriptExecutor) d).executeScript("return document.readyState")));
+        } catch (Exception ignored) { }
+    }
+
+    /** Reads the first page text matching `pattern` and keeps it as {{name}} for later steps. */
+    public void remember(String pattern, String name) {
+        String v = null;
+        try {
+            v = new WebDriverWait(driver, Duration.ofSeconds(10)).until(d -> {
+                Object o = ((JavascriptExecutor) d).executeScript(REMEMBER_JS, pattern);
+                return o == null || o.toString().isEmpty() ? null : o.toString();
+            });
+        } catch (Exception ignored) { }
+        if (v == null || v.isEmpty()) throw new AssertionError("Nothing on the page matches " + pattern + " to remember as " + name);
+        data.put(dataKey(name), v);
+        System.out.println("[heal] remembered " + name + " = " + v);
+    }
+
+    /** A file whose name contains `name` finished downloading (this browser's download folder). */
     public boolean assertDownloaded(String name) {
         String want = name == null ? "" : name.toLowerCase();
         // A repeat download is saved as "file_1 (1).txt": match name and extension separately.
@@ -14227,7 +17191,7 @@ public final class Healer {
         String stem = dot > 0 ? want.substring(0, dot) : want, ext = dot > 0 ? want.substring(dot) : "";
         long end = System.currentTimeMillis() + 20000;
         while (System.currentTimeMillis() < end) {
-            java.io.File[] files = DriverFactory.DOWNLOADS.listFiles();
+            java.io.File[] files = DriverFactory.downloadsOf(driver).listFiles();
             if (files != null) {
                 for (java.io.File f : files) {
                     String n = f.getName().toLowerCase();
@@ -14293,8 +17257,11 @@ public final class Healer {
     }
 
     public boolean assertEnabled(String key, By seed, String intentJson, boolean enabled) {
-        try { return find(key, seed, intentJson).isEnabled() == enabled; }
-        catch (Exception e) { return false; }
+        try {
+            WebElement el = find(key, seed, intentJson);
+            // Often enabled only after a loading bar: wait up to 10 s.
+            return new WebDriverWait(driver, Duration.ofSeconds(10)).until(d -> el.isEnabled() == enabled);
+        } catch (Exception e) { return false; }
     }
 
     public boolean assertSelected(String key, By seed, String intentJson, String expected) {
@@ -14311,12 +17278,19 @@ public final class Healer {
         // A removal assertion must keep its pre-action selector. Asking the
         // AI healer after removal risks proving absence with a different item.
         if (seed == null) return false;
-        try {
-            for (WebElement el : driver.findElements(seed)) {
-                if (el.isDisplayed()) return false;
-            }
-            return true;
-        } catch (Exception e) { return true; }
+        // Removal is often async (a loading bar first): wait up to 10 s.
+        long end = System.currentTimeMillis() + 10000;
+        while (true) {
+            boolean shown = false;
+            try {
+                for (WebElement el : driver.findElements(seed)) {
+                    if (el.isDisplayed()) { shown = true; break; }
+                }
+            } catch (Exception e) { shown = false; }
+            if (!shown) return true;
+            if (System.currentTimeMillis() >= end) return false;
+            try { Thread.sleep(250); } catch (InterruptedException ie) { return false; }
+        }
     }
 
     /** Verify by PAGE TEXT — true if the rendered page contains ANY of the given
@@ -14394,6 +17368,80 @@ public final class Healer {
         @Override public String toString() { return "By.shadow: " + chain; }
     }
 
+    /** Which readiness an action needs: click (enabled, not covered), input (enabled), view, or none. */
+    private static String readyMode(String verb) {
+        String v = verb == null ? "click" : verb;
+        switch (v) {
+            case "upload": case "frame": case "navigate": case "wait": case "scroll_to": return null;
+            case "type": case "clear": case "key_press": return "input";
+            case "set_value": return "view";
+            default: return "click";
+        }
+    }
+
+    /** Before an action: keep the element centred and wait until it is shown,
+     *  enabled, no longer moving and (for clicks) not covered by an overlay.
+     *  Never throws - after the limit the action runs anyway with its own
+     *  fallbacks (e.g. a JavaScript click). */
+    private void ready(WebElement el, String verb) {
+        String mode = readyMode(verb);
+        if (mode == null) return;
+        long start = System.currentTimeMillis();
+        String last = null;
+        while (true) {
+            String r;
+            try {
+                Object o = ((JavascriptExecutor) driver).executeScript(READY_JS, el, mode);
+                r = o == null ? "ok|" : o.toString();
+            } catch (Exception e) { return; }
+            int bar = r.indexOf('|');
+            String state = bar < 0 ? r : r.substring(0, bar), box = bar < 0 ? "" : r.substring(bar + 1);
+            if ("gone".equals(state)) return;
+            if ("ok".equals(state) && box.equals(last)) return;
+            last = "ok".equals(state) ? box : null;
+            long limit = "disabled".equals(state) ? READY_DISABLED_MS
+                : "covered".equals(state) ? READY_COVERED_MS : READY_WAIT_MS;
+            if (System.currentTimeMillis() - start > limit) {
+                System.out.println("[wait] element still " + state + " after " + (limit / 1000) + " s - acting anyway");
+                return;
+            }
+            try { Thread.sleep(150); } catch (InterruptedException ie) { return; }
+        }
+    }
+
+    /** Lazy-loaded / infinite content: scroll down step by step until one of
+     *  the locators shows its element; the page goes back to the top if not. */
+    private WebElement scrollSearch(By... bys) {
+        boolean any = false;
+        for (By b : bys) if (b != null) any = true;
+        if (!any) return null;
+        JavascriptExecutor js = (JavascriptExecutor) driver;
+        for (int i = 0; i < SCROLL_SEARCH_STEPS; i++) {
+            boolean end;
+            try { end = "end".equals(String.valueOf(js.executeScript(SCROLL_PAGE_JS, false))); }
+            catch (Exception e) { return null; }
+            try { Thread.sleep(end ? 1100 : 350); } catch (InterruptedException ie) { return null; }
+            for (By b : bys) {
+                if (b == null) continue;
+                try {
+                    for (WebElement e : driver.findElements(b)) {
+                        if (e.isDisplayed()) {
+                            System.out.println("[wait] found " + b + " after scrolling the page");
+                            js.executeScript("arguments[0].scrollIntoView({block:'center'});", e);
+                            return e;
+                        }
+                    }
+                } catch (Exception ignored) { }
+            }
+            if (end) {
+                try { if ("end".equals(String.valueOf(js.executeScript(SCROLL_PAGE_JS, false)))) break; }
+                catch (Exception e) { break; }
+            }
+        }
+        try { js.executeScript(SCROLL_PAGE_JS, true); } catch (Exception ignored) { }
+        return null;
+    }
+
     private WebElement tryFind(By by, WebDriverWait w) {
         try { return w.until(ExpectedConditions.visibilityOfElementLocated(by)); }
         catch (Exception e) { return null; }
@@ -14446,7 +17494,19 @@ public final class Healer {
             .replace("__SCROLL_MAX__", str(_SCROLL_MAX))
             .replace("__DROP_TARGET_JS__", json.dumps(_DROP_TARGET_JS))
             .replace("__HTML5_DRAG_JS__", json.dumps(_HTML5_DRAG_JS))
-            .replace("__TABLE_CELL_JS__", json.dumps(_TABLE_CELL_JS)))
+            .replace("__TABLE_CELL_JS__", json.dumps(_TABLE_CELL_JS))
+            .replace("__PAGE_CHECK_JS__", json.dumps(_PAGE_CHECK_JS))
+            .replace("__REMEMBER_JS__", json.dumps(_REMEMBER_JS))
+            .replace("__DISMISS_JS__", json.dumps(_DISMISS_JS))
+            .replace("__READY_JS__", json.dumps(_READY_JS))
+            .replace("__SCROLL_PAGE_JS__", json.dumps(_SCROLL_PAGE_JS))
+            .replace("__PAGINATE_JS__", json.dumps(_PAGINATE_JS))
+            .replace("__STORAGE_JS__", json.dumps(_STORAGE_JS))
+            .replace("__SCROLL_SEARCH_STEPS__", str(_SCROLL_SEARCH_STEPS))
+            .replace("__PAGINATE_MAX__", str(_PAGINATE_MAX))
+            .replace("__READY_WAIT_MS__", str(_READY_WAIT_S * 1000))
+            .replace("__READY_DISABLED_MS__", str(_READY_DISABLED_S * 1000))
+            .replace("__READY_COVERED_MS__", str(_READY_COVERED_S * 1000)))
 
 
 def _sh_base_test(pkg):
@@ -14454,20 +17514,25 @@ def _sh_base_test(pkg):
 
 import __PKG__.core.*;
 import org.openqa.selenium.*;
+import org.testng.ITestContext;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.BeforeClass;
 import java.time.Duration;
 
 /** One browser per test class. Logged-out cases run first (priority order),
- *  then the successful-login step, then app cases — no logout-to-retest. */
+ *  then the successful-login step, then app cases — no logout-to-retest.
+ *  Cross-browser runs (BROWSER=chrome,firefox or all) repeat every class once
+ *  per browser; the browser comes from the run's <test> (see ReportMailer). */
 public abstract class BaseTest {
     protected WebDriver driver;
     protected Healer heal;
     private String mainWindow;
 
     @BeforeClass
-    public void setUp() {
-        driver = DriverFactory.create();
+    public void setUp(ITestContext ctx) {
+        String browser = ctx == null || ctx.getCurrentXmlTest() == null ? null
+            : ctx.getCurrentXmlTest().getParameter("qa.browser");
+        driver = browser == null ? DriverFactory.create() : DriverFactory.create(browser);
         // Implicit wait stays 0: Healer's explicit waits own all element timing
         // (mixing the two multiplies wait time on every miss).
         driver.manage().timeouts().implicitlyWait(Duration.ZERO);
@@ -14592,7 +17657,9 @@ def _sh_gitignore():
             "# local DOM snapshots from an opt-in live inspection:\n"
             "inspection-screens.json\n"
             "# QA Studio's local record of verified cases (reused on regenerate):\n"
-            ".qastudio/verified-cases.json\n")
+            ".qastudio/verified-cases.json\n"
+            "# test account / report sender saved by QA Studio (opt-in):\n"
+            ".env\n")
 
 
 def _sh_readme(base_url, login_url):
@@ -14635,6 +17702,20 @@ report (`target/qa-studio-report.html`) opens when the run finishes.
      `OPENAI_API_KEY`, `NVIDIA_API_KEY`, `GROQ_API_KEY`, `GEMINI_API_KEY`.
    - `APP_USER`, `APP_PASS`  (login credentials)
 3. `mvn test`
+
+## Browsers and videos
+- `browser=` in `config.properties` (or the `BROWSER` env var, or `-Dqa.browser=`):
+  `chrome` (default), `edge`, `firefox`, a list (`chrome,firefox`) or `all`. With more
+  than one, every test runs once per browser and the reports group them per browser.
+  The browsers run at the same time; `PARALLEL=false` in `.env` runs them one after another.
+  `PROGRESS=off` in `.env` hides the live progress window.
+  IntelliJ: **Run tests (Chrome / Edge / Firefox / all browsers)**. Tip: set
+  `APP_USER` / `APP_PASS` once under Settings > Build Tools > Maven > Runner >
+  Environment variables so every run configuration has them.
+- `video=retain-on-failure` (default) saves a GIF of each FAILED test
+  (`target/qa-videos/`), shown under "Recording" in `target/qa-studio-detailed.html`;
+  `video=on` saves one for every test (slower run end, much more disk), `off`
+  records nothing. `headless=true` hides the browser.
 
 ## Sequence
 Tests run by TestNG priority: logged-out cases (invalid login, validation, the
@@ -14710,6 +17791,17 @@ def _intent_step_label(intent):
             "upload": 'Upload a file to "%s"' % tgt,
             "scroll_to": 'Scroll until "%s" appears' % (shown or tgt),
             "drag": 'Drag "%s" onto "%s"' % (tgt, shown),
+            "remember": 'Remember the text matching "%s" as %s' % (val[:40], intent.get("remember_as") or "value"),
+            "clear": 'Clear "%s"' % tgt,
+            "go_back": "Go back", "go_forward": "Go forward", "refresh": "Refresh the page",
+            "dismiss_if_present": _page_action_label("dismiss_if_present", val),
+            "next_page": _page_action_label("next_page", val),
+            "go_to_page": _page_action_label("go_to_page", val),
+            "set_cookie": _page_action_label("set_cookie", val),
+            "delete_cookies": _page_action_label("delete_cookies", val),
+            "set_storage": _page_action_label("set_storage", val),
+            "clear_storage": _page_action_label("clear_storage", val),
+            "auth_open": _page_action_label("auth_open", val),
             "check": 'Tick "%s"' % tgt,
             "uncheck": 'Untick "%s"' % tgt,
             "frame": 'Enter frame "%s"' % tgt,
@@ -14767,6 +17859,20 @@ def _emit_intent(lines, key, intent, seed_sink=None, app_page=False):
         lines.append('        org.testng.Assert.assertTrue(heal.assertDownloaded("%s"),'
                      % _java_str(name))
         lines.append('            "expected download: %s");' % _java_str(name)[:60])
+        return
+    if role == "assertion" and (intent.get("check") or "") in _PAGE_CHECKS:
+        check, cval = intent["check"], str(intent.get("value") or "")
+        lines.append('        org.testng.Assert.assertTrue(heal.assertPage("%s", "%s"),'
+                     % (check, _java_str(cval)))
+        lines.append('            "expected %s");' % _java_str(_page_check_label(check, cval))[:90])
+        return
+    if role == "action" and (intent.get("verb") or "") == "remember":
+        lines.append('        heal.remember("%s", "%s");'
+                     % (_java_str(intent.get("value") or ""), _java_str(intent.get("remember_as") or "value")))
+        return
+    if role == "action" and (intent.get("verb") or "") in _PAGE_ACTIONS:
+        lines.append('        heal.pageAction("%s", "%s");'
+                     % (intent["verb"], _java_str(intent.get("value") or "")))
         return
     if role == "assertion":
         kind = (intent.get("kind") or "").lower()
@@ -14855,8 +17961,8 @@ def _emit_intent(lines, key, intent, seed_sink=None, app_page=False):
         _seed(key)
         return
     raw_value = intent.get("value", "")
-    value_expr = ("Config.USER" if raw_value == APP_USER_TOKEN else
-                  "Config.PASS" if raw_value == APP_PASS_TOKEN else '"%s"' % value)
+    value_expr = ('Config.need("APP_USER")' if raw_value == APP_USER_TOKEN else
+                  'Config.need("APP_PASS")' if raw_value == APP_PASS_TOKEN else '"%s"' % value)
     lines.append('        heal.act("%s", "%s", %s, "%s", %s);%s'
                  % (_java_str(key), verb, seed, _java_str(ij), value_expr, todo))
     _seed(key)
@@ -14938,7 +18044,7 @@ def generate_selfhealing_test_class(story, cases, pkg, seed_sink=None):
         # performLogin() already did the real login — but keep its assertions)
         intents = c.get("intents", [])
         for ii, intent in enumerate(intents):
-            if (bucket == 2 and intent.get("role") == "action") or (
+            if (bucket == 2 and not as_authored and intent.get("role") == "action") or (
                     explicit_login_flow and _is_login_flow_action(intent)):
                 continue
             # A new window is detected by comparing handles, so remember them
@@ -14961,7 +18067,7 @@ def generate_selfhealing_test_class(story, cases, pkg, seed_sink=None):
     return "\n".join(L) + "\n", cls
 
 
-_SH_DETAIL_CSS = ":root{--bg:#F3F5F8;--card:#FFFFFF;--ink:#16151C;--ink2:#5D5B69;--ink3:#9896A3;--line:#E4E6EC;--tint:#F8F9FB;--brand:#0E9CC0;--brand2:#0B6E86;--pass:#1F8A52;--pass-s:#E5F4EC;--fail:#D6414A;--fail-s:#FCEBEC;--skip:#8E8C99;--skip-s:#EFEFF3;--flaky:#B7791F;--flaky-s:#FFF4DB;--shadow:0 1px 2px rgba(20,20,40,.05),0 4px 14px rgba(20,20,40,.05)}\n@media (prefers-color-scheme:dark){:root{--bg:#0F1117;--card:#171A22;--ink:#ECEDF2;--ink2:#A9ABB8;--ink3:#737584;--line:#262A35;--tint:#1C202A;--pass:#3DBB78;--pass-s:#15301F;--fail:#F0656D;--fail-s:#3A1A1D;--skip:#9A99A6;--skip-s:#23262F;--flaky:#E2A845;--flaky-s:#382B12;--shadow:none}}\n*{box-sizing:border-box}html{-webkit-text-size-adjust:100%}\nbody{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 'Segoe UI',system-ui,-apple-system,Roboto,Helvetica,Arial,sans-serif}\n.top{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px max(16px,calc((100% - 1040px)/2));background:var(--card);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}\n.brand{display:flex;align-items:center;gap:12px}.brand img{width:36px;height:36px;border-radius:9px}\n.name{font-weight:800;font-size:16px}.sub{font-size:12px;color:var(--ink2)}.when{font-size:12px;color:var(--ink2);text-align:right}\nmain{max-width:1040px;margin:0 auto;padding:20px 16px 8px}\n.hero{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px 22px;box-shadow:var(--shadow);border-top:4px solid var(--pass)}\n.hero.bad{border-top-color:var(--fail)}.hero h1{margin:0;font-size:24px;letter-spacing:-.3px}.hero.ok h1{color:var(--pass)}.hero.bad h1{color:var(--fail)}\n.meta{color:var(--ink2);font-size:13px;margin-top:2px}\n.bar{display:flex;height:10px;border-radius:6px;overflow:hidden;background:var(--skip-s);margin:16px 0}\n.bar span{display:block;height:100%}.bar .pass{background:var(--pass)}.bar .fail{background:var(--fail)}.bar .skip{background:var(--skip)}\n.kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:10px}\n.kpi{background:var(--tint);border:1px solid var(--line);border-radius:10px;padding:10px 12px}\n.kv{font-size:21px;font-weight:800}.kl{font-size:11px;color:var(--ink3);text-transform:uppercase;letter-spacing:.5px}\n.kpi.pass .kv{color:var(--pass)}.kpi.fail .kv{color:var(--fail)}.kpi.flaky .kv{color:var(--flaky)}\n.tools{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:18px 0 6px;position:sticky;top:65px;z-index:4;background:var(--bg);padding:8px 0}\n.chips{display:flex;gap:6px;flex-wrap:wrap}\n.chip,.ghost{font:inherit;font-size:13px;border:1px solid var(--line);background:var(--card);color:var(--ink2);border-radius:999px;padding:6px 12px;cursor:pointer}\n.chip b{color:var(--ink);margin-left:3px}.chip.on{background:var(--brand);border-color:var(--brand);color:#fff}.chip.on b{color:#fff}\n.ghost{border-radius:8px}.chip:hover,.ghost:hover{border-color:var(--brand)}\n#q{flex:1;min-width:180px;font:inherit;font-size:13px;padding:7px 12px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--ink)}\n#q:focus{outline:2px solid var(--brand);outline-offset:-1px}\n.story{margin-top:16px}.sh{display:flex;align-items:baseline;justify-content:space-between;gap:10px;flex-wrap:wrap;margin:0 2px 8px}\n.sh h2{font-size:13px;margin:0;color:var(--brand2);text-transform:uppercase;letter-spacing:.6px}\n@media (prefers-color-scheme:dark){.sh h2{color:var(--brand)}}\n.sc{display:flex;gap:10px;font-size:12px;color:var(--ink3)}.c.pass{color:var(--pass)}.c.fail{color:var(--fail);font-weight:700}\ndetails.t{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--pass);border-radius:10px;margin-bottom:8px;box-shadow:var(--shadow)}\ndetails.t.failed{border-left-color:var(--fail)}details.t.skipped{border-left-color:var(--skip)}\ndetails.t>summary{list-style:none;display:flex;align-items:center;gap:10px;padding:11px 14px;cursor:pointer}\ndetails.t>summary::-webkit-details-marker{display:none}\ndetails.t>summary::after{content:'';width:7px;height:7px;border-right:2px solid var(--ink3);border-bottom:2px solid var(--ink3);transform:rotate(-45deg);transition:transform .15s;margin-left:2px}\ndetails.t[open]>summary::after{transform:rotate(45deg)}\n.dot{width:9px;height:9px;border-radius:50%;background:var(--pass);flex:none}.failed .dot{background:var(--fail)}.skipped .dot{background:var(--skip)}\n.tt{flex:1;font-weight:600;min-width:0}\n.badge{font-size:11px;font-weight:700;border-radius:999px;padding:2px 8px;white-space:nowrap}\n.badge.data{background:var(--tint);color:var(--ink2);border:1px solid var(--line)}\n.badge.flaky,.badge.site{background:var(--flaky-s);color:var(--flaky)}\n.st{font-size:11px;font-weight:700;border-radius:999px;padding:2px 9px}.st.passed{background:var(--pass-s);color:var(--pass)}\n.st.failed{background:var(--fail-s);color:var(--fail)}.st.skipped{background:var(--skip-s);color:var(--skip)}\n.ms{font-size:12px;color:var(--ink3);width:56px;text-align:right;font-variant-numeric:tabular-nums}\n.body{padding:2px 16px 16px 33px;border-top:1px solid var(--line)}\n.lbl{font-size:11px;font-weight:700;color:var(--ink3);text-transform:uppercase;letter-spacing:.5px;margin:14px 0 6px}\n.steps{list-style:none;margin:0;padding:0;border-left:2px solid var(--line);margin-left:9px}\n.steps li{display:flex;align-items:flex-start;gap:10px;padding:4px 0 4px 0;position:relative;left:-10px}\n.n{flex:none;min-width:20px;height:20px;border-radius:10px;background:var(--tint);border:1px solid var(--line);font-size:11px;font-weight:700;color:var(--ink2);display:flex;align-items:center;justify-content:center;padding:0 5px}\n.x{padding-top:1px}.steps li.bad .n{background:var(--fail);border-color:var(--fail);color:#fff}.steps li.bad .x{color:var(--fail);font-weight:600}\n.here{font-size:11px;font-weight:700;color:var(--fail);background:var(--fail-s);border-radius:999px;padding:1px 8px;margin-top:1px}\npre{margin:0;white-space:pre-wrap;word-break:break-word;font:12px/1.5 Consolas,Menlo,monospace}\n.err{color:var(--fail);background:var(--fail-s);padding:10px 12px;border-radius:8px}\n.stack{margin-top:8px}.stack summary{cursor:pointer;font-size:12px;color:var(--ink2)}\n.stack pre{margin-top:6px;color:var(--ink2);background:var(--tint);border:1px solid var(--line);padding:10px 12px;border-radius:8px;max-height:260px;overflow:auto}\n.down{margin-top:12px;background:var(--flaky-s);color:var(--flaky);border-radius:8px;padding:9px 12px;font-size:13px}\n.shot{display:block;max-width:100%;width:560px;border:1px solid var(--line);border-radius:8px;cursor:zoom-in}\n.none{margin-top:12px;color:var(--ink3);font-size:13px}.empty{text-align:center;color:var(--ink3);padding:30px}\n.env{margin-top:22px;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 18px;box-shadow:var(--shadow)}\n.env h2{font-size:13px;margin:0 0 6px;color:var(--ink2);text-transform:uppercase;letter-spacing:.6px}\n.env table{width:100%;border-collapse:collapse;font-size:13px}.env th{text-align:left;color:var(--ink3);font-weight:600;width:120px;padding:6px 0;vertical-align:top}\n.env td{padding:6px 0;word-break:break-word}.env tr+tr th,.env tr+tr td{border-top:1px solid var(--line)}\nfooter{text-align:center;color:var(--ink3);font-size:12px;padding:18px 16px 28px}\n.zoom{position:fixed;inset:0;background:rgba(8,10,16,.82);display:flex;align-items:center;justify-content:center;padding:20px;z-index:10;cursor:zoom-out}\n.zoom img{max-width:100%;max-height:100%;border-radius:8px}\n[hidden]{display:none!important}\n@media (max-width:760px){.kpis{grid-template-columns:repeat(3,1fr)}.top{position:static}.tools{top:0}.ms{display:none}.body{padding-left:16px}.hero h1{font-size:20px}}\n@media print{.tools,.zoom{display:none!important}details.t{break-inside:avoid}.top{position:static}}\n"
+_SH_DETAIL_CSS = ":root{--bg:#F3F5F8;--card:#FFFFFF;--ink:#16151C;--ink2:#5D5B69;--ink3:#9896A3;--line:#E4E6EC;--tint:#F8F9FB;--brand:#0E9CC0;--brand2:#0B6E86;--pass:#1F8A52;--pass-s:#E5F4EC;--fail:#D6414A;--fail-s:#FCEBEC;--skip:#8E8C99;--skip-s:#EFEFF3;--flaky:#B7791F;--flaky-s:#FFF4DB;--shadow:0 1px 2px rgba(20,20,40,.05),0 4px 14px rgba(20,20,40,.05)}\n@media (prefers-color-scheme:dark){:root{--bg:#0F1117;--card:#171A22;--ink:#ECEDF2;--ink2:#A9ABB8;--ink3:#737584;--line:#262A35;--tint:#1C202A;--pass:#3DBB78;--pass-s:#15301F;--fail:#F0656D;--fail-s:#3A1A1D;--skip:#9A99A6;--skip-s:#23262F;--flaky:#E2A845;--flaky-s:#382B12;--shadow:none}}\n*{box-sizing:border-box}html{-webkit-text-size-adjust:100%}\nbody{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 'Segoe UI',system-ui,-apple-system,Roboto,Helvetica,Arial,sans-serif}\n.top{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px max(16px,calc((100% - 1040px)/2));background:var(--card);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}\n.brand{display:flex;align-items:center;gap:12px}.brand img{width:36px;height:36px;border-radius:9px}\n.name{font-weight:800;font-size:16px}.sub{font-size:12px;color:var(--ink2)}.when{font-size:12px;color:var(--ink2);text-align:right}\nmain{max-width:1040px;margin:0 auto;padding:20px 16px 8px}\n.hero{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px 22px;box-shadow:var(--shadow);border-top:4px solid var(--pass)}\n.hero.bad{border-top-color:var(--fail)}.hero h1{margin:0;font-size:24px;letter-spacing:-.3px}.hero.ok h1{color:var(--pass)}.hero.bad h1{color:var(--fail)}\n.meta{color:var(--ink2);font-size:13px;margin-top:2px}\n.bar{display:flex;height:10px;border-radius:6px;overflow:hidden;background:var(--skip-s);margin:16px 0}\n.bar span{display:block;height:100%}.bar .pass{background:var(--pass)}.bar .fail{background:var(--fail)}.bar .skip{background:var(--skip)}\n.kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:10px}\n.kpi{background:var(--tint);border:1px solid var(--line);border-radius:10px;padding:10px 12px}\n.kv{font-size:21px;font-weight:800}.kl{font-size:11px;color:var(--ink3);text-transform:uppercase;letter-spacing:.5px}\n.kpi.pass .kv{color:var(--pass)}.kpi.fail .kv{color:var(--fail)}.kpi.flaky .kv{color:var(--flaky)}\n.tools{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:18px 0 6px;position:sticky;top:65px;z-index:4;background:var(--bg);padding:8px 0}\n.chips{display:flex;gap:6px;flex-wrap:wrap}\n.chip,.ghost{font:inherit;font-size:13px;border:1px solid var(--line);background:var(--card);color:var(--ink2);border-radius:999px;padding:6px 12px;cursor:pointer}\n.chip b{color:var(--ink);margin-left:3px}.chip.on{background:var(--brand);border-color:var(--brand);color:#fff}.chip.on b{color:#fff}\n.ghost{border-radius:8px}.chip:hover,.ghost:hover{border-color:var(--brand)}\n#q{flex:1;min-width:180px;font:inherit;font-size:13px;padding:7px 12px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--ink)}\n#q:focus{outline:2px solid var(--brand);outline-offset:-1px}\n.story{margin-top:16px}.sh{display:flex;align-items:baseline;justify-content:space-between;gap:10px;flex-wrap:wrap;margin:0 2px 8px}\n.sh h2{font-size:13px;margin:0;color:var(--brand2);text-transform:uppercase;letter-spacing:.6px}\n@media (prefers-color-scheme:dark){.sh h2{color:var(--brand)}}\n.sc{display:flex;gap:10px;font-size:12px;color:var(--ink3)}.c.pass{color:var(--pass)}.c.fail{color:var(--fail);font-weight:700}\ndetails.t{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--pass);border-radius:10px;margin-bottom:8px;box-shadow:var(--shadow)}\ndetails.t.failed{border-left-color:var(--fail)}details.t.skipped{border-left-color:var(--skip)}\ndetails.t>summary{list-style:none;display:flex;align-items:center;gap:10px;padding:11px 14px;cursor:pointer}\ndetails.t>summary::-webkit-details-marker{display:none}\ndetails.t>summary::after{content:'';width:7px;height:7px;border-right:2px solid var(--ink3);border-bottom:2px solid var(--ink3);transform:rotate(-45deg);transition:transform .15s;margin-left:2px}\ndetails.t[open]>summary::after{transform:rotate(45deg)}\n.dot{width:9px;height:9px;border-radius:50%;background:var(--pass);flex:none}.failed .dot{background:var(--fail)}.skipped .dot{background:var(--skip)}\n.tt{flex:1;font-weight:600;min-width:0}\n.badge{font-size:11px;font-weight:700;border-radius:999px;padding:2px 8px;white-space:nowrap}\n.badge.data{background:var(--tint);color:var(--ink2);border:1px solid var(--line)}\n.badge.flaky,.badge.site{background:var(--flaky-s);color:var(--flaky)}\n.st{font-size:11px;font-weight:700;border-radius:999px;padding:2px 9px}.st.passed{background:var(--pass-s);color:var(--pass)}\n.st.failed{background:var(--fail-s);color:var(--fail)}.st.skipped{background:var(--skip-s);color:var(--skip)}\n.ms{font-size:12px;color:var(--ink3);width:56px;text-align:right;font-variant-numeric:tabular-nums}\n.body{padding:2px 16px 16px 33px;border-top:1px solid var(--line)}\n.lbl{font-size:11px;font-weight:700;color:var(--ink3);text-transform:uppercase;letter-spacing:.5px;margin:14px 0 6px}\n.steps{list-style:none;margin:0;padding:0;border-left:2px solid var(--line);margin-left:9px}\n.steps li{display:flex;align-items:flex-start;gap:10px;padding:4px 0 4px 0;position:relative;left:-10px}\n.n{flex:none;min-width:20px;height:20px;border-radius:10px;background:var(--tint);border:1px solid var(--line);font-size:11px;font-weight:700;color:var(--ink2);display:flex;align-items:center;justify-content:center;padding:0 5px}\n.x{padding-top:1px}.steps li.bad .n{background:var(--fail);border-color:var(--fail);color:#fff}.steps li.bad .x{color:var(--fail);font-weight:600}\n.here{font-size:11px;font-weight:700;color:var(--fail);background:var(--fail-s);border-radius:999px;padding:1px 8px;margin-top:1px}\npre{margin:0;white-space:pre-wrap;word-break:break-word;font:12px/1.5 Consolas,Menlo,monospace}\n.err{color:var(--fail);background:var(--fail-s);padding:10px 12px;border-radius:8px}\n.stack{margin-top:8px}.stack summary{cursor:pointer;font-size:12px;color:var(--ink2)}\n.stack pre{margin-top:6px;color:var(--ink2);background:var(--tint);border:1px solid var(--line);padding:10px 12px;border-radius:8px;max-height:260px;overflow:auto}\n.down{margin-top:12px;background:var(--flaky-s);color:var(--flaky);border-radius:8px;padding:9px 12px;font-size:13px}\n.shot{display:block;max-width:100%;width:560px;border:1px solid var(--line);border-radius:8px;cursor:zoom-in}\n.vid{display:block;max-width:100%;width:720px;border:1px solid var(--line);border-radius:8px;background:#000}\n.vnote{font-size:12px;color:var(--ink3);margin-top:4px}\n.none{margin-top:12px;color:var(--ink3);font-size:13px}.empty{text-align:center;color:var(--ink3);padding:30px}\n.env{margin-top:22px;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 18px;box-shadow:var(--shadow)}\n.env h2{font-size:13px;margin:0 0 6px;color:var(--ink2);text-transform:uppercase;letter-spacing:.6px}\n.env table{width:100%;border-collapse:collapse;font-size:13px}.env th{text-align:left;color:var(--ink3);font-weight:600;width:120px;padding:6px 0;vertical-align:top}\n.env td{padding:6px 0;word-break:break-word}.env tr+tr th,.env tr+tr td{border-top:1px solid var(--line)}\nfooter{text-align:center;color:var(--ink3);font-size:12px;padding:18px 16px 28px}\n.zoom{position:fixed;inset:0;background:rgba(8,10,16,.82);display:flex;align-items:center;justify-content:center;padding:20px;z-index:10;cursor:zoom-out}\n.zoom img{max-width:100%;max-height:100%;border-radius:8px}\n[hidden]{display:none!important}\n@media (max-width:760px){.kpis{grid-template-columns:repeat(3,1fr)}.top{position:static}.tools{top:0}.ms{display:none}.body{padding-left:16px}.hero h1{font-size:20px}}\n@media print{.tools,.zoom{display:none!important}details.t{break-inside:avoid}.top{position:static}}\n"
 _SH_DETAIL_JS = "(function(){\nvar tests=[].slice.call(document.querySelectorAll('details.t'));\nvar chips=[].slice.call(document.querySelectorAll('.chip'));\nvar q=document.getElementById('q'),empty=document.getElementById('empty'),filter='all';\nfunction apply(){var term=(q.value||'').trim().toLowerCase(),shown=0;\ntests.forEach(function(t){var ok=(filter==='all'||t.getAttribute('data-s')===filter)&&(!term||t.getAttribute('data-q').indexOf(term)>=0);t.hidden=!ok;if(ok)shown++;});\n[].forEach.call(document.querySelectorAll('section.story'),function(s){s.hidden=!s.querySelector('details.t:not([hidden])');});\nempty.hidden=shown>0;}\nchips.forEach(function(c){c.addEventListener('click',function(){chips.forEach(function(x){x.classList.remove('on');});c.classList.add('on');filter=c.getAttribute('data-f');apply();});});\nq.addEventListener('input',apply);\nvar xp=document.getElementById('xp'),open=false;\nxp.addEventListener('click',function(){open=!open;tests.forEach(function(t){if(!t.hidden)t.open=open;});xp.textContent=open?'Collapse all':'Expand all';});\nvar zoom=document.getElementById('zoom'),zimg=zoom.querySelector('img');\ndocument.addEventListener('click',function(e){if(e.target.classList&&e.target.classList.contains('shot')){zimg.src=e.target.src;zoom.hidden=false;}});\nzoom.addEventListener('click',function(){zoom.hidden=true;});\ndocument.addEventListener('keydown',function(e){if(e.key==='Escape')zoom.hidden=true;});\n})();"
 
 
@@ -14983,6 +18089,12 @@ import org.openqa.selenium.TakesScreenshot;
 import org.openqa.selenium.WebDriver;
 import org.testng.*;
 import org.testng.annotations.ITestAnnotation;
+import org.testng.xml.XmlClass;
+import org.testng.xml.XmlSuite;
+import org.testng.xml.XmlTest;
+import __PKG__.core.DriverFactory;
+import __PKG__.core.VideoRecorder;
+import __PKG__.core.ProgressWindow;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 
@@ -15001,7 +18113,7 @@ import java.util.*;
  *  run environment), opens it and emails it with the TestNG report. Settings:
  *  env vars or config.properties — REPORT_EMAIL_TO, SMTP_USER, SMTP_PASS,
  *  SMTP_HOST (smtp.gmail.com), SMTP_PORT (465), OPEN_REPORT (true). */
-public class ReportMailer implements ISuiteListener, IExecutionListener, ITestListener, IAnnotationTransformer {
+public class ReportMailer implements ISuiteListener, IExecutionListener, ITestListener, IAnnotationTransformer, IAlterSuiteListener {
     private static final String QA_VERSION = "__QA_VERSION__";
     private static final File LOGO = new File("src/test/resources/qa-logo.png");
     private static final int MAX_SHOTS = 6;
@@ -15012,7 +18124,7 @@ public class ReportMailer implements ISuiteListener, IExecutionListener, ITestLi
     private static final String FONT = "'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
 
     private static final class T {
-        String title, status, error = "", shot = "", cid = "", site = "", dataSet = "", fullError = "", stack = "";
+        String title, status, error = "", shot = "", cid = "", site = "", dataSet = "", fullError = "", stack = "", video = "";
         List<String> steps = new ArrayList<>();
         boolean flaky;
         long ms;
@@ -15021,6 +18133,17 @@ public class ReportMailer implements ISuiteListener, IExecutionListener, ITestLi
     private final long start = System.currentTimeMillis();
     private final Map<String, List<T>> stories = new LinkedHashMap<>();
     private int passed, failed, skipped, flaky;
+    /** First setup (@BeforeClass) failure, shown when tests were skipped because of it. */
+    private String setupError = "";
+
+    /** Headline: a run where every test was skipped did NOT pass. */
+    private static String verdict(int total, int failed, int skipped) {
+        if (failed > 0) return failed + " of " + total + " tests failed";
+        if (total > 0 && skipped == total) return "None of the " + total + " tests ran (setup failed)";
+        if (skipped > 0) return (total - skipped) + " of " + total + " tests passed, " + skipped + " skipped";
+        return "All " + total + " tests passed";
+    }
+    private boolean bad() { return failed > 0 || (passed == 0 && skipped > 0); }
 
     /** Every test gets one retry (RETRIES=0 turns it off): a site blip shouldn't
      *  fail the run. A test that passes on the retry is reported as flaky. */
@@ -15028,6 +18151,61 @@ public class ReportMailer implements ISuiteListener, IExecutionListener, ITestLi
     @SuppressWarnings("rawtypes")
     public void transform(ITestAnnotation a, Class testClass, Constructor testConstructor, Method testMethod) {
         a.setRetryAnalyzer(Retry.class);
+    }
+
+    /** Cross-browser run (BROWSER=chrome,firefox or all): every <test> of
+     *  testng.xml is repeated once per browser, each with its own qa.browser
+     *  parameter (BaseTest starts that browser). One browser: nothing changes. */
+    @Override
+    public void alter(List<XmlSuite> suites) {
+        List<String> browsers = DriverFactory.browsers();
+        if (browsers.size() < 2) return;
+        System.out.println("[browser] cross-browser run: " + String.join(", ", browsers));
+        for (XmlSuite suite : suites) {
+            List<XmlTest> orig = new ArrayList<>(suite.getTests());
+            suite.getTests().clear();
+            for (String b : browsers) {
+                for (XmlTest t : orig) {
+                    XmlTest n = new XmlTest(suite);
+                    if (!suite.getTests().contains(n)) suite.getTests().add(n);
+                    n.setName(t.getName() + " - " + DriverFactory.label(b));
+                    n.setPreserveOrder(t.getPreserveOrder());
+                    Map<String, String> params = new HashMap<>(t.getLocalParameters());
+                    params.put("qa.browser", b);
+                    n.setParameters(params);
+                    List<XmlClass> classes = new ArrayList<>();
+                    for (XmlClass c : t.getXmlClasses()) {
+                        XmlClass x = new XmlClass(c.getName(), false);
+                        x.setIncludedMethods(c.getIncludedMethods());
+                        x.setExcludedMethods(c.getExcludedMethods());
+                        classes.add(x);
+                    }
+                    n.setXmlClasses(classes);
+                }
+            }
+            // PARALLEL=true (default, one line in .env): every browser runs at the
+            // same time, each in its own thread; its tests still run in order.
+            if (parallel()) {
+                suite.setParallel(XmlSuite.ParallelMode.TESTS);
+                suite.setThreadCount(Math.max(1, suite.getTests().size()));
+            }
+        }
+        System.out.println("[browser] " + (parallel() ? "browsers run in parallel (PARALLEL=true)"
+            : "browsers run one after another (PARALLEL=false)"));
+    }
+
+    /** PARALLEL in .env, an environment variable, -Dqa.parallel or config.properties. */
+    static boolean parallel() {
+        String v = __PKG__.core.Config.setting("PARALLEL", "true").trim();
+        return !("false".equalsIgnoreCase(v) || "off".equalsIgnoreCase(v) || "0".equals(v) || "no".equalsIgnoreCase(v));
+    }
+
+    /** The browser a result ran in ("Chrome"), or "" in a one-browser run. */
+    private static String browserOf(ITestResult r) {
+        try {
+            String b = r.getTestContext().getCurrentXmlTest().getParameter("qa.browser");
+            return b == null || b.isBlank() ? "" : DriverFactory.label(b);
+        } catch (Exception e) { return ""; }
     }
 
     public static class Retry implements IRetryAnalyzer {
@@ -15131,19 +18309,51 @@ public class ReportMailer implements ISuiteListener, IExecutionListener, ITestLi
     }
 
     private static String cfg(String key, String d) {
-        String v = System.getenv(key);
+        String v = __PKG__.core.Config.getenv(key);
         if (v == null || v.isEmpty()) v = P.getProperty(key.toLowerCase().replace('_', '.'), "");
         return (v == null || v.isEmpty()) ? d : v.trim();
     }
 
     // ---- collect ----
     @Override
-    public void onTestFailure(ITestResult r) { shoot(r); }
+    public void onTestStart(ITestResult r) {
+        VideoRecorder.begin();
+        String d = r.getMethod().getDescription();
+        ProgressWindow.testStarted(d == null || d.isEmpty() ? r.getMethod().getMethodName() : d, browserOf(r));
+    }
+
+    @Override
+    public void onTestFailure(ITestResult r) { shoot(r); video(r, true); ProgressWindow.testDone("failed", browserOf(r)); }
 
     /** Passed tests get a screenshot too (set QA_SCREENSHOTS=failed to skip them). */
     @Override
     public void onTestSuccess(ITestResult r) {
         if (!"failed".equalsIgnoreCase(cfg("QA_SCREENSHOTS", "all"))) shoot(r);
+        video(r, false);
+        ProgressWindow.testDone("passed", browserOf(r));
+    }
+
+    /** Skipped, or a failed attempt that is run again: its recording is dropped. */
+    @Override
+    public void onTestSkipped(ITestResult r) {
+        VideoRecorder.discard();
+        if (!r.wasRetried()) ProgressWindow.testDone("skipped", browserOf(r));   // a retried attempt runs again
+    }
+
+    /** The test's recording (VIDEO=on|retain-on-failure|off), kept on the result
+     *  and linked from the TestNG reports. */
+    private void video(ITestResult r, boolean failed) {
+        try {
+            String b = browserOf(r);
+            File gif = VideoRecorder.end(r.getTestClass().getRealClass().getSimpleName() + "_"
+                + r.getMethod().getMethodName() + (b.isEmpty() ? "" : "_" + b), failed);
+            if (gif == null) return;
+            r.setAttribute("qa.video", gif.getAbsolutePath());
+            ITestResult prev = Reporter.getCurrentTestResult();
+            Reporter.setCurrentTestResult(r);
+            Reporter.log("<a href='../qa-videos/" + gif.getName() + "' target='_blank'>Recording of this test</a>");
+            Reporter.setCurrentTestResult(prev);
+        } catch (Exception e) { System.out.println("[video] " + e.getMessage()); }
     }
 
     /** Screenshot of the test's browser, kept on the result and shown in the TestNG reports. */
@@ -15178,13 +18388,42 @@ public class ReportMailer implements ISuiteListener, IExecutionListener, ITestLi
         } catch (Exception e) { System.out.println("[report] screenshot failed: " + e.getMessage()); }
     }
 
-    @Override public void onStart(ISuite suite) { }
+    @Override public void onStart(ISuite suite) {
+        ProgressWindow.start(suite.getAllMethods().size());
+        // One progress row per browser: how many tests each will run.
+        Map<String, Integer> perBrowser = new LinkedHashMap<>();
+        for (ITestNGMethod m : suite.getAllMethods()) {
+            try {
+                String b = m.getXmlTest().getParameter("qa.browser");
+                if (b != null && !b.isBlank()) perBrowser.merge(DriverFactory.label(b), 1, Integer::sum);
+            } catch (Exception ignored) { }
+        }
+        perBrowser.forEach(ProgressWindow::expect);
+    }
 
     @Override
     public void onFinish(ISuite suite) {
+        ProgressWindow.wrapUp();                   // every test ran: stop the clock
         List<ITestResult> all = new ArrayList<>();
         for (ISuiteResult sr : suite.getResults().values()) {
             ITestContext c = sr.getTestContext();
+            for (ITestResult cf : c.getFailedConfigurations().getAllResults()) {
+                Throwable th = cf.getThrowable();
+                if (th == null) continue;
+                String full = String.valueOf(th.getMessage());
+                int nl = full.indexOf('\\n');
+                String msg = (nl >= 0 ? full.substring(0, nl) : full).trim();
+                String one = th.getClass().getSimpleName()
+                    + (msg.isEmpty() || "null".equals(msg) ? "" : " - " + msg);
+                // WebDriver errors name the command that failed (get {url=...}).
+                int at = full.indexOf("Command: [");
+                int end = at < 0 ? -1 : full.indexOf(']', at);
+                if (at >= 0 && end > at) one += " (" + full.substring(at, end + 1) + ")";
+                String bl = browserOf(cf);
+                one = (bl.isEmpty() ? "" : bl + ": ") + one;
+                if (!setupError.contains(one)) setupError += (setupError.isEmpty() ? "" : " | ") + one;
+                break;   // one per browser
+            }
             all.addAll(c.getPassedTests().getAllResults());
             all.addAll(c.getFailedTests().getAllResults());
             all.addAll(c.getSkippedTests().getAllResults());
@@ -15216,6 +18455,8 @@ public class ReportMailer implements ISuiteListener, IExecutionListener, ITestLi
             }
             Object shot = r.getAttribute("qa.shot");
             if (shot != null) t.shot = shot.toString();
+            Object video = r.getAttribute("qa.video");
+            if (video != null) t.video = video.toString();
             Object site = r.getAttribute("qa.site");
             if (site != null && "failed".equals(t.status)) t.site = site.toString();
             t.flaky = "passed".equals(t.status) && retried.contains(key(r));
@@ -15231,13 +18472,17 @@ public class ReportMailer implements ISuiteListener, IExecutionListener, ITestLi
                 t.stack = sb.toString();
             }
             if ("passed".equals(t.status)) passed++; else if ("failed".equals(t.status)) failed++; else skipped++;
-            stories.computeIfAbsent(storyName(r.getTestClass().getRealClass()), k -> new ArrayList<>()).add(t);
+            String browser = browserOf(r);
+            stories.computeIfAbsent(storyName(r.getTestClass().getRealClass()) + (browser.isEmpty() ? "" : " · " + browser),
+                k -> new ArrayList<>()).add(t);
         }
     }
 
     @Override
     public void onExecutionFinish() {
-        if (passed + failed + skipped == 0) return;
+        if (passed + failed + skipped == 0) { ProgressWindow.finish("No tests ran"); return; }
+        ProgressWindow.wrapUp();
+        VideoRecorder.awaitAll();
         File detail = writeDetailed();
         if (detail == null) detail = findReport();
         File summary = new File("target/qa-studio-report.html").getAbsoluteFile();
@@ -15252,6 +18497,7 @@ public class ReportMailer implements ISuiteListener, IExecutionListener, ITestLi
                 if (Desktop.isDesktopSupported()) Desktop.getDesktop().browse(summary.toURI());
             } catch (Exception e) { System.out.println("[report] could not open: " + e.getMessage()); }
         }
+        ProgressWindow.finish(verdict(passed + failed + skipped, failed, skipped));
         mail(summary, detail);
     }
 
@@ -15314,8 +18560,9 @@ public class ReportMailer implements ISuiteListener, IExecutionListener, ITestLi
          .append(new SimpleDateFormat("d MMM yyyy, HH:mm").format(new Date(start))).append("</td></tr></table></td></tr>");
         int rate = total == 0 ? 0 : Math.round(passed * 100f / total);
         h.append("<tr><td style=\\"padding:22px 28px 6px\\"><div style=\\"font-size:24px;font-weight:800;color:")
-         .append(failed == 0 ? GREEN : RED).append("\\">")
-         .append(failed == 0 ? "All " + total + " tests passed" : failed + " of " + total + " tests failed").append("</div>")
+         .append(bad() ? RED : GREEN).append("\\">")
+         .append(verdict(total, failed, skipped)).append("</div>")
+         .append(setupError.isEmpty() ? "" : "<div style=\\"font-size:12px;color:" + RED + ";margin-top:6px\\">Setup failed: " + esc(setupError) + "</div>")
          .append("<div style=\\"font-size:13px;color:").append(INK2).append(";margin-top:4px\\">Pass rate ").append(rate)
          .append("% &middot; ").append(stories.size()).append(stories.size() == 1 ? " story" : " stories")
          .append(" &middot; ").append(secs(dur)).append("</div>")
@@ -15422,13 +18669,20 @@ public class ReportMailer implements ISuiteListener, IExecutionListener, ITestLi
         return new String[][]{
             {"Run from", ide()},
             {"Framework", "Selenium + TestNG"},
-            {"Browser", "Chrome"},
+            {"Browser", DriverFactory.used().isEmpty() ? String.join(", ", labels()) : DriverFactory.used()},
+            {"Video", "off".equals(VideoRecorder.mode()) ? "Off" : "failed".equals(VideoRecorder.mode()) ? "Failed tests only" : "Every test"},
             {"Mode", "true".equalsIgnoreCase(cfg("HEADLESS", "false")) ? "Headless" : "Headed (browser visible)"},
             {"Retries", cfg("RETRIES", "1")},
             {"Sites", sites()},
             {"OS", System.getProperty("os.name") + " " + System.getProperty("os.version")},
             {"Machine", host},
             {"Runtime", "Java " + System.getProperty("java.version")}};
+    }
+
+    private static List<String> labels() {
+        List<String> out = new ArrayList<>();
+        for (String b : DriverFactory.browsers()) out.add(DriverFactory.label(b));
+        return out;
     }
 
     /** The story title the generator put on the test class (QA_STORY), else the class name. */
@@ -15441,7 +18695,7 @@ public class ReportMailer implements ISuiteListener, IExecutionListener, ITestLi
     }
 
     private static String key(ITestResult r) {
-        return r.getTestClass().getRealClass().getName() + "#" + r.getMethod().getMethodName()
+        return browserOf(r) + "|" + r.getTestClass().getRealClass().getName() + "#" + r.getMethod().getMethodName()
             + Arrays.toString(r.getParameters());
     }
 
@@ -15485,10 +18739,13 @@ public class ReportMailer implements ISuiteListener, IExecutionListener, ITestLi
          .append(esc(ide())).append("</b></div></div></div><div class='when'>")
          .append(new SimpleDateFormat("EEE d MMM yyyy, HH:mm").format(new Date(start))).append("</div></header><main>");
 
-        b.append("<section class='hero ").append(failed == 0 ? "ok" : "bad").append("'><div class='verdict'><h1>")
-         .append(failed == 0 ? "All " + total + " tests passed" : failed + " of " + total + " tests failed")
+        b.append("<section class='hero ").append(bad() ? "bad" : "ok").append("'><div class='verdict'><h1>")
+         .append(verdict(total, failed, skipped))
          .append("</h1><div class='meta'>").append(stories.size()).append(stories.size() == 1 ? " story" : " stories")
-         .append(" &middot; ").append(secs(ran)).append(" &middot; Chrome</div></div><div class='bar'>")
+         .append(" &middot; ").append(secs(ran)).append(" &middot; ")
+         .append(esc(DriverFactory.used().isEmpty() ? String.join(", ", labels()) : DriverFactory.used()))
+         .append(setupError.isEmpty() ? "" : "<div class='vnote' style='color:var(--red,#c0392b)'>Setup failed: " + esc(setupError) + "</div>")
+         .append("</div></div><div class='bar'>")
          .append(seg("pass", passed, total)).append(seg("fail", failed, total)).append(seg("skip", skipped, total))
          .append("</div><div class='kpis'>")
          .append(kpiCard("Pass rate", rate + "%", failed == 0 ? "pass" : ""))
@@ -15554,6 +18811,10 @@ public class ReportMailer implements ISuiteListener, IExecutionListener, ITestLi
                     b.append("<div class='lbl'>Screenshot</div><img class='shot' loading='lazy' alt='Screenshot' src='")
                      .append(src).append("'>");
                 }
+                File gif = t.video.isEmpty() ? null : new File(t.video);
+                if (gif != null && gif.isFile())
+                    b.append("<div class='lbl'>Recording</div><img class='shot vid' loading='lazy' alt='Recording of this test' src='qa-videos/")
+                     .append(esc(gif.getName())).append("'>");
                 if (t.steps.isEmpty() && t.fullError.isEmpty() && (shot == null || !shot.isFile()))
                     b.append("<div class='none'>No steps or screenshot were recorded for this test.</div>");
                 b.append("</div></details>");
@@ -15703,7 +18964,8 @@ def _prune_generated_orphans(out_dir, pkg, m, cb=None):
     pkg_path = pkg.replace(".", "/")
     core_dir = os.path.join(out_dir, "src", "main", "java", pkg_path, "core")
     tests_dir = os.path.join(out_dir, "src", "test", "java", pkg_path, "tests")
-    core_owned = {"DriverFactory", "Config", "LocatorStore", "AiClient", "Healer"}
+    core_owned = {"DriverFactory", "Config", "LocatorStore", "AiClient", "Healer", "VideoRecorder",
+                  "ProgressWindow"}
     # ReportMailer is framework-owned too (testng.xml lists it as a listener);
     # leaving it out made this prune delete it, and every run then failed with
     # "Listener …ReportMailer was not found in project's classpath".
@@ -15765,8 +19027,11 @@ def _guarded_write_test_class(path, content, prev_hash, cb=None):
     return True, new_hash
 
 
-def _idea_maven_config(name, goals):
-    """IntelliJ Maven run configuration (.run/*.run.xml, shared with the project)."""
+def _idea_maven_config(name, goals, cmd_options=""):
+    """IntelliJ Maven run configuration (.run/*.run.xml, shared with the project).
+    `cmd_options` = extra Maven command-line options (e.g. -Dqa.browser=edge)."""
+    cmd_xml = ('          <option name="cmdOptions" value="%s" />\n' % cmd_options
+               if cmd_options else '          <option name="cmdOptions" />\n')
     goal_xml = "".join('              <option value="%s" />\n' % g for g in goals)
     return ('<component name="ProjectRunConfigurationManager">\n'
             '  <configuration default="false" name="%s" type="MavenRunConfiguration" '
@@ -15776,7 +19041,7 @@ def _idea_maven_config(name, goals):
             '      <option name="myRunnerSettings" />\n'
             '      <option name="myRunnerParameters">\n'
             '        <MavenRunnerParameters>\n'
-            '          <option name="cmdOptions" />\n'
+            '%s'
             '          <option name="profiles">\n            <set />\n          </option>\n'
             '          <option name="goals">\n            <list>\n%s            </list>\n'
             '          </option>\n'
@@ -15792,7 +19057,7 @@ def _idea_maven_config(name, goals):
             '    </MavenSettings>\n'
             '    <method v="2" />\n'
             '  </configuration>\n'
-            '</component>\n') % (name, goal_xml)
+            '</component>\n') % (name, cmd_xml, goal_xml)
 
 
 def maven_prefetch(out_dir, cb=None, should_stop=None, timeout=900):
@@ -15886,10 +19151,20 @@ def build_selfhealing_project(out_dir, sequenced, base_url, login=None,
     # One-click run in IntelliJ: Maven run configurations use IntelliJ's own
     # bundled Maven, so nothing has to be installed on the PC.
     os.makedirs(os.path.join(out_dir, ".run"), exist_ok=True)
-    for _name, _goals in (("Run tests", ["test"]),
-                          ("Download dependencies", ["dependency:resolve", "test-compile"])):
-        _w(os.path.join(out_dir, ".run", _name + ".run.xml"), _idea_maven_config(_name, _goals))
+    # Written once: IntelliJ saves your edits (environment variables such as
+    # APP_USER / APP_PASS) into these files, so a regenerate never resets them.
+    for _name, _goals, _opts in (("Run tests", ["test"], ""),
+                                 ("Download dependencies", ["dependency:resolve", "test-compile"], ""),
+                                 ("Run tests (Chrome)", ["test"], "-Dqa.browser=chrome"),
+                                 ("Run tests (Edge)", ["test"], "-Dqa.browser=edge"),
+                                 ("Run tests (Firefox)", ["test"], "-Dqa.browser=firefox"),
+                                 ("Run tests (all browsers)", ["test"], "-Dqa.browser=all")):
+        _rc = os.path.join(out_dir, ".run", _name + ".run.xml")
+        if not os.path.exists(_rc):
+            _w(_rc, _idea_maven_config(_name, _goals, _opts))
     _w(os.path.join(src_main, "DriverFactory.java"), _driver_factory(pkg))
+    _w(os.path.join(src_main, "VideoRecorder.java"), _video_recorder(pkg))
+    _w(os.path.join(src_main, "ProgressWindow.java"), _progress_window(pkg))
     _w(os.path.join(src_main, "Config.java"),
        _sh_config(pkg, base_url, login_url, _ai_prov, _ai_base, _ai_model))
     _w(os.path.join(src_main, "LocatorStore.java"), _sh_locator_store(pkg))
@@ -15922,6 +19197,20 @@ def build_selfhealing_project(out_dir, sequenced, base_url, login=None,
         written.append("config.properties")
     _append_report_props(_cfg_props, (login or {}).get("report_to", ""),
                          (login or {}).get("smtp_user", ""))
+    _append_run_props(_cfg_props)
+    # QA Studio's current URLs and report recipients win on every generate
+    # (they used to be written only into a brand-new config.properties).
+    _set_props(_cfg_props, {
+        "app.base.url": resolve_site_url(base_url) if base_url else "",
+        "app.login.url": resolve_site_url(login_url) if login_url else "",
+        "report.email.to": (login or {}).get("report_to", ""),
+        "smtp.user": (login or {}).get("smtp_user", "")})
+    _repair_url_props(_cfg_props)
+    # Opt-in "save this test account": APP_USER / APP_PASS (+ SMTP_PASS) to the
+    # git-ignored .env, refreshed on every generate.
+    _write_dotenv(out_dir, {"APP_USER": (login or {}).get("env_user", ""),
+                            "APP_PASS": (login or {}).get("env_pass", ""),
+                            "SMTP_PASS": (login or {}).get("smtp_pass", "")})
 
     test_classes = []
     seed_sink = {}                      # generation-time locators → committed locators.json
@@ -16002,6 +19291,42 @@ def automation_done_message(target, todo, provider="your AI provider"):
         key = (" No TODO locators, so QA_AI_API_KEY is optional — set it only if you "
                "want self-healing when a locator breaks later.")
     return "Done — review the activity, then Push to Git. " + run + key
+
+
+RUN_BROWSERS = ("chrome", "edge", "firefox")
+
+
+def apply_run_browsers(out_dir, target, browsers, cb=None):
+    """Write the browsers picked in QA Studio (Framework card) into the project,
+    so every run uses them with no IDE setup: `browser=` in config.properties
+    (Selenium) or `BROWSER=` in .env (Playwright / Cypress). More than one =
+    every test runs once per browser. Runs on every generate, even when no
+    script changed. Returns the written value, or "" when there was no file."""
+    ensure_env_defaults(out_dir, cb)
+    picked = [b for b in RUN_BROWSERS if b in (browsers or [])] or ["chrome"]
+    value = ",".join(picked)
+    if (target or "selenium") == "selenium":
+        path, key = os.path.join(out_dir, "config.properties"), "browser"
+        # Every generate (even "keep"): old projects move to the new video default.
+        _migrate_video_default(path)
+    else:
+        path, key = os.path.join(out_dir, ".env"), "BROWSER"
+    if not os.path.isfile(path):
+        return ""
+    with open(path, "r", encoding="utf-8") as f:
+        text = f.read()
+    line = "%s=%s" % (key, value)
+    pat = re.compile(r"(?m)^[ \t]*%s[ \t]*=.*$" % re.escape(key))
+    if pat.search(text):
+        new = pat.sub(lambda _m: line, text, count=1)
+    else:
+        new = text + ("" if not text or text.endswith("\n") else "\n") + line + "\n"
+    if new != text:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(new)
+    if cb:
+        cb("Browsers for the generated tests: " + ", ".join(b.capitalize() for b in picked), "info")
+    return value
 
 
 def generate_and_push_selfhealing(out_dir, stories_payload, base_url, login=None,

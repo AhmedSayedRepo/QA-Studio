@@ -12332,31 +12332,31 @@ for _language, _values in _AUTOMATION_HELP_I18N.items():
 
 _READY_TO_RUN_I18N = {
     "en": {
-        "auto_env_creds": "Save this test account and the report sender in the generated project's .env (git-ignored) so Playwright/Cypress scripts run and email their report straight from the IDE",
+        "auto_env_creds": "Save this test account and the report sender in the generated project's .env (git-ignored) so Selenium/Playwright/Cypress scripts run and email their report straight from the IDE",
         "upd_note_js_ready_to_run": 'Playwright/Cypress output is ready to run: QA Studio installs the dependencies and browser, and adds one-click “Run tests” configurations for VS Code and IntelliJ/WebStorm.',
     },
     "ar": {
-        "auto_env_creds": 'حفظ حساب الاختبار هذا ومُرسل التقرير في ملف \u200e.env للمشروع الناتج (مُستبعد من git) لتعمل سكربتات Playwright/Cypress وترسل تقريرها مباشرة من محرر الأكواد',
+        "auto_env_creds": 'حفظ حساب الاختبار هذا ومُرسل التقرير في ملف \u200e.env للمشروع الناتج (مُستبعد من git) لتعمل سكربتات Selenium/Playwright/Cypress وترسل تقريرها مباشرة من محرر الأكواد',
         "upd_note_js_ready_to_run": 'أصبح ناتج Playwright/Cypress جاهزًا للتشغيل: يثبّت QA Studio الاعتماديات والمتصفح، ويضيف إعدادات تشغيل “Run tests” بنقرة واحدة لـ VS Code وIntelliJ/WebStorm.',
     },
     "fr": {
-        "auto_env_creds": "Enregistrer ce compte de test et l'expéditeur du rapport dans le .env du projet généré (ignoré par git) pour lancer les scripts Playwright/Cypress et envoyer leur rapport directement depuis l'IDE",
+        "auto_env_creds": "Enregistrer ce compte de test et l'expéditeur du rapport dans le .env du projet généré (ignoré par git) pour lancer les scripts Selenium/Playwright/Cypress et envoyer leur rapport directement depuis l'IDE",
         "upd_note_js_ready_to_run": "La sortie Playwright/Cypress est prête à l'emploi : QA Studio installe les dépendances et le navigateur, et ajoute des configurations « Run tests » en un clic pour VS Code et IntelliJ/WebStorm.",
     },
     "tr": {
-        "auto_env_creds": "Playwright/Cypress betikleri doğrudan IDE'den çalışıp raporlarını e-postayla göndersin diye bu test hesabını ve rapor göndericisini oluşturulan projenin .env dosyasına (git'e dahil edilmez) kaydet",
+        "auto_env_creds": "Selenium/Playwright/Cypress betikleri doğrudan IDE'den çalışıp raporlarını e-postayla göndersin diye bu test hesabını ve rapor göndericisini oluşturulan projenin .env dosyasına (git'e dahil edilmez) kaydet",
         "upd_note_js_ready_to_run": 'Playwright/Cypress çıktısı çalışmaya hazır: QA Studio bağımlılıkları ve tarayıcıyı kurar, VS Code ve IntelliJ/WebStorm için tek tıkla “Run tests” yapılandırmaları ekler.',
     },
     "es": {
-        "auto_env_creds": 'Guardar esta cuenta de prueba y el remitente del informe en el .env del proyecto generado (ignorado por git) para que los scripts de Playwright/Cypress se ejecuten y envíen su informe directamente desde el IDE',
+        "auto_env_creds": 'Guardar esta cuenta de prueba y el remitente del informe en el .env del proyecto generado (ignorado por git) para que los scripts de Selenium/Playwright/Cypress se ejecuten y envíen su informe directamente desde el IDE',
         "upd_note_js_ready_to_run": 'La salida de Playwright/Cypress queda lista para ejecutar: QA Studio instala las dependencias y el navegador, y añade configuraciones “Run tests” de un clic para VS Code e IntelliJ/WebStorm.',
     },
     "de": {
-        "auto_env_creds": 'Dieses Testkonto und den Berichtsabsender in der .env des erzeugten Projekts speichern (von git ignoriert), damit Playwright/Cypress-Skripte direkt aus der IDE laufen und ihren Bericht mailen',
+        "auto_env_creds": 'Dieses Testkonto und den Berichtsabsender in der .env des erzeugten Projekts speichern (von git ignoriert), damit Selenium/Playwright/Cypress-Skripte direkt aus der IDE laufen und ihren Bericht mailen',
         "upd_note_js_ready_to_run": 'Playwright/Cypress-Ausgabe ist startklar: QA Studio installiert Abhängigkeiten und Browser und fügt „Run tests“-Konfigurationen mit einem Klick für VS Code und IntelliJ/WebStorm hinzu.',
     },
     "nl": {
-        "auto_env_creds": 'Dit testaccount en de rapportafzender opslaan in de .env van het gegenereerde project (genegeerd door git) zodat Playwright/Cypress-scripts direct vanuit de IDE draaien en hun rapport mailen',
+        "auto_env_creds": 'Dit testaccount en de rapportafzender opslaan in de .env van het gegenereerde project (genegeerd door git) zodat Selenium/Playwright/Cypress-scripts direct vanuit de IDE draaien en hun rapport mailen',
         "upd_note_js_ready_to_run": 'Playwright/Cypress-uitvoer is klaar om te draaien: QA Studio installeert de afhankelijkheden en browser en voegt “Run tests”-configuraties met één klik toe voor VS Code en IntelliJ/WebStorm.',
     },
 }
@@ -12675,6 +12675,151 @@ _REPORTS_RETRY_I18N = {
            "upd_note_398_fixes": "Oplossingen: dropdowncontroles vergelijken de zichtbare optietekst; het activiteitenlog blijft bijwerken na het wisselen van framework; login-testcases voeren hun eigen stappen uit (hun eigen loginpagina) in plaats van de gedeelde login; lokale databestanden worden gebruikt en in het log genoemd; rustigere Selenium-console-uitvoer."},
 }
 for _language, _values in _REPORTS_RETRY_I18N.items():
+    _STRINGS[_language].update(_values)
+
+_ASSERTIONS_PACK_I18N = {
+    "en": {"upd_note_assertions_pack": "New checks: the URL, the page title, how many table rows or times a text appears, whether a column is sorted, and text matching a pattern. A step can also remember a value from the page (Remember the text matching \"ORD-(\\d+)\" as {{order}}) and reuse it in later steps. Try samples/assertions-test-cases.csv."},
+    "ar": {"upd_note_assertions_pack": "فحوصات جديدة: الرابط، وعنوان الصفحة، وعدد صفوف الجدول أو مرات ظهور نص، وهل العمود مرتب، ونص يطابق نمطًا. ويمكن لخطوة أن تحفظ قيمة من الصفحة (Remember the text matching \"ORD-(\\d+)\" as {{order}}) لإعادة استخدامها في الخطوات التالية. جرّب samples/assertions-test-cases.csv."},
+    "fr": {"upd_note_assertions_pack": "Nouvelles vérifications : l'URL, le titre de la page, le nombre de lignes d'un tableau ou d'apparitions d'un texte, le tri d'une colonne et un texte correspondant à un motif. Une étape peut aussi mémoriser une valeur de la page (Remember the text matching \"ORD-(\\d+)\" as {{order}}) et la réutiliser ensuite. Essayez samples/assertions-test-cases.csv."},
+    "tr": {"upd_note_assertions_pack": "Yeni kontroller: URL, sayfa başlığı, tablo satır sayısı veya bir metnin kaç kez göründüğü, bir sütunun sıralı olup olmadığı ve bir kalıba uyan metin. Bir adım sayfadan bir değeri hatırlayıp (Remember the text matching \"ORD-(\\d+)\" as {{order}}) sonraki adımlarda kullanabilir. samples/assertions-test-cases.csv dosyasını deneyin."},
+    "es": {"upd_note_assertions_pack": "Nuevas comprobaciones: la URL, el título de la página, cuántas filas tiene una tabla o cuántas veces aparece un texto, si una columna está ordenada y texto que coincide con un patrón. Un paso también puede recordar un valor de la página (Remember the text matching \"ORD-(\\d+)\" as {{order}}) y reutilizarlo después. Prueba samples/assertions-test-cases.csv."},
+    "de": {"upd_note_assertions_pack": "Neue Prüfungen: die URL, der Seitentitel, die Anzahl der Tabellenzeilen oder wie oft ein Text erscheint, ob eine Spalte sortiert ist und Text, der einem Muster entspricht. Ein Schritt kann sich auch einen Wert der Seite merken (Remember the text matching \"ORD-(\\d+)\" as {{order}}) und ihn später wiederverwenden. Probieren Sie samples/assertions-test-cases.csv."},
+    "nl": {"upd_note_assertions_pack": "Nieuwe controles: de URL, de paginatitel, hoeveel tabelrijen er zijn of hoe vaak een tekst voorkomt, of een kolom gesorteerd is en tekst die bij een patroon past. Een stap kan ook een waarde van de pagina onthouden (Remember the text matching \"ORD-(\\d+)\" as {{order}}) en die later hergebruiken. Probeer samples/assertions-test-cases.csv."},
+}
+for _language, _values in _ASSERTIONS_PACK_I18N.items():
+    _STRINGS[_language].update(_values)
+
+_VIDEO_CROSS_BROWSER_I18N = {
+    "en": {"upd_note_video_cross_browser": "Videos and browsers: the detailed report now plays test videos. Playwright and Cypress record every test; Selenium saves a GIF of each failed test (video=on in config.properties records every test). Pick the browser with BROWSER (chrome, edge, firefox, a list or all), or use the new Run tests (Edge) style run configurations in IntelliJ. Several browsers run one after another and share one report."},
+    "ar": {"upd_note_video_cross_browser": "الفيديو والمتصفحات: يعرض التقرير المفصل الآن مقاطع فيديو للاختبارات. يسجّل Playwright وCypress كل اختبار، ويحفظ Selenium صورة GIF لكل اختبار فاشل (video=on في config.properties يسجّل كل اختبار). اختر المتصفح عبر BROWSER (chrome أو edge أو firefox أو قائمة أو all)، أو استخدم إعدادات التشغيل الجديدة مثل Run tests (Edge) في IntelliJ. تعمل عدة متصفحات واحدًا تلو الآخر بتقرير واحد مشترك."},
+    "fr": {"upd_note_video_cross_browser": "Vidéos et navigateurs : le rapport détaillé affiche désormais les vidéos des tests. Playwright et Cypress enregistrent chaque test ; Selenium enregistre un GIF de chaque test en échec (video=on dans config.properties enregistre tous les tests). Choisissez le navigateur avec BROWSER (chrome, edge, firefox, une liste ou all), ou utilisez les nouvelles configurations Run tests (Edge) dans IntelliJ. Plusieurs navigateurs s'exécutent l'un après l'autre avec un seul rapport."},
+    "tr": {"upd_note_video_cross_browser": "Videolar ve tarayıcılar: ayrıntılı rapor artık test videolarını oynatıyor. Playwright ve Cypress her testi kaydeder; Selenium başarısız her test için bir GIF kaydeder (config.properties içindeki video=on her testi kaydeder). Tarayıcıyı BROWSER ile seçin (chrome, edge, firefox, bir liste veya all) ya da IntelliJ'deki yeni Run tests (Edge) gibi çalıştırma yapılandırmalarını kullanın. Birden çok tarayıcı sırayla çalışır ve tek bir rapor paylaşır."},
+    "es": {"upd_note_video_cross_browser": "Vídeos y navegadores: el informe detallado ahora muestra vídeos de las pruebas. Playwright y Cypress graban cada prueba; Selenium guarda un GIF de cada prueba fallida (video=on en config.properties graba todas). Elige el navegador con BROWSER (chrome, edge, firefox, una lista o all), o usa las nuevas configuraciones Run tests (Edge) en IntelliJ. Varios navegadores se ejecutan uno tras otro y comparten un informe."},
+    "de": {"upd_note_video_cross_browser": "Videos und Browser: Der Detailbericht zeigt jetzt Testvideos. Playwright und Cypress zeichnen jeden Test auf; Selenium speichert ein GIF jedes fehlgeschlagenen Tests (video=on in config.properties zeichnet jeden Test auf). Wählen Sie den Browser mit BROWSER (chrome, edge, firefox, eine Liste oder all) oder nutzen Sie die neuen Run-tests-(Edge)-Konfigurationen in IntelliJ. Mehrere Browser laufen nacheinander und teilen sich einen Bericht."},
+    "nl": {"upd_note_video_cross_browser": "Video's en browsers: het gedetailleerde rapport toont nu testvideo's. Playwright en Cypress nemen elke test op; Selenium bewaart een GIF van elke mislukte test (video=on in config.properties neemt elke test op). Kies de browser met BROWSER (chrome, edge, firefox, een lijst of all), of gebruik de nieuwe Run tests (Edge)-configuraties in IntelliJ. Meerdere browsers draaien na elkaar en delen één rapport."},
+}
+for _language, _values in _VIDEO_CROSS_BROWSER_I18N.items():
+    _STRINGS[_language].update(_values)
+
+_BROWSER_PICKER_I18N = {
+    "en": {"auto_browsers": "Browsers:",
+           "auto_browsers_note": "Saved into the generated project, so Run tests in IntelliJ uses them with no setup. More than one = every test runs in each browser, with one report."},
+    "ar": {"auto_browsers": "المتصفحات:",
+           "auto_browsers_note": "تُحفظ في المشروع الناتج، فيستخدمها Run tests في IntelliJ دون أي إعداد. أكثر من متصفح = يعمل كل اختبار في كل متصفح مع تقرير واحد."},
+    "fr": {"auto_browsers": "Navigateurs :",
+           "auto_browsers_note": "Enregistrés dans le projet généré : Run tests dans IntelliJ les utilise sans réglage. Plusieurs = chaque test s'exécute dans chaque navigateur, avec un seul rapport."},
+    "tr": {"auto_browsers": "Tarayıcılar:",
+           "auto_browsers_note": "Oluşturulan projeye kaydedilir; IntelliJ'deki Run tests ayar gerektirmeden bunları kullanır. Birden fazla = her test her tarayıcıda çalışır, tek rapor."},
+    "es": {"auto_browsers": "Navegadores:",
+           "auto_browsers_note": "Se guardan en el proyecto generado, así Run tests en IntelliJ los usa sin configurar nada. Más de uno = cada prueba se ejecuta en cada navegador, con un solo informe."},
+    "de": {"auto_browsers": "Browser:",
+           "auto_browsers_note": "Wird im erzeugten Projekt gespeichert, sodass Run tests in IntelliJ sie ohne Einrichtung nutzt. Mehrere = jeder Test läuft in jedem Browser, mit einem Bericht."},
+    "nl": {"auto_browsers": "Browsers:",
+           "auto_browsers_note": "Opgeslagen in het gegenereerde project, zodat Run tests in IntelliJ ze zonder instellen gebruikt. Meer dan één = elke test draait in elke browser, met één rapport."},
+}
+for _language, _values in _BROWSER_PICKER_I18N.items():
+    _STRINGS[_language].update(_values)
+
+_MORE_COMPONENTS_I18N = {
+    "en": {"upd_note_more_components": "New steps in all three frameworks: browser Back / Forward / Refresh, \"close X if it is shown\" for pop-ups and cookie banners, clearing a field, key combinations like Ctrl+A, and attribute checks (\"has type equal to submit\"). Generated projects now pick up changed URLs, report recipients and the saved test account on every run, and switching the framework no longer redraws the screen."},
+    "ar": {"upd_note_more_components": "خطوات جديدة في الأطر الثلاثة: رجوع / تقدّم / تحديث المتصفح، و\"أغلق X إن ظهر\" للنوافذ المنبثقة وشرائط الكوكيز، ومسح الحقل، وتركيبات المفاتيح مثل Ctrl+A، والتحقق من خصائص العناصر. المشاريع الناتجة تأخذ الروابط والمستلمين وحساب الاختبار المحفوظ عند كل تشغيل، وتبديل الإطار لم يعد يعيد رسم الشاشة."},
+    "fr": {"upd_note_more_components": "Nouvelles étapes dans les trois frameworks : Précédent / Suivant / Actualiser, « fermer X s'il apparaît » pour les pop-ups et bandeaux cookies, vider un champ, combinaisons de touches comme Ctrl+A et vérification d'attributs. Les projets générés reprennent à chaque exécution les URL, destinataires et compte de test enregistré, et changer de framework ne redessine plus l'écran."},
+    "tr": {"upd_note_more_components": "Üç çerçevede yeni adımlar: tarayıcı Geri / İleri / Yenile, açılır pencereler ve çerez bantları için \"görünürse X'i kapat\", alan temizleme, Ctrl+A gibi tuş kombinasyonları ve öznitelik kontrolleri. Oluşturulan projeler her çalıştırmada değişen URL'leri, alıcıları ve kayıtlı test hesabını alır; çerçeve değiştirmek artık ekranı yeniden çizmez."},
+    "es": {"upd_note_more_components": "Nuevos pasos en los tres frameworks: Atrás / Adelante / Recargar del navegador, \"cerrar X si aparece\" para ventanas emergentes y avisos de cookies, vaciar un campo, combinaciones de teclas como Ctrl+A y comprobación de atributos. Los proyectos generados toman en cada ejecución las URL, destinatarios y la cuenta de prueba guardada, y cambiar de framework ya no redibuja la pantalla."},
+    "de": {"upd_note_more_components": "Neue Schritte in allen drei Frameworks: Browser Zurück / Vor / Neu laden, \"X schließen, falls angezeigt\" für Pop-ups und Cookie-Banner, Feld leeren, Tastenkombinationen wie Strg+A und Attributprüfungen. Erzeugte Projekte übernehmen bei jedem Lauf geänderte URLs, Empfänger und das gespeicherte Testkonto, und der Framework-Wechsel zeichnet den Bildschirm nicht mehr neu."},
+    "nl": {"upd_note_more_components": "Nieuwe stappen in alle drie frameworks: browser Terug / Vooruit / Vernieuwen, \"sluit X als het verschijnt\" voor pop-ups en cookiebanners, een veld leegmaken, toetscombinaties zoals Ctrl+A en attribuutcontroles. Gegenereerde projecten nemen bij elke run gewijzigde URL's, ontvangers en het opgeslagen testaccount over, en wisselen van framework tekent het scherm niet meer opnieuw."},
+}
+for _language, _values in _MORE_COMPONENTS_I18N.items():
+    _STRINGS[_language].update(_values)
+
+_WAIT_SCROLL_PAGES_I18N = {
+    "en": {"upd_note_wait_scroll_pages": "Every action now waits for its element: tests scroll it into view, wait until it is enabled, has stopped moving and is no longer covered by an overlay, and scroll down the page to find content that loads late. New steps in all three frameworks: pagination (\"Go to page 3\", \"Click Next page until a name is shown\", \"Page 3 is the current page\"), cookies and local / session storage (set, check, delete), and pages behind basic or digest authentication."},
+    "ar": {"upd_note_wait_scroll_pages": "كل خطوة تنتظر عنصرها الآن: تمرّر الاختبارات العنصر إلى منتصف الشاشة، وتنتظر حتى يصبح مفعّلًا ويتوقف عن الحركة ولا تغطيه نافذة، وتنزل في الصفحة لتجد المحتوى الذي يُحمَّل متأخرًا. خطوات جديدة في الأطر الثلاثة: التنقل بين الصفحات (\"اذهب إلى الصفحة 3\"، \"الصفحة التالية حتى يظهر الاسم\"، \"الصفحة 3 هي الحالية\")، والكوكيز والتخزين المحلي وتخزين الجلسة (ضبط وتحقق وحذف)، والصفحات المحمية بمصادقة Basic أو Digest."},
+    "fr": {"upd_note_wait_scroll_pages": "Chaque action attend désormais son élément : les tests le font défiler à l'écran, attendent qu'il soit activé, immobile et non masqué par une fenêtre, et descendent dans la page pour trouver le contenu chargé tardivement. Nouvelles étapes dans les trois frameworks : pagination (« Aller à la page 3 », « Page suivante jusqu'à voir un nom », « La page 3 est la page courante »), cookies et stockage local / de session (définir, vérifier, supprimer), et pages protégées par authentification basic ou digest."},
+    "tr": {"upd_note_wait_scroll_pages": "Her eylem artık öğesini bekliyor: testler öğeyi görünüme kaydırır, etkinleşmesini, hareketinin durmasını ve bir katmanın altında kalmamasını bekler; geç yüklenen içeriği bulmak için sayfada aşağı iner. Üç çerçevede yeni adımlar: sayfalama (\"3. sayfaya git\", \"bir isim görünene kadar Sonraki sayfa\", \"3. sayfa geçerli sayfa\"), çerezler ve yerel / oturum depolama (ayarla, kontrol et, sil) ve basic ya da digest kimlik doğrulamalı sayfalar."},
+    "es": {"upd_note_wait_scroll_pages": "Cada acción espera ahora a su elemento: las pruebas lo desplazan a la vista, esperan a que esté habilitado, quieto y sin una capa encima, y bajan por la página para encontrar contenido que carga tarde. Nuevos pasos en los tres frameworks: paginación (\"Ir a la página 3\", \"Página siguiente hasta ver un nombre\", \"La página 3 es la actual\"), cookies y almacenamiento local / de sesión (definir, comprobar, borrar) y páginas protegidas con autenticación basic o digest."},
+    "de": {"upd_note_wait_scroll_pages": "Jede Aktion wartet jetzt auf ihr Element: Tests scrollen es ins Bild, warten, bis es aktiv ist, sich nicht mehr bewegt und von keinem Overlay verdeckt wird, und scrollen die Seite hinunter, um spät geladene Inhalte zu finden. Neue Schritte in allen drei Frameworks: Seitenwechsel (\"Gehe zu Seite 3\", \"Nächste Seite, bis ein Name erscheint\", \"Seite 3 ist die aktuelle Seite\"), Cookies und Local / Session Storage (setzen, prüfen, löschen) sowie Seiten mit Basic- oder Digest-Authentifizierung."},
+    "nl": {"upd_note_wait_scroll_pages": "Elke actie wacht nu op zijn element: tests scrollen het in beeld, wachten tot het ingeschakeld is, stilstaat en niet meer door een overlay wordt bedekt, en scrollen de pagina af om laat geladen inhoud te vinden. Nieuwe stappen in alle drie frameworks: paginering (\"Ga naar pagina 3\", \"Volgende pagina tot een naam verschijnt\", \"Pagina 3 is de huidige pagina\"), cookies en local / session storage (instellen, controleren, verwijderen) en pagina's achter basic- of digest-authenticatie."},
+}
+for _language, _values in _WAIT_SCROLL_PAGES_I18N.items():
+    _STRINGS[_language].update(_values)
+
+_IDE_PROGRESS_I18N = {
+    "en": {"upd_note_ide_progress": "Test runs from the IDE now show a small progress window (current test and browser, passed / failed / skipped, time left) for Selenium, Playwright and Cypress. Chrome tests no longer stop typing after a login, JavaScript alerts stay open until their step, and download links with a run-specific number in their name are found again."},
+    "ar": {"upd_note_ide_progress": "تشغيل الاختبارات من بيئة التطوير يعرض الآن نافذة صغيرة للتقدم (الاختبار والمتصفح الحاليان، والناجح / الفاشل / المتخطى، والوقت المتبقي) لكل من Selenium وPlaywright وCypress. اختبارات Chrome لم تعد تتوقف عن الكتابة بعد تسجيل الدخول، وتبقى تنبيهات JavaScript مفتوحة حتى خطوتها، وروابط التحميل التي يتغير رقم في اسمها كل تشغيل أصبحت تُعثر عليها من جديد."},
+    "fr": {"upd_note_ide_progress": "Les exécutions lancées depuis l'IDE affichent une petite fenêtre de progression (test et navigateur en cours, réussis / échoués / ignorés, temps restant) pour Selenium, Playwright et Cypress. Les tests Chrome ne cessent plus de saisir après une connexion, les alertes JavaScript restent ouvertes jusqu'à leur étape et les liens de téléchargement dont le nom contient un numéro variable sont de nouveau trouvés."},
+    "tr": {"upd_note_ide_progress": "IDE'den çalıştırılan testler artık Selenium, Playwright ve Cypress için küçük bir ilerleme penceresi gösteriyor (geçerli test ve tarayıcı, başarılı / başarısız / atlanan, kalan süre). Chrome testleri girişten sonra yazmayı bırakmıyor, JavaScript uyarıları kendi adımına kadar açık kalıyor ve adında her çalıştırmada değişen bir sayı olan indirme bağlantıları yine bulunuyor."},
+    "es": {"upd_note_ide_progress": "Las ejecuciones desde el IDE muestran ahora una pequeña ventana de progreso (prueba y navegador actuales, aprobadas / fallidas / omitidas, tiempo restante) para Selenium, Playwright y Cypress. Las pruebas de Chrome ya no dejan de escribir tras iniciar sesión, las alertas de JavaScript siguen abiertas hasta su paso y los enlaces de descarga con un número variable en el nombre vuelven a encontrarse."},
+    "de": {"upd_note_ide_progress": "Testläufe aus der IDE zeigen jetzt ein kleines Fortschrittsfenster (aktueller Test und Browser, bestanden / fehlgeschlagen / übersprungen, Restzeit) für Selenium, Playwright und Cypress. Chrome-Tests tippen nach einem Login weiter, JavaScript-Alerts bleiben bis zu ihrem Schritt offen, und Download-Links mit einer pro Lauf wechselnden Nummer im Namen werden wieder gefunden."},
+    "nl": {"upd_note_ide_progress": "Testruns vanuit de IDE tonen nu een klein voortgangsvenster (huidige test en browser, geslaagd / mislukt / overgeslagen, resterende tijd) voor Selenium, Playwright en Cypress. Chrome-tests blijven typen na het inloggen, JavaScript-meldingen blijven open tot hun stap en downloadlinks met een per run wisselend nummer in de naam worden weer gevonden."},
+}
+for _language, _values in _IDE_PROGRESS_I18N.items():
+    _STRINGS[_language].update(_values)
+
+_RECENT_EMAIL_I18N = {
+    "en": {"reg_email_recent": "recent"},
+    "ar": {"reg_email_recent": "مستخدم مؤخرًا"},
+    "fr": {"reg_email_recent": "récent"},
+    "tr": {"reg_email_recent": "son kullanılan"},
+    "es": {"reg_email_recent": "reciente"},
+    "de": {"reg_email_recent": "zuletzt"},
+    "nl": {"reg_email_recent": "recent"},
+}
+for _language, _values in _RECENT_EMAIL_I18N.items():
+    _STRINGS[_language].update(_values)
+
+_PARALLEL_RUNS_I18N = {
+    "en": {
+        "help_automation_d10": "Running the generated tests: with more than one browser picked, the browsers run at the same time. One line in the project's .env switches it: PARALLEL=true (default) or PARALLEL=false for one browser after another. While tests run from the IDE a small progress window shows the current test, browser, counts and time left; its clock stops at 100%, it says when the report is being written and closes by itself. PROGRESS=off in .env hides it (never shown on CI).",
+        "help_automation_d11": "Steps can wait, scroll, page and set up the browser with no extra code: every action waits for its element and scrolls to find it; steps can go to the next page or page 3, set or delete cookies and local / session storage, open a page behind basic or digest auth, and check an element's attribute. Copy AI prompt lists every phrasing an outside AI should use in the CSV.",
+        "help_automation_p10": "One .env line runs browsers in parallel (PARALLEL=true, default) or one by one (PARALLEL=false); PROGRESS=off hides the IDE progress window.",
+        "help_automation_p11": "Built-in waiting and scrolling, pagination, cookies, local / session storage, basic / digest auth and attribute checks; Copy AI prompt teaches an outside AI the exact phrasings.",
+        "upd_note_parallel_runs": "Cross-browser runs are faster: Selenium, Playwright and Cypress now run the browsers at the same time, switched by one line in the project's .env (PARALLEL=true, or false for one after another). The progress window stops counting at 100%, shows \"Writing the report...\" and closes on its own instead of keeping the run waiting. Copy AI prompt now covers pagination, cookies, storage, basic / digest auth and attribute checks.",
+    },
+    "ar": {
+        "help_automation_d10": "تشغيل الاختبارات الناتجة: عند اختيار أكثر من متصفح تعمل المتصفحات في الوقت نفسه. سطر واحد في ملف ‎.env للمشروع يتحكم بذلك: PARALLEL=true (الافتراضي) أو PARALLEL=false لتشغيل متصفح بعد آخر. أثناء التشغيل من بيئة التطوير تعرض نافذة تقدم صغيرة الاختبار والمتصفح الحاليين والأعداد والوقت المتبقي؛ يتوقف عدّادها عند 100% وتُظهر أن التقرير قيد الكتابة ثم تُغلق تلقائيًا. PROGRESS=off في ‎.env يخفيها (ولا تظهر أبدًا في CI).",
+        "help_automation_d11": "يمكن للخطوات الانتظار والتمرير والتنقل بين الصفحات وتهيئة المتصفح دون كود إضافي: كل إجراء ينتظر عنصره ويمرّر الصفحة للعثور عليه؛ ويمكن الانتقال إلى الصفحة التالية أو الصفحة 3، وضبط ملفات تعريف الارتباط والتخزين المحلي / تخزين الجلسة أو حذفها، وفتح صفحة محمية بمصادقة basic أو digest، والتحقق من سمة عنصر. يسرد زر نسخ موجّه الذكاء الاصطناعي كل الصيغ التي يجب أن يستخدمها أي ذكاء اصطناعي خارجي في ملف CSV.",
+        "help_automation_p10": "سطر واحد في ‎.env يشغّل المتصفحات معًا (PARALLEL=true، الافتراضي) أو واحدًا تلو الآخر (PARALLEL=false)؛ PROGRESS=off يخفي نافذة التقدم.",
+        "help_automation_p11": "انتظار وتمرير مدمجان، والتنقل بين الصفحات، وملفات تعريف الارتباط، والتخزين المحلي / تخزين الجلسة، ومصادقة basic / digest، والتحقق من السمات؛ ويعلّم زر نسخ الموجّه أي ذكاء اصطناعي خارجي الصيغ الدقيقة.",
+        "upd_note_parallel_runs": "تشغيل عدة متصفحات أصبح أسرع: يشغّل Selenium وPlaywright وCypress المتصفحات في الوقت نفسه، ويتحكم بذلك سطر واحد في ملف ‎.env للمشروع (PARALLEL=true، أو false لتشغيلها واحدًا تلو الآخر). نافذة التقدم تتوقف عن العدّ عند 100% وتعرض \"جارٍ كتابة التقرير...\" ثم تُغلق تلقائيًا دون أن تؤخر التشغيل. ويشمل موجّه الذكاء الاصطناعي الآن التنقل بين الصفحات وملفات تعريف الارتباط والتخزين ومصادقة basic / digest والتحقق من السمات.",
+    },
+    "fr": {
+        "help_automation_d10": "Exécuter les tests générés : avec plusieurs navigateurs choisis, ils s'exécutent en même temps. Une ligne du .env du projet le règle : PARALLEL=true (par défaut) ou PARALLEL=false pour un navigateur après l'autre. Pendant une exécution depuis l'IDE, une petite fenêtre de progression affiche le test, le navigateur, les compteurs et le temps restant ; son chrono s'arrête à 100 %, elle indique que le rapport est en cours d'écriture puis se ferme seule. PROGRESS=off dans .env la masque (jamais affichée en CI).",
+        "help_automation_d11": "Les étapes peuvent attendre, défiler, paginer et préparer le navigateur sans code en plus : chaque action attend son élément et fait défiler la page pour le trouver ; on peut aller à la page suivante ou à la page 3, définir ou supprimer des cookies et le stockage local / de session, ouvrir une page protégée par authentification basic ou digest et vérifier un attribut. Copier le prompt IA liste toutes les formulations à utiliser dans le CSV.",
+        "help_automation_p10": "Une ligne du .env exécute les navigateurs en parallèle (PARALLEL=true, par défaut) ou l'un après l'autre (PARALLEL=false) ; PROGRESS=off masque la fenêtre de progression.",
+        "help_automation_p11": "Attente et défilement intégrés, pagination, cookies, stockage local / de session, authentification basic / digest et vérification d'attributs ; Copier le prompt IA donne les formulations exactes.",
+        "upd_note_parallel_runs": "Les exécutions multi-navigateurs sont plus rapides : Selenium, Playwright et Cypress lancent désormais les navigateurs en même temps, réglé par une ligne du .env du projet (PARALLEL=true, ou false pour l'un après l'autre). La fenêtre de progression s'arrête de compter à 100 %, affiche « Écriture du rapport... » et se ferme seule sans retarder l'exécution. Le prompt IA couvre maintenant pagination, cookies, stockage, authentification basic / digest et attributs.",
+    },
+    "tr": {
+        "help_automation_d10": "Oluşturulan testleri çalıştırma: birden fazla tarayıcı seçildiğinde tarayıcılar aynı anda çalışır. Projenin .env dosyasındaki tek satır bunu belirler: PARALLEL=true (varsayılan) veya sırayla çalıştırmak için PARALLEL=false. IDE'den çalışırken küçük bir ilerleme penceresi geçerli testi, tarayıcıyı, sayıları ve kalan süreyi gösterir; sayacı %100'de durur, raporun yazıldığını belirtir ve kendiliğinden kapanır. .env içindeki PROGRESS=off onu gizler (CI'da hiç gösterilmez).",
+        "help_automation_d11": "Adımlar ek kod olmadan bekleyebilir, kaydırabilir, sayfa değiştirebilir ve tarayıcıyı hazırlayabilir: her eylem öğesini bekler ve bulmak için sayfayı kaydırır; sonraki sayfaya veya 3. sayfaya gidilebilir, çerezler ve yerel / oturum depolaması ayarlanıp silinebilir, basic veya digest kimlik doğrulamalı bir sayfa açılabilir ve öğe niteliği kontrol edilebilir. Yapay zekâ istemini kopyala, CSV'de kullanılacak tüm ifadeleri listeler.",
+        "help_automation_p10": ".env içindeki tek satır tarayıcıları paralel (PARALLEL=true, varsayılan) veya sırayla (PARALLEL=false) çalıştırır; PROGRESS=off ilerleme penceresini gizler.",
+        "help_automation_p11": "Yerleşik bekleme ve kaydırma, sayfalama, çerezler, yerel / oturum depolaması, basic / digest kimlik doğrulama ve nitelik kontrolleri; Yapay zekâ istemi tam ifadeleri öğretir.",
+        "upd_note_parallel_runs": "Çoklu tarayıcı çalıştırmaları daha hızlı: Selenium, Playwright ve Cypress artık tarayıcıları aynı anda çalıştırıyor; projenin .env dosyasındaki tek satırla değiştirilir (PARALLEL=true veya sırayla için false). İlerleme penceresi %100'de saymayı bırakır, \"Rapor yazılıyor...\" gösterir ve çalıştırmayı bekletmeden kendiliğinden kapanır. Yapay zekâ istemi artık sayfalama, çerezler, depolama, basic / digest kimlik doğrulama ve nitelik kontrollerini de kapsıyor.",
+    },
+    "es": {
+        "help_automation_d10": "Ejecutar las pruebas generadas: con más de un navegador elegido, los navegadores se ejecutan a la vez. Una línea del .env del proyecto lo controla: PARALLEL=true (por defecto) o PARALLEL=false para uno tras otro. Al ejecutar desde el IDE, una pequeña ventana de progreso muestra la prueba, el navegador, los contadores y el tiempo restante; su reloj se detiene al 100 %, avisa de que se está escribiendo el informe y se cierra sola. PROGRESS=off en .env la oculta (nunca aparece en CI).",
+        "help_automation_d11": "Los pasos pueden esperar, desplazarse, paginar y preparar el navegador sin código extra: cada acción espera a su elemento y desplaza la página para encontrarlo; se puede ir a la página siguiente o a la página 3, crear o borrar cookies y almacenamiento local / de sesión, abrir una página con autenticación basic o digest y comprobar un atributo. Copiar prompt de IA enumera todas las frases que debe usar una IA externa en el CSV.",
+        "help_automation_p10": "Una línea del .env ejecuta los navegadores en paralelo (PARALLEL=true, por defecto) o uno tras otro (PARALLEL=false); PROGRESS=off oculta la ventana de progreso.",
+        "help_automation_p11": "Espera y desplazamiento integrados, paginación, cookies, almacenamiento local / de sesión, autenticación basic / digest y comprobación de atributos; Copiar prompt de IA enseña las frases exactas.",
+        "upd_note_parallel_runs": "Las ejecuciones en varios navegadores son más rápidas: Selenium, Playwright y Cypress ahora ejecutan los navegadores a la vez, controlado por una línea del .env del proyecto (PARALLEL=true, o false para uno tras otro). La ventana de progreso deja de contar al 100 %, muestra \"Escribiendo el informe...\" y se cierra sola sin hacer esperar a la ejecución. El prompt de IA ahora cubre paginación, cookies, almacenamiento, autenticación basic / digest y atributos.",
+    },
+    "de": {
+        "help_automation_d10": "Erzeugte Tests ausführen: Mit mehreren gewählten Browsern laufen die Browser gleichzeitig. Eine Zeile in der .env des Projekts steuert das: PARALLEL=true (Standard) oder PARALLEL=false für einen Browser nach dem anderen. Beim Lauf aus der IDE zeigt ein kleines Fortschrittsfenster aktuellen Test, Browser, Zähler und Restzeit; die Uhr stoppt bei 100 %, das Fenster meldet, dass der Bericht geschrieben wird, und schließt sich selbst. PROGRESS=off in .env blendet es aus (auf CI nie sichtbar).",
+        "help_automation_d11": "Schritte können ohne Zusatzcode warten, scrollen, blättern und den Browser vorbereiten: Jede Aktion wartet auf ihr Element und scrollt, um es zu finden; man kann zur nächsten Seite oder zu Seite 3 gehen, Cookies und Local / Session Storage setzen oder löschen, eine Seite mit Basic- oder Digest-Authentifizierung öffnen und ein Attribut prüfen. KI-Prompt kopieren listet alle Formulierungen, die eine externe KI im CSV verwenden soll.",
+        "help_automation_p10": "Eine .env-Zeile lässt Browser parallel (PARALLEL=true, Standard) oder nacheinander (PARALLEL=false) laufen; PROGRESS=off blendet das Fortschrittsfenster aus.",
+        "help_automation_p11": "Eingebautes Warten und Scrollen, Blättern, Cookies, Local / Session Storage, Basic- / Digest-Authentifizierung und Attributprüfungen; KI-Prompt kopieren nennt die genauen Formulierungen.",
+        "upd_note_parallel_runs": "Läufe in mehreren Browsern sind schneller: Selenium, Playwright und Cypress starten die Browser jetzt gleichzeitig, gesteuert durch eine Zeile in der .env des Projekts (PARALLEL=true, oder false für nacheinander). Das Fortschrittsfenster hört bei 100 % auf zu zählen, zeigt \"Bericht wird geschrieben...\" und schließt sich selbst, ohne den Lauf aufzuhalten. Der KI-Prompt deckt jetzt Blättern, Cookies, Storage, Basic- / Digest-Authentifizierung und Attribute ab.",
+    },
+    "nl": {
+        "help_automation_d10": "De gegenereerde tests draaien: met meer dan één gekozen browser draaien de browsers tegelijk. Eén regel in de .env van het project regelt dat: PARALLEL=true (standaard) of PARALLEL=false voor de ene browser na de andere. Tijdens een run vanuit de IDE toont een klein voortgangsvenster de huidige test, browser, tellingen en resterende tijd; de klok stopt op 100%, het venster meldt dat het rapport wordt geschreven en sluit vanzelf. PROGRESS=off in .env verbergt het (nooit zichtbaar op CI).",
+        "help_automation_d11": "Stappen kunnen zonder extra code wachten, scrollen, bladeren en de browser voorbereiden: elke actie wacht op zijn element en scrolt om het te vinden; je kunt naar de volgende pagina of pagina 3 gaan, cookies en local / session storage instellen of verwijderen, een pagina met basic- of digest-authenticatie openen en een attribuut controleren. AI-prompt kopiëren somt alle formuleringen op die een externe AI in de CSV moet gebruiken.",
+        "help_automation_p10": "Eén .env-regel draait browsers parallel (PARALLEL=true, standaard) of na elkaar (PARALLEL=false); PROGRESS=off verbergt het voortgangsvenster.",
+        "help_automation_p11": "Ingebouwd wachten en scrollen, bladeren, cookies, local / session storage, basic- / digest-authenticatie en attribuutcontroles; AI-prompt kopiëren leert de exacte formuleringen.",
+        "upd_note_parallel_runs": "Runs in meerdere browsers zijn sneller: Selenium, Playwright en Cypress draaien de browsers nu tegelijk, geregeld met één regel in de .env van het project (PARALLEL=true, of false voor na elkaar). Het voortgangsvenster stopt met tellen op 100%, toont \"Rapport wordt geschreven...\" en sluit vanzelf zonder de run op te houden. De AI-prompt dekt nu bladeren, cookies, storage, basic- / digest-authenticatie en attributen.",
+    },
+}
+for _language, _values in _PARALLEL_RUNS_I18N.items():
     _STRINGS[_language].update(_values)
 
 def t(key, **kw):

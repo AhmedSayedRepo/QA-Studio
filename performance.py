@@ -1732,8 +1732,14 @@ def screen(app, _fragment=False):
     # Keep these two controls mounted for the lifetime of this Performance
     # screen. Subsequent actions transplant fresh child controls into them,
     # avoiding app.render() and preserving native body + rail scroll offsets.
+    # Phone: no room for a side rail (a 384px rail left the panels 0px wide):
+    # the Activity card sits at the end of the one scrolling column instead.
+    import platform_caps as _pc
+    mobile = _pc.is_mobile()
     left_host = ft.Container(left, expand=True)
-    right_host = ft.Container(right, width=384)
+    right_host = ft.Container(right, height=420) if mobile else ft.Container(right, width=384)
+    if mobile:
+        left.controls.append(right_host)
 
     def _refresh_mounted():
         if getattr(app, "active", "performance") != "performance":
@@ -1743,6 +1749,8 @@ def screen(app, _fragment=False):
         # once, when this page first mounts, and must survive every log-driven
         # partial refresh so scroll position 0 remains below the fixed header.
         _replace_mounted_children(left, fresh_left)
+        if mobile:
+            left.controls.append(right_host)
         for name in ("spacing", "run_spacing", "horizontal_alignment",
                      "alignment", "tight", "expand"):
             try:
@@ -1751,9 +1759,11 @@ def screen(app, _fragment=False):
                 pass
         _replace_mounted_content(right_host, fresh_right)
         left.update()
-        right_host.update()
+        if not mobile:
+            right_host.update()
 
     app._perf_refresh_mounted = _refresh_mounted
-    body = ft.Row([left_host, right_host], spacing=22,
-                  vertical_alignment=ft.CrossAxisAlignment.STRETCH, expand=True)
+    body = (left if mobile else
+            ft.Row([left_host, right_host], spacing=22,
+                   vertical_alignment=ft.CrossAxisAlignment.STRETCH, expand=True))
     return app.shell(strings.t("perf_title"), strings.t("perf_subtitle"), body)

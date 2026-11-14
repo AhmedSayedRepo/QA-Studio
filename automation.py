@@ -143,6 +143,73 @@ def _log_placeholder():
         strings.t("auto_no_activity_hint")), height=320)
 
 
+TARGETS = (("selenium", "Selenium", "Java · TestNG"),
+           ("playwright", "Playwright", "JavaScript"),
+           ("cypress", "Cypress", "JavaScript"))
+
+
+def _target_cards(app):
+    """The three framework cards (Selenium / Playwright / Cypress).
+
+    Picking one switches IN PLACE: the three cards are restyled and the choice
+    saved - never app.render(), so the screen keeps its scroll position and a
+    running Activity log keeps updating. A full re-render here came back as a
+    regression twice; tests/test_ui_in_place.py now guards it."""
+    cards = {}
+
+    def style(key):
+        cont, title = cards[key]
+        active = getattr(app, "_auto_target", "selenium") == key
+        title.color = T.VIOLET if active else T.INK_2
+        cont.border = ft.Border.all(2 if active else 1, T.VIOLET if active else T.BORDER)
+        cont.scale = 1.0
+
+        def hover(e, _c=cont, _k=key):
+            if getattr(app, "_auto_target", "selenium") == _k:
+                return
+            on = e.data in (True, "true", "True")
+            _c.border = ft.Border.all(2 if on else 1, T.VIOLET if on else T.BORDER)
+            _c.scale = 1.02 if on else 1.0
+            try:
+                _c.update()
+            except Exception:
+                pass
+        cont.on_hover = None if active else hover
+
+    def pick(key):
+        if getattr(app, "_auto_target", "selenium") == key:
+            return
+        app._auto_target = key
+        app.creds["auto_target"] = key
+        try:
+            import store
+            store.save(app.creds)
+        except Exception:
+            pass
+        for k in cards:
+            style(k)
+        for cont, _t in cards.values():
+            try:
+                cont.update()
+            except Exception:
+                pass          # not mounted (tests) - the next build shows it
+
+    out = []
+    for key, label, sub in TARGETS:
+        title = ft.Text(label, size=13, weight=ft.FontWeight.BOLD)
+        cont = ft.Container(
+            ft.Column([title, ft.Text(sub, size=10.5, color=T.INK_3, weight=ft.FontWeight.W_500)],
+                      spacing=2),
+            padding=ft.Padding.symmetric(horizontal=14, vertical=10),
+            border_radius=T.R, expand=1, bgcolor=T.CARD_2,
+            animate_scale=ft.Animation(110, ft.AnimationCurve.EASE_OUT),
+            on_click=lambda e, k=key: pick(k))
+        cards[key] = (cont, title)
+        style(key)
+        out.append(cont)
+    return out
+
+
 def refresh_run_ui(app, starting=False):
     """In-place update for a Generate run's start/end: buttons, spinner, the four
     cards, the result banner and (on start) an emptied log. Returns False when the
@@ -159,6 +226,11 @@ def refresh_run_ui(app, starting=False):
             ctl.update()
         except Exception:
             pass
+    # Case counter: shown only while running (text comes from main.py).
+    try:
+        app._auto_refresh_progress()
+    except Exception:
+        pass
     rctr = getattr(app, "_auto_result_ctr", None)
     if rctr is not None:
         try:
@@ -211,34 +283,31 @@ def screen(app):
                 padding=12, bgcolor=T.AMBER_SOFT, border_radius=T.R,
                 border=ft.Border.all(1, "#EAD9A8"), margin=ft.Margin.only(bottom=14))
 
-        def _target_opt(key, label, sub, enabled=True):
-            active = (getattr(app, "_auto_target", "selenium") == key)
-            def _pick(e, k=key):
-                app._auto_target = k
-                app.render()
-            cont = ft.Container(
-                ft.Column([
-                    ft.Text(label, size=13, weight=ft.FontWeight.BOLD,
-                            color=(T.VIOLET if active else T.INK_2)),
-                    ft.Text(sub, size=10.5, color=T.INK_3, weight=ft.FontWeight.W_500),
-                ], spacing=2),
-                padding=ft.Padding.symmetric(horizontal=14, vertical=10),
-                border=ft.Border.all(2 if active else 1, T.VIOLET if active else T.BORDER),
-                border_radius=T.R, expand=1, bgcolor=T.CARD_2,
-                opacity=(1 if enabled else 0.5),
-                tooltip=(None if enabled else strings.t("auto_coming_soon")),
-                animate_scale=ft.Animation(110, ft.AnimationCurve.EASE_OUT),
-                on_click=(_pick if enabled else None))
-            if enabled and not active:
-                # hover: tint the frame violet + a subtle lift (no shadow halo)
-                def _hover(e, _c=cont):
-                    on = e.data in (True, "true", "True")
-                    _c.border = ft.Border.all(2 if on else 1,
-                                              T.VIOLET if on else T.BORDER)
-                    _c.scale = 1.02 if on else 1.0
-                    _c.update()
-                cont.on_hover = _hover
-            return cont
+        def _picked_browsers():
+            got = [b for b in ("chrome", "edge", "firefox") if b in (app.creds.get("auto_browsers") or [])]
+            return got or ["chrome"]
+
+        def _browser_box(key, label):
+            # Saved immediately; the worker writes it into the project at
+            # generation (config.properties browser= / .env BROWSER=).
+            def _flip(e, k=key):
+                cur = _picked_browsers()
+                if e.control.value and k not in cur:
+                    cur.append(k)
+                elif not e.control.value and k in cur:
+                    cur.remove(k)
+                if not cur:                       # at least one browser
+                    e.control.value = True
+                    e.control.update()
+                    return
+                app.creds["auto_browsers"] = [b for b in ("chrome", "edge", "firefox") if b in cur]
+                try:
+                    import store
+                    store.save(app.creds)
+                except Exception:
+                    pass
+            return ft.Checkbox(label=label, value=(key in _picked_browsers()),
+                               active_color=T.VIOLET, on_change=_flip)
 
         def _source_option(key, title, desc, icon, enabled=True):
             active = (("file" if file_source else "backend") == key)
@@ -326,12 +395,20 @@ def screen(app):
             sec_head("B", strings.t("auto_sec_framework")),
             ft.Container(height=10),
             ft.Row([
-                _target_opt("selenium", "Selenium", "Java · TestNG"),
-                _target_opt("playwright", "Playwright", "JavaScript"),
-                _target_opt("cypress", "Cypress", "JavaScript"),
+                *_target_cards(app),
             ], spacing=10),
             ft.Container(height=6),
             ft.Text(strings.t("auto_framework_note"),
+                    size=11, color=T.INK_3, weight=ft.FontWeight.W_500),
+            ft.Container(height=10),
+            ft.Row([
+                ft.Text(strings.t("auto_browsers"), size=12, color=T.INK_2,
+                        weight=ft.FontWeight.W_600),
+                _browser_box("chrome", "Chrome"),
+                _browser_box("edge", "Edge"),
+                _browser_box("firefox", "Firefox"),
+            ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER, wrap=True),
+            ft.Text(strings.t("auto_browsers_note"),
                     size=11, color=T.INK_3, weight=ft.FontWeight.W_500),
         ], spacing=0))
 
@@ -713,18 +790,30 @@ def screen(app):
         # Pinned toolbar: spinner + title + Copy/Clear, fixed at the very top of
         # the log rail (a sibling of the scrollable column, not inside it) so it
         # never scrolls away with the log — only the log content beneath scrolls.
+        # Live case counter ("Inspecting 3 / 31") sits INSIDE this fixed-height
+        # toolbar row, so it never takes height from the log rail; main.py's
+        # _auto_refresh_progress updates it in place.
+        _prog = getattr(app, "_auto_progress_text", "") if app._auto_running else ""
+        # The counter is a bold chip ("Inspecting 3 / 31") so it reads as status.
+        app._auto_case_txt = ft.Text(_prog, size=11, weight=ft.FontWeight.W_800,
+                                     color=T.VIOLET_INK, no_wrap=True)
+        app._auto_case_ctr = ft.Container(
+            app._auto_case_txt, visible=bool(_prog), bgcolor=T.VIOLET_SOFT,
+            border=ft.Border.all(1, T.VIOLET), border_radius=999,
+            padding=ft.Padding.symmetric(horizontal=9, vertical=3))
         log_toolbar = ft.Container(
             ft.Row([app._auto_spinner_ctr,
+                    # no_wrap: with the case counter showing, a narrow rail
+                    # used to break the label into "ACTIVI / TY".
                     ft.Text(strings.t("auto_activity"), size=11, weight=ft.FontWeight.BOLD,
-                           color=T.INK_3, expand=True),
+                           color=T.INK_3, expand=True, no_wrap=True, max_lines=1),
+                    app._auto_case_ctr,
                     app._auto_log_filter_ctr,
-                    ft.Container(width=4),
                     _log_tool_btn(ft.Icons.COPY_ALL_OUTLINED, strings.t("auto_copy_log"),
                                  app._copy_auto_log),
-                    ft.Container(width=6),
                     _log_tool_btn(ft.Icons.DELETE_OUTLINE, strings.t("auto_clear_log"),
                                  app._clear_auto_log, danger=True)],
-                   spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                   spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER),
             padding=ft.Padding.only(bottom=10),
             margin=ft.Margin.only(bottom=10),
             border=ft.Border.only(bottom=ft.BorderSide(1, T.BORDER)))

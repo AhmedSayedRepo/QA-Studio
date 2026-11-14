@@ -80,7 +80,7 @@ class PlaceholderEmissionTests(unittest.TestCase):
     def test_java_reads_placeholders_from_config_never_a_literal(self):
         java, _ = engine.generate_selfhealing_test_class(
             {"id": 7}, [self._case(engine.APP_USER_TOKEN)], "com.qastudio")
-        self.assertIn("Config.USER);", java)
+        self.assertIn('Config.need("APP_USER"));', java)
         self.assertNotIn(engine.APP_USER_TOKEN, java)
 
     def test_playwright_and_cypress_read_placeholders_from_env(self):

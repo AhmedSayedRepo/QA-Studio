@@ -1,0 +1,24 @@
+﻿Test Case ID,Test Case Title,Step,Action,Expected Result,Element Type,Preferred Locator,Frame Context,Automation Note
+EC01,Go to a page by its number,1,Open https://practice.expandtesting.com/dynamic-pagination-table,"""Alice Johnson"" is shown",,,,
+EC01,Go to a page by its number,2,Go to page 3,"Page 3 is the current page. ""John Doe"" is shown",,,,3 students per page
+EC02,Move to the next page,1,Open https://practice.expandtesting.com/dynamic-pagination-table,"""Alice Johnson"" is shown",,,,
+EC02,Move to the next page,2,Go to the next page,"Page 2 is the current page. ""Emma Brown"" is shown",,,,
+EC03,Page through until a student is found,1,Open https://practice.expandtesting.com/dynamic-pagination-table,"""Alice Johnson"" is shown",,,,
+EC03,Page through until a student is found,2,"Click Next page until ""Sophia Anderson"" is shown","""Sophia Anderson"" is shown. Page 4 is the current page",,,,Stops at the last page if the name is never found
+EC04,"Set, read and delete a cookie",1,Open https://practice.expandtesting.com,"The page title contains ""Automation Testing Practice""",,,,
+EC04,"Set, read and delete a cookie",2,"Set cookie ""qa_theme"" to ""dark""","Cookie ""qa_theme"" is ""dark""",,,,
+EC04,"Set, read and delete a cookie",3,"Delete cookie ""qa_theme""","Cookie ""qa_theme"" is deleted",,,,
+EC05,Delete all cookies,1,Open https://practice.expandtesting.com,"The page title contains ""Automation Testing Practice""",,,,
+EC05,Delete all cookies,2,"Set cookie ""qa_a"" to ""1""","Cookie ""qa_a"" exists",,,,
+EC05,Delete all cookies,3,Delete all cookies,"Cookie ""qa_a"" is deleted",,,,
+EC06,Local storage survives a refresh and can be cleared,1,Open https://practice.expandtesting.com,"The page title contains ""Automation Testing Practice""",,,,
+EC06,Local storage survives a refresh and can be cleared,2,"Set local storage ""qa_token"" to ""abc123""","Local storage ""qa_token"" is ""abc123""",,,,
+EC06,Local storage survives a refresh and can be cleared,3,Refresh the page,"Local storage ""qa_token"" contains ""abc""",,,,
+EC06,Local storage survives a refresh and can be cleared,4,Clear local storage,"Local storage ""qa_token"" is removed",,,,
+EC07,Session storage can be set and cleared,1,Open https://practice.expandtesting.com,"The page title contains ""Automation Testing Practice""",,,,
+EC07,Session storage can be set and cleared,2,"Set session storage ""qa_cart"" to ""2""","Session storage ""qa_cart"" is ""2""",,,,
+EC07,Session storage can be set and cleared,3,Clear local and session storage,"Session storage ""qa_cart"" is removed",,,,
+EC08,Open a page protected by basic auth,1,Open https://practice.expandtesting.com,"The page title contains ""Automation Testing Practice""",,,,
+EC08,Open a page protected by basic auth,2,"Open ""/basic-auth"" with basic auth ""admin"" / ""admin""","The URL contains ""/basic-auth"". ""Congratulations"" is shown",,,,Public demo credentials; for your own site write {{APP_USER}} / {{APP_PASS}} instead
+EC09,Open a page protected by digest auth,1,Open https://practice.expandtesting.com,"The page title contains ""Automation Testing Practice""",,,,
+EC09,Open a page protected by digest auth,2,"Open ""/digest-auth"" with digest auth ""admin"" / ""admin""","The URL contains ""/digest-auth"". ""Congratulations"" is shown",,,,Cypress can only send basic auth headers; digest uses the URL credentials

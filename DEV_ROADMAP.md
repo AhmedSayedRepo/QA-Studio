@@ -33,6 +33,35 @@ Flet **0.85.3** (pinned) desktop app — an Azure DevOps test-case / test-plan g
 
 ---
 
+## Automation roadmap — gaps vs competitors (added 2026-11-14)
+Market check (Nov 2026): Testsigma, mabl, Katalon, Testim, Functionize, ACCELQ, KaneAI (TestMu), ContextQA, Azure DevOps Marketplace generators (PowerTestmation, AI Test Case Generator), and Playwright's free Planner/Generator/Healer agents.
+**QA Studio's edge:** Azure DevOps-native end to end (stories → cases → plans → sprint/regression reports), checked-on-the-live-site code you own in Selenium, Playwright AND Cypress (no runtime lock-in), any AI provider, local desktop app.
+
+Done so far: field batches 1–8 (fields, frames/alerts/windows, custom dropdowns, autocomplete, shadow DOM, infinite scroll, drag & drop, tables, downloads, page actions, pagination, cookies/storage, basic/digest auth, wait/scroll), assertions pack, data-driven, cross-browser + parallel, video, IDE progress window, verified-case reuse, branded reports.
+
+| # | Gap (who has it) | Plan | Size |
+|---|---|---|---|
+| 1 | **API steps** — REST/GraphQL calls and checks inside UI tests (KaneAI, ContextQA, Katalon) | `Call GET /api/x`, check status / JSON path, remember a value for later UI steps; code in all 3 frameworks | M |
+| 2 | **OTP / 2FA login** (most platforms) | TOTP codes from a secret in `.env` (authenticator apps); email codes later | S |
+| 3 | **Accessibility checks** (KaneAI WCAG audit, mabl) | `Check the page is accessible` step with axe-core; violations listed in the report | S |
+| 4 | **Visual testing** (Applitools, Percy, mabl) | `The page looks the same` step: baseline screenshot + pixel diff with a tolerance, diff image in the report | M |
+| 5 | **CI pipeline export** (enterprise suites) | Generate `azure-pipelines.yml` and a GitHub Actions file per project (headless, report as artifact) | S |
+| 6 | **Explore a site → suggest cases** (Playwright Planner, ContextQA) | Crawl a URL, propose test cases into the CSV / Azure DevOps for review | L |
+| 7 | **More inputs for case generation** (ContextQA: Figma/Swagger/video; PowerTestmation: PDFs) | Generate cases from a PDF/Word spec and an OpenAPI file, next to stories | M |
+| 8 | **Run history & flaky dashboard** (mabl, TestDino) | Trend of pass rate, flaky tests and slowest tests across runs, from saved run.json files | M |
+| 9 | **Cloud grids** (BrowserStack, Sauce, TestMu) | Optional remote grid URL / credentials in `.env` for all 3 frameworks | S |
+| 10 | **Mobile** (KaneAI, Katalon, mabl: Appium) | Mobile web via device emulation first; native Appium later | L |
+| 11 | **MCP server / IDE agents** (ContextQA, TestSprite) | Expose QA Studio actions (generate, run, report) as MCP tools | M |
+| — | Not planned: Salesforce/SAP specialisms, security scanning | | |
+
+**Proposed batches:**
+- **Batch 9 (next):** #1 API steps + #2 TOTP login + #3 accessibility check.
+- **Batch 10:** #4 visual testing + #5 CI pipeline export + #9 cloud grids.
+- **Batch 11:** #8 run history/flaky dashboard + #7 more generation inputs.
+- **Later:** #6 explore-and-suggest, #10 mobile, #11 MCP.
+
+---
+
 ## Session changes (2026-07-25, cont'd #128) — Jira+Xray VERIFIED end-to-end via probe + Setup story picker fixed for non-Azure
 The Xray write path is now **live-verified** — `run_xray_probe.py SCRUM` passes **9/9** (credentials, project, real story, Test Plan, Test Set idempotent, Test created, steps OVERWRITE round-trip incl. `data`, test listed in set, test deleted). Getting there surfaced two real app bugs (both fixed) plus one user-side config step (documented).
 

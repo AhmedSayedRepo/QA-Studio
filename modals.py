@@ -759,6 +759,12 @@ def open_sprint_summary(app):
             try: email_status.update()
             except Exception: app.render()
             return
+        # A typed address (no Enter) counts, and is remembered.
+        try:
+            import regression as _reg
+            _reg.flush_typed_emails(app, "sum_emails")
+        except Exception:
+            pass
         to = [x.strip() for x in re.split(r"[,\s;]+", (app._sum_email_to or "")) if x.strip()]
         if not to:
             email_status.value = strings.t("m2_enter_recipient")

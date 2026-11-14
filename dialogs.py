@@ -8,6 +8,19 @@ import flet as ft
 import theme as T
 from ui import danger_btn, green_btn, ghost_btn
 import strings
+import platform_caps
+
+# Phone dialogs: the space between the dialog and the screen edge, and inside it.
+MOBILE_INSET = 12
+MOBILE_PAD = 16
+
+
+def mobile_content_width(app, wanted=480):
+    """Widest a dialog's content can be on this phone without running past the
+    dialog's edges (screen - outer margin - inner padding)."""
+    page = getattr(app, "page", None)
+    sw = (getattr(page, "width", None) or 360) if page is not None else 360
+    return max(200, min(wanted, int(sw - 2 * MOBILE_INSET - 2 * MOBILE_PAD)))
 
 
 def show_dialog(app, dlg):
@@ -27,6 +40,17 @@ def show_dialog(app, dlg):
     # for empty space, while checkboxes/buttons keep their own taps" trick
     # here fixes click-away-to-close for every dialog in one place instead of
     # each modal needing its own copy of this wiring.
+    mobile = platform_caps.is_mobile()
+    # Phone: a dialog's content (often width=480) is narrowed to the screen,
+    # so it never runs past the dialog's edges.
+    if mobile:
+        try:
+            c = getattr(dlg, "content", None)
+            w = getattr(c, "width", None)
+            if isinstance(w, (int, float)) and w > mobile_content_width(app, w):
+                c.width = mobile_content_width(app, w)
+        except Exception:
+            pass
     try:
         c = getattr(dlg, "content", None)
         if c is not None and not isinstance(c, ft.SelectionArea):
@@ -60,11 +84,17 @@ def show_dialog(app, dlg):
         dlg.shadow_color = ft.Colors.with_opacity(0.4, "#05060F")
         dlg.surface_tint_color = ft.Colors.TRANSPARENT
         dlg.barrier_color = ft.Colors.with_opacity(0.55, "#05060F")
-        dlg.title_padding = ft.Padding.only(left=26, right=26, top=24, bottom=6)
-        dlg.content_padding = ft.Padding.symmetric(horizontal=26, vertical=6)
-        dlg.actions_padding = ft.Padding.only(left=26, right=26, top=16, bottom=22)
+        side = MOBILE_PAD if mobile else 26
+        dlg.title_padding = ft.Padding.only(left=side, right=side, top=24 if not mobile else 18, bottom=6)
+        dlg.content_padding = ft.Padding.symmetric(horizontal=side, vertical=6)
+        dlg.actions_padding = ft.Padding.only(left=side, right=side, top=16, bottom=22 if not mobile else 16)
     except Exception:
         pass
+    if mobile:
+        try:
+            dlg.inset_padding = ft.Padding.symmetric(horizontal=MOBILE_INSET, vertical=24)
+        except Exception:
+            pass
     # Flet 0.85 uses page.show_dialog(); 0.24-0.79 uses page.open(); older sets page.dialog
     if hasattr(app.page, "show_dialog"):
         app.page.show_dialog(dlg)

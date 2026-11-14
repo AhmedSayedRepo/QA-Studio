@@ -3131,6 +3131,50 @@ def _checkbox_multiselect(options, selected, on_toggle, on_all, *, is_open, on_o
     return _maybe_disable(ft.Column([field_container, panel_wrap], spacing=0))
 
 
+# Addresses typed into a recipient picker by hand, newest first, kept in the
+# signed-in user's saved settings so they're one tick away next time (also
+# when the project's member directory isn't loaded / not connected).
+_RECENT_EMAILS_KEY = "email_recent"
+_RECENT_EMAILS_MAX = 20
+
+
+def _recent_emails(app):
+    creds = getattr(app, "creds", None)
+    lst = creds.get(_RECENT_EMAILS_KEY) if isinstance(creds, dict) else None
+    if not isinstance(lst, list):
+        return []
+    return [x.strip() for x in lst if isinstance(x, str) and x.strip()]
+
+
+def _remember_email(app, email):
+    creds = getattr(app, "creds", None)
+    if not isinstance(creds, dict) or not email:
+        return
+    rest = [x for x in _recent_emails(app) if x.lower() != email.lower()]
+    new = ([email] + rest)[:_RECENT_EMAILS_MAX]
+    if new == _recent_emails(app):
+        return
+    creds[_RECENT_EMAILS_KEY] = new
+    try:
+        import store
+        store.save(creds)
+    except Exception:
+        pass
+
+
+def flush_typed_emails(app, sync_key=None):
+    """Add an address still sitting in a recipients field (typed, no Enter) to
+    its list - and remember it - before a send reads the list. sync_key picks
+    one picker; None flushes every picker on screen."""
+    flushers = getattr(app, "_email_flushers", None) or {}
+    for key, fn in list(flushers.items()):
+        if sync_key is None or key == sync_key:
+            try:
+                fn()
+            except Exception:
+                pass
+
+
 def email_recipient_picker(app, state_key, *, is_open_key, sync_key, height=260,
                            trailing=None, on_change=None):
     """Searchable multiselect for email recipients — same search + multiselect
@@ -3162,7 +3206,13 @@ def email_recipient_picker(app, state_key, *, is_open_key, sync_key, height=260,
         return [x.strip() for x in re.split(r"[,\s;]+", raw) if x.strip()]
 
     def _set_list(lst):
+        before = {x.lower() for x in _get_list()}
         setattr(app, state_key, ", ".join(lst))
+        # Every address used here is offered again next time (also people
+        # picked from the directory: it isn't loaded when not connected).
+        for em in lst:
+            if em.lower() not in before and "@" in em:
+                _remember_email(app, em)
         # Notify the caller so it can refresh a dependent summary in place
         # (e.g. Setup's "THIS RUN → Email" recipient count).
         if on_change:
@@ -3201,9 +3251,13 @@ def email_recipient_picker(app, state_key, *, is_open_key, sync_key, height=260,
         threading.Thread(target=_load_members, daemon=True).start()
 
     members = getattr(app, "_members_cache", None) or []
-    member_emails = {m["email"].lower() for m in members}
+    directory = {m["email"].lower() for m in members}
+    # Emails you typed before, offered under the directory members.
+    recent = [em for em in _recent_emails(app) if em.lower() not in directory]
+    member_emails = directory | {em.lower() for em in recent}
     by_email = {m["email"].lower(): m["name"] for m in members}
-    options = [(m["email"], m["name"]) for m in members]
+    options = [(m["email"], m["name"]) for m in members] + [
+        (em, em + "  \u00b7  " + strings.t("reg_email_recent")) for em in recent]
 
     sel_list = _get_list()
     sel_member_keys = [em for em in sel_list if em.lower() in member_emails]
@@ -3299,10 +3353,61 @@ def email_recipient_picker(app, state_key, *, is_open_key, sync_key, height=260,
         if not any(x.lower() == raw.lower() for x in cur):
             cur.append(raw)
             _set_list(cur)
+        _remember_email(app, raw)
         custom_tf.value = ""
+        _show_suggestions("")
         _rebuild_chips()
         try:
             custom_tf.update()
+        except Exception:
+            pass
+
+    # Suggestions while typing: emails used before (and directory members)
+    # whose address or name contains what was typed - one click adds it.
+    suggest_col = ft.Column([], spacing=2, tight=True)
+    suggest_wrap = ft.Container(suggest_col, visible=False, padding=ft.Padding.only(top=4),
+                                border_radius=T.R_SM)
+
+    def _pick_suggestion(email):
+        cur = _get_list()
+        if not any(x.lower() == email.lower() for x in cur):
+            cur.append(email)
+            _set_list(cur)
+        custom_tf.value = ""
+        _show_suggestions("")
+        _rebuild_chips()
+        try:
+            custom_tf.update()
+        except Exception:
+            pass
+
+    def _show_suggestions(text):
+        q = (text or "").strip().lower()
+        chosen = {x.lower() for x in _get_list()}
+        pool = [(em, "") for em in _recent_emails(app)] + \
+               [(m["email"], m.get("name") or "") for m in members]
+        seen, rows = set(), []
+        if q:
+            for em, name in pool:
+                k = em.lower()
+                if k in seen or k in chosen or (q not in k and q not in name.lower()):
+                    continue
+                seen.add(k)
+                rows.append(ft.Container(
+                    ft.Row([ft.Icon(ft.Icons.HISTORY if not name else ft.Icons.PERSON_OUTLINE,
+                                    size=14, color=T.INK_3),
+                            ft.Text(em if not name else "%s  \u00b7  %s" % (name, em), size=12.5,
+                                    color=T.INK, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS,
+                                    expand=True)], spacing=8),
+                    padding=ft.Padding.symmetric(vertical=6, horizontal=10),
+                    border_radius=T.R_SM, bgcolor=T.CARD_2, ink=True,
+                    on_click=lambda e, x=em: _pick_suggestion(x)))
+                if len(rows) >= 5:
+                    break
+        suggest_col.controls = rows
+        suggest_wrap.visible = bool(rows)
+        try:
+            suggest_wrap.update()
         except Exception:
             pass
 
@@ -3321,6 +3426,7 @@ def email_recipient_picker(app, state_key, *, is_open_key, sync_key, height=260,
         focused_border_color=T.VIOLET, border_radius=T.R_SM,
         content_padding=ft.Padding.symmetric(vertical=8, horizontal=10),
         on_submit=_add_custom,
+        on_change=lambda e: _show_suggestions(custom_tf.value),
         # A typed address used to count only after Enter — typing it and
         # pressing Generate/Send silently sent nothing. Leaving the field
         # (or the run starting, via the flusher below) now adds it too.
@@ -3350,6 +3456,7 @@ def email_recipient_picker(app, state_key, *, is_open_key, sync_key, height=260,
     return ft.Column([
         top,
         ft.Container(hover_field(custom_tf), padding=ft.Padding.only(top=8)),
+        suggest_wrap,
         chip_wrap,
     ], spacing=0, tight=True)
 

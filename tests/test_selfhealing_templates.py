@@ -69,7 +69,8 @@ class SelfHealingHoverTests(unittest.TestCase):
     def test_hover_moves_the_pointer_instead_of_clicking(self):
         healer = engine._sh_healer(PKG)
         hover = re.search(r'case "hover":(.*?)break;', healer, re.S).group(1)
-        self.assertIn("new Actions(driver).moveToElement(el).perform()", hover)
+        # Mouse actions use the real driver behind the video recorder.
+        self.assertIn("new Actions(VideoRecorder.raw(driver)).moveToElement(VideoRecorder.raw(el)).perform()", hover)
         self.assertNotIn("click", hover)
         self.assertIn("import org.openqa.selenium.interactions.Actions;", healer)
 

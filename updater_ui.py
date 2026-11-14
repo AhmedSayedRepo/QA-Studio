@@ -269,8 +269,9 @@ def show_update_error(app, msg):
     app._show_dialog(dlg)
 
 
-def _release_notes_card(version):
-    """Build notes authored for this exact version, or return ``None``."""
+def _release_notes_card(version, scroll_inside=True):
+    """Build notes authored for this exact version, or return ``None``.
+    scroll_inside=False leaves scrolling to the dialog (mobile)."""
     note_keys = release_notes.keys_for(version or E.local_version())
     if not note_keys:
         return None
@@ -299,7 +300,7 @@ def _release_notes_card(version):
     # A long list scrolls inside a fixed-height box, so it can't run past the
     # dialog and under the Continue button.
     total_chars = sum(len(strings.t(k)) for k in note_keys)
-    if total_chars > 700:
+    if scroll_inside and total_chars > 700:
         notes = ft.Container(ft.Column(note_rows, spacing=8, scroll=ft.ScrollMode.AUTO),
                              height=330)
     else:
@@ -387,9 +388,22 @@ def show_post_update_dialog(app, version):
     app._show_dialog(dlg)
 
 
+def _mobile_dialog_box(app, text_chars):
+    """(width, height) for a phone dialog's content: inside the screen with a
+    margin on each side, and no taller than about 60% of the screen (the rest
+    scrolls). Height follows the text so a short note isn't a tall empty box."""
+    page = getattr(app, "page", None)
+    sh = (getattr(page, "height", None) or 640) if page is not None else 640
+    import dialogs
+    width = dialogs.mobile_content_width(app, 480)
+    per_line = max(20, int((width - 70) / 6.3))      # ~11.5px text
+    est = 120 + int(text_chars / per_line + 1) * 17
+    return width, max(160, min(est, int(sh * 0.6)))
+
+
 def show_mobile_release_notes_dialog(app, version):
     """Show an installed APK's exact notes once, after sign-in."""
-    release_card = _release_notes_card(version)
+    release_card = _release_notes_card(version, scroll_inside=False)
 
     def _continue(e):
         E.mark_release_notice_seen(version)
@@ -402,6 +416,8 @@ def show_mobile_release_notes_dialog(app, version):
     ]
     if release_card is not None:
         content_controls.extend([ft.Container(height=8), release_card])
+    keys = release_notes.keys_for(version or E.local_version()) or []
+    width, height = _mobile_dialog_box(app, sum(len(strings.t(k)) for k in keys))
     dlg = ft.AlertDialog(
         modal=True,
         title=ft.Row([
@@ -411,7 +427,10 @@ def show_mobile_release_notes_dialog(app, version):
             ft.Text(strings.t("upd_whats_new"), size=16,
                     weight=ft.FontWeight.W_800, color=T.INK),
         ], spacing=10, tight=True),
-        content=ft.Container(ft.Column(content_controls, spacing=2, tight=True), width=480),
+        # Phone: the content fits the screen width and scrolls when the notes
+        # are long, so nothing runs past the dialog's edges.
+        content=ft.Container(ft.Column(content_controls, spacing=2, scroll=ft.ScrollMode.AUTO),
+                             width=width, height=height),
         actions=[green_btn(strings.t("upd_continue"), on_click=_continue, height=46)],
         actions_alignment=ft.MainAxisAlignment.END,
     )

@@ -59,7 +59,10 @@ class ProjectTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as out:
             AT.build_cypress_project(out, [], CFG, lambda *a, **k: None, "return [];")
             pkg = json.load(open(os.path.join(out, "package.json")))
-            self.assertEqual(pkg["scripts"]["test"], "cypress run --headed")
+            # npm test runs the browser(s) chosen by BROWSER, headed (Module API).
+            self.assertEqual(pkg["scripts"]["test"], "node cypress/run-browsers.js")
+            runner = open(os.path.join(out, "cypress", "run-browsers.js")).read()
+            self.assertIn("headed: !headless", runner)
             self.assertTrue(os.path.isfile(os.path.join(out, "cypress", "report-mailer.js")))
             cfg = open(os.path.join(out, "cypress.config.js")).read()
             self.assertIn("afterRunHook", cfg)

@@ -136,7 +136,7 @@ class SeleniumReadyToRunTests(unittest.TestCase):
         self.assertEqual(cfg.get("type"), "MavenRunConfiguration")
         self.assertEqual([o.get("value") for o in root.iter("option") if o.get("value") == "test"], ["test"])
         src = (ROOT / "engine.py").read_text(encoding="utf-8")
-        self.assertIn('("Download dependencies", ["dependency:resolve", "test-compile"])', src)
+        self.assertIn('("Download dependencies", ["dependency:resolve", "test-compile"], "")', src)
         self.assertIn("maven_prefetch(out_dir, cb=cb, should_stop=should_stop)", src)
 
     def test_prefetch_without_maven_explains(self):

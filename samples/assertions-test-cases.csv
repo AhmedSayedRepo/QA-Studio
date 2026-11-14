@@ -1,0 +1,12 @@
+﻿Test Case ID,Test Case Title,Step,Action,Expected Result,Element Type,Preferred Locator,Frame Context,Automation Note
+TC01,Check the URL and page title after login,1,Open https://the-internet.herokuapp.com/login,"The page title is ""The Internet""",,,,
+TC01,Check the URL and page title after login,2,"Type ""tomsmith"" in the ""Username"" field","The ""Username"" field shows ""tomsmith""",,,,
+TC01,Check the URL and page title after login,3,"Type ""SuperSecretPassword!"" in the ""Password"" field",,,,,
+TC01,Check the URL and page title after login,4,"Click the ""Login"" button","The URL contains ""/secure""",,,,
+TC02,Count table rows and repeated links,1,Open https://the-internet.herokuapp.com/tables,"The table has 4 rows and ""edit"" appears 8 times",,,,
+TC03,Sort a table column,1,Open https://the-internet.herokuapp.com/tables,The table has 4 rows,,,,
+TC03,Sort a table column,2,"Click the ""Last Name"" column header","The ""Last Name"" column is sorted ascending",,#table1 thead th:nth-child(1),,
+TC04,Remember a value and reuse it,1,Open https://the-internet.herokuapp.com/tables,"The page shows text matching ""\$\d+\.\d{2}""",,,,
+TC04,Remember a value and reuse it,2,"Remember the text matching ""\$\d+\.\d{2}"" as {{due}}",,,,,
+TC04,Remember a value and reuse it,3,Open https://the-internet.herokuapp.com/login,"The page title is ""The Internet""",,,,
+TC04,Remember a value and reuse it,4,"Type ""{{due}}"" in the ""Username"" field","The ""Username"" field shows ""{{due}}""",,,,

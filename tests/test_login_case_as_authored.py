@@ -34,7 +34,7 @@ def test_java_emits_the_case_own_login_steps():
     assert "performLogin();" not in src
     assert 'driver.get("https://the-internet.herokuapp.com/login");' in src
     assert "resetContext();" in src
-    assert "Config.USER" in src and "Config.PASS" in src
+    assert 'Config.need("APP_USER")' in src and 'Config.need("APP_PASS")' in src
 
 
 def test_java_keeps_helper_when_login_steps_unverified():
@@ -56,3 +56,25 @@ def test_selenium_report_screenshots_passed_tests():
     assert "public void onTestSuccess(ITestResult r)" in j
     assert 'Reporter.log("<a href=\\"../qa-screenshots/' in j
     assert 'String src = "qa-screenshots/"' in j
+
+
+def test_bucket2_login_case_keeps_its_actions_when_verified():
+    c = _case()
+    c["bucket"] = 2
+    src, _ = E.generate_selfhealing_test_class({"id": "s1", "title": "t"}, [c], "com.x")
+    assert "performLogin();" not in src and 'Config.need("APP_USER")' in src
+    pw = AT._pw_spec({"id": "s1", "title": "t"}, [c], E._seed_locator_for_intent, {})
+    pw = pw[0] if isinstance(pw, tuple) else pw
+    assert "Config" not in pw and "username" in pw
+
+
+def test_replay_runs_verified_login_steps_as_written():
+    import inspect
+    src = inspect.getsource(E)
+    assert "as_authored = _login_steps_as_authored(case, _is_login_flow_action)" in src
+    assert 'bucket == 2 and not as_authored and intent.get("role") == "action"' in src
+
+
+def test_missing_credentials_fail_with_a_clear_message():
+    assert "public static String need(String name)" in E._sh_config("com.x", "https://x.test", "")
+    assert "is not set" in AT._pw_env("APP_USER") and "throw new Error" in AT._cy_env("APP_PASS")

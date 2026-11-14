@@ -97,3 +97,13 @@ def banner_tone(kind):
     """Tone of the end-of-run result banner."""
     return {"generated": "ok", "nothing": "ok", "blocked": "err",
             "failed": "err", "stopped": "warn"}.get(kind, "dim")
+
+
+def lines_to_copy(lines, issues_only=False, model=None):
+    """What Copy takes from the rail: every line on the All tab; on the Issues
+    tab only what that tab shows (warn/err lines and their case headers)."""
+    lines = list(lines or [])
+    if not issues_only:
+        return lines
+    vis = visibility(lines, False, None, True, model)
+    return [line for line, shown in zip(lines, vis) if shown]

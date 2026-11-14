@@ -328,6 +328,8 @@ FEATURES = [
          "compiled to finish. The Activity panel (right) shows every step live, in "
          "the order it actually happened; Copy and Clear (top of the log) are always "
          "pinned there regardless of how far you've scrolled.",
+         "Running the generated tests: with more than one browser picked, the browsers run at the same time. One line in the project's .env switches it: PARALLEL=true (default) or PARALLEL=false for one browser after another. While tests run from the IDE a small progress window shows the current test, browser, counts and time left; its clock stops at 100%, it says when the report is being written and closes by itself. PROGRESS=off in .env hides it (never shown on CI).",
+         "Steps can wait, scroll, page and set up the browser with no extra code: every action waits for its element and scrolls to find it; steps can go to the next page or page 3, set or delete cookies and local / session storage, open a page behind basic or digest auth, and check an element's attribute. Copy AI prompt lists every phrasing an outside AI should use in the CSV.",
      ],
      "points": [
          "Own Source & stories picker (section A) — unlocks with just a "
@@ -354,6 +356,8 @@ FEATURES = [
          "regenerating.",
          "Copy / Clear log buttons are pinned at the top of the Activity panel, "
          "always visible above the scrolling log.",
+         'One .env line runs browsers in parallel (PARALLEL=true, default) or one by one (PARALLEL=false); PROGRESS=off hides the IDE progress window.',
+         'Built-in waiting and scrolling, pagination, cookies, local / session storage, basic / digest auth and attribute checks; Copy AI prompt teaches an outside AI the exact phrasings.',
      ]},
     {"key": "links", "icon": ft.Icons.BOOKMARK_BORDER, "title": "Useful Links",
      "blurb": "Save links to the boards and apps you use, and open them in one click.",
