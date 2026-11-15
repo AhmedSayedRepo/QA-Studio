@@ -12824,6 +12824,7 @@ for _language, _values in _PARALLEL_RUNS_I18N.items():
 
 _BATCH9_I18N = {
     'en': {
+        "upd_note_phone_automation_layout": "On a phone, the Automation screen now shows the whole form (source, framework, site, Git, Run remotely) with the Activity log under it — the side panel no longer pushes the form off the screen.",
         "upd_note_otp_field_and_fixes": "Also new and fixed: an Authenticator secret field on the Automation screen (live inspection uses it; \"save to .env\" also writes it to the project), test cases that open another site's login page are no longer skipped, API steps whose body mentions email / password are no longer treated as login steps, a check whose expected text was split into fragments must now match the whole sentence, and the Postman export now goes to api-tests/ (Postman's own Local Mode uses postman/).",
         "help_automation_d0": "Automation generates a real project: on a desktop into a local folder (and pushes it with git); on a phone, Run remotely does the same on GitHub Actions and pushes the project to your Git repository.",
         "auto_run_remote": "Run remotely",
@@ -12848,6 +12849,7 @@ _BATCH9_I18N = {
         "upd_note_batch9_api_otp_a11y": "New step types: API requests with status / body / JSON-field checks (and response values reused in later steps), two-factor login with {{OTP}} from an authenticator secret (OTP_SECRET in .env), and accessibility checks with axe-core, in Selenium, Playwright and Cypress. Copy AI prompt lists the phrasings.",
     },
     'ar': {
+        "upd_note_phone_automation_layout": "على الهاتف، تعرض شاشة الأتمتة الآن النموذج كاملًا (المصدر، الإطار، الموقع، Git، التشغيل عن بُعد) مع سجل النشاط أسفله — ولم تعد اللوحة الجانبية تدفع النموذج خارج الشاشة.",
         "upd_note_otp_field_and_fixes": "جديد وإصلاحات أيضًا: حقل سر تطبيق المصادقة في شاشة الأتمتة (يستخدمه الفحص المباشر، ومع \"الحفظ في ‎.env\" يُكتب في المشروع أيضًا)، ولم تعد حالات الاختبار التي تفتح صفحة دخول موقع آخر تُتخطّى، ولم تعد خطوات API التي يذكر محتواها البريد / كلمة المرور تُعامل كخطوات تسجيل دخول، ويجب أن يطابق التحقق الذي قُسّم نصه المتوقع إلى أجزاء الجملة كاملة، وأصبح تصدير Postman في api-tests/ (لأن وضع Postman المحلي يستخدم postman/).",
         "help_automation_d0": "تولّد الأتمتة مشروعًا حقيقيًا: على سطح المكتب في مجلد محلي (وترفعه عبر git)، وعلى الهاتف ينفّذ التشغيل عن بُعد الشيء نفسه على GitHub Actions ويرفع المشروع إلى مستودع Git.",
         "auto_run_remote": "تشغيل عن بُعد",
@@ -12872,6 +12874,7 @@ _BATCH9_I18N = {
         "upd_note_batch9_api_otp_a11y": "أنواع خطوات جديدة: طلبات API مع التحقق من الحالة / المحتوى / حقول JSON (وإعادة استخدام قيم الاستجابة في الخطوات التالية)، وتسجيل دخول ثنائي المصادقة عبر {{OTP}} من سر تطبيق المصادقة (OTP_SECRET في ‎.env)، وفحوص إمكانية الوصول عبر axe-core، في Selenium وPlaywright وCypress. ويسرد موجّه الذكاء الاصطناعي الصيغ.",
     },
     'fr': {
+        "upd_note_phone_automation_layout": "Sur téléphone, l'écran Automatisation affiche maintenant tout le formulaire (source, framework, site, Git, Exécuter à distance) avec le journal d'activité en dessous — le panneau latéral ne pousse plus le formulaire hors de l'écran.",
         "upd_note_otp_field_and_fixes": "Également nouveau et corrigé : un champ Secret d'authentification sur l'écran Automatisation (utilisé par l'inspection en direct ; avec « enregistrer dans .env » il est aussi écrit dans le projet), les cas qui ouvrent la page de connexion d'un autre site ne sont plus ignorés, les étapes API dont le corps mentionne email / mot de passe ne sont plus prises pour des étapes de connexion, une vérification dont le texte attendu a été découpé doit maintenant correspondre à la phrase entière, et l'export Postman va désormais dans api-tests/ (le mode local de Postman utilise postman/).",
         "help_automation_d0": "L'automatisation génère un vrai projet : sur ordinateur dans un dossier local (poussé avec git) ; sur téléphone, Exécuter à distance fait de même sur GitHub Actions et pousse le projet vers votre dépôt Git.",
         "auto_run_remote": "Exécuter à distance",
@@ -12896,6 +12899,7 @@ _BATCH9_I18N = {
         "upd_note_batch9_api_otp_a11y": "Nouveaux types d'étapes : requêtes API avec vérification du statut / du contenu / des champs JSON (valeurs réutilisables ensuite), connexion à double authentification avec {{OTP}} (OTP_SECRET dans .env) et vérifications d'accessibilité axe-core, dans Selenium, Playwright et Cypress. Le prompt IA liste les formulations.",
     },
     'tr': {
+        "upd_note_phone_automation_layout": "Telefonda Otomasyon ekranı artık formun tamamını (kaynak, çatı, site, Git, Uzakta çalıştır) altında Etkinlik günlüğüyle gösteriyor — yan panel formu artık ekranın dışına itmiyor.",
         "upd_note_otp_field_and_fixes": "Ayrıca yeni ve düzeltilenler: Otomasyon ekranında Doğrulayıcı gizli anahtarı alanı (canlı inceleme kullanır; \".env'e kaydet\" ile projeye de yazılır), başka bir sitenin giriş sayfasını açan test durumları artık atlanmıyor, gövdesinde e-posta / parola geçen API adımları artık giriş adımı sayılmıyor, beklenen metni parçalara bölünen bir kontrol artık tüm cümleyle eşleşmeli ve Postman dışa aktarımı artık api-tests/ klasörüne gidiyor (Postman'ın Yerel Modu postman/ klasörünü kullanır).",
         "help_automation_d0": "Otomasyon gerçek bir proje oluşturur: masaüstünde yerel bir klasöre (ve git ile gönderir); telefonda Uzakta çalıştır aynısını GitHub Actions'ta yapar ve projeyi Git deponuza gönderir.",
         "auto_run_remote": "Uzakta çalıştır",
@@ -12920,6 +12924,7 @@ _BATCH9_I18N = {
         "upd_note_batch9_api_otp_a11y": "Yeni adım türleri: durum / içerik / JSON alanı kontrollü API istekleri (yanıt değerleri sonraki adımlarda kullanılabilir), doğrulayıcı gizli anahtarıyla {{OTP}} iki aşamalı giriş (.env içinde OTP_SECRET) ve axe-core erişilebilirlik kontrolleri; Selenium, Playwright ve Cypress'te. AI istemi ifadeleri listeler.",
     },
     'es': {
+        "upd_note_phone_automation_layout": "En el móvil, la pantalla Automatización ahora muestra todo el formulario (origen, framework, sitio, Git, Ejecutar en remoto) con el registro de actividad debajo — el panel lateral ya no empuja el formulario fuera de la pantalla.",
         "upd_note_otp_field_and_fixes": "También nuevo y corregido: un campo Secreto del autenticador en la pantalla Automatización (lo usa la inspección en vivo; con «guardar en .env» también se escribe en el proyecto), los casos que abren la página de inicio de sesión de otro sitio ya no se omiten, los pasos de API cuyo cuerpo menciona email / contraseña ya no se tratan como pasos de inicio de sesión, una comprobación cuyo texto esperado se dividió en fragmentos ahora debe coincidir con la frase completa, y la exportación de Postman ahora va a api-tests/ (el modo local de Postman usa postman/).",
         "help_automation_d0": "La automatización genera un proyecto real: en el escritorio en una carpeta local (y lo sube con git); en el móvil, Ejecutar en remoto hace lo mismo en GitHub Actions y sube el proyecto a tu repositorio Git.",
         "auto_run_remote": "Ejecutar en remoto",
@@ -12944,6 +12949,7 @@ _BATCH9_I18N = {
         "upd_note_batch9_api_otp_a11y": "Nuevos tipos de paso: peticiones API con comprobación de estado / contenido / campos JSON (valores reutilizables después), inicio de sesión con doble factor mediante {{OTP}} (OTP_SECRET en .env) y comprobaciones de accesibilidad axe-core, en Selenium, Playwright y Cypress. El prompt de IA lista las frases.",
     },
     'de': {
+        "upd_note_phone_automation_layout": "Auf dem Telefon zeigt der Automatisierungsbildschirm jetzt das ganze Formular (Quelle, Framework, Website, Git, Remote ausführen) mit dem Aktivitätsprotokoll darunter — das Seitenpanel schiebt das Formular nicht mehr aus dem Bildschirm.",
         "upd_note_otp_field_and_fixes": "Außerdem neu und behoben: ein Feld Authenticator-Geheimnis auf dem Automatisierungsbildschirm (die Live-Inspektion nutzt es; mit „in .env speichern“ landet es auch im Projekt), Testfälle, die die Anmeldeseite einer anderen Website öffnen, werden nicht mehr übersprungen, API-Schritte, deren Body E-Mail / Passwort erwähnt, gelten nicht mehr als Anmeldeschritte, eine Prüfung mit in Fragmente zerlegtem Erwartungstext muss jetzt den ganzen Satz treffen, und der Postman-Export liegt jetzt in api-tests/ (Postmans Local Mode nutzt postman/).",
         "help_automation_d0": "Die Automatisierung erzeugt ein echtes Projekt: am Desktop in einen lokalen Ordner (per git gepusht); auf dem Telefon macht Remote ausführen dasselbe auf GitHub Actions und pusht das Projekt in Ihr Git-Repository.",
         "auto_run_remote": "Remote ausführen",
@@ -12968,6 +12974,7 @@ _BATCH9_I18N = {
         "upd_note_batch9_api_otp_a11y": "Neue Schrittarten: API-Anfragen mit Status- / Inhalts- / JSON-Feld-Prüfung (Antwortwerte in späteren Schritten nutzbar), Zwei-Faktor-Login mit {{OTP}} aus einem Authenticator-Geheimnis (OTP_SECRET in .env) und axe-core-Barrierefreiheitsprüfungen, in Selenium, Playwright und Cypress. Der KI-Prompt listet die Formulierungen.",
     },
     'nl': {
+        "upd_note_phone_automation_layout": "Op een telefoon toont het Automatiseringsscherm nu het hele formulier (bron, framework, site, Git, Op afstand uitvoeren) met het activiteitenlogboek eronder — het zijpaneel duwt het formulier niet meer van het scherm.",
         "upd_note_otp_field_and_fixes": "Ook nieuw en opgelost: een veld Authenticatorgeheim op het Automatiseringsscherm (live-inspectie gebruikt het; met „opslaan in .env” komt het ook in het project), testgevallen die de inlogpagina van een andere site openen worden niet meer overgeslagen, API-stappen waarvan de body e-mail / wachtwoord noemt gelden niet meer als inlogstappen, een controle waarvan de verwachte tekst in stukken is gesplitst moet nu de hele zin bevatten, en de Postman-export staat nu in api-tests/ (Postmans Local Mode gebruikt postman/).",
         "help_automation_d0": "Automatisering genereert een echt project: op een desktop in een lokale map (gepusht met git); op een telefoon doet Op afstand uitvoeren hetzelfde op GitHub Actions en pusht het project naar je Git-repository.",
         "auto_run_remote": "Op afstand uitvoeren",

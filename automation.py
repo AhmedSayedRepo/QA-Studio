@@ -906,10 +906,20 @@ def screen(app):
                         padding=12),
         ], spacing=0, expand=True), expand=True)
 
-        body = ft.Row([ft.Container(left, expand=True),
-                       ft.Container(right, width=384)], spacing=22,
-                      vertical_alignment=ft.CrossAxisAlignment.STRETCH, expand=True)
-        if file_source:
+        if platform_caps.is_mobile():
+            # Phone: no room for a 384px side rail (it pushed the form off the
+            # screen and cut the Activity card) - the form and then the
+            # Activity card share one scrolling column, like Performance.
+            left.controls.append(ft.Container(right, height=520))
+            body = left
+        else:
+            body = ft.Row([ft.Container(left, expand=True),
+                           ft.Container(right, width=384)], spacing=22,
+                          vertical_alignment=ft.CrossAxisAlignment.STRETCH, expand=True)
+        if file_source and remote:
+            _up = (getattr(app, "_auto_upload", None) or {}).get("name")
+            sub = strings.t("auto_file_selected", name=_up) if _up else strings.t("auto_file_none")
+        elif file_source:
             sub = (strings.t("auto_file_selected", name=os.path.basename(app.auto_test_case_file))
                    if (app.auto_test_case_file or "").strip() else strings.t("auto_file_none"))
         else:

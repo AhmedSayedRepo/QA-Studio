@@ -236,5 +236,21 @@ class AppSide(unittest.TestCase):
                 self.assertTrue(S._STRINGS[lang].get(k), (lang, k))
 
 
+_PHONE_SCRIPT = 'import sys, types\nsys.path.insert(0, %r)\nfrom unittest import mock\nclass Ctl:\n    def __init__(self, *a, **k):\n        self.__dict__.update(k)\n        if a and \'controls\' not in k and isinstance(a[0], list): self.controls = a[0]\n        elif a and \'content\' not in k: self.content = a[0]\n    def update(self): pass\nfl = mock.MagicMock()\nfor n in ("Column", "Row", "Container"): setattr(fl, n, type(n, (Ctl,), {}))\nsys.modules[\'flet\'] = fl\nfor _ in range(40):\n    try:\n        import platform_caps, automation\n        break\n    except ModuleNotFoundError as e:\n        sys.modules[e.name] = mock.MagicMock()\n        for m in ("automation", "regression", "engine", "main", "backend_setup"):\n            if m != e.name:\n                sys.modules.pop(m, None)\nimport backend_setup\nbackend_setup.automation_uses_file_source = lambda app: True\nbackend_setup.tracker_available = lambda app: False\napp = mock.MagicMock()\napp.auto_test_case_file = ""; app._auto_upload = {"name": "c.csv", "content": b"x"}\napp._auto_log = []; app._auto_running = False; app._auto_result = None\napp.auto_live_inspection = True; app.creds = {}\nfor a in ("_auto_email_to", "auto_site_url", "auto_login_url", "auto_login_user", "auto_login_pass",\n          "auto_otp_secret", "auto_git_url", "auto_git_branch", "auto_git_token", "auto_local_path"):\n    setattr(app, a, "")\napp._auto_selected = []; app._auto_plans_selected = []; app._auto_invalid = set()\nimport regression\nregression.email_recipient_picker = lambda *a, **k: fl.Container()\nregression.automation_source_card = lambda *a, **k: fl.Container(content=fl.Column([1, 2]))\ncap = {}\napp.shell = lambda t, s, body, **k: cap.update(body=body, sub=s)\nplatform_caps._FLET_PLATFORM = "android"\nautomation.screen(app); b = cap[\'body\']\nprint("R", type(b).__name__, getattr(b.controls[-1], \'height\', None), app.auto_live_inspection)\nplatform_caps._FLET_PLATFORM = "windows"\nautomation.screen(app); d = cap[\'body\']\nprint("D", type(d).__name__, getattr(d.controls[1], \'width\', None))\n'
+
+
+class PhoneLayout(unittest.TestCase):
+    """On a phone the form and then the Activity card share one scrolling
+    column (the 384px side rail pushed the form off the screen); the desktop
+    keeps the side rail."""
+
+    def test_activity_card_is_stacked_under_the_form(self):
+        r = subprocess.run([sys.executable, "-c", _PHONE_SCRIPT % ROOT], capture_output=True,
+                           text=True, timeout=120, cwd=ROOT)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("R Column 520 True", r.stdout)
+        self.assertIn("D Row 384", r.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
