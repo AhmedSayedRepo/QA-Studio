@@ -65,6 +65,10 @@ def _with_batch2_js(text):
                 .replace("__TOTP_FN__", json.dumps(_E._TOTP_FN))
                 .replace("__A11Y_RUN_FN__", json.dumps(_E._A11Y_RUN_FN))
                 .replace("__A11Y_FAILS_FN__", json.dumps(_E._A11Y_FAILS_FN))
+                .replace("__VISUAL_PREP_FN__", json.dumps(_E._VISUAL_PREP_FN))
+                .replace("__VISUAL_CMP_FN__", json.dumps(_E._VISUAL_CMP_FN))
+                .replace("__VISUAL_MAX__", repr(float(_E._VISUAL_MAX_PCT)))
+                .replace("__VISUAL_DELTA__", str(_E._VISUAL_PIXEL_DELTA))
                 .replace("__AXE_CDN__", _E._AXE_CDN)
                 .replace("__AXE_VER__", _E._AXE_VERSION)
                 .replace("__SCROLL_SEARCH_STEPS__", str(_E._SCROLL_SEARCH_STEPS))
@@ -765,11 +769,66 @@ function selected() {
   return out.length ? out : ['chromium'];
 }
 
-function projects() {
-  return selected().map((b) => ({ name: BROWSERS[b].label, use: BROWSERS[b].use }));
+// GRID (env or .env) = local (default), browserstack, lambdatest, a Playwright
+// server (ws://host:port) or a Selenium Grid URL (Chromium browsers only).
+// Cloud accounts: BROWSERSTACK_USERNAME + BROWSERSTACK_ACCESS_KEY or LT_USERNAME +
+// LT_ACCESS_KEY; GRID_PLATFORM (e.g. "Windows 11") and GRID_BUILD are optional.
+const CLOUD = {
+  browserstack: { chromium: 'playwright-chromium', chrome: 'chrome', edge: 'edge', firefox: 'playwright-firefox' },
+  lambdatest: { chromium: 'Chrome', chrome: 'Chrome', edge: 'MicrosoftEdge', firefox: 'pw-firefox' },
+};
+let gridNoted = false;
+function gridNote(msg) { if (!gridNoted) console.log('[grid] ' + msg); gridNoted = true; }
+function gridEndpoint(b) {
+  const g = String(process.env.GRID || '').trim(), low = g.toLowerCase();
+  if (!low || low === 'local') return null;
+  if (low.startsWith('ws://') || low.startsWith('wss://')) { gridNote('browsers run on ' + g); return g; }
+  if (low.startsWith('http://') || low.startsWith('https://')) {
+    process.env.SELENIUM_REMOTE_URL = g;    // Playwright's Selenium Grid mode (Chromium / Chrome / Edge)
+    gridNote('Chromium browsers run on the Selenium Grid ' + g);
+    return null;
+  }
+  const need = (k) => {
+    const v = String(process.env[k] || '').trim();
+    if (!v) throw new Error('[grid] GRID=' + low + ' needs ' + k + ' in .env or the environment');
+    return v;
+  };
+  let pw = '';
+  try { pw = require('@playwright/test/package.json').version; } catch (e) { /* unknown */ }
+  const build = process.env.GRID_BUILD || 'QA Studio';
+  const platform = String(process.env.GRID_PLATFORM || 'Windows 11');
+  if (low === 'browserstack') {
+    const os = platform.split(' ');
+    const caps = { browser: CLOUD.browserstack[b], os: os[0], os_version: os.slice(1).join(' ') || '11',
+      'browserstack.username': need('BROWSERSTACK_USERNAME'), 'browserstack.accessKey': need('BROWSERSTACK_ACCESS_KEY'),
+      project: 'QA Studio', build, 'client.playwrightVersion': pw };
+    gridNote('browsers run on BrowserStack');
+    return 'wss://cdp.browserstack.com/playwright?caps=' + encodeURIComponent(JSON.stringify(caps));
+  }
+  if (low === 'lambdatest') {
+    const caps = { browserName: CLOUD.lambdatest[b], browserVersion: 'latest',
+      'LT:Options': { platform, build, name: 'QA Studio', user: need('LT_USERNAME'), accessKey: need('LT_ACCESS_KEY'),
+        playwrightClientVersion: pw } };
+    gridNote('browsers run on LambdaTest');
+    return 'wss://cdp.lambdatest.com/playwright?capabilities=' + encodeURIComponent(JSON.stringify(caps));
+  }
+  if (low === 'sauce' || low === 'saucelabs') {
+    gridNote('Sauce Labs runs Playwright with its own tool (npx saucectl run), not GRID - running on this machine');
+    return null;
+  }
+  gridNote('unknown GRID "' + g + '" - use local, browserstack, lambdatest, ws://... or a Selenium Grid URL; running on this machine');
+  return null;
 }
 
-module.exports = { selected, projects, BROWSERS };
+function projects() {
+  return selected().map((b) => {
+    const ws = gridEndpoint(b);
+    const use = ws ? Object.assign({}, BROWSERS[b].use, { connectOptions: { wsEndpoint: ws } }) : BROWSERS[b].use;
+    return { name: BROWSERS[b].label, use };
+  });
+}
+
+module.exports = { selected, projects, BROWSERS, gridEndpoint };
 
 if (require.main === module && process.argv.includes('--install')) {
   const need = new Set(['chromium']);   // global-setup.js logs in with Chromium
@@ -787,15 +846,28 @@ require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 const { chromium } = require('@playwright/test');
-const { performLogin } = require('./support/auth');
+const { performLogin, openLoginPage } = require('./support/auth');
 
 module.exports = async () => {
   const dir = path.join(__dirname, '.auth');
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, 'state.json');
+  const loggedOut = (why) => {
+    fs.writeFileSync(file, JSON.stringify({ cookies: [], origins: [] }));
+    console.log('[auth] ' + why + ' — tests run logged out');
+  };
+  if (!String(process.env.APP_USER || '').trim()) return loggedOut('no APP_USER in .env');
+  console.log('[auth] logging in once before the tests...');
   const browser = await chromium.launch();
   const page = await browser.newPage();
+  page.setDefaultTimeout(15000);
   try {
+    // A site without a login form (or APP_LOGIN_URL pointing at a page without
+    // one) skips the login in seconds instead of waiting on missing fields.
+    await openLoginPage(page);
+    const form = await page.locator('input[type=password]').first()
+      .waitFor({ state: 'visible', timeout: 8000 }).then(() => true, () => false);
+    if (!form) return loggedOut('no login form at APP_LOGIN_URL');
     await performLogin(page);
     await page.context().storageState({ path: file });
     console.log('[auth] logged in once for the run — session saved to .auth/state.json');
@@ -1122,6 +1194,11 @@ const API_FN = __API_FN__;
 const TOTP_FN = __TOTP_FN__;
 const A11Y_RUN_FN = __A11Y_RUN_FN__;
 const A11Y_FAILS_FN = __A11Y_FAILS_FN__;
+// Visual checks: screenshot vs visual-baselines/<test>-<name>-<browser>.png.
+const VISUAL_PREP_FN = __VISUAL_PREP_FN__;
+const VISUAL_CMP_FN = __VISUAL_CMP_FN__;
+const VISUAL_MAX = __VISUAL_MAX__;
+const VISUAL_DELTA = __VISUAL_DELTA__;
 const qaApiFn = (...a) => (new Function('return ' + API_FN)())(...a);
 const qaTotp = (secret) => (new Function('return ' + TOTP_FN)())(secret);
 const qaA11yFails = (raw, level) => (new Function('return ' + A11Y_FAILS_FN)())(raw, level);
@@ -1500,6 +1577,11 @@ class Healer {
       if (bad) throw new Error('Accessibility violations: ' + bad);
       return true;
     }
+    if (check === 'visual') {
+      const bad = await this.visualDiff(value);
+      if (bad) throw new Error('Visual check failed: ' + bad);
+      return true;
+    }
     if (check === 'cookie') {
       // Read through the browser context, so HttpOnly cookies count too.
       const name = String(value).split('|')[0].trim();
@@ -1650,6 +1732,66 @@ class Healer {
       await this.page.waitForTimeout(300);
     } while (Date.now() < end);
     console.log(got ? '[heal] closed "' + got + '"' : '[heal] nothing to close (not shown)');
+  }
+
+  /** 'name|ignore selectors|max %': the visible page against
+   *  visual-baselines/<test>-<name>-<browser>.png. The first run (or
+   *  UPDATE_BASELINES=true) saves the baseline; a failing check writes a diff
+   *  image (changed pixels in red) to test-results/visual-diffs. '' = the same. */
+  async visualDiff(value) {
+    const fs = require('fs'), path = require('path');
+    const p = (String(value || '') + '||').split('|');
+    const ignore = p[1].trim(), max = p[2].trim() ? Number(p[2]) : VISUAL_MAX;
+    let info = null;
+    try { info = require('@playwright/test').test.info(); } catch (e) { info = null; }
+    const test = info ? info.title : 'test';
+    let name = p[0].trim();
+    this.visualCount = this.visualCount || {};
+    if (!name) { this.visualCount[test] = (this.visualCount[test] || 0) + 1; name = 'check' + this.visualCount[test]; }
+    const browser = info && info.project && info.project.name ? info.project.name : 'browser';
+    // The OS is part of the name: fonts draw differently on Windows and on the
+    // Linux CI machines, so each keeps its own baseline.
+    const key = (test + '-' + name + '-' + browser + '-' + process.platform).toLowerCase().replace(/[^a-z0-9_.-]/g, '_');
+    const rel = (f) => path.relative(process.cwd(), f);
+    const basePath = path.resolve('visual-baselines', key + '.png');
+    const prep = (on) => '(' + VISUAL_PREP_FN + ')(' + JSON.stringify(ignore) + ', ' + on + ')';
+    let shot;
+    try {
+      try { await this.page.evaluate(prep(true)); await this.page.waitForTimeout(300); } catch (e) { /* page busy */ }
+      shot = (await this.page.screenshot({ animations: 'disabled', caret: 'hide' })).toString('base64');
+    } finally {
+      try { await this.page.evaluate(prep(false)); } catch (e) { /* page gone */ }
+    }
+    const update = String(process.env.UPDATE_BASELINES || '').trim().toLowerCase() === 'true';
+    if (update || !fs.existsSync(basePath)) {
+      fs.mkdirSync(path.dirname(basePath), { recursive: true });
+      fs.writeFileSync(basePath, Buffer.from(shot, 'base64'));
+      console.log('[visual] ' + (update ? 'updated' : 'saved') + ' the baseline ' + rel(basePath)
+        + (update ? '' : ' (first run) - later runs compare against it'));
+      return '';
+    }
+    const was = fs.readFileSync(basePath).toString('base64');
+    let r;
+    try {
+      r = await this.page.evaluate('new Promise((done) => (' + VISUAL_CMP_FN + ')('
+        + [was, shot, max, VISUAL_DELTA].map((v) => JSON.stringify(v)).join(', ') + ', done))');
+    } catch (e) { r = { ok: false, pct: 100, diff: '', note: 'could not compare the screenshots: ' + e.message }; }
+    if (r && r.ok) return '';
+    let where = '';
+    if (r && r.diff) {
+      const dir = path.resolve('test-results', 'visual-diffs');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, key + '-diff.png'), Buffer.from(r.diff, 'base64'));
+      fs.writeFileSync(path.join(dir, key + '-actual.png'), Buffer.from(shot, 'base64'));
+      where = ' - diff image: ' + rel(path.join(dir, key + '-diff.png'));
+      if (info) {
+        try { await info.attach('visual diff', { body: Buffer.from(r.diff, 'base64'), contentType: 'image/png' }); }
+        catch (e) { /* no attachments */ }
+      }
+    }
+    const what = r && r.note ? r.note
+      : Number(r ? r.pct : 100).toFixed(2) + '% of the page changed (allowed ' + max + '%)';
+    return what + ' against ' + rel(basePath) + where + '. Run with UPDATE_BASELINES=true if the change is intended.';
   }
 
   /** '' when the page passes, else the failing rules ("label (critical, 2 elements)"). */
@@ -3325,6 +3467,64 @@ function runAlone(b, headless, env) {
   });
 }
 
+// GRID (env or .env) = browserstack or lambdatest runs the specs on that cloud
+// with its own command line (npx downloads it on first use). Accounts:
+// BROWSERSTACK_USERNAME + BROWSERSTACK_ACCESS_KEY or LT_USERNAME + LT_ACCESS_KEY;
+// GRID_PLATFORM (e.g. "Windows 11") and GRID_BUILD are optional. The results are
+// on the cloud's dashboard. Resolves to the exit code, or null = run locally.
+function runOnGrid(grid, list) {
+  const need = (k) => {
+    const v = String(process.env[k] || '').trim();
+    if (!v) { console.log('[grid] GRID=' + grid + ' needs ' + k + ' in .env or the environment'); process.exit(1); }
+    return v;
+  };
+  const browsers = (list.length ? list : ['chrome']).filter((b) => b !== 'electron');
+  const platform = process.env.GRID_PLATFORM || 'Windows 11';
+  const build = process.env.GRID_BUILD || 'QA Studio';
+  let deps = {};
+  try {
+    const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+    deps = Object.assign({}, pkg.dependencies || {}, pkg.devDependencies || {});
+    delete deps.cypress;
+  } catch (e) { /* no package.json */ }
+  let cyVer = 'latest';
+  try { cyVer = require('cypress/package.json').version; } catch (e) { /* unknown */ }
+  let cmd, file;
+  if (grid === 'browserstack') {
+    file = 'browserstack.json';
+    fs.writeFileSync('browserstack.json', JSON.stringify({
+      auth: { username: need('BROWSERSTACK_USERNAME'), access_key: need('BROWSERSTACK_ACCESS_KEY') },
+      browsers: browsers.map((b) => ({ browser: b, os: platform, versions: ['latest'] })),
+      run_settings: { cypress_config_file: './cypress.config.js', project_name: 'QA Studio', build_name: build,
+        parallels: browsers.length, npm_dependencies: deps, cypress_version: cyVer },
+    }, null, 2));
+    cmd = ['-y', 'browserstack-cypress-cli', 'run', '--sync'];
+  } else if (grid === 'lambdatest') {
+    const lt = { chrome: 'Chrome', edge: 'MicrosoftEdge', firefox: 'Firefox', chromium: 'Chrome' };
+    file = 'lambdatest-config.json';
+    fs.writeFileSync('lambdatest-config.json', JSON.stringify({
+      lambdatest_auth: { username: need('LT_USERNAME'), access_key: need('LT_ACCESS_KEY') },
+      browsers: browsers.map((b) => ({ browser: lt[b] || 'Chrome', platform, versions: ['latest'] })),
+      run_settings: { config_file: 'cypress.config.js', build_name: build, parallels: browsers.length,
+        npm_dependencies: deps, cypress_version: cyVer },
+      tunnel_settings: { tunnel: false },
+    }, null, 2));
+    cmd = ['-y', 'lambdatest-cypress-cli', 'run', '--sync=true'];
+  } else {
+    console.log('[grid] Cypress runs on BrowserStack or LambdaTest (GRID=browserstack / lambdatest); "' + grid
+      + '" is not supported - running on this machine');
+    return Promise.resolve(null);
+  }
+  console.log('[grid] running the tests on ' + grid + ' in ' + browsers.map(label).join(', '));
+  return new Promise((resolve) => {
+    const child = spawn(process.platform === 'win32' ? 'npx.cmd' : 'npx', cmd, { stdio: 'inherit', shell: process.platform === 'win32' });
+    // The settings file holds the account keys: removed after the run.
+    const tidy = () => { try { fs.unlinkSync(file); } catch (e) { /* already gone */ } };
+    child.on('error', (e) => { tidy(); console.log('[grid] could not start the ' + grid + ' command line: ' + e.message); resolve(1); });
+    child.on('close', (code) => { tidy(); resolve(code || 0); });
+  });
+}
+
 (async () => {
   const argv = process.argv.slice(2);
   const at = argv.indexOf('--browser');
@@ -3332,6 +3532,11 @@ function runAlone(b, headless, env) {
   const headless = argv.includes('--headless') || !!process.env.CI
     || String(process.env.HEADLESS || '').toLowerCase() === 'true';
   const opts = (b) => Object.assign({ headed: !headless }, b ? { browser: b } : {});
+  const grid = String(process.env.GRID || '').trim().toLowerCase();
+  if (grid && grid !== 'local') {
+    const code = await runOnGrid(grid, list);
+    if (code !== null) process.exit(code);
+  }
 
   if (list.length < 2) {
     const res = await cypress.run(opts(list[0]));
@@ -3573,6 +3778,7 @@ module.exports = defineConfig({
         pickLocator: tasks.pickLocator,
         qaDigestHeader: tasks.qaDigestHeader,
         qaAxeSource: tasks.qaAxeSource,
+        qaVisual: tasks.qaVisual,
         // Download steps: is there a finished file whose name contains `name`?
         findDownload(name) {
           const fs = require('fs');
@@ -3733,6 +3939,31 @@ module.exports = {
   },
   async pickLocator({ intent, dom }) { return (await _pick(intent, dom)) || null; },
   qaAxeSource() { return qaAxeSource(); },
+  // Visual checks: 'load' saves the first baseline (or returns both screenshots
+  // as Base64 for the in-browser compare); 'diff' keeps the diff image.
+  qaVisual({ op, key, shot, diff }) {
+    const fs = require('fs'), path = require('path');
+    key = key + '-' + process.platform;   // Windows and Linux (CI) keep their own baselines
+    const rel = (f) => path.relative(process.cwd(), f);
+    const base = path.resolve('visual-baselines', key + '.png');
+    if (op === 'load') {
+      const now = fs.readFileSync(shot);
+      const update = String(process.env.UPDATE_BASELINES || '').trim().toLowerCase() === 'true';
+      if (update || !fs.existsSync(base)) {
+        fs.mkdirSync(path.dirname(base), { recursive: true });
+        fs.writeFileSync(base, now);
+        return { saved: (update ? 'updated' : 'saved') + ' the baseline ' + rel(base)
+          + (update ? '' : ' (first run) - later runs compare against it') };
+      }
+      return { was: fs.readFileSync(base).toString('base64'), now: now.toString('base64'), base: rel(base) };
+    }
+    const dir = path.resolve('cypress', 'visual-diffs');
+    fs.mkdirSync(dir, { recursive: true });
+    const out = path.join(dir, key + '-diff.png');
+    fs.writeFileSync(out, Buffer.from(String(diff || ''), 'base64'));
+    try { fs.copyFileSync(shot, path.join(dir, key + '-actual.png')); } catch (e) { /* screenshot gone */ }
+    return rel(out);
+  },
   // HTTP Digest answer (RFC 7616, MD5, qop=auth) for one request: Cypress
   // itself only sends Basic credentials. The password never leaves Node.
   qaDigestHeader({ url, method, user, pass, challenge }) {
@@ -3763,6 +3994,10 @@ cypress/screenshots/
 cypress/videos/
 cypress/qa-runs/
 cypress/reports/
+cypress/visual-diffs/
+# cloud grid run settings (they hold the account keys):
+browserstack.json
+lambdatest-config.json
 # environment-specific config (URLs + secrets stay out of git):
 .env
 # local DOM snapshots from an opt-in live inspection:
@@ -4149,6 +4384,11 @@ const API_FN = __API_FN__;
 const TOTP_FN = __TOTP_FN__;
 const A11Y_RUN_FN = __A11Y_RUN_FN__;
 const A11Y_FAILS_FN = __A11Y_FAILS_FN__;
+// Visual checks: screenshot vs visual-baselines/<test>-<name>-<browser>.png.
+const VISUAL_PREP_FN = __VISUAL_PREP_FN__;
+const VISUAL_CMP_FN = __VISUAL_CMP_FN__;
+const VISUAL_MAX = __VISUAL_MAX__;
+const VISUAL_DELTA = __VISUAL_DELTA__;
 const qaApiFn = (...a) => (new Function('return ' + API_FN)())(...a);
 const qaTotp = (secret) => (new Function('return ' + TOTP_FN)())(secret);
 const qaA11yFails = (raw, level) => (new Function('return ' + A11Y_FAILS_FN)())(raw, level);
@@ -4367,6 +4607,43 @@ Cypress.Commands.add('backToOriginalWindow', () => { __frame = null; cy.go('back
 // In a table row containing `row`, the column headed `column` shows `expected`.
 // URL / title / row or text count / column sort / text pattern.
 let __qaApi = null;   // the last API step's { status, body }
+const __qaVisualCount = {};
+// 'name|ignore selectors|max %': the visible page against
+// visual-baselines/<test>-<name>-<browser>.png. The first run (or
+// UPDATE_BASELINES=true) saves the baseline; a failing check writes a diff image
+// (changed pixels in red) to cypress/visual-diffs.
+function _qaVisual(value) {
+  const p = (String(value || '') + '||').split('|');
+  const t = (Cypress.currentTest && Cypress.currentTest.title) || 'test';
+  let name = p[0].trim();
+  if (!name) { __qaVisualCount[t] = (__qaVisualCount[t] || 0) + 1; name = 'check' + __qaVisualCount[t]; }
+  const ignore = p[1].trim(), max = p[2].trim() ? Number(p[2]) : VISUAL_MAX;
+  const key = (t + '-' + name + '-' + Cypress.browser.name).toLowerCase().replace(/[^a-z0-9_.-]/g, '_');
+  const prep = (on) => cy.window({ log: false }).then((w) => { try { w.eval('(' + VISUAL_PREP_FN + ')')(ignore, on); } catch (e) { /* page busy */ } });
+  let shot = '';
+  return prep(true)
+    .then(() => cy.wait(300, { log: false }))
+    .then(() => cy.screenshot('qa-visual-' + key, { capture: 'viewport', overwrite: true, log: false,
+      onAfterScreenshot(el, props) { shot = props.path; } }))
+    .then(() => prep(false))
+    .then(() => cy.task('qaVisual', { op: 'load', key, shot }, { log: false }))
+    .then({ timeout: 60000 }, (r) => {
+      if (r.saved) { Cypress.log({ name: 'visual', message: r.saved }); return null; }
+      const cmp = new Function('return ' + VISUAL_CMP_FN)();
+      return new Cypress.Promise((done) => cmp(r.was, r.now, max, VISUAL_DELTA, done))
+        .then((res) => Object.assign({ base: r.base }, res));
+    })
+    .then((res) => {
+      if (!res || res.ok) return null;
+      const what = res.note || Number(res.pct).toFixed(2) + '% of the page changed (allowed ' + max + '%)';
+      const fail = (where) => {
+        throw new Error('Visual check failed: ' + what + ' against ' + res.base + (where ? ' - diff image: ' + where : '')
+          + '. Run with UPDATE_BASELINES=true if the change is intended.');
+      };
+      if (!res.diff) return fail('');
+      return cy.task('qaVisual', { op: 'diff', key, shot, diff: res.diff }, { log: false }).then(fail);
+    });
+}
 Cypress.Commands.add('healAssertPage', (check, value) => {
   if (check === 'api_status' || check === 'api_body') {
     return cy.then(() => {
@@ -4374,6 +4651,7 @@ Cypress.Commands.add('healAssertPage', (check, value) => {
       expect(ok, check + ' ' + value).to.equal(true);
     });
   }
+  if (check === 'visual') return _qaVisual(value);
   if (check === 'a11y') {
     // axe-core in the page (the script comes from Node: cy-tasks.js).
     return cy.task('qaAxeSource', null, { log: false, timeout: 60000 }).then((src) =>

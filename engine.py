@@ -3988,6 +3988,7 @@ Test Case ID,Test Case Title,Step,Action,Expected Result,Element Type,Preferred 
    - Reuse a response value: Action: Save the response field \"data.id\" as {{noteId}} — then use \"{{noteId}}\" in later steps (UI or API)
    - Two-factor login: Type \"{{OTP}}\" in the \"Code\" field   (the current authenticator code; the secret is set as OTP_SECRET in .env, never in the case)
    - Accessibility (Expected Result): The page has no accessibility violations   (serious and critical issues fail; or: no critical accessibility violations)
+   - Visual check (Expected Result): The page looks the same as the visual baseline \"home\"   (optional: ignoring \"#clock\" and \".ads\", within 2%). The first run saves the baseline screenshot.
 
 Now write the CSV."""
 
@@ -8081,6 +8082,19 @@ def _set_login_url(url):
     _LOGIN_URL["url"] = str(url or "").strip()
 
 
+def _already_on_page(driver, url):
+    """A login navigate is only start-state when the browser is already on that
+    page: an anonymous run opens the base URL, so "Open https://x/login" there
+    is a real navigation."""
+    url = str(url or "").strip()
+    if not re.match(r"https?://", url, re.I):
+        return True
+    try:
+        return _url_key(driver.current_url) == _url_key(url)
+    except Exception:
+        return True
+
+
 def _url_key(url):
     from urllib.parse import urlsplit
     p = urlsplit(str(url or "").strip())
@@ -10945,6 +10959,8 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                                 if not ok:
                                     time.sleep(0.5)
                             what = _page_check_label(it["check"], it.get("value"))
+                            if it["check"] == "visual":
+                                what += " — the screenshot is compared when the tests run"
                         elif it["check"] == "table":
                             row, col, want = _table_parts(it.get("value"))
                             ok, _end = False, time.time() + 10
@@ -11115,7 +11131,7 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
                     # That is start-state setup, not a page element, so it must
                     # not become a guessed locator or a false TODO.
                     if (verb == "navigate" and starts_logged_out and
-                            _is_login_flow_action(it)):
+                            _is_login_flow_action(it) and _already_on_page(driver, it.get("value"))):
                         it["inspection_source"] = "start_state"
                         assign(fs, None, "precondition")
                         cb("      (navigate) — login start page is already open", "dim")
@@ -11732,7 +11748,8 @@ public final class DriverFactory {
     public static WebDriver create(String browser) {
         String b = id(browser == null ? "" : browser.toLowerCase(Locale.ROOT));
         if (b.isEmpty()) b = "chrome";
-        boolean headless = "true".equalsIgnoreCase(Config.setting("HEADLESS", "false"));
+        boolean onGrid = !gridName().isEmpty();
+        boolean headless = !onGrid && "true".equalsIgnoreCase(Config.setting("HEADLESS", "false"));
         File downloads = new File(DOWNLOADS, b);
         downloads.mkdirs();
         // Start each browser with an empty download folder, so a download check
@@ -11741,7 +11758,7 @@ public final class DriverFactory {
         if (old != null) for (File f : old) f.delete();
         WebDriver driver;
         if ("firefox".equals(b)) {
-            synchronized (DriverFactory.class) { WebDriverManager.firefoxdriver().setup(); }
+            if (!onGrid) synchronized (DriverFactory.class) { WebDriverManager.firefoxdriver().setup(); }
             FirefoxOptions options = new FirefoxOptions();
             if (headless) options.addArguments("-headless");
             options.addPreference("browser.download.folderList", 2);
@@ -11757,7 +11774,7 @@ public final class DriverFactory {
             options.addPreference("network.http.phishy-userpass-length", 255);
             options.addPreference("signon.rememberSignons", false);
             options.setUnhandledPromptBehaviour(UnexpectedAlertBehaviour.IGNORE);
-            driver = start("Firefox", () -> new FirefoxDriver(options));
+            driver = onGrid ? remote(b, options) : start("Firefox", () -> new FirefoxDriver(options));
             try { driver.manage().window().maximize(); } catch (Exception ignored) { }
         } else if ("edge".equals(b)) {
             // Microsoft moved msedgedriver downloads to msedgedriver.microsoft.com;
@@ -11767,7 +11784,7 @@ public final class DriverFactory {
             if (!own.isEmpty()) System.setProperty("webdriver.edge.driver", own);
             System.setProperty("SE_DRIVER_MIRROR_URL", "https://msedgedriver.microsoft.com");
             System.setProperty("wdm.edgeDownloadUrlPattern", "https://msedgedriver.microsoft.com/%s/edgedriver_%s.zip");
-            if (own.isEmpty()) {
+            if (own.isEmpty() && !onGrid) {
                 try {
                     synchronized (DriverFactory.class) {
                         WebDriverManager.edgedriver()
@@ -11780,12 +11797,12 @@ public final class DriverFactory {
             }
             EdgeOptions options = new EdgeOptions();
             chromium(options, headless, downloads);
-            driver = start("Edge", () -> new EdgeDriver(options));
+            driver = onGrid ? remote(b, options) : start("Edge", () -> new EdgeDriver(options));
         } else {
-            synchronized (DriverFactory.class) { WebDriverManager.chromedriver().setup(); }
+            if (!onGrid) synchronized (DriverFactory.class) { WebDriverManager.chromedriver().setup(); }
             ChromeOptions options = new ChromeOptions();
             chromium(options, headless, downloads);
-            driver = start("Chrome", () -> new ChromeDriver(options));
+            driver = onGrid ? remote(b, options) : start("Chrome", () -> new ChromeDriver(options));
         }
         String version = "";
         try {
@@ -11797,6 +11814,75 @@ public final class DriverFactory {
         DOWNLOAD_DIRS.put(wrapped, downloads);
         DOWNLOAD_DIRS.put(driver, downloads);
         return wrapped;
+    }
+
+    /** GRID (.env, environment or config.properties grid=): local (default),
+     *  browserstack, sauce, lambdatest or a Selenium Grid URL. "" = local. */
+    static String gridName() {
+        String g = Config.setting("GRID", "local").trim();
+        return g.isEmpty() || "local".equalsIgnoreCase(g) ? "" : g;
+    }
+
+    private static String need(String key) {
+        String v = Config.setting(key, "");
+        if (v.isEmpty()) throw new IllegalStateException("[grid] GRID=" + gridName() + " needs " + key
+            + " in .env or the environment");
+        return v;
+    }
+
+    /** The browser on the cloud / Selenium Grid that GRID names. Cloud accounts:
+     *  BROWSERSTACK_USERNAME + BROWSERSTACK_ACCESS_KEY, SAUCE_USERNAME +
+     *  SAUCE_ACCESS_KEY (SAUCE_REGION, default us-west-1), LT_USERNAME + LT_ACCESS_KEY.
+     *  GRID_PLATFORM (e.g. "Windows 11") and GRID_BUILD are optional. */
+    private static WebDriver remote(String b, org.openqa.selenium.MutableCapabilities options) {
+        String g = gridName(), low = g.toLowerCase(Locale.ROOT), hub, vendorKey = null;
+        String build = Config.setting("GRID_BUILD", "QA Studio"), platform = Config.setting("GRID_PLATFORM", "");
+        java.util.Map<String, Object> vendor = new java.util.HashMap<>();
+        if (low.startsWith("http://") || low.startsWith("https://")) {
+            hub = g;
+        } else if ("browserstack".equals(low)) {
+            hub = "https://hub-cloud.browserstack.com/wd/hub";
+            vendorKey = "bstack:options";
+            vendor.put("userName", need("BROWSERSTACK_USERNAME"));
+            vendor.put("accessKey", need("BROWSERSTACK_ACCESS_KEY"));
+            vendor.put("projectName", "QA Studio");
+            vendor.put("buildName", build);
+            if (!platform.isEmpty()) {
+                String[] os = platform.split(" ", 2);
+                vendor.put("os", os[0]);
+                if (os.length > 1) vendor.put("osVersion", os[1]);
+            }
+        } else if ("sauce".equals(low) || "saucelabs".equals(low)) {
+            hub = "https://ondemand." + Config.setting("SAUCE_REGION", "us-west-1") + ".saucelabs.com/wd/hub";
+            vendorKey = "sauce:options";
+            vendor.put("username", need("SAUCE_USERNAME"));
+            vendor.put("accessKey", need("SAUCE_ACCESS_KEY"));
+            vendor.put("build", build);
+            vendor.put("name", "QA Studio");
+            if (!platform.isEmpty()) options.setCapability("platformName", platform);
+        } else if ("lambdatest".equals(low)) {
+            hub = "https://hub.lambdatest.com/wd/hub";
+            vendorKey = "LT:Options";
+            vendor.put("username", need("LT_USERNAME"));
+            vendor.put("accessKey", need("LT_ACCESS_KEY"));
+            vendor.put("build", build);
+            vendor.put("project", "QA Studio");
+            vendor.put("w3c", true);
+            if (!platform.isEmpty()) vendor.put("platformName", platform);
+        } else {
+            throw new IllegalStateException("[grid] unknown GRID '" + g
+                + "' - use local, browserstack, sauce, lambdatest or a Selenium Grid URL");
+        }
+        if (vendorKey != null) {
+            options.setCapability(vendorKey, vendor);
+            options.setCapability("browserVersion", Config.setting("GRID_BROWSER_VERSION", "latest"));
+        }
+        System.out.println("[grid] " + label(b) + " on " + (vendorKey == null ? hub : low));
+        try {
+            return new org.openqa.selenium.remote.RemoteWebDriver(new java.net.URL(hub), options);
+        } catch (java.net.MalformedURLException e) {
+            throw new IllegalStateException("[grid] GRID is not a valid URL: " + g);
+        }
     }
 
     /** Start a browser; a browser that isn't installed fails with a clear message
@@ -12793,7 +12879,7 @@ def _parse_github_owner_repo(remote_url):
         return None, None
 
 
-def _github_ensure_repo(owner, repo, token, cb):
+def _github_ensure_repo(owner, repo, token, cb, public=False):
     """Create the GitHub repo if it doesn't exist yet (idempotent — a no-op, not
     an error, when it's already there). Returns (ok, msg)."""
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
@@ -12807,7 +12893,7 @@ def _github_ensure_repo(owner, repo, token, cb):
     except Exception as ex:
         return False, f"Couldn't reach the GitHub API to check the repo: {ex}"
 
-    cb(f"Repo {owner}/{repo} doesn't exist on GitHub yet — creating it…", "dim")
+    cb(f"Repo {owner}/{repo} doesn't exist on GitHub yet — creating it ({'public' if public else 'private'})…", "dim")
     my_login = None
     try:
         me = requests.get("https://api.github.com/user", headers=headers, timeout=15)
@@ -12820,7 +12906,7 @@ def _github_ensure_repo(owner, repo, token, cb):
                  else f"https://api.github.com/orgs/{owner}/repos")
     try:
         r = requests.post(create_url, headers=headers, timeout=20,
-                          json={"name": repo, "private": True,
+                          json={"name": repo, "private": not public,
                                 "description": "Automation tests generated by QA Studio"})
         if r.status_code == 201:
             cb(f"Created {owner}/{repo} on GitHub.", "ok")
@@ -12889,7 +12975,8 @@ def sync_project_readme(out_dir, cb=None):
     return changed, fw
 
 
-def push_to_git(repo_dir, remote_url, token, branch="main", message="Add QA Studio automation tests", cb=None, force=False):
+def push_to_git(repo_dir, remote_url, token, branch="main", message="Add QA Studio automation tests", cb=None, force=False,
+                public=False):
     """Init/commit/push the generated project to a Git remote using the git CLI.
     `token` is passed to the push subprocess via a one-shot GIT_CONFIG_* env
     override (http.extraheader) — see the SECURITY comment below. It is never
@@ -12954,10 +13041,11 @@ def push_to_git(repo_dir, remote_url, token, branch="main", message="Add QA Stud
     # wired up, so those remotes fall through unchanged (existing behaviour —
     # the repo must already exist, same as before this fix).
     _m = load_manifest(repo_dir)
-    if not _m.get("git_pushed"):
+    # ...or when the folder now pushes to a different repo URL than last time.
+    if not _m.get("git_pushed") or (_m.get("git_pushed") or {}).get("remote") != remote_url:
         _owner, _gh_repo = _parse_github_owner_repo(remote_url)
         if _owner and _gh_repo:
-            _ok_repo, _repo_msg = _github_ensure_repo(_owner, _gh_repo, token, cb)
+            _ok_repo, _repo_msg = _github_ensure_repo(_owner, _gh_repo, token, cb, public=public)
             if not _ok_repo:
                 return False, f"Couldn't prepare the GitHub repo: {_repo_msg}"
 
@@ -13018,6 +13106,7 @@ def push_to_git(repo_dir, remote_url, token, branch="main", message="Add QA Stud
             save_manifest(repo_dir, _m2)
         except Exception:
             pass
+        _github_ci_settings_safe(repo_dir, remote_url, token, cb)
         return True, "Pushed successfully."
     # Recognize a plain non-fast-forward rejection and translate the raw git
     # hint dump into one actionable sentence instead of surfacing plumbing
@@ -15054,6 +15143,8 @@ def _page_check_ok(driver, check, value):
                                                              check, str(value or "")))
         if check == "a11y":
             return not _a11y_failures(driver, value)
+        if check == "visual":
+            return True     # compared with the baseline when the generated tests run
         return bool(driver.execute_script(_PAGE_CHECK_JS, check, str(value or "")))
     except Exception:
         return False
@@ -15951,6 +16042,809 @@ def _count_op(word):
     return "gte" if w.startswith("at least") else "lte" if w.startswith("at most") else "eq"
 
 
+# ---- Batch 10: visual checks (a screenshot against a saved baseline) ----
+#   visual  'name|ignore selectors|max %'   e.g. 'home|#clock, .ads|2'
+#           Baseline: visual-baselines/<test>-<name>-<browser>.png, saved by the
+#           first run (and rewritten when UPDATE_BASELINES=true). A failing check
+#           writes a diff image (red = changed pixels) to target/visual-diffs,
+#           test-results/visual-diffs or cypress/visual-diffs.
+_PAGE_CHECKS = _PAGE_CHECKS + ("visual",)
+_VISUAL_MAX_PCT = 1.0       # share of pixels (%) that may differ by default
+_VISUAL_PIXEL_DELTA = 32    # a pixel differs when a colour channel moves more than this
+# Before the screenshot: animations and the text cursor off, ignored elements
+# hidden (inline styles, so a strict Content-Security-Policy can't block it).
+# on = false undoes it.
+_VISUAL_PREP_FN = r"""function(ignore, on) {
+  var d = document, st = d.__qaVisual;
+  if (st) {
+    st.hidden.forEach(function (h) { h[0].style.setProperty('visibility', h[1], h[2]); });
+    if (st.sheet) d.adoptedStyleSheets = d.adoptedStyleSheets.filter(function (s) { return s !== st.sheet; });
+    if (st.tag && st.tag.parentNode) st.tag.parentNode.removeChild(st.tag);
+    d.__qaVisual = null;
+  }
+  if (!on) return true;
+  st = d.__qaVisual = { hidden: [], sheet: null, tag: null };
+  var css = '*, *::before, *::after { animation: none !important; transition: none !important; caret-color: transparent !important; }';
+  try {
+    st.sheet = new CSSStyleSheet();
+    st.sheet.replaceSync(css);
+    d.adoptedStyleSheets = d.adoptedStyleSheets.concat([st.sheet]);
+  } catch (e) {
+    st.sheet = null;
+    st.tag = d.createElement('style');
+    st.tag.textContent = css;
+    (d.head || d.documentElement).appendChild(st.tag);
+  }
+  if (ignore) {
+    var els = [];
+    try { els = d.querySelectorAll(ignore); } catch (e) { els = []; }
+    Array.prototype.forEach.call(els, function (el) {
+      st.hidden.push([el, el.style.getPropertyValue('visibility'), el.style.getPropertyPriority('visibility')]);
+      el.style.setProperty('visibility', 'hidden', 'important');
+    });
+  }
+  try { if (d.activeElement && d.activeElement.blur) d.activeElement.blur(); } catch (e) { /* nothing focused */ }
+  return true;
+}"""
+# Compares two PNG screenshots (Base64, no data: prefix) in the browser.
+# done({ok, pct, diff, note}): pct = share of changed pixels, diff = a PNG
+# (Base64) with the changed pixels in red, or '' when nothing to show.
+_VISUAL_CMP_FN = r"""function(wasB64, nowB64, maxPct, delta, done) {
+  function bitmap(b64) {
+    var bin = atob(b64), bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return createImageBitmap(new Blob([bytes], { type: 'image/png' }));
+  }
+  function pixels(img) {
+    var c = document.createElement('canvas');
+    c.width = img.width; c.height = img.height;
+    var x = c.getContext('2d');
+    x.drawImage(img, 0, 0);
+    return x.getImageData(0, 0, img.width, img.height).data;
+  }
+  Promise.all([bitmap(wasB64), bitmap(nowB64)]).then(function (imgs) {
+    var a = imgs[0], b = imgs[1];
+    if (a.width !== b.width || a.height !== b.height) {
+      done({ ok: false, pct: 100, diff: '', note: 'the screenshot size changed from ' + a.width + 'x' + a.height
+        + ' to ' + b.width + 'x' + b.height + ' (a different window size?)' });
+      return;
+    }
+    var pa = pixels(a), pb = pixels(b), n = 0, out = new Uint8ClampedArray(pb.length);
+    for (var i = 0; i < pb.length; i += 4) {
+      var dd = Math.max(Math.abs(pa[i] - pb[i]), Math.abs(pa[i + 1] - pb[i + 1]), Math.abs(pa[i + 2] - pb[i + 2]));
+      if (dd > delta) { n++; out[i] = 255; out[i + 1] = 0; out[i + 2] = 0; }
+      else { out[i] = out[i + 1] = out[i + 2] = 170 + (pb[i] + pb[i + 1] + pb[i + 2]) / 9; }
+      out[i + 3] = 255;
+    }
+    var pct = 100 * n / (pb.length / 4), ok = pct <= Number(maxPct);
+    if (ok || !n) { done({ ok: ok, pct: pct, diff: '', note: '' }); return; }
+    var c = document.createElement('canvas');
+    c.width = b.width; c.height = b.height;
+    c.getContext('2d').putImageData(new ImageData(out, b.width, b.height), 0, 0);
+    done({ ok: false, pct: pct, diff: c.toDataURL('image/png').split(',')[1], note: '' });
+  }).catch(function (e) { done({ ok: false, pct: 100, diff: '', note: 'could not compare the screenshots: ' + e }); });
+}"""
+_VISUAL_PREP_JS = "return (" + _VISUAL_PREP_FN + ")(arguments[0], arguments[1]);"
+_VISUAL_CMP_JS = ("(" + _VISUAL_CMP_FN + ")(arguments[0], arguments[1], arguments[2], arguments[3],"
+                  " arguments[arguments.length - 1]);")
+
+_VISUAL_RE = re.compile(
+    r"\b(?:(?:page|screen|layout|ui|it|everything)\s+(?:still\s+)?(?:looks?|appears?)\s+(?:exactly\s+)?"
+    r"(?:the\s+)?same\s+as\s+(?:the\s+)?(?:visual\s+|saved\s+|screenshot\s+)?"
+    r"(?:baseline|snapshot|reference|before)(?:\s+(?:image|screenshot))?"
+    r"|(?:page|screen|layout|ui|it)\s+(?:still\s+)?(?:visually\s+)?matches\s+(?:the\s+)?(?:visual|screenshot|saved)\s+"
+    r"(?:baseline|snapshot|reference)(?:\s+(?:image|screenshot))?"
+    r"|(?:page|screen|layout|ui|it)\s+(?:still\s+)?visually\s+matches"
+    r"|no\s+visual\s+(?:changes?|differences?|regressions?|diffs?))"
+    r"(?:\s+(?:(?:named|called|from|for|of)\s+)?" + _Q_TEXT + r")?", re.I)
+_VISUAL_OPT_RE = re.compile(
+    r'\s*,?\s*(?:and\s+|while\s+)?(?:'
+    r'(?:ignoring|ignore|except(?:\s+for)?|masking|hiding|excluding)\s+(?:the\s+)?(?:elements?\s+|areas?\s+)?'
+    r'((?:["“][^"”]+["”](?:\s*,\s*and\s+|\s*,\s*|\s+and\s+|\s+or\s+)?)+)'
+    r'|(?:within|with(?:\s+a)?|tolerance(?:\s+of)?|allowing(?:\s+up\s+to)?|up\s+to)\s+(\d+(?:\.\d+)?)\s*%'
+    r'(?:\s+(?:tolerance|difference|different|of\s+(?:the\s+)?pixels))?)', re.I)
+
+
+def _visual_value(name="", ignore=(), pct=""):
+    return "|".join([str(name or "").strip(), ", ".join(s.strip() for s in ignore if s.strip()),
+                     str(pct or "").strip()]).rstrip("|")
+
+
+def _visual_parts(value):
+    """(name, ignore selectors, max %) of a visual check value."""
+    p = (str(value or "").split("|") + ["", "", ""])[:3]
+    try:
+        pct = float(p[2]) if p[2].strip() else _VISUAL_MAX_PCT
+    except ValueError:
+        pct = _VISUAL_MAX_PCT
+    return p[0].strip(), p[1].strip(), pct
+
+
+def _visual_checks_in(t, add):
+    for m in _VISUAL_RE.finditer(t):
+        name = (m.group(1) or "").strip()
+        ignore, pct, pos = [], "", m.end()
+        while True:
+            o = _VISUAL_OPT_RE.match(t, pos)
+            if not o or o.end() == pos:
+                break
+            if o.group(1):
+                ignore += re.findall(r'["“]([^"”]+)["”]', o.group(1))
+            if o.group(2):
+                pct = o.group(2)
+            pos = o.end()
+        add(m, "visual", _visual_value(name, ignore, pct), tuple(x for x in [name] + ignore if x) or "")
+
+
+# ---- Batch 10: CI pipelines and cloud grids ----
+_CI_MARKER = "Generated by QA Studio (qa-studio:ci)"
+_CI_GITHUB = ".github/workflows/qa-tests.yml"
+_CI_AZURE = "azure-pipelines.yml"
+# Secrets the pipeline passes to the tests (repository secrets / secret variables).
+_CI_SECRETS = ("APP_USER", "APP_PASS", "OTP_SECRET", "QA_AI_API_KEY", "SMTP_PASS",
+               "BROWSERSTACK_USERNAME", "BROWSERSTACK_ACCESS_KEY", "SAUCE_USERNAME", "SAUCE_ACCESS_KEY",
+               "LT_USERNAME", "LT_ACCESS_KEY")
+# Plain settings (repository variables / pipeline variables); URLs stay out of git.
+_CI_VARS = ("APP_BASE_URL", "APP_LOGIN_URL", "GRID")
+_ENV_BATCH10_DEFAULTS = (
+    ("GRID", "local",
+     "# Where the browsers run: local, browserstack, sauce, lambdatest, or a Selenium Grid /\n"
+     "# Playwright server URL. Cloud accounts: BROWSERSTACK_USERNAME + BROWSERSTACK_ACCESS_KEY,\n"
+     "# SAUCE_USERNAME + SAUCE_ACCESS_KEY, LT_USERNAME + LT_ACCESS_KEY."),
+    ("UPDATE_BASELINES", "false",
+     "# true = visual checks save new baseline screenshots (visual-baselines/) instead of comparing."),
+)
+_CI_ARTIFACTS = {
+    "selenium": ("target/qa-studio-report.html", "target/qa-studio-detailed.html", "target/qa-videos/",
+                 "target/visual-diffs/", "target/surefire-reports/", "test-output/"),
+    "playwright": ("playwright-report/", "test-results/"),
+    "cypress": ("cypress/reports/", "cypress/screenshots/", "cypress/videos/", "cypress/visual-diffs/"),
+}
+
+
+def ensure_env_batch10(out_dir, cb=None):
+    """Add GRID / UPDATE_BASELINES lines to the project's .env when missing."""
+    path = os.path.join(out_dir, ".env")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            text = f.read()
+    except Exception:
+        return []
+    added, extra = [], []
+    for key, value, note in _ENV_BATCH10_DEFAULTS:
+        if re.search(r"(?m)^[ \t]*#?[ \t]*%s[ \t]*=" % re.escape(key), text):
+            continue
+        extra += [note, "%s=%s" % (key, value)]
+        added.append(key)
+    if not added:
+        return []
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text + ("" if not text or text.endswith("\n") else "\n") + "\n".join(extra) + "\n")
+    except Exception:
+        return []
+    if cb:
+        cb("Added %s to the project's .env" % ", ".join(added), "info")
+    return added
+
+
+def _ci_target(out_dir, target=None):
+    if target:
+        return target
+    if os.path.isfile(os.path.join(out_dir, "pom.xml")):
+        return "selenium"
+    if os.path.isfile(os.path.join(out_dir, "playwright.config.js")):
+        return "playwright"
+    if os.path.isfile(os.path.join(out_dir, "cypress.config.js")):
+        return "cypress"
+    return ""
+
+
+def _ci_api_files(out_dir):
+    folder = os.path.join(out_dir, _POSTMAN_DIR)
+    if not os.path.isfile(os.path.join(folder, _POSTMAN_COLLECTION)):
+        return None
+    return _POSTMAN_DIR + "/" + _POSTMAN_COLLECTION, _POSTMAN_DIR + "/" + _POSTMAN_ENV
+
+
+def _ci_run_steps(target, browsers):
+    """[(name, shell command)] that install and run the UI tests on Ubuntu."""
+    if target == "selenium":
+        return [("Run the tests", "mvn -B test")]
+    if target == "playwright":
+        need = ["chromium"] + (["firefox"] if "firefox" in browsers.split(",") else [])
+        return [("Install packages", "npm install"),
+                ("Install browsers", "npx playwright install --with-deps " + " ".join(need)),
+                ("Run the tests", "npm test")]
+    return [("Install packages", "npm install"),
+            ("Run the tests", "npm run test:headless")]
+
+
+def _ci_github(target, browsers, api):
+    env = [("CI", "true"), ("HEADLESS", "true"), ("PROGRESS", "off"), ("OPEN_REPORT", "false"),
+           ("BROWSER", browsers)] + ([("VIDEO", "off")] if target == "selenium" else [])
+    env += [(k, "${{ vars.%s%s }}" % (k, " || 'local'" if k == "GRID" else "")) for k in _CI_VARS]
+    env += [(k, "${{ secrets.%s }}" % k) for k in _CI_SECRETS]
+    q = lambda v: v if v.startswith("${{") else '"%s"' % v
+    out = ["# %s. Delete this line to keep your own edits:" % _CI_MARKER,
+           "# QA Studio then leaves the file alone on the next generate.",
+           "# Settings > Secrets and variables > Actions: add APP_BASE_URL / APP_LOGIN_URL (and GRID) as",
+           "# variables, APP_USER / APP_PASS / OTP_SECRET / QA_AI_API_KEY (and cloud grid keys) as secrets.",
+           "# Visual checks: CI runs on Linux, so download qa-visual-baselines from the first run and",
+           "# commit its files to visual-baselines/ - later runs compare against them.",
+           "name: QA tests",
+           "on:",
+           "  push:",
+           "  pull_request:",
+           "  workflow_dispatch:",
+           "jobs:",
+           "  ui-tests:",
+           "    runs-on: ubuntu-latest",
+           "    timeout-minutes: 90",
+           "    env:"]
+    out += ["      %s: %s" % (k, q(v)) for k, v in env]
+    out += ["    steps:", "      - uses: actions/checkout@v5"]
+    if target == "selenium":
+        out += ["      - uses: actions/setup-java@v5", "        with:", "          distribution: temurin",
+                "          java-version: '17'", "          cache: maven"]
+    else:
+        out += ["      - uses: actions/setup-node@v5", "        with:", "          node-version: '22'"]
+    for name, cmd in _ci_run_steps(target, browsers):
+        out += ["      - name: %s" % name, "        run: %s" % cmd]
+    out += ["      - name: Keep the reports", "        if: always()", "        uses: actions/upload-artifact@v5",
+            "        with:", "          name: qa-test-reports", "          if-no-files-found: ignore",
+            "          path: |"] + ["            %s" % a for a in _CI_ARTIFACTS[target]]
+    out += ["      - name: Keep the visual baselines (download once and commit visual-baselines/)",
+            "        if: always()", "        uses: actions/upload-artifact@v5",
+            "        with:", "          name: qa-visual-baselines", "          if-no-files-found: ignore",
+            "          path: visual-baselines/"]
+    if api:
+        coll, envf = api
+        out += ["",
+                "  api-tests:",
+                "    runs-on: ubuntu-latest",
+                "    env:"]
+        out += ["      %s: ${{ secrets.%s }}" % (k, k) for k in ("APP_USER", "APP_PASS", "OTP_SECRET")]
+        out += ["    steps:", "      - uses: actions/checkout@v5",
+                "      - uses: actions/setup-node@v5", "        with:", "          node-version: '22'",
+                "      - name: Run the API tests (Newman)",
+                "        run: " + _ci_newman(coll, envf),
+                "      - name: Keep the API results", "        if: always()",
+                "        uses: actions/upload-artifact@v5",
+                "        with:", "          name: qa-api-results", "          if-no-files-found: ignore",
+                "          path: newman/"]
+    return "\n".join(out) + "\n"
+
+
+def _ci_newman(coll, envf):
+    return ('mkdir -p newman; E=""; [ -f "%s" ] && E="--environment %s"; npx -y newman run "%s" $E'
+            ' --env-var "APP_USER=$APP_USER" --env-var "APP_PASS=$APP_PASS" --env-var "OTP_SECRET=$OTP_SECRET"'
+            ' --reporters cli,junit --reporter-junit-export newman/results.xml' % (envf, envf, coll))
+
+
+def _ci_azure(target, browsers, api):
+    names = list(_CI_SECRETS) + [k for k in _CI_VARS if k != "GRID"]
+    # An undefined Azure variable stays as the literal text "$(NAME)": drop those.
+    clean = 'for v in %s; do case "${!v}" in \'$(\'*) unset "$v";; esac; done' % " ".join(names)
+    out = ["# %s. Delete this line to keep your own edits:" % _CI_MARKER,
+           "# QA Studio then leaves the file alone on the next generate.",
+           "# Pipeline > Edit > Variables: add APP_BASE_URL / APP_LOGIN_URL, and APP_USER / APP_PASS /",
+           "# OTP_SECRET / QA_AI_API_KEY (and cloud grid keys) as secret variables.",
+           "# Visual checks: CI runs on Linux, so download qa-visual-baselines from the first run and",
+           "# commit its files to visual-baselines/ - later runs compare against them.",
+           "trigger:", "  - main", "  - master", "pr:", "  - main", "  - master",
+           "pool:", "  vmImage: ubuntu-latest",
+           "variables:"]
+    plain = [("CI", "true"), ("HEADLESS", "true"), ("PROGRESS", "off"), ("OPEN_REPORT", "false"),
+             ("BROWSER", browsers)] + ([("VIDEO", "off")] if target == "selenium" else [])
+    out += ["  %s: '%s'" % (k, v) for k, v in plain]
+    out += ["  GRID: 'local'", "jobs:", "  - job: ui_tests", "    displayName: UI tests",
+            "    timeoutInMinutes: 90", "    steps:"]
+    if target != "selenium":
+        out += ["      - task: NodeTool@0", "        inputs:", "          versionSpec: '22.x'"]
+    steps = _ci_run_steps(target, browsers)
+    for name, cmd in steps[:-1]:
+        out += ["      - script: %s" % cmd, "        displayName: %s" % name]
+    java = ['          export JAVA_HOME="${JAVA_HOME_17_X64:-$JAVA_HOME}"'] if target == "selenium" else []
+    out += ["      - script: |", "          " + clean] + java + ["          " + steps[-1][1],
+            "        displayName: %s" % steps[-1][0], "        env:"]
+    out += ["          %s: $(%s)" % (k, k) for k in names]
+    for i, a in enumerate(sorted({x.split("/")[0] + ("/" + x.split("/")[1] if target == "cypress" else "")
+                                  for x in _CI_ARTIFACTS[target]})):
+        out += ["      - task: PublishPipelineArtifact@1", "        condition: always()", "        continueOnError: true",
+                "        inputs:", "          targetPath: %s" % a.rstrip("/"),
+                "          artifact: qa-%s" % a.rstrip("/").replace("/", "-")]
+    out += ["      - task: PublishPipelineArtifact@1", "        displayName: Keep the visual baselines",
+            "        condition: always()", "        continueOnError: true",
+            "        inputs:", "          targetPath: visual-baselines", "          artifact: qa-visual-baselines"]
+    if target == "selenium":
+        out += ["      - task: PublishTestResults@2", "        condition: always()", "        inputs:",
+                "          testResultsFormat: JUnit", "          testResultsFiles: 'target/surefire-reports/TEST-*.xml'"]
+    if api:
+        coll, envf = api
+        out += ["  - job: api_tests", "    displayName: API tests (Newman)", "    steps:",
+                "      - task: NodeTool@0", "        inputs:", "          versionSpec: '22.x'",
+                "      - script: |", "          " + clean.replace(" ".join(names), "APP_USER APP_PASS OTP_SECRET"),
+                "          " + _ci_newman(coll, envf),
+                "        displayName: Run the API tests", "        env:"]
+        out += ["          %s: $(%s)" % (k, k) for k in ("APP_USER", "APP_PASS", "OTP_SECRET")]
+        out += ["      - task: PublishTestResults@2", "        condition: always()", "        inputs:",
+                "          testResultsFormat: JUnit", "          testResultsFiles: 'newman/results.xml'"]
+    return "\n".join(out) + "\n"
+
+
+def write_ci_pipelines(out_dir, target=None, browsers="", cb=None):
+    """GitHub Actions + Azure Pipelines files that run the generated tests (and the
+    Postman collection with Newman). A file whose marker line was deleted is
+    the user's own and is left alone. Returns the written paths."""
+    target = _ci_target(out_dir, target)
+    if target not in _CI_ARTIFACTS:
+        return []
+    browsers = ",".join(b for b in str(browsers or "").replace(" ", "").split(",") if b) or "chrome"
+    api = _ci_api_files(out_dir)
+    written = []
+    for rel, text in ((_CI_GITHUB, _ci_github(target, browsers, api)), (_CI_AZURE, _ci_azure(target, browsers, api))):
+        path = os.path.join(out_dir, *rel.split("/"))
+        old = None
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                old = f.read()
+        except Exception:
+            pass
+        if old is not None and (_CI_MARKER not in old or old == text):
+            continue
+        os.makedirs(os.path.dirname(path) or out_dir, exist_ok=True)
+        with open(path, "w", encoding="utf-8", newline="\n") as f:
+            f.write(text)
+        written.append(rel)
+    if written and cb:
+        cb("CI pipelines: %s (reports kept as build artifacts)" % ", ".join(written), "info")
+    return written
+
+
+# ---- Batch 10: GitHub Actions settings for the generated workflow ----
+# After a push to GitHub, the URLs (repository variables) and the test account
+# (encrypted secrets) are added from the project's own settings, so the
+# qa-tests workflow runs without setup. Only MISSING names are added: values
+# already set on GitHub are never replaced. Secrets come only from the
+# project's .env (written there only when the user opted in) and need PyNaCl.
+_CI_PLACEHOLDER_HOSTS = ("example.com", "your-app", "your-login")
+_CI_PUSH_SECRETS = ("APP_USER", "APP_PASS", "OTP_SECRET")
+
+
+def _ci_project_settings(repo_dir):
+    """({variable: value}, {secret: value}) found in the project."""
+    vals = {k: read_env_value(repo_dir, k) for k in ("APP_BASE_URL", "APP_LOGIN_URL") + _CI_PUSH_SECRETS}
+    props = os.path.join(repo_dir, "config.properties")
+    if os.path.isfile(props):
+        try:
+            with open(props, "r", encoding="utf-8") as f:
+                for line in f:
+                    k, sep, v = line.strip().partition("=")
+                    key = {"app.base.url": "APP_BASE_URL", "app.login.url": "APP_LOGIN_URL"}.get(k.strip())
+                    if sep and key and not vals.get(key):
+                        vals[key] = v.strip()
+        except Exception:
+            pass
+    variables = {k: vals[k] for k in ("APP_BASE_URL", "APP_LOGIN_URL")
+                 if vals.get(k) and not any(h in vals[k].lower() for h in _CI_PLACEHOLDER_HOSTS)}
+    secrets = {k: vals[k] for k in _CI_PUSH_SECRETS if vals.get(k)}
+    return variables, secrets
+
+
+def _seal_secret(public_key_b64, value):
+    """GitHub's secret encryption (libsodium sealed box), via PyNaCl."""
+    from nacl import encoding, public
+    box = public.SealedBox(public.PublicKey(public_key_b64.encode("utf-8"), encoding.Base64Encoder()))
+    return base64.b64encode(box.encrypt(str(value).encode("utf-8"))).decode("utf-8")
+
+
+def github_ci_settings(repo_dir, remote_url, token, cb=None):
+    """Add the missing Actions variables / secrets for the generated workflow.
+    Returns {"variables": [...], "secrets": [...]} (the names added)."""
+    cb = cb or (lambda *a, **k: None)
+    done = {"variables": [], "secrets": []}
+    owner, repo = _parse_github_owner_repo(remote_url)
+    if not (owner and repo and token) or not os.path.isfile(os.path.join(repo_dir, *_CI_GITHUB.split("/"))):
+        return done
+    variables, secrets = _ci_project_settings(repo_dir)
+    if not variables and not secrets:
+        return done
+    api = "https://api.github.com/repos/%s/%s/actions" % (owner, repo)
+    headers = {"Authorization": "Bearer " + token, "Accept": "application/vnd.github+json",
+               "X-GitHub-Api-Version": "2022-11-28"}
+    denied = False
+    for name, value in variables.items():
+        r = requests.get("%s/variables/%s" % (api, name), headers=headers, timeout=15)
+        if r.status_code == 200:
+            continue                                  # already set on GitHub: keep it
+        if r.status_code in (401, 403):
+            denied = True
+            break
+        r = requests.post(api + "/variables", headers=headers, json={"name": name, "value": value}, timeout=15)
+        if r.status_code in (200, 201):
+            done["variables"].append(name)
+        elif r.status_code in (401, 403):
+            denied = True
+            break
+    if secrets and not denied:
+        try:
+            import nacl  # noqa: F401
+            have_nacl = True
+        except ImportError:
+            have_nacl = False
+        missing = []
+        for name in secrets:
+            r = requests.get("%s/secrets/%s" % (api, name), headers=headers, timeout=15)
+            if r.status_code in (401, 403):
+                denied = True
+                break
+            if r.status_code == 404:
+                missing.append(name)
+        if missing and not denied and not have_nacl:
+            cb("GitHub secrets %s were not added: that needs the PyNaCl package (py -3.12 -m pip install pynacl), "
+               "or add them in the repository's Settings > Secrets and variables > Actions." % ", ".join(missing), "warn")
+        elif missing and not denied:
+            r = requests.get(api + "/secrets/public-key", headers=headers, timeout=15)
+            if r.status_code in (401, 403):
+                denied = True
+            elif r.status_code == 200:
+                key = r.json()
+                for name in missing:
+                    body = {"encrypted_value": _seal_secret(key["key"], secrets[name]), "key_id": key["key_id"]}
+                    r = requests.put("%s/secrets/%s" % (api, name), headers=headers, json=body, timeout=15)
+                    if r.status_code in (201, 204):
+                        done["secrets"].append(name)
+                    elif r.status_code in (401, 403):
+                        denied = True
+                        break
+    if denied:
+        cb("The Git token can't change this repository's Actions settings: add APP_BASE_URL / APP_LOGIN_URL "
+           "(variables) and APP_USER / APP_PASS (secrets) yourself, or give the token the 'repo' scope "
+           "(fine-grained: Variables and Secrets: Read and write).", "warn")
+    added = done["variables"] + done["secrets"]
+    if added:
+        cb("GitHub Actions settings added for the qa-tests workflow: %s" % ", ".join(added), "ok")
+    return done
+
+
+def _github_ci_settings_safe(repo_dir, remote_url, token, cb=None):
+    """Never fails a push."""
+    try:
+        return github_ci_settings(repo_dir, remote_url, token, cb)
+    except Exception as exc:
+        if cb:
+            cb("GitHub Actions settings skipped: %s" % str(exc).replace(token or "\0", "***"), "warn")
+        return {"variables": [], "secrets": []}
+
+
+# ---- Batch 10: the test account in .env only while opted in ----
+# QA Studio remembers (on this PC, outside the project) a fingerprint of each
+# APP_USER / APP_PASS / OTP_SECRET value it wrote into a project's .env. When a
+# later generate doesn't write it (saving the test account is off), a value
+# QA Studio wrote is cleared; a value typed by hand is kept (with a warning).
+_ENV_CRED_KEYS = ("APP_USER", "APP_PASS", "OTP_SECRET")
+
+
+def _env_cred_store():
+    return os.path.join(os.path.expanduser("~"), ".qastudio", "env-credentials.json")
+
+
+def _env_cred_fp(out_dir, value):
+    import hashlib
+    return hashlib.sha256((os.path.abspath(out_dir).lower() + "\0" + str(value)).encode("utf-8")).hexdigest()
+
+
+def _clear_env_keys(out_dir, keys):
+    path = os.path.join(out_dir, ".env")
+    with open(path, "r", encoding="utf-8", newline="") as f:
+        text = f.read()
+    for k in keys:
+        text = re.sub(r"(?m)^([ \t]*%s[ \t]*=)[^\r\n]*" % re.escape(k), r"\1", text)
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        f.write(text)
+
+
+def sync_env_credentials(out_dir, wanted, cb=None):
+    """wanted = {key: value} this generate wrote to .env (empty when the user
+    didn't opt in). Returns (cleared keys, kept keys)."""
+    wanted = {k: v for k, v in (wanted or {}).items() if k in _ENV_CRED_KEYS and v}
+    store_path, proj = _env_cred_store(), os.path.abspath(out_dir).lower()
+    try:
+        with open(store_path, "r", encoding="utf-8") as f:
+            store = json.load(f)
+        if not isinstance(store, dict):
+            store = {}
+    except Exception:
+        store = {}
+    rec = dict(store.get(proj) or {})
+    cleared, kept = [], []
+    for key in _ENV_CRED_KEYS:
+        cur = read_env_value(out_dir, key)
+        if wanted.get(key):
+            rec[key] = _env_cred_fp(out_dir, wanted[key])
+        elif cur and rec.get(key) == _env_cred_fp(out_dir, cur):
+            cleared.append(key)
+            rec.pop(key, None)
+        else:
+            rec.pop(key, None)
+            if cur:
+                kept.append(key)
+    if cleared:
+        _clear_env_keys(out_dir, cleared)
+        if cb:
+            cb("Removed %s from the project's .env: saving the test account is off." % ", ".join(cleared), "info")
+    if kept and cb:
+        cb("The project's .env still has %s that this run didn't write (saving the test account is off). "
+           "Clear them there if they shouldn't be used." % ", ".join(kept), "warn")
+    if rec:
+        store[proj] = rec
+    else:
+        store.pop(proj, None)
+    try:
+        os.makedirs(os.path.dirname(store_path), exist_ok=True)
+        with open(store_path, "w", encoding="utf-8") as f:
+            json.dump(store, f)
+    except Exception:
+        pass
+    return cleared, kept
+
+
+def _sync_env_credentials_safe(out_dir, login, cb=None):
+    try:
+        return sync_env_credentials(out_dir, {"APP_USER": (login or {}).get("env_user", ""),
+                                              "APP_PASS": (login or {}).get("env_pass", ""),
+                                              "OTP_SECRET": (login or {}).get("env_otp", "")}, cb)
+    except Exception as exc:
+        if cb:
+            cb("Couldn't check the project's .env credentials: %s" % exc, "warn")
+        return [], []
+
+
+# ---- Batch 10: run the tests, push, and bring back the CI baselines ----
+_RUN_LOG_HINTS = ("✓", "✘", "√", "×", " passed", " failed", " flaky", " skipped", "did not run",
+                  "[visual]", "[auth]", "[grid]", "Tests run:", "All specs passed", "BUILD FAILURE")
+
+
+def _kill_tree(proc):
+    import subprocess
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        else:
+            proc.kill()
+    except Exception:
+        pass
+
+
+def _test_command(out_dir, target):
+    import shutil
+    if target == "selenium":
+        mvn = shutil.which("mvn")
+        return [mvn, "-B", "test"] if mvn else None
+    npm = shutil.which("npm")
+    if not npm:
+        return None
+    return [npm, "run", "test:headless"] if target == "cypress" else [npm, "test"]
+
+
+def run_project_tests(out_dir, target=None, cb=None, should_stop=None, timeout=3600):
+    """Run the generated tests once with hidden browsers, streaming the result
+    lines to cb. Returns {"ran", "code", "summary"}."""
+    import subprocess
+    cb = cb or (lambda *a, **k: None)
+    should_stop = should_stop or (lambda: False)
+    target = _ci_target(out_dir, target)
+    cmd = _test_command(out_dir, target)
+    if not cmd:
+        need = "Maven (mvn)" if target == "selenium" else "Node.js (npm)"
+        cb("Can't run the tests here: %s isn't installed on this PC." % need, "warn")
+        return {"ran": False, "code": None, "summary": ""}
+    if target != "selenium" and not os.path.isdir(os.path.join(out_dir, "node_modules")):
+        try:
+            import automation_targets
+            automation_targets.install_dependencies(out_dir, cb=cb, should_stop=should_stop)
+        except Exception as exc:
+            cb("npm install failed: %s" % exc, "warn")
+    env = dict(os.environ, HEADLESS="true", PROGRESS="off")
+    cb("Running the tests with hidden browsers (%s)…" % " ".join(os.path.basename(c) for c in cmd[:1] + cmd[1:]), "info")
+    try:
+        proc = subprocess.Popen(cmd, cwd=out_dir, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, encoding="utf-8", errors="replace",
+                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except Exception as exc:
+        cb("Couldn't start the tests: %s" % str(exc)[:160], "warn")
+        return {"ran": False, "code": None, "summary": ""}
+    start, summary, tail = time.time(), [], []
+    for line in proc.stdout:
+        line = line.rstrip()
+        if not line:
+            continue
+        tail = (tail + [line])[-8:]
+        if any(h in line for h in _RUN_LOG_HINTS):
+            cb("   " + line.strip()[:220], "dim")
+        if re.match(r"^\s*\d+ (passed|failed|flaky|skipped|did not run)\b", line) or \
+                re.search(r"Tests run: \d+, Failures: \d+", line) or "All specs passed" in line or \
+                re.search(r"\d+ of \d+ failed", line):
+            summary.append(line.strip())
+        if should_stop() or time.time() - start > timeout:
+            _kill_tree(proc)
+            cb("Test run stopped.", "warn")
+            return {"ran": False, "code": None, "summary": ""}
+    proc.wait()
+    text = " · ".join(summary[-4:]) or " | ".join(tail[-3:])
+    if proc.returncode == 0:
+        cb("Tests finished: %s" % text, "ok")
+    else:
+        cb("Tests finished with failures (exit %s): %s" % (proc.returncode, text), "warn")
+    return {"ran": True, "code": proc.returncode, "summary": text}
+
+
+def _git_head(repo_dir):
+    import subprocess
+    try:
+        return subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo_dir, capture_output=True,
+                              text=True).stdout.strip()
+    except Exception:
+        return ""
+
+
+def _github_run_failure_reasons(api, run_id, headers):
+    """Why a run failed, in GitHub's words: the error annotations of each failed
+    job (e.g. a billing / spending-limit stop before any step ran), else the
+    step it failed at."""
+    out = []
+    try:
+        r = requests.get("%s/runs/%s/jobs" % (api, run_id), headers=headers, timeout=20)
+        jobs = (r.json() or {}).get("jobs") or [] if r.status_code == 200 else []
+    except Exception:
+        return out
+    for job in jobs:
+        if job.get("conclusion") not in ("failure", "cancelled", "timed_out", "startup_failure"):
+            continue
+        notes = []
+        try:
+            a = requests.get(job["check_run_url"].rstrip("/") + "/annotations", headers=headers, timeout=20)
+            notes = [n.get("message", "").strip() for n in (a.json() or [])
+                     if a.status_code == 200 and n.get("annotation_level") == "failure" and n.get("message")]
+        except Exception:
+            notes = []
+        steps = [st.get("name") for st in job.get("steps") or [] if st.get("conclusion") == "failure"]
+        name = job.get("name") or "job"
+        for n in notes[:3]:
+            out.append("%s: %s" % (name, n[:300]))
+        if steps:
+            out.append("%s failed at step: %s" % (name, ", ".join(steps)))
+        elif not notes:
+            out.append("%s didn't start — see the run page on GitHub." % name)
+        if any("spending limit" in n or "payments have failed" in n for n in notes):
+            out.append("GitHub only runs Actions on private repos while billing is in order: make the repo "
+                       "public (Settings > Danger Zone), or fix Settings > Billing and plans, then re-run.")
+    return out
+
+
+def github_fetch_ci_baselines(repo_dir, remote_url, token, branch="main", cb=None, should_stop=None,
+                              timeout=2400, poll=15):
+    """Wait for the qa-tests run of the pushed commit, then add the visual
+    baselines it saved (qa-visual-baselines) to visual-baselines/ and push
+    them, so the next run compares against them. Returns the files added."""
+    import io
+    import zipfile
+    cb = cb or (lambda *a, **k: None)
+    should_stop = should_stop or (lambda: False)
+    owner, repo = _parse_github_owner_repo(remote_url)
+    sha = _git_head(repo_dir)
+    if not (owner and repo and token and sha):
+        return []
+    api = "https://api.github.com/repos/%s/%s/actions" % (owner, repo)
+    headers = {"Authorization": "Bearer " + token, "Accept": "application/vnd.github+json",
+               "X-GitHub-Api-Version": "2022-11-28"}
+    cb("Waiting for the GitHub 'QA tests' run of this push…", "info")
+    start, run, shown = time.time(), None, ""
+    while time.time() - start < timeout:
+        if should_stop():
+            cb("Stopped waiting for GitHub.", "warn")
+            return []
+        r = requests.get("%s/workflows/qa-tests.yml/runs" % api, headers=headers,
+                         params={"head_sha": sha, "per_page": 5}, timeout=20)
+        if r.status_code in (401, 403, 404):
+            cb("Can't follow the GitHub run (HTTP %s): the token needs the 'repo' scope "
+               "(fine-grained: Actions: Read)." % r.status_code, "warn")
+            return []
+        runs = (r.json() or {}).get("workflow_runs") or [] if r.status_code == 200 else []
+        run = runs[0] if runs else None
+        if run:
+            if run.get("status") != shown:
+                shown = run.get("status")
+                cb("GitHub run %s: %s" % (shown, run.get("html_url", "")), "dim")
+            if run.get("status") == "completed":
+                break
+        elif time.time() - start > 180:
+            cb("No GitHub run started for this push — check the repository's Actions tab "
+               "(Actions may be turned off).", "warn")
+            return []
+        time.sleep(poll)
+    else:
+        cb("The GitHub run didn't finish in time — open it on GitHub.", "warn")
+        return []
+    concl = run.get("conclusion") or ""
+    cb("GitHub run finished: %s — %s" % (concl, run.get("html_url", "")), "ok" if concl == "success" else "warn")
+    if concl != "success":
+        for why in _github_run_failure_reasons(api, run["id"], headers):
+            cb("   " + why, "warn")
+    r = requests.get("%s/runs/%s/artifacts" % (api, run["id"]), headers=headers, timeout=20)
+    arts = [a for a in ((r.json() or {}).get("artifacts") or []) if a.get("name") == "qa-visual-baselines"] \
+        if r.status_code == 200 else []
+    if not arts:
+        return []
+    z = requests.get(arts[0]["archive_download_url"], headers=headers, timeout=120)
+    if z.status_code != 200:
+        cb("Couldn't download the CI visual baselines (HTTP %s)." % z.status_code, "warn")
+        return []
+    folder = os.path.join(repo_dir, "visual-baselines")
+    added = []
+    with zipfile.ZipFile(io.BytesIO(z.content)) as zf:
+        for name in zf.namelist():
+            base = os.path.basename(name)
+            if not base.lower().endswith(".png") or os.path.exists(os.path.join(folder, base)):
+                continue
+            os.makedirs(folder, exist_ok=True)
+            with open(os.path.join(folder, base), "wb") as f:
+                f.write(zf.read(name))
+            added.append(base)
+    if not added:
+        cb("The CI visual baselines are already in the repository.", "dim")
+        return []
+    cb("Adding %d visual baseline(s) made by the GitHub run…" % len(added), "info")
+    ok, msg = push_to_git(repo_dir, remote_url, token, branch=branch,
+                          message="Add the CI visual baselines", cb=cb)
+    if ok:
+        cb("Visual baselines pushed — the next GitHub run compares against them.", "ok")
+    else:
+        cb("Couldn't push the visual baselines: %s" % msg, "warn")
+    return added
+
+
+def run_and_push(project_dir, target, git, cb=None, should_stop=None):
+    """'After generating: run and push': run the tests (hidden browsers), push
+    whatever the result, then (GitHub) wait for the CI run and push the visual
+    baselines it made. git = {url, token, branch}."""
+    cb = cb or (lambda *a, **k: None)
+    should_stop = should_stop or (lambda: False)
+    result = run_project_tests(project_dir, target, cb, should_stop)
+    if should_stop():
+        return result
+    url, token = (git or {}).get("url", "").strip(), (git or {}).get("token", "").strip()
+    branch = (git or {}).get("branch", "").strip() or "main"
+    if not url or not token:
+        cb("Not pushed: fill in the Git repository URL and token (section E) to push automatically.", "warn")
+        return result
+    cb("Pushing to %s…" % url, "info")
+    ok, msg = push_to_git(project_dir, url, token, branch=branch, cb=cb, public=bool((git or {}).get("public")))
+    if not ok:
+        cb("Push failed — %s" % (msg[len("rejected:"):].strip() if msg.startswith("rejected:") else msg), "err")
+        return result
+    if _parse_github_owner_repo(url)[0] and \
+            os.path.isfile(os.path.join(project_dir, *_CI_GITHUB.split("/"))):
+        try:
+            github_fetch_ci_baselines(project_dir, url, token, branch, cb, should_stop)
+        except Exception as exc:
+            cb("Couldn't follow the GitHub run: %s" % str(exc).replace(token, "***")[:200], "warn")
+    return result
+
+
+def _ci_pipelines_safe(out_dir, target, browsers, cb=None):
+    """CI files never fail a generate."""
+    try:
+        ensure_env_batch10(out_dir, cb)
+        return write_ci_pipelines(out_dir, target, browsers, cb)
+    except Exception as exc:
+        if cb:
+            cb("CI pipelines skipped: %s" % exc, "warn")
+        return []
+
+
 def _page_checks_in(text):
     """Page-level checks an expected result names, in order: [(check, value, phrase)]."""
     t = str(text or "")
@@ -16003,6 +16897,7 @@ def _page_checks_in(text):
     _batch68_checks_in(t, add)
     _api_checks_in(t, add)
     _a11y_checks_in(t, add)
+    _visual_checks_in(t, add)
     found.sort(key=lambda x: x[0])
     return [(c, v, p) for _, c, v, p in found]
 
@@ -16081,6 +16976,10 @@ def _page_check_label(check, value):
         how = {"exists": "exists", "absent": "is absent", "contains": 'contains "%s"' % "|".join(p[3:]).rstrip("|")
                }.get(p[2], 'is "%s"' % "|".join(p[3:]).rstrip("|"))
         return 'API response field "%s" %s' % (p[1], how)
+    if check == "visual":
+        name, ignore, pct = _visual_parts(value)
+        return ("page looks the same as the visual baseline" + (' "%s"' % name if name else "")
+                + (" (ignoring %s)" % ignore if ignore else "") + (" within %g%%" % pct))
     if check == "a11y":
         lvl = str(value or "serious")
         return "no %s accessibility violations" % ("critical" if lvl == "critical" else lvl + " or worse")
@@ -16160,9 +17059,13 @@ def _apply_assertion_pack(clean, raw_steps):
         covered = {_norm(x) for _, _, p in checks if p
                    for x in (p if isinstance(p, tuple) else (p,))}
         others = [p for p in _quoted_phrases(expected) if _norm(p) not in covered]
+        kinds = {c for c, _, _ in checks}
         at = first_index(n, "assertion")
         keep = []
         for i, it in enumerate(out):
+            if it.get("role") == "assertion" and n in (it.get("from_steps") or []) and \
+                    (it.get("check") or "") in kinds:
+                continue              # the compiler's own copy of a page check: replaced below
             if it.get("role") == "assertion" and n in (it.get("from_steps") or []) and \
                     (it.get("check") or "") not in ("table", "download"):
                 blob = _norm(" ".join([str(it.get("expected") or ""), str(it.get("target") or "")]
@@ -17863,6 +18766,11 @@ public final class Healer {
             if (!bad.isEmpty()) throw new AssertionError("Accessibility violations: " + bad);
             return true;
         }
+        if ("visual".equals(check)) {
+            String bad = visualDiff(value);
+            if (!bad.isEmpty()) throw new AssertionError("Visual check failed: " + bad);
+            return true;
+        }
         try {
             return new WebDriverWait(driver, Duration.ofSeconds(10)).until(d ->
                 Boolean.TRUE.equals(((JavascriptExecutor) d).executeScript(PAGE_CHECK_JS, check, value)));
@@ -17949,6 +18857,72 @@ public final class Healer {
     private static final String API_JS = __API_JS__;
     private static final String A11Y_RUN_JS = __A11Y_RUN_JS__;
     private static final String A11Y_FAILS_JS = __A11Y_FAILS_JS__;
+    private static final String VISUAL_PREP_JS = __VISUAL_PREP_JS__;
+    private static final String VISUAL_CMP_JS = __VISUAL_CMP_JS__;
+    private final Map<String, Integer> visualCount = new java.util.HashMap<>();
+
+    /** 'name|ignore selectors|max %': the visible page against
+     *  visual-baselines/<test>-<name>-<browser>.png. The first run (or
+     *  UPDATE_BASELINES=true) saves the baseline; a failing check writes a diff
+     *  image (changed pixels in red) to target/visual-diffs. '' = the same. */
+    private String visualDiff(String spec) {
+        String[] p = (spec + "||").split("[|]", -1);
+        String name = p[0].trim(), ignore = p[1].trim();
+        double max = __VISUAL_MAX__;
+        try { if (!p[2].trim().isEmpty()) max = Double.parseDouble(p[2].trim()); } catch (Exception ignored) { }
+        String test = "test";
+        try { test = org.testng.Reporter.getCurrentTestResult().getMethod().getMethodName(); } catch (Exception ignored) { }
+        if (name.isEmpty()) name = "check" + visualCount.merge(test, 1, Integer::sum);
+        String browser = "browser";
+        try {
+            browser = ((HasCapabilities) driver).getCapabilities().getBrowserName().toLowerCase(java.util.Locale.ROOT);
+            if (browser.contains("edge")) browser = "edge";
+        } catch (Exception ignored) { }
+        // The OS is part of the name: fonts draw differently on Windows and on the
+        // Linux CI machines, so each keeps its own baseline.
+        String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
+        os = os.startsWith("win") ? "win32" : os.startsWith("mac") ? "darwin" : "linux";
+        String key = (test + "-" + name + "-" + browser + "-" + os).replaceAll("[^A-Za-z0-9_.-]", "_");
+        java.nio.file.Path base = java.nio.file.Paths.get("visual-baselines", key + ".png");
+        JavascriptExecutor js = (JavascriptExecutor) driver;
+        String shot;
+        try {
+            try { js.executeScript(VISUAL_PREP_JS, ignore, true); Thread.sleep(300); } catch (Exception ignored) { }
+            shot = ((TakesScreenshot) driver).getScreenshotAs(OutputType.BASE64);
+        } finally {
+            try { js.executeScript(VISUAL_PREP_JS, ignore, false); } catch (Exception ignored) { }
+        }
+        try {
+            boolean update = "true".equalsIgnoreCase(Config.setting("UPDATE_BASELINES", "false"));
+            if (update || !java.nio.file.Files.exists(base)) {
+                java.nio.file.Files.createDirectories(base.getParent());
+                java.nio.file.Files.write(base, java.util.Base64.getDecoder().decode(shot));
+                System.out.println("[visual] " + (update ? "updated" : "saved") + " the baseline " + base
+                    + (update ? "" : " (first run) - later runs compare against it"));
+                return "";
+            }
+            String was = java.util.Base64.getEncoder().encodeToString(java.nio.file.Files.readAllBytes(base));
+            Object raw = js.executeAsyncScript(VISUAL_CMP_JS, was, shot, max, __VISUAL_DELTA__);
+            Map<?, ?> r = raw instanceof Map ? (Map<?, ?>) raw : java.util.Collections.emptyMap();
+            if (Boolean.TRUE.equals(r.get("ok"))) return "";
+            String note = String.valueOf(r.get("note") == null ? "" : r.get("note"));
+            double pct = r.get("pct") instanceof Number ? ((Number) r.get("pct")).doubleValue() : 100;
+            String diff = r.get("diff") instanceof String ? (String) r.get("diff") : "";
+            String where = "";
+            if (!diff.isEmpty()) {
+                java.nio.file.Path out = java.nio.file.Paths.get("target", "visual-diffs", key + "-diff.png");
+                java.nio.file.Files.createDirectories(out.getParent());
+                java.nio.file.Files.write(out, java.util.Base64.getDecoder().decode(diff));
+                java.nio.file.Files.write(java.nio.file.Paths.get("target", "visual-diffs", key + "-actual.png"),
+                    java.util.Base64.getDecoder().decode(shot));
+                where = " - diff image: " + out;
+            }
+            return (note.isEmpty() ? String.format(java.util.Locale.ROOT, "%.2f%% of the page changed (allowed %s%%)", pct, max)
+                : note) + " against " + base + where + ". Run with UPDATE_BASELINES=true if the change is intended.";
+        } catch (java.io.IOException e) {
+            return "could not read or write " + base + ": " + e.getMessage();
+        }
+    }
     private static final String AXE_CDN = "__AXE_CDN__";
     private static String axeSource;
     private int apiStatus = -1;
@@ -18416,6 +19390,10 @@ public final class Healer {
             .replace("__API_JS__", json.dumps(_API_JS))
             .replace("__A11Y_RUN_JS__", json.dumps(_A11Y_RUN_JS))
             .replace("__A11Y_FAILS_JS__", json.dumps(_A11Y_FAILS_JS))
+            .replace("__VISUAL_PREP_JS__", json.dumps(_VISUAL_PREP_JS))
+            .replace("__VISUAL_CMP_JS__", json.dumps(_VISUAL_CMP_JS))
+            .replace("__VISUAL_MAX__", repr(float(_VISUAL_MAX_PCT)))
+            .replace("__VISUAL_DELTA__", str(_VISUAL_PIXEL_DELTA))
             .replace("__AXE_CDN__", _AXE_CDN)
             .replace("__SCROLL_SEARCH_STEPS__", str(_SCROLL_SEARCH_STEPS))
             .replace("__PAGINATE_MAX__", str(_PAGINATE_MAX))
@@ -20132,6 +21110,7 @@ def build_selfhealing_project(out_dir, sequenced, base_url, login=None,
                             "APP_PASS": (login or {}).get("env_pass", ""),
                             "SMTP_PASS": (login or {}).get("smtp_pass", ""),
                             "OTP_SECRET": (login or {}).get("env_otp", "")})
+    _sync_env_credentials_safe(out_dir, login, cb)
 
     test_classes = []
     seed_sink = {}                      # generation-time locators → committed locators.json
@@ -20226,6 +21205,7 @@ def apply_run_browsers(out_dir, target, browsers, cb=None):
     ensure_env_defaults(out_dir, cb)
     picked = [b for b in RUN_BROWSERS if b in (browsers or [])] or ["chrome"]
     value = ",".join(picked)
+    _ci_pipelines_safe(out_dir, target or "selenium", value, cb)
     if (target or "selenium") == "selenium":
         path, key = os.path.join(out_dir, "config.properties"), "browser"
         # Every generate (even "keep"): old projects move to the new video default.
@@ -20306,6 +21286,7 @@ def generate_and_push_selfhealing(out_dir, stories_payload, base_url, login=None
         written = automation_targets.build(target, out_dir, sequenced, cfg,
                                            _seed_locator_for_intent, _HARVEST_JS,
                                            cb=cb, should_stop=should_stop, orig_tcs=_orig_tcs)
+        _sync_env_credentials_safe(out_dir, login, cb)
         if written is not None and not should_stop():
             written = list(written) + _api_collection_safe(out_dir, sequenced, base_url, cb)
             # Ready to run: dependencies (and the browser) installed in the folder.

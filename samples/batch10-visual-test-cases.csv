@@ -1,0 +1,7 @@
+﻿Test Case ID,Test Case Title,Step,Action,Expected Result,Element Type,Preferred Locator,Frame Context,Automation Note
+VB01,Login page looks the same as its baseline,1,Open https://the-internet.herokuapp.com/login,"The page shows ""Login Page"". The page looks the same as the visual baseline ""login""",,,,
+VB02,Checkboxes after ticking the first one,1,Open https://the-internet.herokuapp.com/checkboxes,"The page shows ""Checkboxes""",,,,
+VB02,Checkboxes after ticking the first one,2,"Tick the ""checkbox 1"" checkbox","The ""checkbox 1"" checkbox is checked. The page matches the visual baseline ""checkboxes-ticked""",,,,
+VB03,Challenging DOM ignoring the parts that change on every load,1,Open https://the-internet.herokuapp.com/challenging_dom,"The page shows ""Challenging DOM"". The page looks the same as the visual baseline ""challenging-dom"", ignoring ""#canvas"" and "".large-2 .button"", within 1%",,,,
+VB04,Hovers page has no visual changes within a tolerance,1,Open https://the-internet.herokuapp.com/hovers,"The page shows ""Hovers"". No visual changes within 2%",,,,
+VB05,Dynamic content changes (fails from the second run on purpose),1,Open https://the-internet.herokuapp.com/dynamic_content,"The page shows ""Dynamic Content"". The page looks the same as the visual baseline ""dynamic""",,,,Fails from the 2nd run: the text changes on every load (shows the diff image)

@@ -331,6 +331,7 @@ FEATURES = [
          "API, two-factor and accessibility steps: a step can send a GET / POST / PUT / PATCH / DELETE request (the browser's login cookies go along), check the response status, text or a JSON field, and save a field as {{name}} for later steps. Type \"{{OTP}}\" for the current authenticator code (secret: OTP_SECRET in .env). \"The page has no accessibility violations\" runs an axe-core scan (serious and critical issues fail).",
          "API tests for Postman and other API tools: when test cases have API steps, Generate also writes a api-tests/ folder: a Postman v2.1 collection (one folder per story and test case, one request per API step, the case's checks as Tests, saved response fields as variables, {{OTP}} computed by a pre-request script) and an environment with baseUrl and empty secrets. Import it into Postman, Insomnia, Bruno, Hoppscotch or Thunder Client, or run it on CI with: npx newman run api-tests/qa-studio-api.postman_collection.json -e api-tests/qa-studio.postman_environment.json",
          "Automation on a phone: tap Run remotely to run the same pipeline on GitHub Actions (headless Chrome inspection, replay, generation) and push the project to your Git repository. Test cases come from your Azure plans/stories or an uploaded CSV / Excel file (plus its optional data file). The Git token, test password and authenticator secret are saved encrypted in Supabase Vault. Follow the run live in Remote Runs.",
+         "Visual checks, CI pipelines and cloud browsers: an expected result such as 'The page looks the same as the visual baseline \"home\"' compares a screenshot with visual-baselines/; Generate also writes GitHub Actions / Azure Pipelines files, and GRID in .env runs the browsers in the cloud.",
      ],
      "points": [
          "Own Source & stories picker (section A) — unlocks with just a "
@@ -362,6 +363,7 @@ FEATURES = [
          "API requests and response checks, {{OTP}} two-factor codes from OTP_SECRET, and axe-core accessibility checks in all three frameworks.",
          "API steps are also exported as a Postman collection (api-tests/) that imports into any API tool and runs with Newman.",
          "On a phone, Run remotely generates the project on GitHub Actions and pushes it to Git; follow it in Remote Runs.",
+         "Visual baseline checks with ignore areas and a tolerance, ready-made GitHub Actions / Azure Pipelines files, and GRID=browserstack / sauce / lambdatest / a grid URL for cloud browsers.",
      ]},
     {"key": "links", "icon": ft.Icons.BOOKMARK_BORDER, "title": "Useful Links",
      "blurb": "Save links to the boards and apps you use, and open them in one click.",

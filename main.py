@@ -385,6 +385,11 @@ class QAStudio:
                                save=False)
         self.auto_only_automation = bool(self.creds.get("auto_only_automation", False))
         self.auto_env_creds = bool(self.creds.get("auto_env_creds", False))
+        # After generating: run the tests (hidden browsers), push, then bring the
+        # GitHub run's visual baselines back into the repo (desktop only).
+        self.auto_run_push = bool(self.creds.get("auto_run_push", False))
+        # A GitHub repo QA Studio creates on the first push: private by default.
+        self.auto_git_public = bool(self.creds.get("auto_git_public", False))
         # Email footers name the ACTIVE backend (read live, so a backend switch
         # or account change is reflected without re-registering).
         try:
@@ -10872,6 +10877,15 @@ class QAStudio:
                 cb(E.automation_done_message(_tgt, int(getattr(self, "_auto_todo", 0) or 0),
                                              _hprov), "ok")
                 _send_auto_report(stopped=bool(self._auto_stop))
+                if (getattr(self, "auto_run_push", False) and not self._auto_stop
+                        and (self._auto_result or ("",))[0] in ("generated", "nothing")):
+                    self._save_git_creds()
+                    E.run_and_push(project_dir, _tgt,
+                                   {"url": (self.auto_git_url or "").strip(),
+                                    "token": (self.auto_git_token or "").strip(),
+                                    "branch": (self.auto_git_branch or "").strip() or "main",
+                                    "public": bool(getattr(self, "auto_git_public", False))},
+                                   cb=cb, should_stop=lambda: self._auto_stop)
             except Exception as ex:
                 self._auto_result = ("failed", str(ex)[:120])
                 cb(f"Automation failed: {str(ex)[:200]}", "err")
@@ -11093,7 +11107,8 @@ class QAStudio:
                 ok, msg = E.push_to_git(proj, self.auto_git_url.strip(),
                                         self.auto_git_token.strip(),
                                         branch=(self.auto_git_branch.strip() or "main"),
-                                        cb=cb, force=force)
+                                        cb=cb, force=force,
+                                        public=bool(getattr(self, "auto_git_public", False)))
                 if ok:
                     cb("Pushed. Open/refresh the repo in IntelliJ to sync.", "ok")
                 elif msg.startswith("rejected:"):

@@ -496,6 +496,25 @@ def screen(app):
             except Exception:
                 pass
 
+        def _flip_run_push(e):
+            # Saved immediately; read by the worker after generation (no render).
+            app.auto_run_push = bool(e.control.value)
+            try:
+                app.creds["auto_run_push"] = app.auto_run_push
+                import store
+                store.save(app.creds)
+            except Exception:
+                pass
+
+        def _flip_git_public(e):
+            app.auto_git_public = bool(e.control.value)
+            try:
+                app.creds["auto_git_public"] = app.auto_git_public
+                import store
+                store.save(app.creds)
+            except Exception:
+                pass
+
         # "If this folder already has scripts": one clear choice instead of two
         # checkboxes (regenerate + re-inspect all). Saved at once; updated in place.
         existing_opts = {}
@@ -615,6 +634,18 @@ def screen(app):
             ft.Container(height=4),
             ft.Text(strings.t("auto_git_note_remote" if remote else "auto_git_note"),
                     size=11, color=T.INK_3, weight=ft.FontWeight.W_500),
+            # Desktop: after Generate, run the tests (hidden browsers), push, and
+            # bring the GitHub run's visual baselines back into the repo.
+            *([] if remote else [ft.Container(height=8), ft.Row([
+                ft.Checkbox(value=bool(getattr(app, "auto_run_push", False)),
+                            active_color=T.VIOLET, on_change=_flip_run_push),
+                ft.Text(strings.t("auto_run_push"), size=11.5, color=T.INK_2, expand=True),
+            ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.START)]),
+            *([] if remote else [ft.Container(height=4), ft.Row([
+                ft.Checkbox(value=bool(getattr(app, "auto_git_public", False)),
+                            active_color=T.VIOLET, on_change=_flip_git_public),
+                ft.Text(strings.t("auto_git_public"), size=11.5, color=T.INK_2, expand=True),
+            ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.START)]),
         ], spacing=0))
 
         local_card = card(ft.Column([
