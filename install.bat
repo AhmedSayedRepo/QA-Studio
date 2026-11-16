@@ -112,10 +112,10 @@ exit /b 0
 
 rem ================================ helpers ================================
 rem :find_python
-rem Re-detect a usable Python 3.12 by FULL PATH first (a Python just installed by
-rem winget or the python.org installer is NOT on this running shell's PATH yet) and
-rem call python.exe directly. Only fall back to the py launcher / PATH python if no
-rem known full-path install exists. Sets PY (and PYW for the windowless GUI launch).
+rem Re-detect Python 3.12 by FULL PATH first (a Python just installed by winget or
+rem the python.org installer is NOT on this running shell's PATH yet) and call
+rem python.exe directly; then the py launcher (py -3.12) or a PATH python that IS 3.12.
+rem Other versions are skipped on purpose. Sets PY (and PYW for the windowless GUI launch).
 rem Full paths are stored WITH surrounding quotes so a "%ProgramFiles%" location that
 rem contains a space still invokes correctly as %PY% / %PYW%.
 :find_python
@@ -125,30 +125,16 @@ if exist "%LOCALAPPDATA%\Programs\Python\Python312\python.exe" (
   set "PY="%LOCALAPPDATA%\Programs\Python\Python312\python.exe""
   set "PYW="%LOCALAPPDATA%\Programs\Python\Python312\pythonw.exe""
 )
-if not defined PY if exist "%LOCALAPPDATA%\Programs\Python\Python311\python.exe" (
-  set "PY="%LOCALAPPDATA%\Programs\Python\Python311\python.exe""
-  set "PYW="%LOCALAPPDATA%\Programs\Python\Python311\pythonw.exe""
-)
-if not defined PY if exist "%LOCALAPPDATA%\Programs\Python\Python313\python.exe" (
-  set "PY="%LOCALAPPDATA%\Programs\Python\Python313\python.exe""
-  set "PYW="%LOCALAPPDATA%\Programs\Python\Python313\pythonw.exe""
-)
 if not defined PY if exist "%ProgramFiles%\Python312\python.exe" (
   set "PY="%ProgramFiles%\Python312\python.exe""
   set "PYW="%ProgramFiles%\Python312\pythonw.exe""
 )
-if not defined PY if exist "%ProgramFiles%\Python311\python.exe" (
-  set "PY="%ProgramFiles%\Python311\python.exe""
-  set "PYW="%ProgramFiles%\Python311\pythonw.exe""
-)
-if not defined PY if exist "%ProgramFiles%\Python313\python.exe" (
-  set "PY="%ProgramFiles%\Python313\python.exe""
-  set "PYW="%ProgramFiles%\Python313\pythonw.exe""
-)
 if not defined PY ( py -3.12 --version >nul 2>&1 && ( set "PY=py -3.12" & set "PYW=pyw -3.12" ) )
-if not defined PY ( py -3 --version   >nul 2>&1 && ( set "PY=py -3"    & set "PYW=pyw -3" ) )
-if not defined PY ( python --version  >nul 2>&1 && ( set "PY=python"   & set "PYW=pythonw" ) )
+rem Only Python 3.12: on another version (3.13 / 3.14 ...) some pinned packages have
+rem no ready-made build and pip fails, so a missing 3.12 is installed instead.
+if not defined PY ( python -c "import sys; sys.exit(0 if sys.version_info[:2]==(3,12) else 1)" >nul 2>&1 && ( set "PY=python" & set "PYW=pythonw" ) )
 goto :eof
+
 
 
 

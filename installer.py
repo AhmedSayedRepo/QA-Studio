@@ -14,7 +14,9 @@ Run:  python installer.py
 # may be used, copied, modified, or distributed without prior written permission.
 
 import os
+import re
 import sys
+import tempfile
 import json
 import time
 import queue
@@ -70,8 +72,9 @@ def emit(ev):
 
 
 # ── Install worker ────────────────────────────────────────────────────────────
-def _run(cmd, lo, hi, progress):
-    """Stream a subprocess to the log; nudge progress between lo..hi."""
+def _run(cmd, lo, hi, progress, keep=None):
+    """Stream a subprocess to the log; nudge progress between lo..hi.
+    `keep` (a list) collects every output line, for the failure message."""
     nice = " ".join(os.path.basename(c) if i == 0 else c for i, c in enumerate(cmd))
     emit({"type": "log", "tone": "dim", "msg": "> " + nice})
     cur = lo
@@ -84,6 +87,8 @@ def _run(cmd, lo, hi, progress):
             line = line.rstrip()
             if not line:
                 continue
+            if keep is not None:
+                keep.append(line)
             low = line.lower()
             tone = "dim"
             if "error" in low or "failed" in low:
@@ -252,6 +257,52 @@ def _register_uninstall(py):
         return False
 
 
+_WANT_PY = (3, 12)     # QA Studio is built and tested on Python 3.12
+_NET_HINTS = ("could not fetch url", "connectionerror", "connection error", "read timed out", "proxyerror",
+              "sslerror", "ssl:", "certificate verify failed", "temporary failure in name resolution",
+              "getaddrinfo failed", "max retries exceeded", "network is unreachable", "connection reset")
+_BUILD_HINTS = ("microsoft visual c++", "failed building wheel", "failed to build", "error: subprocess-exited-with-error",
+                "metadata-generation-failed", "no matching distribution found", "could not find a version that satisfies")
+
+
+def _pip_failure(lines):
+    """A short, specific failure message from pip's output (the real reason
+    instead of a generic 'check your internet')."""
+    low = [l.lower() for l in lines]
+    ver = "%d.%d" % sys.version_info[:2]
+    pkg = ""
+    for l in lines:
+        m = re.search(r"(?:Failed (?:to )?build(?:ing wheel for)?|No matching distribution found for|"
+                      r"satisfies the requirement)\s+([A-Za-z0-9_.\-]+)", l)
+        if m:
+            pkg = m.group(1).rstrip(".")
+            break
+    errors = [l.strip() for l in lines if l.strip().lower().startswith("error")]
+    first = errors[0] if errors else (lines[-1].strip() if lines else "no output")
+    net = [lines[i].strip() for i, l in enumerate(low) if any(h in l for h in _NET_HINTS)]
+    if net:
+        return ("pip couldn't download the packages (network, proxy or firewall): %s — check the connection "
+                "or proxy, then Retry." % net[-1][:220])
+    if any(h in l for l in low for h in _BUILD_HINTS):
+        what = ("'%s'" % pkg) if pkg else "a package"
+        if sys.version_info[:2] != _WANT_PY:
+            return ("%s can't be installed on Python %s (no ready-made build for it). QA Studio needs "
+                    "Python 3.12: install it from python.org (tick 'Add Python to PATH'), then run install.bat "
+                    "again." % (what, ver))
+        return "%s failed to install: %s" % (what, first[:220])
+    return "Installing the packages failed: %s" % first[:240]
+
+
+def _save_pip_log(lines):
+    try:
+        path = os.path.join(tempfile.gettempdir(), "qastudio_install_pip.log")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+        return path
+    except Exception:
+        return ""
+
+
 def _work():
     py = sys.executable
 
@@ -259,16 +310,27 @@ def _work():
           "desc": "Setting up QA Studio. You can watch progress below \u2014 this only takes a moment."})
     emit({"type": "step", "i": 0, "state": "active", "meta": "running"})
     emit({"type": "progress", "value": 10})
+    ver = "%d.%d.%d" % sys.version_info[:3]
+    if sys.version_info[:2] == _WANT_PY:
+        emit({"type": "log", "tone": "ok", "msg": "Python %s (%s)" % (ver, py)})
+    else:
+        emit({"type": "log", "tone": "warn",
+              "msg": "Python %s found (%s) — QA Studio is built for Python 3.12; some packages may not "
+                     "install on %d.%d. If this fails, install Python 3.12 and run install.bat again."
+                     % (ver, py, sys.version_info[0], sys.version_info[1])})
     _run([py, "-m", "pip", "install", "--upgrade", "pip"], 10, 22, None)
 
     emit({"type": "step", "i": 0, "state": "done", "meta": "done"})
     emit({"type": "step", "i": 1, "state": "active", "meta": "working"})
     emit({"type": "progress", "value": 30})
-    code = _run([py, "-m", "pip", "install", "-r", REQ_FILE], 30, 88, None)
+    out = []
+    code = _run([py, "-m", "pip", "install", "-r", REQ_FILE], 30, 88, None, keep=out)
     if code != 0:
         emit({"type": "step", "i": 1, "state": "error", "meta": "failed"})
-        emit({"type": "fail",
-              "msg": "Dependency installation failed. Check your internet connection and try again."})
+        log_path = _save_pip_log(out)
+        if log_path:
+            emit({"type": "log", "tone": "err", "msg": "Full pip output saved to " + log_path})
+        emit({"type": "fail", "msg": _pip_failure(out) + (" (details: %s)" % log_path if log_path else "")})
         _STATE["finished"] = True
         return
 
