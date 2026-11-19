@@ -279,6 +279,10 @@ def _pip_failure(lines):
             break
     errors = [l.strip() for l in lines if l.strip().lower().startswith("error")]
     first = errors[0] if errors else (lines[-1].strip() if lines else "no output")
+    locked = [l for l in lines if "could not restore" in l.lower() or "winerror 32" in l.lower()]
+    if locked:
+        return ("A package this installer window is using couldn't be replaced (its files are open): %s — "
+                "close this window, download install.bat again and run it." % locked[0].strip()[:200])
     net = [lines[i].strip() for i, l in enumerate(low) if any(h in l for h in _NET_HINTS)]
     if net:
         return ("pip couldn't download the packages (network, proxy or firewall): %s — check the connection "
@@ -855,8 +859,11 @@ def _ensure_pywebview():
         pkgs.append("pythonnet")   # EdgeChromium/WebView2 backend on Windows
     try:
         flags = 0x08000000 if os.name == "nt" else 0
+        # Pinned to requirements.txt: this window keeps them loaded, so the
+        # package step must find the exact same versions already installed.
+        pins = ["-c", REQ_FILE] if os.path.isfile(REQ_FILE) else []
         subprocess.run([sys.executable, "-m", "pip", "install",
-                        "--disable-pip-version-check", *pkgs],
+                        "--disable-pip-version-check", *pkgs, *pins],
                        creationflags=flags, check=False)
     except Exception as ex:
         _log(f"pip install pywebview failed: {ex}")

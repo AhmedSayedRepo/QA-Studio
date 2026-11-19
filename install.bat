@@ -96,7 +96,10 @@ echo Preparing QA Studio installer...
 %PY% -m pip install --quiet --disable-pip-version-check --upgrade pip >nul 2>&1
 
 echo Installing native window backend (pywebview)...
-%PY% -m pip install --disable-pip-version-check "pywebview>=5.0" pythonnet
+rem -c requirements.txt pins them to the SAME versions the app needs: the installer
+rem window then holds those files open, and installing a different version later
+rem ("Could not restore ...\pythonnet") would fail on the locked files.
+%PY% -m pip install --disable-pip-version-check "pywebview>=5.0" pythonnet -c "%DEST%\requirements.txt"
 if errorlevel 1 (
   echo.
   echo [warn] Could not install the native-window backend. The installer will
@@ -134,6 +137,7 @@ rem Only Python 3.12: on another version (3.13 / 3.14 ...) some pinned packages 
 rem no ready-made build and pip fails, so a missing 3.12 is installed instead.
 if not defined PY ( python -c "import sys; sys.exit(0 if sys.version_info[:2]==(3,12) else 1)" >nul 2>&1 && ( set "PY=python" & set "PYW=pythonw" ) )
 goto :eof
+
 
 
 

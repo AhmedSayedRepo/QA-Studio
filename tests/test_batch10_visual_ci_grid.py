@@ -247,9 +247,9 @@ class CiPipelines(unittest.TestCase):
 
 class Texts(unittest.TestCase):
     def test_release_notes_and_help(self):
-        self.assertEqual(release_notes.PENDING_RELEASE_NOTE_KEYS,
-                         ("upd_note_batch10_visual", "upd_note_batch10_ci_grid", "upd_note_batch10_run_push"))
-        keys = release_notes.PENDING_RELEASE_NOTE_KEYS + ("help_automation_d15", "help_automation_p15",
+        batch10 = ("upd_note_batch10_visual", "upd_note_batch10_ci_grid", "upd_note_batch10_run_push")
+        self.assertEqual(release_notes.exact_keys_for("4.0.3"), batch10)       # released in 4.0.3
+        keys = batch10 + ("help_automation_d15", "help_automation_p15",
                                                           "auto_run_push")
         for lang in LANGS:
             for k in keys:

@@ -12824,6 +12824,7 @@ for _language, _values in _PARALLEL_RUNS_I18N.items():
 
 _BATCH9_I18N = {
     'en': {
+        "upd_note_installer_fixes": "Installing on a new PC is fixed: the installer now uses Python 3.12 (installing it when another Python version is there), no longer fails replacing a package its own window uses, and shows the real reason if a package can't be installed.",
         "auto_git_public": "Create a new GitHub repo as public (free GitHub Actions; anyone can see the tests)",
         "auto_run_push": "After generating: run the tests (hidden browsers), push to Git, and on GitHub add the visual baselines the CI run makes",
         "upd_note_batch10_run_push": "One click: with 'After generating: run the tests … and push' ticked, Generate also runs the tests with hidden browsers, pushes the project, waits for the GitHub run and adds its visual baselines to the repo. Visual baselines are now kept per OS (Windows / Linux CI), and a test account QA Studio saved in a project's .env is removed again when saving it is off.",
@@ -12856,6 +12857,7 @@ _BATCH9_I18N = {
         "upd_note_batch9_api_otp_a11y": "New step types: API requests with status / body / JSON-field checks (and response values reused in later steps), two-factor login with {{OTP}} from an authenticator secret (OTP_SECRET in .env), and accessibility checks with axe-core, in Selenium, Playwright and Cypress. Copy AI prompt lists the phrasings.",
     },
     'ar': {
+        "upd_note_installer_fixes": "تم إصلاح التثبيت على جهاز جديد: يستخدم المثبّت الآن Python 3.12 (ويثبّته عند وجود إصدار آخر من Python)، ولم يعد يفشل عند استبدال حزمة تستخدمها نافذته، ويعرض السبب الحقيقي إذا تعذّر تثبيت حزمة.",
         "auto_git_public": "إنشاء مستودع GitHub الجديد كمستودع عام (GitHub Actions مجانًا؛ يمكن لأي شخص رؤية الاختبارات)",
         "auto_run_push": "بعد التوليد: تشغيل الاختبارات (بمتصفحات مخفية) والدفع إلى Git، وعلى GitHub إضافة الصور المرجعية التي ينشئها تشغيل CI",
         "upd_note_batch10_run_push": "بنقرة واحدة: عند تحديد 'بعد التوليد: تشغيل الاختبارات … والدفع'، يشغّل التوليد أيضًا الاختبارات بمتصفحات مخفية، ويدفع المشروع، وينتظر تشغيل GitHub ثم يضيف صوره المرجعية إلى المستودع. أصبحت الصور المرجعية تُحفظ لكل نظام تشغيل (Windows / Linux في CI)، ويُزال حساب الاختبار الذي حفظه QA Studio في ملف .env للمشروع عند إيقاف الحفظ.",
@@ -12888,6 +12890,7 @@ _BATCH9_I18N = {
         "upd_note_batch9_api_otp_a11y": "أنواع خطوات جديدة: طلبات API مع التحقق من الحالة / المحتوى / حقول JSON (وإعادة استخدام قيم الاستجابة في الخطوات التالية)، وتسجيل دخول ثنائي المصادقة عبر {{OTP}} من سر تطبيق المصادقة (OTP_SECRET في ‎.env)، وفحوص إمكانية الوصول عبر axe-core، في Selenium وPlaywright وCypress. ويسرد موجّه الذكاء الاصطناعي الصيغ.",
     },
     'fr': {
+        "upd_note_installer_fixes": "L'installation sur un nouveau PC est corrigée : l'installateur utilise désormais Python 3.12 (en l'installant si une autre version est présente), n'échoue plus en remplaçant un paquet utilisé par sa propre fenêtre et affiche la vraie raison si un paquet ne peut pas être installé.",
         "auto_git_public": "Créer un nouveau dépôt GitHub public (GitHub Actions gratuit ; tout le monde peut voir les tests)",
         "auto_run_push": "Après la génération : lancer les tests (navigateurs masqués), pousser sur Git et, sur GitHub, ajouter les références visuelles créées par l'exécution CI",
         "upd_note_batch10_run_push": "En un clic : avec « Après la génération : lancer les tests … et pousser » coché, Générer lance aussi les tests avec des navigateurs masqués, pousse le projet, attend l'exécution GitHub et ajoute ses références visuelles au dépôt. Les références visuelles sont désormais gardées par système (Windows / Linux CI), et un compte de test enregistré par QA Studio dans le .env d'un projet est retiré quand l'enregistrement est désactivé.",
@@ -12920,6 +12923,7 @@ _BATCH9_I18N = {
         "upd_note_batch9_api_otp_a11y": "Nouveaux types d'étapes : requêtes API avec vérification du statut / du contenu / des champs JSON (valeurs réutilisables ensuite), connexion à double authentification avec {{OTP}} (OTP_SECRET dans .env) et vérifications d'accessibilité axe-core, dans Selenium, Playwright et Cypress. Le prompt IA liste les formulations.",
     },
     'tr': {
+        "upd_note_installer_fixes": "Yeni bir bilgisayara kurulum düzeltildi: yükleyici artık Python 3.12 kullanıyor (başka bir Python sürümü varsa onu kuruyor), kendi penceresinin kullandığı bir paketi değiştirirken artık başarısız olmuyor ve bir paket kurulamazsa gerçek nedeni gösteriyor.",
         "auto_git_public": "Yeni GitHub deposunu herkese açık oluştur (GitHub Actions ücretsiz; testleri herkes görebilir)",
         "auto_run_push": "Oluşturduktan sonra: testleri çalıştır (gizli tarayıcılar), Git'e gönder ve GitHub'da CI çalıştırmasının ürettiği görsel referansları ekle",
         "upd_note_batch10_run_push": "Tek tık: 'Oluşturduktan sonra: testleri çalıştır … ve gönder' işaretliyken Oluştur, testleri gizli tarayıcılarla da çalıştırır, projeyi gönderir, GitHub çalıştırmasını bekler ve görsel referanslarını depoya ekler. Görsel referanslar artık işletim sistemine göre (Windows / Linux CI) ayrı tutulur ve QA Studio'nun bir projenin .env dosyasına kaydettiği test hesabı, kaydetme kapalıyken yeniden kaldırılır.",
@@ -12952,6 +12956,7 @@ _BATCH9_I18N = {
         "upd_note_batch9_api_otp_a11y": "Yeni adım türleri: durum / içerik / JSON alanı kontrollü API istekleri (yanıt değerleri sonraki adımlarda kullanılabilir), doğrulayıcı gizli anahtarıyla {{OTP}} iki aşamalı giriş (.env içinde OTP_SECRET) ve axe-core erişilebilirlik kontrolleri; Selenium, Playwright ve Cypress'te. AI istemi ifadeleri listeler.",
     },
     'es': {
+        "upd_note_installer_fixes": "Se corrigió la instalación en un PC nuevo: el instalador ahora usa Python 3.12 (lo instala si hay otra versión de Python), ya no falla al reemplazar un paquete que usa su propia ventana y muestra el motivo real si un paquete no se puede instalar.",
         "auto_git_public": "Crear el nuevo repositorio de GitHub como público (GitHub Actions gratis; cualquiera puede ver las pruebas)",
         "auto_run_push": "Después de generar: ejecutar las pruebas (navegadores ocultos), subir a Git y, en GitHub, añadir las referencias visuales que crea la ejecución de CI",
         "upd_note_batch10_run_push": "Con un clic: con «Después de generar: ejecutar las pruebas … y subir» marcado, Generar también ejecuta las pruebas con navegadores ocultos, sube el proyecto, espera la ejecución de GitHub y añade sus referencias visuales al repositorio. Las referencias visuales ahora se guardan por sistema (Windows / Linux CI), y una cuenta de prueba que QA Studio guardó en el .env de un proyecto se quita cuando guardarla está desactivado.",
@@ -12984,6 +12989,7 @@ _BATCH9_I18N = {
         "upd_note_batch9_api_otp_a11y": "Nuevos tipos de paso: peticiones API con comprobación de estado / contenido / campos JSON (valores reutilizables después), inicio de sesión con doble factor mediante {{OTP}} (OTP_SECRET en .env) y comprobaciones de accesibilidad axe-core, en Selenium, Playwright y Cypress. El prompt de IA lista las frases.",
     },
     'de': {
+        "upd_note_installer_fixes": "Die Installation auf einem neuen PC ist behoben: Das Installationsprogramm verwendet jetzt Python 3.12 (und installiert es, wenn eine andere Python-Version vorhanden ist), scheitert nicht mehr beim Ersetzen eines Pakets, das sein eigenes Fenster nutzt, und zeigt den echten Grund, wenn ein Paket nicht installiert werden kann.",
         "auto_git_public": "Neues GitHub-Repository öffentlich anlegen (GitHub Actions kostenlos; jeder kann die Tests sehen)",
         "auto_run_push": "Nach dem Generieren: Tests ausführen (ausgeblendete Browser), zu Git pushen und auf GitHub die visuellen Referenzen des CI-Laufs hinzufügen",
         "upd_note_batch10_run_push": "Mit einem Klick: Ist „Nach dem Generieren: Tests ausführen … und pushen“ aktiviert, führt Generieren die Tests auch mit ausgeblendeten Browsern aus, pusht das Projekt, wartet auf den GitHub-Lauf und fügt dessen visuelle Referenzen dem Repository hinzu. Visuelle Referenzen werden jetzt pro Betriebssystem (Windows / Linux-CI) gespeichert, und ein von QA Studio in der .env eines Projekts gespeichertes Testkonto wird wieder entfernt, wenn das Speichern aus ist.",
@@ -13016,6 +13022,7 @@ _BATCH9_I18N = {
         "upd_note_batch9_api_otp_a11y": "Neue Schrittarten: API-Anfragen mit Status- / Inhalts- / JSON-Feld-Prüfung (Antwortwerte in späteren Schritten nutzbar), Zwei-Faktor-Login mit {{OTP}} aus einem Authenticator-Geheimnis (OTP_SECRET in .env) und axe-core-Barrierefreiheitsprüfungen, in Selenium, Playwright und Cypress. Der KI-Prompt listet die Formulierungen.",
     },
     'nl': {
+        "upd_note_installer_fixes": "Installeren op een nieuwe pc is opgelost: het installatieprogramma gebruikt nu Python 3.12 (en installeert het als er een andere Python-versie is), mislukt niet meer bij het vervangen van een pakket dat het eigen venster gebruikt, en toont de echte reden als een pakket niet kan worden geïnstalleerd.",
         "auto_git_public": "Nieuwe GitHub-repository openbaar maken (GitHub Actions gratis; iedereen kan de tests zien)",
         "auto_run_push": "Na het genereren: de tests uitvoeren (verborgen browsers), naar Git pushen en op GitHub de visuele referenties van de CI-run toevoegen",
         "upd_note_batch10_run_push": "Met één klik: met 'Na het genereren: de tests uitvoeren … en pushen' aangevinkt voert Genereren ook de tests uit met verborgen browsers, pusht het project, wacht op de GitHub-run en voegt de visuele referenties daarvan toe aan de repository. Visuele referenties worden nu per besturingssysteem bewaard (Windows / Linux-CI), en een testaccount dat QA Studio in de .env van een project bewaarde, wordt weer verwijderd als bewaren uit staat.",

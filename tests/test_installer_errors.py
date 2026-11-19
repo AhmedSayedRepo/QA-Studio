@@ -41,6 +41,17 @@ class PipFailureMessage(unittest.TestCase):
         self.assertIn("_WANT_PY", src)
         self.assertNotIn("Check your internet connection", src)
 
+    def test_locked_package(self):
+        msg = installer._pip_failure(["ERROR: Could not restore 'c:\\py312\\site-packages\\pythonnet\\' from "
+                                      "'C:\\py312\\site-packages\\~~thonnet'. Check both paths"])
+        self.assertIn("close this window", msg)
+
+    def test_window_packages_are_pinned(self):
+        with open(os.path.join(ROOT, "install.bat"), encoding="utf-8") as f:
+            self.assertIn('pythonnet -c "%DEST%\\requirements.txt"', f.read())
+        import inspect
+        self.assertIn('["-c", REQ_FILE]', inspect.getsource(installer._ensure_pywebview))
+
 
 class InstallBatPicksPython312(unittest.TestCase):
     def test_only_312_is_used(self):
