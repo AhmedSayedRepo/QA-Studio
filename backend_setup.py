@@ -329,6 +329,34 @@ def connect_and_list_projects(app):
     return sorted({(p.ref.key or p.name) for p in projects if (p.ref.key or p.name)})
 
 
+def preferred_project(app, projects):
+    """Which project Connect selects: the one last used with this backend if
+    it's still listed; on Jira + Zephyr, a project Zephyr is enabled for (the
+    last-used one when it qualifies, else the first enabled one) - the first
+    project in a company's list often has no Zephyr and only errors. Falls
+    back to the first project."""
+    projects = list(projects or [])
+    if not projects:
+        return None
+    creds = getattr(app, "creds", {}) or {}
+    name = active(creds) or AZURE
+    last = creds.get("last_project_" + name)
+    pick = last if last in projects else None
+    if name == JIRA_ZEPHYR:
+        try:
+            enabled = get_backend(app).zephyr_enabled_project_keys()
+        except Exception:
+            enabled = None
+        if enabled:
+            on = set(enabled)
+            if pick in on:
+                return pick
+            first_on = next((p for p in projects if p in on), None)
+            if first_on:
+                return first_on
+    return pick or projects[0]
+
+
 def list_projects_for_backend(app, backend_name):
     """Return ``[{key, name}]`` for one locally configured backend.
 
@@ -446,7 +474,32 @@ def fetch_stories_for_plan(app, plan_id):
     try:
         backend = get_backend(app)
         proj = _as_project(backend, project)
+        # Setup's Sprint picker: "" = all active sprints (default), a sprint id,
+        # or "__backlog__" for the open stories outside sprints.
+        pick = str(getattr(app, "setup_sprint", "") or "")
+        if pick == "__backlog__":
+            seen = {}
+            backlog = getattr(backend, "fetch_backlog_stories", None)
+            for st in ((backlog(proj, 100) or []) if callable(backlog) else []):
+                sid = st.ref.key or st.ref.id
+                if sid and sid not in seen:
+                    seen[sid] = {"id": sid, "title": st.title}
+            if not seen:
+                app._stories_source_note = strings.t(
+                    "stories_note_none", project=getattr(getattr(proj, "ref", None), "key", "") or str(project))
+            return list(seen.values())
         sprints = backend.fetch_sprints(proj) or []
+        if pick:
+            chosen = [s for s in sprints if str(s.path) == pick]
+            seen = {}
+            for sp in chosen:
+                for st in (backend.fetch_stories_in_sprint(proj, sp.path) or []):
+                    sid = st.ref.key or st.ref.id
+                    if sid and sid not in seen:
+                        seen[sid] = {"id": sid, "title": st.title}
+            if not seen:
+                app._stories_source_note = strings.t("stories_note_sprint_empty")
+            return list(seen.values())
         active = [s for s in sprints
                   if (getattr(s, "state", "") or "").lower() == "active"]
         chosen = active or sprints
@@ -455,7 +508,9 @@ def fetch_stories_for_plan(app, plan_id):
             for st in (backend.fetch_stories_in_sprint(proj, sp.path) or []):
                 sid = st.ref.key or st.ref.id
                 if sid and sid not in seen:
-                    seen[sid] = {"id": sid, "title": st.title}
+                    # "sprint": shown beside the story in Setup's picker, so with
+                    # several active sprints it's clear which one a story is in.
+                    seen[sid] = {"id": sid, "title": st.title, "sprint": sp.name}
         if seen:
             return list(seen.values())
         # No sprint (Kanban / business project, or no board) or the sprint holds
@@ -559,6 +614,127 @@ def count_test_cases(app, plan_id, story_ids):
         return 0
 
 
+def zephyr_test_plans(app, project=None):
+    """Zephyr Test Plans [(key, name)] for the optional test-cycle step; []
+    off Jira + Zephyr or when they can't be read."""
+    if active(getattr(app, "creds", {}) or {}) != JIRA_ZEPHYR:
+        return []
+    try:
+        backend = get_backend(app)
+        return backend.fetch_zephyr_test_plans(_as_project(backend, project or getattr(app, "project", "")))
+    except Exception:
+        return []
+
+
+def add_run_to_zephyr_cycle(app, name, case_keys, plan_key=None):
+    """Put this run's test cases in a new Zephyr test cycle (optionally linked
+    to a Zephyr test plan). Returns create_cycle_for_cases' result dict."""
+    backend = get_backend(app)
+    return backend.create_cycle_for_cases(_as_project(backend, getattr(app, "project", "")),
+                                          name, case_keys, plan_key=plan_key or None)
+
+
+def sprint_summary_available(app):
+    """Sprint Summary works on Azure and on Jira + Zephyr (stories from the
+    sprint, test cases counted from Zephyr's traceability links)."""
+    creds = getattr(app, "creds", {}) or {}
+    return is_azure(creds) or active(creds) == JIRA_ZEPHYR
+
+
+def sprint_summary(app, plan_id, progress=None):
+    """The Sprint Summary modal's data. Azure: engine's own summary (unchanged).
+    Jira + Zephyr: the stories of Setup's chosen sprint (or all active sprints),
+    their states / assignees, and how many Zephyr test cases are linked to
+    each - same dict shape, plus "url_map" so the email links Jira issues."""
+    creds = getattr(app, "creds", {}) or {}
+    project = getattr(app, "project", "") or ""
+    if is_azure(creds):
+        import engine as E
+        return E.sprint_summary(project, plan_id)
+    import concurrent.futures as _cf
+
+    def _p(frac, text):
+        # progress(fraction 0..1, text) for the modal's percentage line
+        if callable(progress):
+            try:
+                progress(max(0.0, min(1.0, frac)), text)
+            except Exception:
+                pass
+    backend = get_backend(app)
+    proj = _as_project(backend, project)
+    _p(0.03, strings.t("sum_p_sprints"))
+    sprints = backend.fetch_sprints(proj) or []
+    pick = str(getattr(app, "setup_sprint", "") or "")
+    if pick and pick != "__backlog__":
+        chosen = [s for s in sprints if str(s.path) == pick]
+    else:
+        chosen = [s for s in sprints if (s.state or "") == "active"]
+    seen = {}
+    read = getattr(backend, "fetch_story_summaries_in_sprint", None) or backend.fetch_stories_in_sprint
+    for i, sp in enumerate(chosen, 1):
+        _p(0.05 + 0.25 * (i - 1) / max(1, len(chosen)),
+           strings.t("sum_p_stories", sprint=sp.name, i=i, n=len(chosen)))
+        for st in (read(proj, sp.path) or []):
+            sid = st.ref.key or st.ref.id
+            if sid and sid not in seen:
+                seen[sid] = {"id": sid, "title": st.title, "state": st.state or "",
+                             "assigned_to": (st.assignee.display_name if st.assignee else ""),
+                             "test_cases": 0}
+    stories = list(seen.values())
+    # Bugs of the same sprint(s) for the summary's Bugs card (Jira links via
+    # each bug's "url"). Optional: a backend without bugs just shows none.
+    bugs, seen_b = [], set()
+    fetch_bugs = getattr(backend, "fetch_bugs_in_sprint", None)
+    if callable(fetch_bugs) and chosen:
+        _p(0.29, strings.t("sum_p_bugs"))
+        for sp in chosen:
+            try:
+                for b in (fetch_bugs(proj, sp.path) or []):
+                    if b.get("id") and b["id"] not in seen_b:
+                        seen_b.add(b["id"])
+                        bugs.append(b)
+            except Exception:
+                pass
+
+    def _count(s):
+        try:
+            return s["id"], int(backend.linked_test_case_count(s["id"]))
+        except Exception:
+            return s["id"], 0
+    if stories:
+        counts, done = {}, 0
+        _p(0.30, strings.t("sum_p_cases", done=0, total=len(stories)))
+        with _cf.ThreadPoolExecutor(max_workers=min(12, len(stories))) as ex:
+            for sid, n in ex.map(_count, stories):
+                counts[sid] = n
+                done += 1
+                if done == len(stories) or done % 3 == 0:
+                    _p(0.30 + 0.68 * done / len(stories),
+                       strings.t("sum_p_cases", done=done, total=len(stories)))
+        for s in stories:
+            s["test_cases"] = counts.get(s["id"], 0)
+    _p(1.0, strings.t("m2_summarizing"))
+    by_state = {}
+    for s in stories:
+        by_state[s["state"]] = by_state.get(s["state"], 0) + 1
+    site = (creds.get("jira_site") or "").strip().rstrip("/")
+    return {
+        # No test case folder is needed on Jira + Zephyr: fall back to the
+        # sprint name, then the project, for the summary's title.
+        "plan_name": ((getattr(app, "plan_name", "") if plan_id else "")
+                      or ", ".join(sp.name for sp in chosen) or project),
+        "iteration": ", ".join(sp.name for sp in chosen),
+        "total_stories": len(stories),
+        "by_state": by_state,
+        "stories": stories,
+        "total_test_cases": sum(s["test_cases"] for s in stories),
+        "project": project,
+        "org": "",
+        "url_map": ({s["id"]: f"{site}/browse/{s['id']}" for s in stories} if site else {}),
+        "bugs": bugs,
+    }
+
+
 def sprint_reports_available(app):
     """Whether the Sprint Report / Sprint Summary screens can actually GENERATE
     on the active backend (ADR-002).
@@ -634,10 +810,27 @@ def fetch_sprints(app, project=None):
     # name AND path), so a partial dict would work until the day it silently
     # didn't. Dates are "" when the backend doesn't supply them, matching how
     # engine's own fallback row does it.
-    return [{"name": s.name, "path": s.path, "id": s.ref.id,
-             "start_date": s.start.isoformat() if s.start else "",
-             "finish_date": s.end.isoformat() if s.end else ""}
-            for s in backend.fetch_sprints(_as_project(backend, project))]
+    sprints = backend.fetch_sprints(_as_project(backend, project))
+    # "label": what pickers show for a non-Azure sprint - its FULL name (Jira
+    # names like "Smart Services Sprint 14 (Pensions)" must not be cut to
+    # "Sprint 14", which made different sprints look identical), "· active"
+    # for the running one, and the board name when sprints come from more than
+    # one board. Pickers keep the backend's order (active, future, closed).
+    board_of = getattr(backend, "sprint_board", None)
+    boards = {board_of(s.path) for s in sprints} if callable(board_of) else set()
+    multi = len(boards - {""}) > 1
+    out = []
+    for s in sprints:
+        label = s.name
+        if multi and callable(board_of) and board_of(s.path):
+            label += "  ·  " + board_of(s.path)
+        if (s.state or "") == "active":
+            label += "  ·  " + strings.t("sprint_state_active")
+        out.append({"name": s.name, "path": s.path, "id": s.ref.id,
+                    "start_date": s.start.isoformat() if s.start else "",
+                    "finish_date": s.end.isoformat() if s.end else "",
+                    "state": s.state or "", "label": label})
+    return out
 
 
 def fetch_stories_in_sprint(app, sprint_path, project=None):
@@ -725,6 +918,10 @@ def plan_url(app, plan_id, project=None):
         return (f"https://dev.azure.com/{org}/{project}"
                 f"/_testPlans/define?planId={plan_id}")
     site = (creds.get("jira_site") or "").strip().rstrip("/")
+    if site and active(creds) == "jira_zephyr":
+        # Zephyr's own project page (test cases + folders) - not the Jira board.
+        return (f"{site}/projects/{project}?selectedItem=com.atlassian.plugins."
+                f"atlassian-connect-plugin:com.kanoah.test-manager__main-project-page")
     return f"{site}/projects/{project}" if site else ""
 
 
@@ -960,6 +1157,9 @@ def plan_link_label(app):
     where = {AZURE: "Azure DevOps", JIRA_ZEPHYR: "Zephyr", XRAY: "Xray",
              TESTRAIL: "TestRail",
              AZURE_TESTRAIL: "Azure DevOps", JIRA_TESTRAIL: "Jira"}.get(name, "")
+    if name == JIRA_ZEPHYR:
+        # plan_url opens Zephyr's project page (no safe per-folder deep link).
+        return "Open in Zephyr"
     return f"Open plan in {where}" if where else "Open plan"
 
 
@@ -991,6 +1191,9 @@ def generation_ops(app):
     from tracker.models import Plan, Ref, Step, Story, Suite
 
     backend = get_backend(app)
+    # The test cases this run created or wrote steps to - read after the run
+    # by the optional "add to a Zephyr test cycle" step (main.py).
+    app._run_case_keys = []
 
     def _proj(project):
         return _as_project(backend, project)
@@ -1040,9 +1243,14 @@ def generation_ops(app):
                 suite = backend.find_suite_for_story(proj, plan, story)
             if suite is None:
                 continue
+            _suite_story[str(suite.ref.id)] = story
             for k in (sid, str(sid), story.ref.id, story.ref.key):
                 out[k] = suite.ref.id
         return out
+
+    # suite id -> its story, so existing_titles can also count the test cases
+    # already linked to the story outside its folder (Jira + Zephyr).
+    _suite_story = {}
 
     def fetch_stories(story_ids):
         """engine reads `story.id` and `story.fields.get("System.Title")` as
@@ -1175,8 +1383,31 @@ def generation_ops(app):
                 "keeper_ids": keeper_ids}
 
     def existing_titles(project, plan_id, suite_id):
-        return backend.fetch_existing_titles_for_suite(
-            _proj(project), _plan(plan_id), _suite(suite_id))
+        """engine reads each item as `it.get("title")` (Azure's shape). Adapters
+        return plain title strings, which made that `.get` raise inside engine's
+        try/except - so the existing list was always empty and every run asked
+        the AI for a full new set. Return {"title": ...} dicts."""
+        out, seen = [], set()
+
+        def _add(t):
+            t = (t.get("title") if isinstance(t, dict) else t) or ""
+            t = str(t).strip()
+            if t and t.lower() not in seen:
+                seen.add(t.lower())
+                out.append({"title": t})
+        for t in backend.fetch_existing_titles_for_suite(
+                _proj(project), _plan(plan_id), _suite(suite_id)) or []:
+            _add(t)
+        story = _suite_story.get(str(suite_id))
+        linked = getattr(backend, "linked_test_case_titles", None)
+        if story is not None and callable(linked) and \
+                getattr(backend, "name", "") == "jira_zephyr":
+            try:
+                for t in linked(story.ref.key or story.ref.id):
+                    _add(t)
+            except Exception:
+                pass        # the folder's own titles still count
+        return out
 
     def create_case(project, plan_id, suite_id, title, story_id):
         story = None
@@ -1197,7 +1428,22 @@ def generation_ops(app):
         else:
             case = backend.create_test_case(_proj(project), _plan(plan_id),
                                             _suite(suite_id), title, story)
-        return case.ref.key or case.ref.id      # engine expects a bare id
+        cid = case.ref.key or case.ref.id
+        pop = getattr(backend, "pop_link_error", None)
+        why = pop(cid) if (callable(pop) and story_id) else ""
+        if story_id and story is None and callable(pop):
+            why = "the story couldn't be read from Jira, so it wasn't linked"
+        if why:
+            _link_warnings.append(f"Created {cid} but couldn't link it to story {story_id} — {why}")
+        app._run_case_keys.append(str(cid))
+        return cid      # engine expects a bare id
+
+    _link_warnings = []
+
+    def pop_warnings():
+        out = list(_link_warnings)
+        del _link_warnings[:]
+        return out
 
     def cases_for_suite(project, plan_id, suite_id):
         # engine reads each case as tc.get("workItem", {}).get("id"/"name") —
@@ -1217,6 +1463,8 @@ def generation_ops(app):
     def write_steps(tc_id, steps_xml, project=None, story_id=None):
         """engine hands us Azure steps XML. Parse it back into Step DTOs — the
         XML never reaches the backend."""
+        if str(tc_id) not in app._run_case_keys:
+            app._run_case_keys.append(str(tc_id))
         parsed = E.parse_steps_xml(steps_xml) or []
         steps = []
         for i, row in enumerate(parsed, start=1):
@@ -1256,7 +1504,8 @@ def generation_ops(app):
         fetch_stories=fetch_stories, dedupe_suite=dedupe_suite,
         existing_titles=existing_titles, create_case=create_case,
         cases_for_suite=cases_for_suite, case_title=case_title,
-        write_steps=write_steps, case_detail=case_detail)
+        write_steps=write_steps, case_detail=case_detail,
+        pop_warnings=pop_warnings)
 
 
 #: Labels engine.build_steps_xml uses when folding a step's precondition into
@@ -1326,8 +1575,20 @@ def suite_map_for_stories(app, plan_id, story_ids):
         from tracker.models import Ref
         stories = backend.fetch_stories([Ref(id=str(s), key=str(s))
                                          for s in (story_ids or [])]) or []
+        # One folder listing for every story when the backend can (Zephyr:
+        # a per-story lookup re-downloaded ALL folders each time).
+        _batch = getattr(backend, "find_suites_for_stories", None)
+        found = None
+        if callable(_batch):
+            try:
+                found = _batch(proj, plan, stories) or {}
+            except Exception:
+                found = None
         for story in stories:
-            suite = backend.find_suite_for_story(proj, plan, story)
+            if found is not None:
+                suite = found.get(story.ref.key or story.ref.id)
+            else:
+                suite = backend.find_suite_for_story(proj, plan, story)
             if suite is None:
                 continue
             # Key by BOTH int and str: callers index with the original story id,

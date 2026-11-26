@@ -5044,11 +5044,20 @@ class _TrackerOps:
 
     __slots__ = ("connect", "discover_suites", "fetch_stories", "dedupe_suite",
                  "existing_titles", "create_case", "cases_for_suite",
-                 "case_title", "write_steps", "case_detail")
+                 "case_title", "write_steps", "case_detail", "pop_warnings")
+    #: Optional: a backend that can report non-fatal problems (Jira + Zephyr:
+    #: "created SS-T12 but couldn't link it to the story — <reason>").
+    _OPTIONAL = ("pop_warnings",)
 
     def __init__(self, **kw):
         for name in self.__slots__:
-            setattr(self, name, kw[name])
+            setattr(self, name, kw[name] if name not in self._OPTIONAL else kw.get(name))
+
+    def log_warnings(self, cb):
+        """Send any collected warnings to the run log (amber)."""
+        fn = self.pop_warnings
+        for w in ((fn() or []) if callable(fn) else []):
+            cb("log", {"msg": w, "tone": "warn", "ico": "⚠"})
 
 
 def _default_ops():
@@ -5271,6 +5280,7 @@ def run_titles(project, plan_id, story_ids, cb, should_stop=lambda: False,
                 ps_secs += _elapsed
                 cb("log", {"msg": tc_title, "tone": "ok", "id": tc_id, "ar": True,
                            "secs": round(_elapsed, 1), "detail": f"⏱ {_fmt_mmss(_elapsed)}"})
+                _o.log_warnings(cb)
             except Exception as e:
                 ps_err += 1
                 ps_secs += (time.time() - _tc_start)
@@ -5651,6 +5661,7 @@ def run_steps(project, plan_id, story_ids, cb, should_stop=lambda: False,
                 seeded_total += 1
                 cb("log", {"msg": tc_title + " — test case created", "tone": "ok",
                            "id": new_id, "ar": True})
+                _o.log_warnings(cb)
             except Exception as e:
                 cb("log", {"msg": f"{tc_title} — {e}", "tone": "err", "ar": True})
     if seeded_total:
@@ -6580,9 +6591,20 @@ def email_footer_html(source=None, note="", meta_html="", logo=24):
             f"line-height:1.5'>{text}</td></tr></table>" + (meta_html or ""))
 
 
+def _starts_rtl(s):
+    """Right-to-left only when the text's FIRST letter is Arabic. "Any Arabic
+    character anywhere" flipped English titles that merely quote an Arabic
+    name (e.g. 'CX Channel … "Debt Certificate | شهادة مديونية"') to RTL,
+    which scrambled their word order in the email."""
+    for c in str(s or ""):
+        if c.isalpha():
+            return '\u0600' <= c <= '\u06ff' or '\u0750' <= c <= '\u077f'
+    return False
+
+
 def build_report_email(tool, summary, stats, action_items=None, skipped_items=None,
                        per_story=None, plan_url=None, total_secs=None, log_lines=None,
-                       org=None, project=None, url_map=None):
+                       org=None, project=None, url_map=None, plan_label=None):
     """Restrained, email-safe (table + inline-style) HTML run report.
     Renders consistently across Outlook / Gmail / Apple Mail; web fonts fall
     back to system fonts. Drives off the same data the in-app report uses."""
@@ -6627,7 +6649,7 @@ def build_report_email(tool, summary, stats, action_items=None, skipped_items=No
             return 0
 
     def _is_ar(s):
-        return any('\u0600' <= c <= '\u06ff' for c in str(s))
+        return _starts_rtl(s)
 
     stats = stats or {}
     is_steps = "step" in str(tool).lower()
@@ -6713,7 +6735,8 @@ def build_report_email(tool, summary, stats, action_items=None, skipped_items=No
         cta_row = (f"<tr><td style='padding:20px 32px 0'>"
                    f"<a href='{safe_url}' style='display:inline-block;background:{VIOLET};color:#fff;"
                    f"text-decoration:none;font-size:13px;font-weight:700;padding:12px 22px;"
-                   f"border-radius:11px'>Open test plan in Azure DevOps &rarr;</a></td></tr>")
+                   f"border-radius:11px'>{_html.escape(plan_label or 'Open test plan in Azure DevOps')}"
+                   f" &rarr;</a></td></tr>")
 
     # ---- section heading helper ----
     def _sec_head(dot, title, count, desc=""):
@@ -6735,7 +6758,9 @@ def build_report_email(tool, summary, stats, action_items=None, skipped_items=No
         title = _html.escape(str(a.get("title", "")))
         reason = _html.escape(str(a.get("reason", "")))
         item_id = _html.escape(str(a.get("id", "")))
-        rtl = "direction:rtl;text-align:right;" if _is_ar(a.get("title", "")) else ""
+        _cdir = "rtl" if _is_ar(a.get("title", "")) else "ltr"
+        rtl = ("direction:rtl;text-align:right;" if _cdir == "rtl"
+               else "direction:ltr;text-align:left;")
         url = _wi_url(a.get("id"))
         open_link = (f"<a href='{_html.escape(url, quote=True)}' style='color:{VIOLET_INK};"
                      f"font-size:11.5px;font-weight:700;text-decoration:none'>Open &rarr;</a>") if url else ""
@@ -6750,7 +6775,7 @@ def build_report_email(tool, summary, stats, action_items=None, skipped_items=No
                 f"<span style='font-family:{MONO};font-size:11.5px;font-weight:700;color:{INK3}'>#{item_id}</span></td>"
                 f"<td valign='middle' align='right'>{open_link}</td>"
                 f"</tr></table>"
-                f"<div style='font-family:{AR};font-size:14px;font-weight:600;color:{INK};"
+                f"<div dir='{_cdir}' style='font-family:{AR};font-size:14px;font-weight:600;color:{INK};"
                 f"margin-top:11px;line-height:1.5;{rtl}'>{title}</div>"
                 + (f"<div style='font-family:{AR};font-size:12.5px;color:{INK2};margin-top:6px;"
                    f"line-height:1.7;{rtl}'>{reason}</div>" if reason else "")
@@ -6768,7 +6793,9 @@ def build_report_email(tool, summary, stats, action_items=None, skipped_items=No
             total = int(sp.get("total", 0) or 0)
             ok = int(sp.get("ok", 0) or 0); sk = int(sp.get("skipped", 0) or 0); er = int(sp.get("err", 0) or 0)
             secs = sp.get("secs", None)
-            rtl = "direction:rtl;text-align:right;" if _is_ar(sp.get("title", "")) else ""
+            _sdir = "rtl" if _is_ar(sp.get("title", "")) else "ltr"
+            rtl = ("direction:rtl;text-align:right;" if _sdir == "rtl"
+                   else "direction:ltr;text-align:left;")
             chips = ""
             if ok: chips += (f"<span style='display:inline-block;background:{GREEN_SOFT};color:{GREEN};"
                              f"font-family:{MONO};font-size:11px;font-weight:700;padding:2px 9px;"
@@ -6784,7 +6811,7 @@ def build_report_email(tool, summary, stats, action_items=None, skipped_items=No
             tlink = (f"<a href='{_html.escape(su, quote=True)}' style='color:{INK};"
                      f"text-decoration:none'>{title}</a>" if su else title)
             rows += (f"<tr><td style='padding:13px 0;border-top:1px solid {LINE2};vertical-align:top'>"
-                     f"<div style='font-size:14px;font-weight:700;color:{INK};{rtl}'>{tlink}</div>"
+                     f"<div dir='{_sdir}' style='font-size:14px;font-weight:700;color:{INK};{rtl}'>{tlink}</div>"
                      f"<div style='font-family:{MONO};font-size:11px;font-weight:600;color:{INK3};"
                      f"margin-top:3px'>#{sid} &middot; {total} test case" + ("s" if total != 1 else "") + tsub + "</div></td>"
                      f"<td align='right' style='padding:13px 0;border-top:1px solid {LINE2};"
@@ -6854,7 +6881,7 @@ def build_report_email(tool, summary, stats, action_items=None, skipped_items=No
                      f"style='border-top:1px solid {LINE2};{indent}background:{bg}'><tr>"
                      f"<td width='18' valign='top' style='padding:8px 0 8px 0;color:{col};"
                      f"font-family:{MONO};font-size:13px;font-weight:700;text-align:center'>{ico}</td>"
-                     f"<td valign='top' style='padding:8px 0 8px 9px;direction:{tdir};text-align:{talign}'>"
+                     f"<td valign='top' dir='{tdir}' style='padding:8px 0 8px 9px;direction:{tdir};text-align:{talign}'>"
                      f"<div style='font-family:{fam};font-size:12.5px;font-weight:600;color:{title_color};"
                      f"line-height:1.5'>{id_chip}{mlink}</div>{detail_html}</td></tr></table>")
         more = (f"<div style='padding:11px 15px;border-top:1px solid {LINE};background:#F4F3F8;"
@@ -6958,7 +6985,7 @@ def build_automation_report_email(target, summary, stats, project_dir=None, git_
     AR='"Segoe UI","Tahoma",Arial,sans-serif'
 
     def _is_ar(s):
-        return any('؀' <= c <= 'ۿ' for c in str(s))
+        return _starts_rtl(s)
 
     stats = stats or {}
     tgt_label = {"selenium": "Selenium (Java · TestNG)", "playwright": "Playwright",
@@ -7095,7 +7122,7 @@ def build_automation_report_email(target, summary, stats, project_dir=None, git_
                      f"style='border-top:1px solid {LINE2};background:{bg}'><tr>"
                      f"<td width='18' valign='top' style='padding:8px 0 8px 0;color:{col};"
                      f"font-family:{MONO};font-size:13px;font-weight:700;text-align:center'>{ico}</td>"
-                     f"<td valign='top' style='padding:8px 0 8px 9px;direction:{tdir};text-align:{talign}'>"
+                     f"<td valign='top' dir='{tdir}' style='padding:8px 0 8px 9px;direction:{tdir};text-align:{talign}'>"
                      f"<div style='font-family:{fam};font-size:12.5px;font-weight:600;color:{INK};"
                      f"line-height:1.5'>{msg}</div></td></tr></table>")
         more = (f"<div style='padding:11px 15px;border-top:1px solid {LINE};background:#F4F3F8;"
@@ -7164,7 +7191,7 @@ def build_sprint_summary_email(data):
     _org = data.get("org", AZURE_ORG)
 
     def _is_ar(s):
-        return any('\u0600' <= c <= '\u06ff' for c in str(s))
+        return _starts_rtl(s)
 
     def _state_colors(state):
         s = (state or "").lower()
@@ -7241,7 +7268,11 @@ def build_sprint_summary_email(data):
         assigned_col = (INK3 if assigned_name == "Unassigned" else INK2)
         fg, bg = _state_colors(state)
         rtl = "direction:rtl;text-align:right;" if _is_ar(title) else ""
-        wi = (f"https://dev.azure.com/{_org}/{_proj}/_workitems/edit/{s.get('id','')}" if _proj and s.get("id") else "")
+        # data["url_map"] (non-Azure: Jira issue links) wins; the dev.azure.com
+        # form only when the data came from Azure (an org is set).
+        wi = ((data.get("url_map") or {}).get(str(s.get("id", "")))
+              or (f"https://dev.azure.com/{_org}/{_proj}/_workitems/edit/{s.get('id','')}"
+                  if (_org and _proj and s.get("id") and not data.get("url_map")) else ""))
         tlink = (f"<a href='{_html.escape(wi, quote=True)}' style='color:{INK};text-decoration:none'>{title}</a>" if wi else title)
         idlink = (f"<a href='{_html.escape(wi, quote=True)}' style='color:{VIOLET_INK};text-decoration:none'>#{sid} &rarr;</a>" if wi else f"#{sid}")
         rows += (f"<tr><td style='padding:13px 0;border-top:1px solid {LINE2};vertical-align:middle'>"

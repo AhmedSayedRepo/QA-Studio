@@ -32,6 +32,40 @@ _DONE = {"done", "closed", "completed", "resolved", "accepted"}
 # separate from _DONE (which still colours the state-distribution chips).
 _REPORT_DONE = {"product owner review"}
 
+# Bug-status dot colours on the Sprint Report (Done = green, New = amber come
+# from the theme). Known Jira/Azure statuses map to fixed colours; any other
+# status picks from _DOT_PALETTE by name, so it's the same colour every time.
+_STATUS_DOT = {
+    "released": "#14B8A6",                       # teal
+    "dropped": "#E0474D", "rejected": "#E0474D", "won't fix": "#E0474D",
+    "cancelled": "#E0474D", "canceled": "#E0474D", "removed": "#E0474D",
+    "waiting": "#F97316", "on hold": "#F97316", "blocked": "#F97316",  # orange
+    "in qa": "#8B5CF6", "testing": "#8B5CF6", "in test": "#8B5CF6",  # purple
+    "in uat": "#3B82F6", "uat": "#3B82F6",       # blue
+    "in progress": "#0E9CC0", "active": "#0E9CC0", "committed": "#0E9CC0",
+    "doing": "#0E9CC0", "in development": "#0E9CC0",  # cyan
+    "reopened": "#EC4899", "re-opened": "#EC4899",    # pink
+    "in review": "#A855F7", "code review": "#A855F7",
+}
+_DOT_PALETTE = ["#6366F1", "#84CC16", "#EAB308", "#06B6D4", "#D946EF",
+                "#F43F5E", "#10B981", "#0EA5E9"]
+
+
+def status_dot_color(state):
+    """One colour per bug/story status — shared by the Sprint Report and the
+    Sprint Summary so a status looks the same on both. Done = green,
+    New/To Do = amber, known statuses fixed, any other a stable palette pick."""
+    s = (state or "").strip().lower()
+    if s in _DONE:
+        return T.GREEN
+    if s in ("new", "to do", "proposed", "open"):
+        return T.AMBER
+    fg = _STATUS_DOT.get(s)
+    if fg is None:
+        import zlib
+        fg = _DOT_PALETTE[zlib.crc32(s.encode("utf-8")) % len(_DOT_PALETTE)]
+    return fg
+
 # Localized labels (headings are fixed strings; story titles are AI-translated).
 _L = {
     "ar": {
@@ -133,7 +167,9 @@ def _init(app):
                  ("_st_sprint_paths", []), ("_st_open", False),
                  ("_st_lang", getattr(app, "lang", "ar")),
                  ("_st_busy", False), ("_st_report", None),
-                 ("_st_done", False), ("_st_msg", None)):
+                 ("_st_done", False), ("_st_msg", None),
+                 ("_st_prog", None), ("_st_prog_ui", None),
+                 ("_st_bug_open", set())):
         if not hasattr(app, k):
             setattr(app, k, v)
 
@@ -193,9 +229,12 @@ def _load_iterations(app):
             its = backend_setup.fetch_sprints(app, _proj) or []
         except Exception:
             its = []
-        sprints = [it for it in its
-                   if (_sprint_num(it.get("name", "")) or _sprint_num(it.get("path", "")))] or its
-        sprints.sort(key=lambda it: (_sort_key(it) < 0, _sort_key(it)))
+        if any(it.get("label") for it in its):
+            sprints = list(its)      # Jira: full names, already active → future → closed
+        else:
+            sprints = [it for it in its
+                       if (_sprint_num(it.get("name", "")) or _sprint_num(it.get("path", "")))] or its
+            sprints.sort(key=lambda it: (_sort_key(it) < 0, _sort_key(it)))
         app._st_iter_loading = False
         if app.project != _proj:      # project changed mid-load → drop stale result
             app._st_iter_for = None
@@ -380,33 +419,153 @@ def _translate_chunk(texts, target):
             for i in range(len(texts))]
 
 
-def _translate(texts, lang):
-    """AI-translate `texts` into `lang` ('ar'/'en'). Returns (results, err) where
-    `results` is aligned 1:1 with the input (originals kept on any miss) and `err`
-    is None on success, "credit" when the AI account is out of credit/quota, or
-    "error:<msg>" for any other failure. Normalizes native-digit numbering, falls
-    back to positional line alignment, and chunks long lists so nothing truncates."""
+_LETTER_RE = re.compile(r"[^\W\d_]", re.UNICODE)
+
+
+def _needs_translation(text, lang):
+    """True when `text` is NOT already in `lang`, judged by script so no AI call
+    is spent on titles that are already right. English/Arabic are told apart by
+    the Arabic script; the other (Latin-script) targets can't be told from
+    English by script, so a Latin title is still sent for those."""
+    t = (text or "").strip()
+    if not t or not _LETTER_RE.search(t):
+        return False                       # empty / IDs / numbers only
+    if lang == "en":
+        return _has_arabic(t)
+    if lang == "ar":
+        return not _has_arabic(t)
+    return True
+
+
+def _is_translated(orig, result, lang):
+    """Did `result` come back in `lang`? Script check for en/ar; for the other
+    languages the best signal is that the text changed."""
+    if lang in ("en", "ar"):
+        return not _needs_translation(result, lang)
+    return (result or "").strip() != (orig or "").strip()
+
+
+def _translate(texts, lang, progress=None):
+    """AI-translate only the titles that aren't already in `lang`.
+
+    Returns (results, err, need, done): `results` aligned 1:1 with the input
+    (originals kept on any miss); `err` None / "credit" / "error:<msg>"; `need`
+    how many titles needed translating (0 = no AI call at all); `done` how many
+    of those actually came back translated. Titles the first pass missed (the
+    model skipped or echoed them) get ONE retry in small batches, so a long
+    sprint isn't left half-translated. `progress(done, total)` is called after
+    each batch for the on-screen loader."""
     texts = [t or "" for t in texts]
-    if not any(t.strip() for t in texts):
-        return list(texts), None
+    out = list(texts)
+    idx = [i for i, t in enumerate(texts) if _needs_translation(t, lang)]
+    if not idx:
+        return out, None, 0, 0
     target = E.LANGUAGES.get(lang, {}).get("name") or "English"
-    out, CHUNK, err = [], 20, None
-    for i in range(0, len(texts), CHUNK):
-        chunk = texts[i:i + CHUNK]
+    err = None
+
+    def _run(indices, size, label_done=0, label_total=None):
+        nonlocal err
+        total = label_total or len(indices)
+        for k in range(0, len(indices), size):
+            part = indices[k:k + size]
+            try:
+                res = _translate_chunk([texts[i] for i in part], target)
+                for i, r in zip(part, res):
+                    if r:
+                        out[i] = r
+            except E.CreditBalanceError:
+                err = "credit"
+                return False             # stop: remaining stay as originals
+            except Exception as ex:
+                err = err or ("error:" + str(ex)[:160])
+            if progress:
+                try:
+                    progress(min(label_done + k + len(part), total), total)
+                except Exception:
+                    pass
+        return True
+
+    if _run(idx, 20):
+        missed = [i for i in idx if not _is_translated(texts[i], out[i], lang)]
+        if missed:
+            if progress:
+                try:
+                    progress(None, len(missed))   # "retrying N titles…"
+                except Exception:
+                    pass
+            _run(missed, 5)
+    done = sum(1 for i in idx if _is_translated(texts[i], out[i], lang))
+    return out, err, len(idx), done
+
+
+def _set_progress(app, label, frac=None):
+    """Update the loader's label + bar in place (no full re-render per batch)."""
+    app._st_prog = (label, frac)
+    ui = getattr(app, "_st_prog_ui", None)
+    if not ui:
+        return
+
+    def _apply():
         try:
-            out.extend(_translate_chunk(chunk, target))
-        except E.CreditBalanceError:
-            err = "credit"
-            out.extend(chunk)            # keep originals for this + remaining
-            out.extend(texts[i + CHUNK:])
-            break
-        except Exception as ex:
-            err = err or ("error:" + str(ex)[:160])
-            out.extend(chunk)            # keep originals for this chunk, keep going
-    # pad just in case a break left it short
-    while len(out) < len(texts):
-        out.append(texts[len(out)])
-    return out[:len(texts)], err
+            txt, bar = ui
+            txt.value = label
+            bar.value = frac
+            txt.update()
+            bar.update()
+        except Exception:
+            pass
+    try:
+        app.ui_safe(_apply)
+    except Exception:
+        pass
+
+
+def _translate_progress(app):
+    def _cb(done, total):
+        if done is None:
+            _set_progress(app, strings.t("spr_p_retry", n=total), None)
+        else:
+            _set_progress(app, strings.t("spr_p_translate", done=done, total=total),
+                          (done / total) if total else None)
+    return _cb
+
+
+def _translation_msg(n_stories, n_bugs, need, done, err, lang, regen=True):
+    """One status line for generate (regen=True) and re-translate."""
+    lname = E.LANGUAGES.get(lang, {}).get("native") or lang
+    if err == "credit":
+        return ("err", strings.t("spr_err_credit_generate" if regen
+                                 else "spr_err_credit_retranslate"))
+    if err and err.startswith("error:") and done == 0:
+        k = "spr_err_translation_failed" if regen else "spr_err_retranslate_translation"
+        return ("err", strings.t(k, msg=err.split(':', 1)[1].strip()))
+    if need == 0:
+        if regen:
+            return ("ok", strings.t("spr_ok_no_translation_needed",
+                                    stories=n_stories, bugs=n_bugs, lang=lname))
+        return ("ok", strings.t("spr_ok_retranslate_none_needed", lang=lname))
+    if done == 0:
+        return ("err", strings.t("spr_err_no_translation_generate" if regen
+                                 else "spr_err_no_translation_retranslate"))
+    head = (strings.t("spr_ok_report_ready_n", stories=n_stories, done=done,
+                      need=need, bugs=n_bugs) if regen
+            else strings.t("spr_ok_translated_n", lang=lname, done=done, need=need))
+    if done < need:
+        return ("warn", head + " " + strings.t("spr_warn_untranslated", n=need - done))
+    return ("ok", head)
+
+
+def _is_completed(app, state):
+    """Completed for the closure report: Azure uses the team's 'Product Owner
+    Review' rule; other backends (Jira) count their own done states."""
+    s = (state or "").lower()
+    if s in _REPORT_DONE:
+        return True
+    try:
+        azure = backend_setup.reads_stories_from_azure(getattr(app, "creds", {}) or {})
+    except Exception:
+        azure = True
+    return (not azure) and s in _DONE
 
 
 def _generate(app):
@@ -429,16 +588,19 @@ def _generate(app):
     app._st_done = False
     app._st_report = None
     app._st_msg = None
+    app._st_bug_open = set()
+    app._st_prog = (strings.t("spr_p_fetch", i=1, n=len(paths)), None)
     app.ui_safe(app.render)
 
     def _work():
         try:
             names, seen_s, seen_b = [], set(), set()
             stories, bugs = [], []
-            for p in paths:
+            for pi, p in enumerate(paths):
+                _set_progress(app, strings.t("spr_p_fetch", i=pi + 1, n=len(paths)), None)
                 it = next((x for x in app._st_iterations if x["path"] == p), None)
                 if it:
-                    names.append(_sprint_num(it["name"]) or it["name"])
+                    names.append(it["name"] if it.get("label") else (_sprint_num(it["name"]) or it["name"]))
                 try:
                     d = backend_setup.sprint_report_data(app, p)
                 except Exception:
@@ -461,16 +623,15 @@ def _generate(app):
             stories = E.sort_stories_by_board(getattr(app, "project", ""), stories)
             # translate every title once, then split into sections by state
             originals = [s["title"] for s in stories]
-            titles, terr = _translate(originals, lang)
+            titles, terr, need, done = _translate(originals, lang,
+                                                  _translate_progress(app))
             for s, tr in zip(stories, titles):
                 # Plain text only — no quotes/colons (see _plain_text). Set here,
                 # at the single point the report title is assigned, so the
                 # on-screen report, the .docx export and the email all agree.
                 s["t"] = _plain_text(tr)
-            n_changed = sum(1 for o, t in zip(originals, titles)
-                            if (t or "").strip() != (o or "").strip())
-            completed = [s for s in stories if (s.get("state", "").lower() in _REPORT_DONE)]
-            carried = [s for s in stories if (s.get("state", "").lower() not in _REPORT_DONE)]
+            completed = [s for s in stories if _is_completed(app, s.get("state", ""))]
+            carried = [s for s in stories if not _is_completed(app, s.get("state", ""))]
 
             from collections import Counter
             reg = sum(1 for b in bugs if "regression" in (b.get("tags", "") or "").lower())
@@ -483,19 +644,15 @@ def _generate(app):
                 "bug_by_state": dict(Counter(b.get("state", "Unknown") for b in bugs)),
                 "total_bugs": len(bugs), "regression_bugs": reg,
                 "sprint_bugs": len(bugs) - reg,
+                "bugs": bugs,
             }
             app._st_done = True
-            if terr == "credit":
-                app._st_msg = ("err", strings.t("spr_err_credit_generate"))
-            elif terr and terr.startswith("error:"):
-                app._st_msg = ("err", strings.t("spr_err_translation_failed", msg=terr.split(':', 1)[1].strip()))
-            elif stories and n_changed == 0:
-                app._st_msg = ("err", strings.t("spr_err_no_translation_generate"))
-            else:
-                app._st_msg = ("ok", strings.t("spr_ok_report_ready", stories=len(stories), changed=n_changed, bugs=len(bugs)))
+            app._st_msg = _translation_msg(len(stories), len(bugs), need, done,
+                                           terr, lang, regen=True)
         except Exception as ex:
             app._st_msg = ("err", strings.t("spr_err_build_failed", err=ex))
         app._st_busy = False
+        app._st_prog_ui = None
         if getattr(app, "active", None) == "titles":
             app.ui_safe(app.render)
     threading.Thread(target=_work, daemon=True).start()
@@ -515,32 +672,27 @@ def _retranslate(app):
         return
     app._st_busy = True
     app._st_msg = None
+    app._st_prog = (strings.t("spr_busy"), None)
     app.ui_safe(app.render)
 
     def _work():
         try:
             rows = list(r.get("completed", [])) + list(r.get("carried", []))
             originals = [s["title"] for s in rows]
-            titles, terr = _translate(originals, lang)
+            titles, terr, need, done = _translate(originals, lang,
+                                                  _translate_progress(app))
             for s, t in zip(rows, titles):
                 # Same plain-text rule as _generate — otherwise flipping the
                 # language toggle would reintroduce quotes/colons the report
                 # was generated without.
                 s["t"] = _plain_text(t)
             r["lang"] = lang
-            n_changed = sum(1 for o, t in zip(originals, titles)
-                            if (t or "").strip() != (o or "").strip())
-            if terr == "credit":
-                app._st_msg = ("err", strings.t("spr_err_credit_retranslate"))
-            elif terr and terr.startswith("error:"):
-                app._st_msg = ("err", strings.t("spr_err_retranslate_translation", msg=terr.split(':', 1)[1].strip()))
-            elif rows and n_changed == 0:
-                app._st_msg = ("err", strings.t("spr_err_no_translation_retranslate"))
-            else:
-                app._st_msg = ("ok", strings.t("spr_ok_translated_to", lang=('Arabic' if lang == 'ar' else 'English'), changed=n_changed, total=len(rows)))
+            app._st_msg = _translation_msg(len(rows), r.get("total_bugs", 0), need,
+                                           done, terr, lang, regen=False)
         except Exception as ex:
             app._st_msg = ("err", strings.t("spr_err_retranslate_failed", err=ex))
         app._st_busy = False
+        app._st_prog_ui = None
         if getattr(app, "active", None) == "titles":
             app.ui_safe(app.render)
     threading.Thread(target=_work, daemon=True).start()
@@ -1094,7 +1246,8 @@ def screen(app):
     picker = (ft.Container(R._txt(strings.t("spr_loading_sprints"), color=T.INK_3, size=12), padding=10)
               if app._st_iter_loading else
               R._checkbox_multiselect(
-                  [(it["path"], (_sprint_num(it["name"]) or it["name"]) + f"   ·   {it['path']}")
+                  [(it["path"], it.get("label") or
+                    ((_sprint_num(it["name"]) or it["name"]) + f"   ·   {it['path']}"))
                    for it in app._st_iterations],
                   app._st_sprint_paths, _toggle, _all, is_open=app._st_open, on_open=_open,
                   placeholder=strings.t("spr_select_sprints"), empty=strings.t("spr_no_sprints"),
@@ -1127,23 +1280,39 @@ def screen(app):
 
     if app._st_msg and not app._st_busy:
         kind, text = app._st_msg
-        _ok = (kind == "ok")
+        _col, _soft, _ico = {
+            "ok": (T.GREEN, T.GREEN_SOFT, ft.Icons.CHECK_CIRCLE),
+            "warn": (T.AMBER, T.AMBER_SOFT, ft.Icons.WARNING_AMBER_ROUNDED),
+        }.get(kind, (T.RED, T.RED_SOFT, ft.Icons.ERROR_OUTLINE))
         body_children += [ft.Container(
-            ft.Row([ft.Icon(ft.Icons.CHECK_CIRCLE if _ok else ft.Icons.ERROR_OUTLINE,
-                            color=(T.GREEN if _ok else T.RED), size=18),
-                    R._txt(text, color=(T.GREEN if _ok else T.RED), size=12.5,
+            ft.Row([ft.Icon(_ico, color=_col, size=18),
+                    R._txt(text, color=_col, size=12.5,
                            no_wrap=False, expand=True)],
                    spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
             padding=ft.Padding.symmetric(vertical=11, horizontal=14),
             margin=ft.Margin.only(top=14), border_radius=T.R,
-            bgcolor=(T.GREEN_SOFT if _ok else T.RED_SOFT),
-            border=ft.Border.all(1, ft.Colors.with_opacity(0.4, T.GREEN if _ok else T.RED)))]
+            bgcolor=_soft,
+            border=ft.Border.all(1, ft.Colors.with_opacity(0.4, _col)))]
 
     if app._st_busy:
+        # Loader: a live label ("sprint 1 of 2…", "Translating titles — 40 of
+        # 137…") and a bar — indeterminate while Jira pages are fetched,
+        # determinate during translation. _set_progress updates these two
+        # controls in place, so a big sprint doesn't re-render per batch.
+        _plabel, _pfrac = app._st_prog or (strings.t("spr_busy"), None)
+        _ptxt = R._txt(_plabel, color=T.INK_2, size=12.5, no_wrap=False, expand=True)
+        _pbar = ft.ProgressBar(value=_pfrac, color=T.VIOLET,
+                               bgcolor=ft.Colors.with_opacity(0.15, T.VIOLET),
+                               bar_height=6, border_radius=999)
+        app._st_prog_ui = (_ptxt, _pbar)
         body_children += [ft.Container(
-            ft.Row([ft.ProgressRing(width=18, height=18, stroke_width=2.5, color=T.VIOLET),
-                    R._txt(strings.t("spr_busy"),
-                           color=T.INK_3, size=12.5)], spacing=10),
+            ft.Column([
+                ft.Row([ft.ProgressRing(width=16, height=16, stroke_width=2.5,
+                                        color=T.VIOLET), _ptxt],
+                       spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                ft.Container(height=10),
+                _pbar,
+            ], spacing=0),
             padding=ft.Padding.symmetric(vertical=12, horizontal=14),
             margin=ft.Margin.only(top=14),
             bgcolor=getattr(T, "VIOLET_SOFT", T.CARD_2), border_radius=T.R)]
@@ -1236,27 +1405,167 @@ def screen(app):
             s = (st or "").lower()
             if s in _DONE:
                 return T.GREEN, T.GREEN_SOFT
-            if s in ("active", "in progress", "committed", "doing"):
-                return T.VIOLET_INK, T.VIOLET_SOFT
             if s in ("new", "to do", "proposed", "open"):
                 return T.AMBER, T.AMBER_SOFT
-            return T.INK_2, T.CARD_2
+            # Every other status gets its OWN dot colour (mid-tones that read in
+            # dark and light mode); the row stays neutral so only Done/New tint.
+            return status_dot_color(st), T.CARD_2
 
-        def _status_chip(st, n):
-            fg, bg = _state_pair(st)
+        # Bugs grouped by status — each group folds open to list its bugs, each
+        # bug a link to its issue in the tracker. Rows are built only when a
+        # group opens, and in pages of _BUG_PAGE, so a 900-bug sprint stays fast.
+        _BUG_PAGE = 50
+        _bugs_by = {}
+        for b in (r.get("bugs") or []):
+            _bugs_by.setdefault(b.get("state") or "Unknown", []).append(b)
+
+        def _bug_row(b, stripe):
+            key = str(b.get("id") or "")
+            url = b.get("url") or ""
+            is_reg = "regression" in (b.get("tags") or "").lower()
+            kids = [R._txt(key, color=(T.VIOLET_INK if url else T.INK_2), size=12,
+                           weight=ft.FontWeight.W_800, font_family=T.F_MONO),
+                    R._txt(b.get("title") or "", color=T.INK, size=13, no_wrap=False,
+                           expand=True, text_align=_ral)]
+            if is_reg:
+                kids.append(ft.Container(
+                    R._txt(L["regression_bugs"], color=T.RED, size=10.5,
+                           weight=ft.FontWeight.W_800),
+                    padding=ft.Padding.symmetric(vertical=1, horizontal=7),
+                    bgcolor=ft.Colors.with_opacity(0.14, T.RED), border_radius=999))
+            if url:
+                kids.append(ft.Icon(ft.Icons.OPEN_IN_NEW_ROUNDED, size=14, color=T.INK_3))
             return ft.Container(
-                _drow([ft.Container(width=7, height=7, border_radius=999, bgcolor=fg),
-                       R._txt(str(st), color=T.INK_2, size=12),
+                _drow(kids, spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                padding=ft.Padding.symmetric(vertical=7, horizontal=12),
+                border_radius=T.R_SM,
+                bgcolor=(T.CARD_2 if stripe else ft.Colors.TRANSPARENT),
+                tooltip=(strings.t("spr_bug_open_tip", issue=key) if url else None),
+                ink=bool(url),
+                on_click=((lambda e, u=url: app._open_url(u)) if url else None))
+
+        def _bug_group(st, n):
+            fg, bg = _state_pair(st)
+            items = _bugs_by.get(st, [])
+            body = ft.Column([], spacing=2, visible=False)
+            shown = [0]
+            chev = ft.Icon(ft.Icons.CHEVRON_RIGHT, size=18, color=T.INK_3)
+            # The chevron slot shows a small spinner while a big group's rows
+            # are built (off the UI thread), so the click gets instant feedback.
+            chev_slot = ft.Container(chev, width=18, height=18,
+                                     alignment=ft.Alignment.CENTER)
+            busy = {"on": False}
+            more_box = [None]
+
+            def _spin():
+                return ft.ProgressRing(width=14, height=14, stroke_width=2,
+                                       color=T.VIOLET)
+
+            def _fill(more=False):
+                if more or not shown[0]:
+                    upto = min(len(items), shown[0] + _BUG_PAGE)
+                    rows = [_bug_row(b, i % 2 == 1)
+                            for i, b in enumerate(items[shown[0]:upto], start=shown[0])]
+                    shown[0] = upto
+                    body.controls = [c for c in body.controls
+                                     if getattr(c, "_qa_more", False) is not True] + rows
+                    left = len(items) - shown[0]
+                    if left > 0:
+                        mb = ghost_btn(strings.t("spr_bug_show_more",
+                                                 n=min(left, _BUG_PAGE), left=left),
+                                       icon=ft.Icons.EXPAND_MORE,
+                                       on_click=lambda e: _more())
+                        mb._qa_more = True
+                        body.controls.append(ft.Container(
+                            mb, padding=ft.Padding.only(top=6)))
+                        body.controls[-1]._qa_more = True
+                        more_box[0] = body.controls[-1]
+
+            def _set_open(is_open):
+                body.visible = is_open
+                for _a in ("icon", "name"):    # Flet renamed Icon.name -> Icon.icon
+                    try:
+                        setattr(chev, _a, ft.Icons.EXPAND_MORE if is_open
+                                else ft.Icons.CHEVRON_RIGHT)
+                    except Exception:
+                        pass
+                if is_open:
+                    _fill()
+
+            def _run(work):
+                runner = getattr(app, "ui_safe", None)
+                if callable(runner):
+                    runner(work)
+                else:
+                    work()
+
+            def _toggle_grp(e):
+                if busy["on"]:
+                    return
+                busy["on"] = True
+                try:
+                    chev_slot.content = _spin()
+                    chev_slot.update()
+                except Exception:
+                    pass
+
+                def work():
+                    try:
+                        is_open = st not in app._st_bug_open
+                        (app._st_bug_open.add if is_open else app._st_bug_open.discard)(st)
+                        _set_open(is_open)
+                        chev_slot.content = chev
+                        try:
+                            grp.update()
+                        except Exception:
+                            pass
+                    finally:
+                        busy["on"] = False
+                _run(work)
+
+            def _more():
+                if busy["on"]:
+                    return
+                busy["on"] = True
+                try:
+                    if more_box[0] is not None:
+                        more_box[0].content = _spin()
+                        more_box[0].update()
+                except Exception:
+                    pass
+
+                def work():
+                    try:
+                        _fill(more=True)
+                        try:
+                            body.update()
+                        except Exception:
+                            pass
+                    finally:
+                        busy["on"] = False
+                _run(work)
+
+            if items and st in app._st_bug_open:
+                _set_open(True)
+            head = ft.Container(
+                _drow([ft.Container(width=8, height=8, border_radius=999, bgcolor=fg),
+                       R._txt(str(st), color=T.INK, size=13, weight=ft.FontWeight.W_700),
                        ft.Container(R._txt(str(n), color=fg, size=12,
                                            weight=ft.FontWeight.W_800),
-                                    padding=ft.Padding.symmetric(vertical=1, horizontal=7),
+                                    padding=ft.Padding.symmetric(vertical=1, horizontal=8),
                                     bgcolor=ft.Colors.with_opacity(0.14, fg),
-                                    border_radius=999)],
-                      spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                padding=ft.Padding.symmetric(vertical=6, horizontal=10),
-                bgcolor=bg, border_radius=999, border=ft.Border.all(1, T.BORDER))
+                                    border_radius=999),
+                       ft.Container(expand=True),
+                       chev_slot if items else ft.Container()],
+                      spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                padding=ft.Padding.symmetric(vertical=9, horizontal=14),
+                bgcolor=bg, border_radius=999, border=ft.Border.all(1, T.BORDER),
+                ink=bool(items), on_click=(_toggle_grp if items else None))
+            grp = ft.Column([head, ft.Container(body, padding=ft.Padding.only(
+                top=6, left=6, right=6, bottom=4))], spacing=0)
+            return grp
 
-        status_items = [_status_chip(st, n)
+        status_items = [_bug_group(st, n)
                         for st, n in (r.get("bug_by_state") or {}).items()]
         bug_section = ft.Column([
             _drow([ft.Icon(ft.Icons.BUG_REPORT_ROUNDED, color=T.VIOLET, size=17),
@@ -1267,10 +1576,9 @@ def screen(app):
             R._txt(L["by_status"], color=T.INK_3, size=11, weight=ft.FontWeight.BOLD,
                    text_align=_ral),
             ft.Container(height=8),
-            (ft.Row(list(reversed(status_items)) if rtl else status_items,
-                    wrap=True, spacing=8, run_spacing=8, alignment=_main)
+            (ft.Column(status_items, spacing=8, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
              if status_items else R._txt(L["none"], color=T.INK_3, size=12)),
-        ], spacing=0, horizontal_alignment=_cross)
+        ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
 
         def _copy(e):
             # Same shared clipboard-with-fallback mechanism the Run/Automation

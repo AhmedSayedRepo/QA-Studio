@@ -43,7 +43,7 @@ class IssueTypes(unittest.TestCase):
         self.assertEqual(be._story_issue_types("SS"), ("Feature", "Task"))
         be.fetch_stories_in_sprint("SS", "42")
         self.assertIn('issuetype in ("Feature", "Task")', jira.jqls[-1])
-        self.assertIn('sprint = "42"', jira.jqls[-1])
+        self.assertIn('sprint = 42 ', jira.jqls[-1])
 
     def test_falls_back_to_classic_types(self):
         be = JiraZephyrBackend(site="https://acme.atlassian.net", jira=FakeJira(issue_types=None), zephyr=object())

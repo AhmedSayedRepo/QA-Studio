@@ -297,9 +297,12 @@ def _load_iterations(app):
             its = backend_setup.fetch_sprints(app, _proj) or []
         except Exception:
             its = []
-        sprints = [it for it in its
-                   if (_sprint_num(it.get("name", "")) or _sprint_num(it.get("path", "")))] or its
-        sprints.sort(key=lambda it: (_sort_key(it) < 0, _sort_key(it)))
+        if any(it.get("label") for it in its):
+            sprints = list(its)      # Jira: full names, already active → future → closed
+        else:
+            sprints = [it for it in its
+                       if (_sprint_num(it.get("name", "")) or _sprint_num(it.get("path", "")))] or its
+            sprints.sort(key=lambda it: (_sort_key(it) < 0, _sort_key(it)))
         app._tm_iter_loading = False
         if app.project != _proj:
             app._tm_iter_for = None
@@ -1151,7 +1154,7 @@ def screen(app):
         return [ft.DropdownOption(key=m["email"], text=m["name"]) for m in members]
 
     iter_options = [ft.DropdownOption(key=it["path"],
-                                      text=(_sprint_num(it["name"]) or it["name"]))
+                                      text=(it.get("label") or _sprint_num(it["name"]) or it["name"]))
                     for it in app._tm_iterations]
 
     # ── Section 1: Sprint/Date-range scope + workload report, merged into one

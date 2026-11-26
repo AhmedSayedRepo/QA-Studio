@@ -4,12 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>QA Studio — AI test cases for Azure DevOps, Jira &amp; TestRail</title>
-<meta name="description" content="QA Studio generates test-case titles or full steps for Azure DevOps, Jira + Xray or TestRail, in seven languages, plans regression &amp; sprint coverage, and drives self-healing test automation. Local-first, bring-your-own AI key. Download the installer for Windows.">
+<meta name="description" content="QA Studio generates test-case titles or full steps for Azure DevOps, Jira + Xray, Jira + Zephyr Scale or TestRail, in seven languages, plans regression &amp; sprint coverage, and drives self-healing test automation. Local-first, bring-your-own AI key. Download the installer for Windows.">
 <!-- Social preview (Open Graph / Twitter) -->
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="QA Studio">
 <meta property="og:title" content="QA Studio — AI test cases for Azure DevOps, Jira &amp; TestRail">
-<meta property="og:description" content="Generate test cases for Azure DevOps, Jira + Xray or TestRail in seven languages, drive self-healing automation, and plan regression &amp; sprint coverage. Bring your own AI key.">
+<meta property="og:description" content="Generate test cases for Azure DevOps, Jira + Xray, Jira + Zephyr Scale or TestRail in seven languages, drive self-healing automation, and plan regression &amp; sprint coverage. Bring your own AI key.">
 <meta property="og:url" content="https://ahmedsayedrepo.github.io/QA-Studio/">
 <meta property="og:image" content="https://ahmedsayedrepo.github.io/QA-Studio/og-image-v2.png">
 <meta property="og:image:width" content="1200">
@@ -17,7 +17,7 @@
 <meta property="og:image:alt" content="QA Studio — AI test cases for Azure DevOps, Jira &amp; TestRail">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="QA Studio — AI test cases for Azure DevOps, Jira &amp; TestRail">
-<meta name="twitter:description" content="Generate test cases for Azure DevOps, Jira + Xray or TestRail in seven languages, drive self-healing automation, and plan regression &amp; sprint coverage. Bring your own AI key.">
+<meta name="twitter:description" content="Generate test cases for Azure DevOps, Jira + Xray, Jira + Zephyr Scale or TestRail in seven languages, drive self-healing automation, and plan regression &amp; sprint coverage. Bring your own AI key.">
 <meta name="twitter:image" content="https://ahmedsayedrepo.github.io/QA-Studio/og-image-v2.png">
 <link rel="icon" type="image/png" href="qa-logo-icon.png">
 <link rel="apple-touch-icon" href="app_new_icon_1024.png">
@@ -185,6 +185,7 @@
   h2{text-align:center;font-size:clamp(24px,3.6vw,34px);font-weight:800;letter-spacing:-.8px;margin:0 0 40px;}
 
   .steps{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;}
+  .steps-2{grid-template-columns:repeat(2,1fr);}
   .step{background:var(--card);border:1px solid var(--border);border-radius:18px;padding:26px 22px;
     backdrop-filter:blur(10px);position:relative;}
   .step .n{width:34px;height:34px;border-radius:10px;display:flex;align-items:center;justify-content:center;
@@ -255,7 +256,7 @@
     <div class="pill">🔒 Local-first — keys never leave your device</div>
   </div>
   <h1 class="fade-up fade-up-2">AI test cases for<br><span class="grad">Azure DevOps, Jira &amp; TestRail</span>, in minutes</h1>
-  <p class="sub fade-up fade-up-3">QA Studio reads your sprints &amp; stories from Azure DevOps, Jira + Xray or TestRail,
+  <p class="sub fade-up fade-up-3">QA Studio reads your sprints &amp; stories from Azure DevOps, Jira + Xray, Jira + Zephyr Scale or TestRail,
     generates test-case titles or full steps in seven languages, plans your regression &amp; sprint
     coverage, and drives self-healing test automation — on Windows or Android, with your own AI key.</p>
   <div class="cta fade-up fade-up-4">
@@ -390,7 +391,7 @@
     <div class="card"><div class="ic">🌐</div><h3>Seven languages</h3>
       <p>Produce test content in English, Arabic, French, Spanish, German, Turkish or Dutch — picked from a dropdown in Setup.</p></div>
     <div class="card"><div class="ic">🔄</div><h3>Works with your tracker</h3>
-      <p>Azure DevOps, Jira + Xray, or a Jira/Azure → TestRail hybrid — pulls your projects, test plans &amp; stories and pushes generated cases straight back in.</p></div>
+      <p>Azure DevOps, Jira + Xray, Jira + Zephyr Scale, or a Jira/Azure → TestRail hybrid — pulls your projects, test plans &amp; stories and pushes generated cases straight back in.</p></div>
     <div class="card"><div class="ic">✦</div><h3>Your choice of model</h3>
       <p>Anthropic, OpenAI, Gemini, NVIDIA, Azure OpenAI, DeepSeek, Qwen or Ollama — bring your own key.</p></div>
     <div class="card"><div class="ic">🗂️</div><h3>Task workload &amp; bulk task creation</h3>
@@ -418,13 +419,17 @@
 </div></section>
 
 <section style="padding-top:8px"><div class="wrap">
-  <div class="eyebrow">WHAT'S NEW · v3.7.8</div>
-  <h2>More reliable updates and navigation</h2>
-  <div class="steps">
-    <div class="step"><div class="n">1</div><h3>Faster, dependable updates</h3>
-      <p>Windows line-ending differences no longer trigger unnecessary dependency installation when requirements have not actually changed.</p></div>
-    <div class="step"><div class="n">2</div><h3>Stable Setup scrolling</h3>
-      <p>Setup keeps its mounted scroll area during refreshes and restores the header spacing correctly, so the first connection section remains reachable.</p></div>
+  <div class="eyebrow">WHAT'S NEW · <span id="vernew">latest release</span></div>
+  <h2>Jira + Zephyr Scale, fairer estimates and live remote runs</h2>
+  <div class="steps steps-2">
+    <div class="step"><div class="n">1</div><h3>Jira + Zephyr Scale</h3>
+      <p>Pick it in Setup with a sprint: each story's test cases go into their own Zephyr folder, linked to the story as Coverage, with an optional test cycle — and re-runs skip tests the story already has.</p></div>
+    <div class="step"><div class="n">2</div><h3>Bugs in every sprint view</h3>
+      <p>Sprint Summary and Sprint Report list the sprint's bugs by status, each opening in Jira; the Sprint Report skips the AI when titles are already in the report language.</p></div>
+    <div class="step"><div class="n">3</div><h3>Fair, faster plans</h3>
+      <p>Regression Plan counts every test linked to a story and estimates stories with none from their size; Sprint Plan's AI scoring and real epics work on Jira — with progress bars throughout.</p></div>
+    <div class="step"><div class="n">4</div><h3>Live remote runs &amp; smoother app</h3>
+      <p>Remote Runs shows each run's progress right in the list, Settings holds your defaults (now with Test style), and links open in front of QA Studio.</p></div>
   </div>
 </div></section>
 
@@ -450,9 +455,11 @@
     <details>
       <summary>Which test-management tools does it work with?</summary>
       <p>Azure DevOps (work items, test plans &amp; suites), Jira + Xray (Jira issues &amp; sprints with
-        Xray tests), and Azure → TestRail or Jira → TestRail hybrids that read stories from Azure or
-        Jira and write the generated cases into TestRail. You pick the backend at the top of Setup;
-        each keeps its own credentials. (Jira + Zephyr Scale is on the way.)</p>
+        Xray tests), Jira + Zephyr Scale (Jira sprints &amp; stories, with each story's test cases in
+        their own Zephyr folder, linked to the story as Coverage and optionally added to a test cycle),
+        and Azure → TestRail or Jira → TestRail hybrids that read stories from Azure or Jira and write
+        the generated cases into TestRail. You pick the backend at the top of Setup; each keeps its own
+        credentials.</p>
     </details>
     <details>
       <summary>Is QA Studio only for Windows?</summary>
@@ -466,7 +473,7 @@
       <summary>Where do my tracker &amp; AI credentials live?</summary>
       <p>Locally on your device only — encrypted with Windows DPAPI on desktop, and in the Android
         Keystore on mobile, where you can also require a fingerprint / PIN unlock before the app
-        restores your session. They're only ever sent to the tracker (Azure DevOps, Jira or TestRail) and AI provider you
+        restores your session. They're only ever sent to the tracker (Azure DevOps, Jira, Zephyr Scale or TestRail) and AI provider you
         explicitly connect — nothing is uploaded anywhere else.</p>
     </details>
     <details>
@@ -576,7 +583,7 @@
   // go stale the moment a new version ships. Fails silently (kept text) if
   // the API call doesn't succeed — never blocks the page.
   (function(){
-    var IDS=['ver','verfoot','vernav'];
+    var IDS=['ver','verfoot','vernav','vernew'];
     function paint(v){
       IDS.forEach(function(id){
         var el=document.getElementById(id);

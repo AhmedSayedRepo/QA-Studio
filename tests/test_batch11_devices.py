@@ -189,7 +189,9 @@ class RunSetting(unittest.TestCase):
 
 class Texts(unittest.TestCase):
     def test_strings_and_notes(self):
-        self.assertIn("upd_note_batch11_devices", release_notes.PENDING_RELEASE_NOTE_KEYS)
+        # Pending until release.bat stamps it into a version (4.0.6 and later).
+        released = {k for keys in release_notes.RELEASE_NOTE_KEYS.values() for k in keys}
+        self.assertIn("upd_note_batch11_devices", set(release_notes.PENDING_RELEASE_NOTE_KEYS) | released)
         for lang in ("en", "ar", "fr", "tr", "es", "de", "nl"):
             for k in ("auto_screen", "auto_screen_desktop", "auto_screen_landscape", "auto_screen_note",
                       "help_automation_d16", "help_automation_p16", "upd_note_batch11_devices"):

@@ -12842,6 +12842,37 @@ _BATCH9_I18N = {
         "stories_note_backlog_no_sprint": "backlog stories (the board has no active sprint)",
         "stories_note_backlog_empty_sprint": "backlog stories (the sprint has no stories)",
         "stories_note_none": "No open stories in {project} (no sprint stories and nothing in the backlog)",
+        "sprint_state_active": "active",
+        "setup_sprint_label": "Sprint",
+        "setup_sprint_hint": "where the stories come from",
+        "setup_sprint_all_active": "All active sprints",
+        "setup_sprint_backlog": "Backlog (all open stories)",
+        "stories_note_sprint_empty": "No stories in this sprint",
+        "setup_zephyr_folder": "Test case folder",
+        "setup_zephyr_folder_id": "Folder ID",
+        "setup_zephyr_create_folder": "Create folder",
+        "setup_zephyr_search_folder": "Search folders…",
+        "zcycle_label": "Add this run's test cases to a Zephyr test cycle",
+        "zcycle_sub": "After the run, a new test cycle holds the cases it created or updated (status: Not Executed).",
+        "zcycle_loading_plans": "Loading Zephyr test plans…",
+        "zcycle_no_plan": "No test plan",
+        "zcycle_plan_label": "Link the cycle to a Zephyr test plan",
+        "zcycle_done": "Added {n} test cases to Zephyr test cycle {cycle} (test plan: {plan}).",
+        "zcycle_failed": "Couldn't create the Zephyr test cycle: {err}",
+        "zcycle_case_failed": "{case} wasn't added to the cycle: {err}",
+        "zcycle_plan_failed": "The cycle wasn't linked to test plan {plan}: {err}",
+        "mdl_zephyr_story_folders": "Create a folder for each story",
+        "mdl_zephyr_story_folders_sub": "One sub-folder per chosen sprint story, named \"KEY Title\" — the run writes its test cases there.",
+        "mdl_connecting_to": "Connecting to {name}…",
+        "runlog_cases": "{n} test cases",
+        "runlog_issues": "{n} issues",
+        "sum_may_take_time": "Large sprints can take a minute — QA Studio counts the linked test cases of every story.",
+        "sum_filter_tip": "{status}: {n} — click to show only these stories",
+        "sum_filter_showing": "Showing {status} · {n} of {total}",
+        "sum_filter_clear": "Show all stories",
+        "sum_p_sprints": "Reading the sprints…",
+        "sum_p_stories": "Reading stories in {sprint} ({i} of {n})…",
+        "sum_p_cases": "Checking stories for linked test cases — story {done} of {total}…",
         "upd_note_installer_fixes": "Installing on a new PC is fixed: the installer now uses Python 3.12 (installing it when another Python version is there), no longer fails replacing a package its own window uses, and shows the real reason if a package can't be installed.",
         "auto_git_public": "Create a new GitHub repo as public (free GitHub Actions; anyone can see the tests)",
         "auto_run_push": "After generating: run the tests (hidden browsers), push to Git, and on GitHub add the visual baselines the CI run makes",
@@ -12893,6 +12924,37 @@ _BATCH9_I18N = {
         "stories_note_backlog_no_sprint": "قصص من قائمة الانتظار (لا يوجد سباق نشط على اللوحة)",
         "stories_note_backlog_empty_sprint": "قصص من قائمة الانتظار (السباق لا يحتوي على قصص)",
         "stories_note_none": "لا توجد قصص مفتوحة في {project} (لا قصص في السباق ولا شيء في قائمة الانتظار)",
+        "sprint_state_active": "نشط",
+        "setup_sprint_label": "السبرنت",
+        "setup_sprint_hint": "مصدر الستوريز",
+        "setup_sprint_all_active": "كل السبرنتات النشطة",
+        "setup_sprint_backlog": "قائمة الانتظار (كل الستوريز المفتوحة)",
+        "stories_note_sprint_empty": "لا توجد ستوريز في هذا السبرنت",
+        "setup_zephyr_folder": "مجلد حالات الاختبار",
+        "setup_zephyr_folder_id": "معرّف المجلد",
+        "setup_zephyr_create_folder": "إنشاء مجلد",
+        "setup_zephyr_search_folder": "ابحث في المجلدات…",
+        "zcycle_label": "أضف حالات الاختبار من هذا التشغيل إلى دورة اختبار في Zephyr",
+        "zcycle_sub": "بعد التشغيل، تُنشأ دورة اختبار جديدة تضم الحالات التي أنشأها أو حدّثها (الحالة: لم يُنفَّذ).",
+        "zcycle_loading_plans": "جارٍ تحميل خطط الاختبار في Zephyr…",
+        "zcycle_no_plan": "بدون خطة اختبار",
+        "zcycle_plan_label": "اربط الدورة بخطة اختبار في Zephyr",
+        "zcycle_done": "تمت إضافة {n} حالة اختبار إلى دورة الاختبار {cycle} في Zephyr (خطة الاختبار: {plan}).",
+        "zcycle_failed": "تعذّر إنشاء دورة الاختبار في Zephyr: {err}",
+        "zcycle_case_failed": "لم تتم إضافة {case} إلى الدورة: {err}",
+        "zcycle_plan_failed": "لم يتم ربط الدورة بخطة الاختبار {plan}: {err}",
+        "mdl_zephyr_story_folders": "إنشاء مجلد لكل قصة",
+        "mdl_zephyr_story_folders_sub": "مجلد فرعي لكل قصة مختارة من السبرنت باسم \"KEY Title\" — يكتب التشغيل حالات الاختبار فيه.",
+        "mdl_connecting_to": "جارٍ الاتصال بـ {name}…",
+        "runlog_cases": "{n} حالة اختبار",
+        "runlog_issues": "{n} مشكلة",
+        "sum_may_take_time": "قد تستغرق السبرنتات الكبيرة دقيقة أو أكثر، إذ يحسب QA Studio حالات الاختبار المرتبطة بكل قصة.",
+        "sum_filter_tip": "{status}: {n} — انقر لعرض هذه القصص فقط",
+        "sum_filter_showing": "عرض {status} · {n} من {total}",
+        "sum_filter_clear": "عرض كل القصص",
+        "sum_p_sprints": "جارٍ قراءة السبرنتات…",
+        "sum_p_stories": "جارٍ قراءة القصص في {sprint} ({i} من {n})…",
+        "sum_p_cases": "جارٍ فحص القصص بحثًا عن حالات الاختبار المرتبطة — القصة {done} من {total}…",
         "upd_note_installer_fixes": "تم إصلاح التثبيت على جهاز جديد: يستخدم المثبّت الآن Python 3.12 (ويثبّته عند وجود إصدار آخر من Python)، ولم يعد يفشل عند استبدال حزمة تستخدمها نافذته، ويعرض السبب الحقيقي إذا تعذّر تثبيت حزمة.",
         "auto_git_public": "إنشاء مستودع GitHub الجديد كمستودع عام (GitHub Actions مجانًا؛ يمكن لأي شخص رؤية الاختبارات)",
         "auto_run_push": "بعد التوليد: تشغيل الاختبارات (بمتصفحات مخفية) والدفع إلى Git، وعلى GitHub إضافة الصور المرجعية التي ينشئها تشغيل CI",
@@ -12944,6 +13006,37 @@ _BATCH9_I18N = {
         "stories_note_backlog_no_sprint": "stories du backlog (le tableau n'a pas de sprint actif)",
         "stories_note_backlog_empty_sprint": "stories du backlog (le sprint ne contient aucune story)",
         "stories_note_none": "Aucune story ouverte dans {project} (rien dans les sprints ni dans le backlog)",
+        "sprint_state_active": "actif",
+        "setup_sprint_label": "Sprint",
+        "setup_sprint_hint": "d'où viennent les stories",
+        "setup_sprint_all_active": "Tous les sprints actifs",
+        "setup_sprint_backlog": "Backlog (toutes les stories ouvertes)",
+        "stories_note_sprint_empty": "Aucune story dans ce sprint",
+        "setup_zephyr_folder": "Dossier de cas de test",
+        "setup_zephyr_folder_id": "ID du dossier",
+        "setup_zephyr_create_folder": "Créer un dossier",
+        "setup_zephyr_search_folder": "Rechercher des dossiers…",
+        "zcycle_label": "Ajouter les cas de test de cette exécution à un cycle de test Zephyr",
+        "zcycle_sub": "Après l'exécution, un nouveau cycle de test contient les cas créés ou mis à jour (statut : Not Executed).",
+        "zcycle_loading_plans": "Chargement des plans de test Zephyr…",
+        "zcycle_no_plan": "Aucun plan de test",
+        "zcycle_plan_label": "Lier le cycle à un plan de test Zephyr",
+        "zcycle_done": "{n} cas de test ajoutés au cycle de test Zephyr {cycle} (plan de test : {plan}).",
+        "zcycle_failed": "Impossible de créer le cycle de test Zephyr : {err}",
+        "zcycle_case_failed": "{case} n'a pas été ajouté au cycle : {err}",
+        "zcycle_plan_failed": "Le cycle n'a pas été lié au plan de test {plan} : {err}",
+        "mdl_zephyr_story_folders": "Créer un dossier pour chaque story",
+        "mdl_zephyr_story_folders_sub": "Un sous-dossier par story choisie du sprint, nommé « KEY Titre » — l'exécution y écrit ses cas de test.",
+        "mdl_connecting_to": "Connexion à {name}…",
+        "runlog_cases": "{n} cas de test",
+        "runlog_issues": "{n} problèmes",
+        "sum_may_take_time": "Les grands sprints peuvent prendre une minute — QA Studio compte les cas de test liés à chaque story.",
+        "sum_filter_tip": "{status} : {n} — cliquez pour n'afficher que ces stories",
+        "sum_filter_showing": "Affichage {status} · {n} sur {total}",
+        "sum_filter_clear": "Afficher toutes les stories",
+        "sum_p_sprints": "Lecture des sprints…",
+        "sum_p_stories": "Lecture des stories de {sprint} ({i} sur {n})…",
+        "sum_p_cases": "Vérification des cas de test liés aux stories — story {done} sur {total}…",
         "upd_note_installer_fixes": "L'installation sur un nouveau PC est corrigée : l'installateur utilise désormais Python 3.12 (en l'installant si une autre version est présente), n'échoue plus en remplaçant un paquet utilisé par sa propre fenêtre et affiche la vraie raison si un paquet ne peut pas être installé.",
         "auto_git_public": "Créer un nouveau dépôt GitHub public (GitHub Actions gratuit ; tout le monde peut voir les tests)",
         "auto_run_push": "Après la génération : lancer les tests (navigateurs masqués), pousser sur Git et, sur GitHub, ajouter les références visuelles créées par l'exécution CI",
@@ -12995,6 +13088,37 @@ _BATCH9_I18N = {
         "stories_note_backlog_no_sprint": "bekleyen iş listesindeki hikâyeler (panoda etkin sprint yok)",
         "stories_note_backlog_empty_sprint": "bekleyen iş listesindeki hikâyeler (sprintte hikâye yok)",
         "stories_note_none": "{project} içinde açık hikâye yok (sprintte de bekleyen iş listesinde de yok)",
+        "sprint_state_active": "etkin",
+        "setup_sprint_label": "Sprint",
+        "setup_sprint_hint": "hikâyelerin kaynağı",
+        "setup_sprint_all_active": "Tüm etkin sprintler",
+        "setup_sprint_backlog": "Bekleyen işler (tüm açık hikâyeler)",
+        "stories_note_sprint_empty": "Bu sprintte hikâye yok",
+        "setup_zephyr_folder": "Test senaryosu klasörü",
+        "setup_zephyr_folder_id": "Klasör kimliği",
+        "setup_zephyr_create_folder": "Klasör oluştur",
+        "setup_zephyr_search_folder": "Klasörlerde ara…",
+        "zcycle_label": "Bu çalıştırmanın test senaryolarını bir Zephyr test döngüsüne ekle",
+        "zcycle_sub": "Çalıştırmadan sonra, oluşturduğu veya güncellediği senaryoları içeren yeni bir test döngüsü oluşturulur (durum: Not Executed).",
+        "zcycle_loading_plans": "Zephyr test planları yükleniyor…",
+        "zcycle_no_plan": "Test planı yok",
+        "zcycle_plan_label": "Döngüyü bir Zephyr test planına bağla",
+        "zcycle_done": "{n} test senaryosu Zephyr test döngüsü {cycle} içine eklendi (test planı: {plan}).",
+        "zcycle_failed": "Zephyr test döngüsü oluşturulamadı: {err}",
+        "zcycle_case_failed": "{case} döngüye eklenmedi: {err}",
+        "zcycle_plan_failed": "Döngü {plan} test planına bağlanmadı: {err}",
+        "mdl_zephyr_story_folders": "Her hikâye için bir klasör oluştur",
+        "mdl_zephyr_story_folders_sub": "Seçilen her sprint hikâyesi için \"KEY Başlık\" adlı bir alt klasör — çalıştırma test senaryolarını oraya yazar.",
+        "mdl_connecting_to": "{name} hizmetine bağlanılıyor…",
+        "runlog_cases": "{n} test senaryosu",
+        "runlog_issues": "{n} sorun",
+        "sum_may_take_time": "Büyük sprintler bir dakika sürebilir — QA Studio her hikâyenin bağlı test senaryolarını sayar.",
+        "sum_filter_tip": "{status}: {n} — yalnızca bu hikâyeleri göstermek için tıklayın",
+        "sum_filter_showing": "{status} gösteriliyor · {n} / {total}",
+        "sum_filter_clear": "Tüm hikâyeleri göster",
+        "sum_p_sprints": "Sprintler okunuyor…",
+        "sum_p_stories": "{sprint} içindeki hikâyeler okunuyor ({i} / {n})…",
+        "sum_p_cases": "Hikâyelerin bağlı test senaryoları kontrol ediliyor — hikâye {done} / {total}…",
         "upd_note_installer_fixes": "Yeni bir bilgisayara kurulum düzeltildi: yükleyici artık Python 3.12 kullanıyor (başka bir Python sürümü varsa onu kuruyor), kendi penceresinin kullandığı bir paketi değiştirirken artık başarısız olmuyor ve bir paket kurulamazsa gerçek nedeni gösteriyor.",
         "auto_git_public": "Yeni GitHub deposunu herkese açık oluştur (GitHub Actions ücretsiz; testleri herkes görebilir)",
         "auto_run_push": "Oluşturduktan sonra: testleri çalıştır (gizli tarayıcılar), Git'e gönder ve GitHub'da CI çalıştırmasının ürettiği görsel referansları ekle",
@@ -13046,6 +13170,37 @@ _BATCH9_I18N = {
         "stories_note_backlog_no_sprint": "historias del backlog (el tablero no tiene un sprint activo)",
         "stories_note_backlog_empty_sprint": "historias del backlog (el sprint no tiene historias)",
         "stories_note_none": "No hay historias abiertas en {project} (ni en los sprints ni en el backlog)",
+        "sprint_state_active": "activo",
+        "setup_sprint_label": "Sprint",
+        "setup_sprint_hint": "de dónde vienen las historias",
+        "setup_sprint_all_active": "Todos los sprints activos",
+        "setup_sprint_backlog": "Backlog (todas las historias abiertas)",
+        "stories_note_sprint_empty": "No hay historias en este sprint",
+        "setup_zephyr_folder": "Carpeta de casos de prueba",
+        "setup_zephyr_folder_id": "ID de carpeta",
+        "setup_zephyr_create_folder": "Crear carpeta",
+        "setup_zephyr_search_folder": "Buscar carpetas…",
+        "zcycle_label": "Añadir los casos de prueba de esta ejecución a un ciclo de prueba de Zephyr",
+        "zcycle_sub": "Tras la ejecución, un nuevo ciclo de prueba contiene los casos que creó o actualizó (estado: Not Executed).",
+        "zcycle_loading_plans": "Cargando planes de prueba de Zephyr…",
+        "zcycle_no_plan": "Sin plan de prueba",
+        "zcycle_plan_label": "Vincular el ciclo a un plan de prueba de Zephyr",
+        "zcycle_done": "Se añadieron {n} casos de prueba al ciclo de prueba de Zephyr {cycle} (plan de prueba: {plan}).",
+        "zcycle_failed": "No se pudo crear el ciclo de prueba de Zephyr: {err}",
+        "zcycle_case_failed": "{case} no se añadió al ciclo: {err}",
+        "zcycle_plan_failed": "El ciclo no se vinculó al plan de prueba {plan}: {err}",
+        "mdl_zephyr_story_folders": "Crear una carpeta por cada historia",
+        "mdl_zephyr_story_folders_sub": "Una subcarpeta por cada historia elegida del sprint, llamada \"KEY Título\": la ejecución escribe ahí sus casos de prueba.",
+        "mdl_connecting_to": "Conectando con {name}…",
+        "runlog_cases": "{n} casos de prueba",
+        "runlog_issues": "{n} incidencias",
+        "sum_may_take_time": "Los sprints grandes pueden tardar un minuto: QA Studio cuenta los casos de prueba vinculados de cada historia.",
+        "sum_filter_tip": "{status}: {n} — haz clic para mostrar solo estas historias",
+        "sum_filter_showing": "Mostrando {status} · {n} de {total}",
+        "sum_filter_clear": "Mostrar todas las historias",
+        "sum_p_sprints": "Leyendo los sprints…",
+        "sum_p_stories": "Leyendo historias de {sprint} ({i} de {n})…",
+        "sum_p_cases": "Revisando los casos de prueba vinculados de cada historia — historia {done} de {total}…",
         "upd_note_installer_fixes": "Se corrigió la instalación en un PC nuevo: el instalador ahora usa Python 3.12 (lo instala si hay otra versión de Python), ya no falla al reemplazar un paquete que usa su propia ventana y muestra el motivo real si un paquete no se puede instalar.",
         "auto_git_public": "Crear el nuevo repositorio de GitHub como público (GitHub Actions gratis; cualquiera puede ver las pruebas)",
         "auto_run_push": "Después de generar: ejecutar las pruebas (navegadores ocultos), subir a Git y, en GitHub, añadir las referencias visuales que crea la ejecución de CI",
@@ -13097,6 +13252,37 @@ _BATCH9_I18N = {
         "stories_note_backlog_no_sprint": "Backlog-Storys (das Board hat keinen aktiven Sprint)",
         "stories_note_backlog_empty_sprint": "Backlog-Storys (der Sprint enthält keine Storys)",
         "stories_note_none": "Keine offenen Storys in {project} (weder im Sprint noch im Backlog)",
+        "sprint_state_active": "aktiv",
+        "setup_sprint_label": "Sprint",
+        "setup_sprint_hint": "woher die Storys kommen",
+        "setup_sprint_all_active": "Alle aktiven Sprints",
+        "setup_sprint_backlog": "Backlog (alle offenen Storys)",
+        "stories_note_sprint_empty": "Keine Storys in diesem Sprint",
+        "setup_zephyr_folder": "Testfall-Ordner",
+        "setup_zephyr_folder_id": "Ordner-ID",
+        "setup_zephyr_create_folder": "Ordner erstellen",
+        "setup_zephyr_search_folder": "Ordner suchen…",
+        "zcycle_label": "Testfälle dieses Laufs zu einem Zephyr-Testzyklus hinzufügen",
+        "zcycle_sub": "Nach dem Lauf enthält ein neuer Testzyklus die erstellten oder aktualisierten Fälle (Status: Not Executed).",
+        "zcycle_loading_plans": "Zephyr-Testpläne werden geladen…",
+        "zcycle_no_plan": "Kein Testplan",
+        "zcycle_plan_label": "Zyklus mit einem Zephyr-Testplan verknüpfen",
+        "zcycle_done": "{n} Testfälle zum Zephyr-Testzyklus {cycle} hinzugefügt (Testplan: {plan}).",
+        "zcycle_failed": "Zephyr-Testzyklus konnte nicht erstellt werden: {err}",
+        "zcycle_case_failed": "{case} wurde dem Zyklus nicht hinzugefügt: {err}",
+        "zcycle_plan_failed": "Der Zyklus wurde nicht mit Testplan {plan} verknüpft: {err}",
+        "mdl_zephyr_story_folders": "Einen Ordner pro Story erstellen",
+        "mdl_zephyr_story_folders_sub": "Ein Unterordner pro gewählter Sprint-Story mit dem Namen „KEY Titel“ – der Lauf schreibt seine Testfälle dorthin.",
+        "mdl_connecting_to": "Verbindung zu {name} wird hergestellt…",
+        "runlog_cases": "{n} Testfälle",
+        "runlog_issues": "{n} Probleme",
+        "sum_may_take_time": "Große Sprints können eine Minute dauern — QA Studio zählt die verknüpften Testfälle jeder Story.",
+        "sum_filter_tip": "{status}: {n} — klicken, um nur diese Stories anzuzeigen",
+        "sum_filter_showing": "Anzeige {status} · {n} von {total}",
+        "sum_filter_clear": "Alle Stories anzeigen",
+        "sum_p_sprints": "Sprints werden gelesen…",
+        "sum_p_stories": "Storys in {sprint} werden gelesen ({i} von {n})…",
+        "sum_p_cases": "Verknüpfte Testfälle der Stories werden geprüft — Story {done} von {total}…",
         "upd_note_installer_fixes": "Die Installation auf einem neuen PC ist behoben: Das Installationsprogramm verwendet jetzt Python 3.12 (und installiert es, wenn eine andere Python-Version vorhanden ist), scheitert nicht mehr beim Ersetzen eines Pakets, das sein eigenes Fenster nutzt, und zeigt den echten Grund, wenn ein Paket nicht installiert werden kann.",
         "auto_git_public": "Neues GitHub-Repository öffentlich anlegen (GitHub Actions kostenlos; jeder kann die Tests sehen)",
         "auto_run_push": "Nach dem Generieren: Tests ausführen (ausgeblendete Browser), zu Git pushen und auf GitHub die visuellen Referenzen des CI-Laufs hinzufügen",
@@ -13148,6 +13334,37 @@ _BATCH9_I18N = {
         "stories_note_backlog_no_sprint": "backlogverhalen (het bord heeft geen actieve sprint)",
         "stories_note_backlog_empty_sprint": "backlogverhalen (de sprint bevat geen verhalen)",
         "stories_note_none": "Geen open verhalen in {project} (niets in de sprints en niets in de backlog)",
+        "sprint_state_active": "actief",
+        "setup_sprint_label": "Sprint",
+        "setup_sprint_hint": "waar de verhalen vandaan komen",
+        "setup_sprint_all_active": "Alle actieve sprints",
+        "setup_sprint_backlog": "Backlog (alle open verhalen)",
+        "stories_note_sprint_empty": "Geen verhalen in deze sprint",
+        "setup_zephyr_folder": "Map met testgevallen",
+        "setup_zephyr_folder_id": "Map-ID",
+        "setup_zephyr_create_folder": "Map maken",
+        "setup_zephyr_search_folder": "Mappen zoeken…",
+        "zcycle_label": "Testgevallen van deze run toevoegen aan een Zephyr-testcyclus",
+        "zcycle_sub": "Na de run bevat een nieuwe testcyclus de gevallen die zijn gemaakt of bijgewerkt (status: Not Executed).",
+        "zcycle_loading_plans": "Zephyr-testplannen laden…",
+        "zcycle_no_plan": "Geen testplan",
+        "zcycle_plan_label": "Cyclus koppelen aan een Zephyr-testplan",
+        "zcycle_done": "{n} testgevallen toegevoegd aan Zephyr-testcyclus {cycle} (testplan: {plan}).",
+        "zcycle_failed": "Kan de Zephyr-testcyclus niet maken: {err}",
+        "zcycle_case_failed": "{case} is niet aan de cyclus toegevoegd: {err}",
+        "zcycle_plan_failed": "De cyclus is niet gekoppeld aan testplan {plan}: {err}",
+        "mdl_zephyr_story_folders": "Een map per verhaal maken",
+        "mdl_zephyr_story_folders_sub": "Eén submap per gekozen sprintverhaal, met de naam \"KEY Titel\" — de run schrijft de testgevallen daarin.",
+        "mdl_connecting_to": "Verbinden met {name}…",
+        "runlog_cases": "{n} testgevallen",
+        "runlog_issues": "{n} problemen",
+        "sum_may_take_time": "Grote sprints kunnen een minuut duren — QA Studio telt de gekoppelde testgevallen van elke story.",
+        "sum_filter_tip": "{status}: {n} — klik om alleen deze stories te tonen",
+        "sum_filter_showing": "{status} weergegeven · {n} van {total}",
+        "sum_filter_clear": "Alle stories tonen",
+        "sum_p_sprints": "Sprints lezen…",
+        "sum_p_stories": "Verhalen in {sprint} lezen ({i} van {n})…",
+        "sum_p_cases": "Gekoppelde testgevallen per story controleren — story {done} van {total}…",
         "upd_note_installer_fixes": "Installeren op een nieuwe pc is opgelost: het installatieprogramma gebruikt nu Python 3.12 (en installeert het als er een andere Python-versie is), mislukt niet meer bij het vervangen van een pakket dat het eigen venster gebruikt, en toont de echte reden als een pakket niet kan worden geïnstalleerd.",
         "auto_git_public": "Nieuwe GitHub-repository openbaar maken (GitHub Actions gratis; iedereen kan de tests zien)",
         "auto_run_push": "Na het genereren: de tests uitvoeren (verborgen browsers), naar Git pushen en op GitHub de visuele referenties van de CI-run toevoegen",
@@ -13182,6 +13399,404 @@ _BATCH9_I18N = {
     },
 }
 for _language, _values in _BATCH9_I18N.items():
+    _STRINGS[_language].update(_values)
+
+# Sprint Report: skip translation when titles are already in the report
+# language, retry missed titles, live loader, expandable bug list.
+_SPR_REFINE_I18N = {
+    "en": {
+        "spr_p_fetch": "Fetching stories & bugs — sprint {i} of {n}… large sprints can take a minute",
+        "spr_p_translate": "Translating titles — {done} of {total}…",
+        "spr_p_retry": "Retrying {n} titles that didn't translate…",
+        "spr_ok_no_translation_needed": "Report ready — {stories} stories, {bugs} bugs. Titles are already in {lang}, so no AI translation was needed.",
+        "spr_ok_report_ready_n": "Report ready — {stories} stories ({done} of {need} titles translated), {bugs} bugs.",
+        "spr_ok_translated_n": "Translated to {lang} ({done} of {need} titles).",
+        "spr_ok_retranslate_none_needed": "Titles are already in {lang} — no translation needed.",
+        "spr_warn_untranslated": "Not translated, shown as-is: {n}.",
+        "spr_bug_show_more": "Show {n} more ({left} left)",
+        "spr_bug_open_tip": "Open {issue}",
+    },
+    "ar": {
+        "spr_p_fetch": "جارٍ جلب القصص والأخطاء — السبرنت {i} من {n}… قد تستغرق السبرنتات الكبيرة دقيقة",
+        "spr_p_translate": "جارٍ ترجمة العناوين — {done} من {total}…",
+        "spr_p_retry": "إعادة محاولة ترجمة {n} من العناوين التي لم تُترجم…",
+        "spr_ok_no_translation_needed": "التقرير جاهز — {stories} قصة، {bugs} خطأ. العناوين باللغة {lang} بالفعل، فلم تكن هناك حاجة إلى الترجمة بالذكاء الاصطناعي.",
+        "spr_ok_report_ready_n": "التقرير جاهز — {stories} قصة (تُرجم {done} من {need} عنوان)، {bugs} خطأ.",
+        "spr_ok_translated_n": "تمت الترجمة إلى {lang} ({done} من {need} عنوان).",
+        "spr_ok_retranslate_none_needed": "العناوين باللغة {lang} بالفعل — لا حاجة إلى الترجمة.",
+        "spr_warn_untranslated": "لم يُترجم وعُرض كما هو: {n}.",
+        "spr_bug_show_more": "عرض {n} أخرى (متبقٍ {left})",
+        "spr_bug_open_tip": "فتح {issue}",
+    },
+    "fr": {
+        "spr_p_fetch": "Récupération des stories et des bugs — sprint {i} sur {n}… un grand sprint peut prendre une minute",
+        "spr_p_translate": "Traduction des titres — {done} sur {total}…",
+        "spr_p_retry": "Nouvel essai pour {n} titres non traduits…",
+        "spr_ok_no_translation_needed": "Rapport prêt — {stories} stories, {bugs} bugs. Les titres sont déjà en {lang} : aucune traduction IA n'a été nécessaire.",
+        "spr_ok_report_ready_n": "Rapport prêt — {stories} stories ({done} titres traduits sur {need}), {bugs} bugs.",
+        "spr_ok_translated_n": "Traduit en {lang} ({done} titres sur {need}).",
+        "spr_ok_retranslate_none_needed": "Les titres sont déjà en {lang} — aucune traduction nécessaire.",
+        "spr_warn_untranslated": "Non traduits, affichés tels quels : {n}.",
+        "spr_bug_show_more": "Afficher {n} de plus ({left} restants)",
+        "spr_bug_open_tip": "Ouvrir {issue}",
+    },
+    "tr": {
+        "spr_p_fetch": "Hikâyeler ve hatalar alınıyor — sprint {i} / {n}… büyük sprintler bir dakika sürebilir",
+        "spr_p_translate": "Başlıklar çevriliyor — {done} / {total}…",
+        "spr_p_retry": "Çevrilmeyen {n} başlık yeniden deneniyor…",
+        "spr_ok_no_translation_needed": "Rapor hazır — {stories} hikâye, {bugs} hata. Başlıklar zaten {lang} olduğu için yapay zekâ çevirisi gerekmedi.",
+        "spr_ok_report_ready_n": "Rapor hazır — {stories} hikâye ({need} başlıktan {done} tanesi çevrildi), {bugs} hata.",
+        "spr_ok_translated_n": "{lang} diline çevrildi ({need} başlıktan {done}).",
+        "spr_ok_retranslate_none_needed": "Başlıklar zaten {lang} — çeviri gerekmiyor.",
+        "spr_warn_untranslated": "Çevrilemedi, olduğu gibi gösteriliyor: {n}.",
+        "spr_bug_show_more": "{n} tane daha göster ({left} kaldı)",
+        "spr_bug_open_tip": "{issue} aç",
+    },
+    "es": {
+        "spr_p_fetch": "Obteniendo historias y errores — sprint {i} de {n}… un sprint grande puede tardar un minuto",
+        "spr_p_translate": "Traduciendo títulos — {done} de {total}…",
+        "spr_p_retry": "Reintentando {n} títulos que no se tradujeron…",
+        "spr_ok_no_translation_needed": "Informe listo — {stories} historias, {bugs} errores. Los títulos ya están en {lang}, así que no hizo falta traducir con IA.",
+        "spr_ok_report_ready_n": "Informe listo — {stories} historias ({done} de {need} títulos traducidos), {bugs} errores.",
+        "spr_ok_translated_n": "Traducido a {lang} ({done} de {need} títulos).",
+        "spr_ok_retranslate_none_needed": "Los títulos ya están en {lang}; no hace falta traducir.",
+        "spr_warn_untranslated": "Sin traducir, se muestran tal cual: {n}.",
+        "spr_bug_show_more": "Mostrar {n} más (quedan {left})",
+        "spr_bug_open_tip": "Abrir {issue}",
+    },
+    "de": {
+        "spr_p_fetch": "Storys und Fehler werden abgerufen — Sprint {i} von {n}… große Sprints können eine Minute dauern",
+        "spr_p_translate": "Titel werden übersetzt — {done} von {total}…",
+        "spr_p_retry": "Neuer Versuch für {n} nicht übersetzte Titel…",
+        "spr_ok_no_translation_needed": "Bericht fertig — {stories} Storys, {bugs} Fehler. Die Titel sind bereits auf {lang}, daher war keine KI-Übersetzung nötig.",
+        "spr_ok_report_ready_n": "Bericht fertig — {stories} Storys ({done} von {need} Titeln übersetzt), {bugs} Fehler.",
+        "spr_ok_translated_n": "Auf {lang} übersetzt ({done} von {need} Titeln).",
+        "spr_ok_retranslate_none_needed": "Die Titel sind bereits auf {lang} — keine Übersetzung nötig.",
+        "spr_warn_untranslated": "Nicht übersetzt, unverändert angezeigt: {n}.",
+        "spr_bug_show_more": "{n} weitere anzeigen (noch {left})",
+        "spr_bug_open_tip": "{issue} öffnen",
+    },
+    "nl": {
+        "spr_p_fetch": "Stories en bugs ophalen — sprint {i} van {n}… grote sprints kunnen een minuut duren",
+        "spr_p_translate": "Titels vertalen — {done} van {total}…",
+        "spr_p_retry": "Opnieuw proberen voor {n} niet-vertaalde titels…",
+        "spr_ok_no_translation_needed": "Rapport klaar — {stories} stories, {bugs} bugs. De titels zijn al in het {lang}, dus AI-vertaling was niet nodig.",
+        "spr_ok_report_ready_n": "Rapport klaar — {stories} stories ({done} van {need} titels vertaald), {bugs} bugs.",
+        "spr_ok_translated_n": "Vertaald naar het {lang} ({done} van {need} titels).",
+        "spr_ok_retranslate_none_needed": "De titels zijn al in het {lang} — vertalen is niet nodig.",
+        "spr_warn_untranslated": "Niet vertaald, ongewijzigd getoond: {n}.",
+        "spr_bug_show_more": "Nog {n} tonen ({left} over)",
+        "spr_bug_open_tip": "{issue} openen",
+    },
+}
+for _language, _values in _SPR_REFINE_I18N.items():
+    _STRINGS[_language].update(_values)
+
+# Sprint Summary: Bugs card.
+_SUM_BUGS_I18N = {
+    "en": {"sum_bugs": "Bugs", "sum_p_bugs": "Reading the sprint's bugs…",
+           "sum_bugs_split": "Regression {reg} · Sprint {sprint}",
+           "sum_bugs_chip_tip": "{status}: {n} — click to list these bugs",
+           "sum_bugs_none": "No bugs in this sprint.",
+           "sum_bugs_more": "+{n} more — open the sprint in Jira to see all."},
+    "ar": {"sum_bugs": "الأخطاء", "sum_p_bugs": "جارٍ قراءة أخطاء السبرنت…",
+           "sum_bugs_split": "Regression ‏{reg} · السبرنت {sprint}",
+           "sum_bugs_chip_tip": "{status}: {n} — انقر لعرض هذه الأخطاء",
+           "sum_bugs_none": "لا توجد أخطاء في هذا السبرنت.",
+           "sum_bugs_more": "+{n} أخرى — افتح السبرنت في Jira لرؤيتها كلها."},
+    "fr": {"sum_bugs": "Bugs", "sum_p_bugs": "Lecture des bugs du sprint…",
+           "sum_bugs_split": "Régression {reg} · Sprint {sprint}",
+           "sum_bugs_chip_tip": "{status} : {n} — cliquez pour lister ces bugs",
+           "sum_bugs_none": "Aucun bug dans ce sprint.",
+           "sum_bugs_more": "+{n} de plus — ouvrez le sprint dans Jira pour tout voir."},
+    "tr": {"sum_bugs": "Hatalar", "sum_p_bugs": "Sprint hataları okunuyor…",
+           "sum_bugs_split": "Regresyon {reg} · Sprint {sprint}",
+           "sum_bugs_chip_tip": "{status}: {n} — bu hataları listelemek için tıklayın",
+           "sum_bugs_none": "Bu sprintte hata yok.",
+           "sum_bugs_more": "+{n} tane daha — tümünü görmek için sprinti Jira'da açın."},
+    "es": {"sum_bugs": "Errores", "sum_p_bugs": "Leyendo los errores del sprint…",
+           "sum_bugs_split": "Regresión {reg} · Sprint {sprint}",
+           "sum_bugs_chip_tip": "{status}: {n} — haz clic para ver estos errores",
+           "sum_bugs_none": "No hay errores en este sprint.",
+           "sum_bugs_more": "+{n} más — abre el sprint en Jira para verlos todos."},
+    "de": {"sum_bugs": "Fehler", "sum_p_bugs": "Fehler des Sprints werden gelesen…",
+           "sum_bugs_split": "Regression {reg} · Sprint {sprint}",
+           "sum_bugs_chip_tip": "{status}: {n} — klicken, um diese Fehler aufzulisten",
+           "sum_bugs_none": "Keine Fehler in diesem Sprint.",
+           "sum_bugs_more": "+{n} weitere — Sprint in Jira öffnen, um alle zu sehen."},
+    "nl": {"sum_bugs": "Bugs", "sum_p_bugs": "Bugs van de sprint lezen…",
+           "sum_bugs_split": "Regressie {reg} · Sprint {sprint}",
+           "sum_bugs_chip_tip": "{status}: {n} — klik om deze bugs te tonen",
+           "sum_bugs_none": "Geen bugs in deze sprint.",
+           "sum_bugs_more": "+{n} meer — open de sprint in Jira om alles te zien."},
+}
+for _language, _values in _SUM_BUGS_I18N.items():
+    _STRINGS[_language].update(_values)
+
+# Release notes for the next version (registered in release_notes.py
+# PENDING_RELEASE_NOTE_KEYS; release.bat stamps the version).
+_RELNOTES_NEXT_I18N = {
+    "en": {
+        "upd_note_jira_zephyr": "New backend: Jira + Zephyr Scale. Pick it in Setup, choose a sprint, and each story's test cases go into a folder named after the story, linked to it as Coverage; you can also add the run's cases to a new test cycle. Running again skips tests the story already has.",
+        "upd_note_sprint_summary_bugs": "Sprint Summary on Jira + Zephyr: real progress while it loads, status cards that filter the story list, and a new Bugs card — bugs by status, each opening in Jira. It opens as soon as you pick a sprint — no test case folder needed.",
+        "upd_note_sprint_report_refresh": "Sprint Report: no AI call when titles are already in the report language, missed titles are retried so big sprints translate fully, a live progress bar, Jira stories in Done count as Completed, and bugs fold open by status (a colour per status) with links to Jira.",
+        "upd_note_run_log_email_links": "The Run log groups lines by story under a ✓ / ⚠ / ✗ header you can fold, and report emails link to the connected backend (“Open in Zephyr”).",
+        "upd_note_settings_defaults": "Settings: Test style (Manual / Automation) is now here. Settings holds the defaults every session starts with, Setup's toggles only change the current run, choices apply without reloading the page, and Restore preferences resets every setting.",
+        "upd_note_links_in_front": "Links now open in your browser in front of QA Studio instead of behind it.",
+    },
+    "ar": {
+        "upd_note_jira_zephyr": "واجهة خلفية جديدة: Jira + Zephyr Scale. اخترها من الإعداد ثم اختر السبرنت، فتُنشأ حالات اختبار كل قصة في مجلد باسم القصة وتُربط بها كتغطية (Coverage)، ويمكنك أيضًا إضافة حالات التشغيل إلى دورة اختبار جديدة. عند التشغيل مرة أخرى تُتخطى الاختبارات الموجودة للقصة.",
+        "upd_note_sprint_summary_bugs": "ملخص السبرنت على Jira + Zephyr: تقدم فعلي أثناء التحميل، وبطاقات حالة تُصفّي قائمة القصص، وبطاقة أخطاء جديدة تعرض الأخطاء حسب الحالة ويفتح كل منها في Jira. ويُتاح بمجرد اختيار السبرنت دون الحاجة إلى مجلد حالات اختبار.",
+        "upd_note_sprint_report_refresh": "تقرير السبرنت: لا استدعاء للذكاء الاصطناعي عندما تكون العناوين بلغة التقرير أصلًا، وإعادة محاولة العناوين التي لم تُترجم لتكتمل ترجمة السبرنتات الكبيرة، وشريط تقدم مباشر، واحتساب قصص Jira المنتهية (Done) كمكتملة، وأخطاء تُفتح حسب الحالة (لون لكل حالة) مع روابط إلى Jira.",
+        "upd_note_run_log_email_links": "سجل التشغيل يجمع الأسطر حسب القصة تحت عنوان ✓ / ⚠ / ✗ يمكن طيّه، وروابط رسائل التقرير تفتح الواجهة الخلفية المتصلة («فتح في Zephyr»).",
+        "upd_note_settings_defaults": "الإعدادات: أصبح نمط الاختبار (يدوي / أتمتة) هنا. تحفظ الإعدادات القيم الافتراضية التي تبدأ بها كل جلسة، وخيارات الإعداد تغيّر التشغيل الحالي فقط، وتُطبّق الاختيارات دون إعادة تحميل الصفحة، و«استعادة التفضيلات» تعيد ضبط كل الإعدادات.",
+        "upd_note_links_in_front": "تُفتح الروابط الآن في المتصفح أمام QA Studio بدلًا من خلفه.",
+    },
+    "fr": {
+        "upd_note_jira_zephyr": "Nouveau backend : Jira + Zephyr Scale. Choisissez-le dans Configuration, sélectionnez un sprint, et les cas de test de chaque story sont créés dans un dossier à son nom et liés à elle en Coverage ; vous pouvez aussi ajouter les cas de l'exécution à un nouveau cycle de test. Une nouvelle exécution ignore les tests que la story a déjà.",
+        "upd_note_sprint_summary_bugs": "Résumé du sprint sur Jira + Zephyr : progression réelle pendant le chargement, cartes de statut qui filtrent la liste des stories, et une nouvelle carte Bugs — les bugs par statut, chacun s'ouvrant dans Jira. Il est disponible dès que vous choisissez un sprint, sans dossier de cas de test.",
+        "upd_note_sprint_report_refresh": "Rapport de sprint : aucun appel IA quand les titres sont déjà dans la langue du rapport, les titres manqués sont réessayés pour que les grands sprints soient entièrement traduits, une barre de progression en direct, les stories Jira « Done » comptent comme terminées, et les bugs se déplient par statut (une couleur par statut) avec des liens vers Jira.",
+        "upd_note_run_log_email_links": "Le journal d'exécution regroupe les lignes par story sous un en-tête ✓ / ⚠ / ✗ repliable, et les e-mails de rapport renvoient vers le backend connecté (« Ouvrir dans Zephyr »).",
+        "upd_note_settings_defaults": "Paramètres : le style de test (Manuel / Automatisation) est maintenant ici. Les Paramètres contiennent les valeurs par défaut de chaque session, les choix de Configuration ne changent que l'exécution en cours, les choix s'appliquent sans recharger la page, et Restaurer les préférences réinitialise tous les paramètres.",
+        "upd_note_links_in_front": "Les liens s'ouvrent maintenant dans votre navigateur au premier plan, devant QA Studio.",
+    },
+    "tr": {
+        "upd_note_jira_zephyr": "Yeni arka uç: Jira + Zephyr Scale. Kurulum'da seçin, bir sprint belirleyin; her hikâyenin test senaryoları hikâyenin adını taşıyan bir klasörde oluşturulur ve hikâyeye Coverage olarak bağlanır. Çalıştırmanın senaryolarını yeni bir test döngüsüne de ekleyebilirsiniz. Yeniden çalıştırma, hikâyede zaten olan testleri atlar.",
+        "upd_note_sprint_summary_bugs": "Jira + Zephyr'de Sprint Özeti: yüklenirken gerçek ilerleme, hikâye listesini filtreleyen durum kartları ve yeni bir Hatalar kartı — duruma göre hatalar, her biri Jira'da açılır. Bir sprint seçer seçmez açılır; test senaryosu klasörü gerekmez.",
+        "upd_note_sprint_report_refresh": "Sprint Raporu: başlıklar zaten rapor dilindeyse yapay zekâ çağrısı yok, çevrilemeyen başlıklar yeniden denenir ve büyük sprintler tamamen çevrilir, canlı ilerleme çubuğu, Jira'da Done olan hikâyeler Tamamlandı sayılır ve hatalar duruma göre açılır (her duruma bir renk), Jira bağlantılarıyla.",
+        "upd_note_run_log_email_links": "Çalıştırma günlüğü satırları hikâyeye göre katlanabilir bir ✓ / ⚠ / ✗ başlığı altında gruplar; rapor e-postaları bağlı arka uca bağlantı verir (“Zephyr'de aç”).",
+        "upd_note_settings_defaults": "Ayarlar: Test stili (Manuel / Otomasyon) artık burada. Ayarlar her oturumun başladığı varsayılanları tutar, Kurulum'daki seçimler yalnızca geçerli çalıştırmayı değiştirir, seçimler sayfa yeniden yüklenmeden uygulanır ve Tercihleri geri yükle tüm ayarları sıfırlar.",
+        "upd_note_links_in_front": "Bağlantılar artık tarayıcıda QA Studio'nun arkasında değil önünde açılıyor.",
+    },
+    "es": {
+        "upd_note_jira_zephyr": "Nuevo backend: Jira + Zephyr Scale. Elígelo en Configuración y selecciona un sprint: los casos de prueba de cada historia se crean en una carpeta con su nombre y se vinculan a ella como Coverage; también puedes añadir los casos de la ejecución a un nuevo ciclo de prueba. Al volver a ejecutar se omiten las pruebas que la historia ya tiene.",
+        "upd_note_sprint_summary_bugs": "Resumen del sprint en Jira + Zephyr: progreso real mientras carga, tarjetas de estado que filtran la lista de historias y una nueva tarjeta de Errores: errores por estado, cada uno se abre en Jira. Se habilita en cuanto eliges un sprint, sin carpeta de casos de prueba.",
+        "upd_note_sprint_report_refresh": "Informe de sprint: sin llamada a la IA cuando los títulos ya están en el idioma del informe, los títulos no traducidos se reintentan para que los sprints grandes se traduzcan por completo, una barra de progreso en vivo, las historias de Jira en Done cuentan como completadas y los errores se despliegan por estado (un color por estado) con enlaces a Jira.",
+        "upd_note_run_log_email_links": "El registro de ejecución agrupa las líneas por historia bajo un encabezado ✓ / ⚠ / ✗ plegable, y los correos del informe enlazan con el backend conectado («Abrir en Zephyr»).",
+        "upd_note_settings_defaults": "Ajustes: el estilo de prueba (Manual / Automatización) ahora está aquí. Ajustes guarda los valores predeterminados con los que empieza cada sesión, las opciones de Configuración solo cambian la ejecución actual, las elecciones se aplican sin recargar la página y Restaurar preferencias restablece todos los ajustes.",
+        "upd_note_links_in_front": "Los enlaces ahora se abren en el navegador delante de QA Studio, no detrás.",
+    },
+    "de": {
+        "upd_note_jira_zephyr": "Neues Backend: Jira + Zephyr Scale. In der Einrichtung auswählen, einen Sprint wählen – die Testfälle jeder Story landen in einem Ordner mit ihrem Namen und werden als Coverage mit ihr verknüpft; die Fälle des Laufs lassen sich auch einem neuen Testzyklus hinzufügen. Ein erneuter Lauf überspringt Tests, die die Story schon hat.",
+        "upd_note_sprint_summary_bugs": "Sprint-Zusammenfassung für Jira + Zephyr: echter Fortschritt beim Laden, Statuskarten, die die Story-Liste filtern, und eine neue Fehler-Karte – Fehler nach Status, jeder öffnet sich in Jira. Sie ist verfügbar, sobald ein Sprint gewählt ist – ohne Testfall-Ordner.",
+        "upd_note_sprint_report_refresh": "Sprint-Bericht: kein KI-Aufruf, wenn die Titel schon in der Berichtssprache sind, nicht übersetzte Titel werden erneut versucht, sodass große Sprints vollständig übersetzt werden, ein Live-Fortschrittsbalken, Jira-Storys in Done zählen als abgeschlossen, und Fehler klappen nach Status auf (eine Farbe pro Status) mit Links zu Jira.",
+        "upd_note_run_log_email_links": "Das Lauf-Protokoll gruppiert die Zeilen nach Story unter einem einklappbaren ✓ / ⚠ / ✗-Kopf, und Berichts-E-Mails verlinken auf das verbundene Backend („In Zephyr öffnen“).",
+        "upd_note_settings_defaults": "Einstellungen: Der Teststil (Manuell / Automatisierung) ist jetzt hier. Die Einstellungen enthalten die Standardwerte, mit denen jede Sitzung startet, die Auswahl in der Einrichtung ändert nur den aktuellen Lauf, Änderungen gelten ohne Neuladen der Seite, und Einstellungen wiederherstellen setzt alles zurück.",
+        "upd_note_links_in_front": "Links öffnen sich jetzt im Browser vor QA Studio statt dahinter.",
+    },
+    "nl": {
+        "upd_note_jira_zephyr": "Nieuwe backend: Jira + Zephyr Scale. Kies hem in Instellen en kies een sprint: de testgevallen van elke story komen in een map met de naam van de story en worden er als Coverage aan gekoppeld; je kunt de gevallen van de run ook aan een nieuwe testcyclus toevoegen. Opnieuw uitvoeren slaat tests over die de story al heeft.",
+        "upd_note_sprint_summary_bugs": "Sprintoverzicht op Jira + Zephyr: echte voortgang tijdens het laden, statuskaarten die de storylijst filteren en een nieuwe Bugs-kaart — bugs per status, elk te openen in Jira. Het is beschikbaar zodra je een sprint kiest, zonder testgevalmap.",
+        "upd_note_sprint_report_refresh": "Sprintrapport: geen AI-aanroep als de titels al in de rapporttaal zijn, gemiste titels worden opnieuw geprobeerd zodat grote sprints volledig vertaald worden, een live voortgangsbalk, Jira-stories in Done tellen als voltooid, en bugs klappen per status open (een kleur per status) met links naar Jira.",
+        "upd_note_run_log_email_links": "Het runlogboek groepeert regels per story onder een inklapbare ✓ / ⚠ / ✗-kop, en rapportmails linken naar de verbonden backend („Openen in Zephyr”).",
+        "upd_note_settings_defaults": "Instellingen: de teststijl (Handmatig / Automatisering) staat nu hier. Instellingen bevat de standaardwaarden waarmee elke sessie begint, keuzes in Instellen wijzigen alleen de huidige run, keuzes worden toegepast zonder de pagina te herladen, en Voorkeuren herstellen zet alle instellingen terug.",
+        "upd_note_links_in_front": "Links openen nu in je browser vóór QA Studio in plaats van erachter.",
+    },
+}
+for _language, _values in _RELNOTES_NEXT_I18N.items():
+    _STRINGS[_language].update(_values)
+
+# Remote Runs list: live progress on in-progress rows (auto-refresh).
+_RR_LIVE_I18N = {
+    "en": {"rr_row_stories": "{done} of {total} stories", "rr_row_waiting": "Starting…",
+           "upd_note_remote_runs_live": "Remote Runs refreshes by itself: runs in progress show a live progress bar and story count right in the list, so you no longer have to open a run to follow it."},
+    "ar": {"rr_row_stories": "{done} من {total} قصص", "rr_row_waiting": "جارٍ البدء…",
+           "upd_note_remote_runs_live": "تتحدّث شاشة التشغيل عن بُعد تلقائيًا: تعرض عمليات التشغيل الجارية شريط تقدم مباشرًا وعدد القصص في القائمة نفسها، فلم يعد عليك فتح التشغيل لمتابعته."},
+    "fr": {"rr_row_stories": "{done} stories sur {total}", "rr_row_waiting": "Démarrage…",
+           "upd_note_remote_runs_live": "Exécutions à distance s'actualise toute seule : les exécutions en cours affichent une barre de progression et le nombre de stories directement dans la liste, sans avoir à ouvrir l'exécution."},
+    "tr": {"rr_row_stories": "{total} hikâyeden {done}", "rr_row_waiting": "Başlatılıyor…",
+           "upd_note_remote_runs_live": "Uzaktan Çalıştırmalar kendiliğinden yenilenir: devam eden çalıştırmalar listede canlı bir ilerleme çubuğu ve hikâye sayısı gösterir; takip etmek için çalıştırmayı açmanız gerekmez."},
+    "es": {"rr_row_stories": "{done} de {total} historias", "rr_row_waiting": "Iniciando…",
+           "upd_note_remote_runs_live": "Ejecuciones remotas se actualiza sola: las ejecuciones en curso muestran una barra de progreso y el número de historias en la propia lista, sin tener que abrir la ejecución."},
+    "de": {"rr_row_stories": "{done} von {total} Storys", "rr_row_waiting": "Wird gestartet…",
+           "upd_note_remote_runs_live": "Remote-Läufe aktualisieren sich selbst: Laufende Läufe zeigen direkt in der Liste einen Fortschrittsbalken und die Anzahl der Storys – ein Lauf muss dafür nicht mehr geöffnet werden."},
+    "nl": {"rr_row_stories": "{done} van {total} stories", "rr_row_waiting": "Starten…",
+           "upd_note_remote_runs_live": "Runs op afstand vernieuwt vanzelf: lopende runs tonen een voortgangsbalk en het aantal stories direct in de lijst, zonder de run te hoeven openen."},
+}
+for _language, _values in _RR_LIVE_I18N.items():
+    _STRINGS[_language].update(_values)
+
+# Regression Plan generate: first phase of the progress bar.
+_REG_FIND_I18N = {
+    "en": {"reg_finding_suites": "Finding each story's test cases in {store} — {total} stories…"},
+    "ar": {"reg_finding_suites": "جارٍ العثور على حالات اختبار كل قصة في {store} — {total} قصة…"},
+    "fr": {"reg_finding_suites": "Recherche des cas de test de chaque story dans {store} — {total} stories…"},
+    "tr": {"reg_finding_suites": "{store} içinde her hikâyenin test senaryoları bulunuyor — {total} hikâye…"},
+    "es": {"reg_finding_suites": "Buscando los casos de prueba de cada historia en {store} — {total} historias…"},
+    "de": {"reg_finding_suites": "Testfälle jeder Story in {store} werden gesucht — {total} Storys…"},
+    "nl": {"reg_finding_suites": "Testgevallen van elke story in {store} zoeken — {total} stories…"},
+}
+for _language, _values in _REG_FIND_I18N.items():
+    _STRINGS[_language].update(_values)
+
+# Release note: faster Regression Plan on Jira + Zephyr.
+_REG_FAST_NOTE_I18N = {
+    "en": {"upd_note_regression_faster": "Regression Plan on Jira + Zephyr generates much faster (Zephyr's folder list is read once, not once per story) with a progress bar, and stories whose title contains / or \\ now find their test cases."},
+    "ar": {"upd_note_regression_faster": "أصبح إنشاء خطة الانحدار على Jira + Zephyr أسرع بكثير (تُقرأ قائمة مجلدات Zephyr مرة واحدة بدلًا من مرة لكل قصة) مع شريط تقدم، وأصبحت القصص التي يحتوي عنوانها على / أو \\ تجد حالات اختبارها."},
+    "fr": {"upd_note_regression_faster": "Le plan de régression sur Jira + Zephyr se génère bien plus vite (la liste des dossiers Zephyr est lue une seule fois, pas une fois par story) avec une barre de progression, et les stories dont le titre contient / ou \\ retrouvent leurs cas de test."},
+    "tr": {"upd_note_regression_faster": "Jira + Zephyr'de Regresyon Planı çok daha hızlı oluşturulur (Zephyr klasör listesi her hikâye için değil bir kez okunur) ve ilerleme çubuğu gösterir; başlığında / veya \\ olan hikâyeler artık test senaryolarını bulur."},
+    "es": {"upd_note_regression_faster": "El plan de regresión en Jira + Zephyr se genera mucho más rápido (la lista de carpetas de Zephyr se lee una vez, no una por historia) con barra de progreso, y las historias con / o \\ en el título ya encuentran sus casos de prueba."},
+    "de": {"upd_note_regression_faster": "Der Regressionsplan für Jira + Zephyr wird deutlich schneller erstellt (die Zephyr-Ordnerliste wird einmal statt pro Story gelesen), mit Fortschrittsbalken; Storys mit / oder \\ im Titel finden jetzt ihre Testfälle."},
+    "nl": {"upd_note_regression_faster": "Het regressieplan op Jira + Zephyr wordt veel sneller gemaakt (de Zephyr-maplijst wordt één keer gelezen in plaats van per story) met een voortgangsbalk, en stories met / of \\ in de titel vinden nu hun testgevallen."},
+}
+for _language, _values in _REG_FAST_NOTE_I18N.items():
+    _STRINGS[_language].update(_values)
+
+# Regression Plan: linked-test counting + size estimate for stories with none.
+_REG_EST_I18N = {
+    "en": {
+        "reg_counting_linked": "Counting the test cases linked to each story in {store} — {done} / {total}…",
+        "reg_estimating": "Estimating {n} stories that have no test cases (from story size)…",
+        "reg_cases_est_tip": "No test cases yet — estimated from the story's size (acceptance criteria, description, title)",
+        "reg_kpi_cases_est": "incl. ~{n} estimated for {stories} stories with none",
+        "upd_note_regression_fair_estimate": "Regression Plan on Jira + Zephyr counts every test linked to a story, not only QA Studio's folders, and stories with no tests get an estimate from their size (shown as ~N) instead of 0 h."
+    },
+    "ar": {
+        "reg_counting_linked": "جارٍ عدّ حالات الاختبار المرتبطة بكل قصة في {store} — {done} / {total}…",
+        "reg_estimating": "جارٍ تقدير {n} قصة بلا حالات اختبار (حسب حجم القصة)…",
+        "reg_cases_est_tip": "لا توجد حالات اختبار بعد — تقدير حسب حجم القصة (معايير القبول والوصف والعنوان)",
+        "reg_kpi_cases_est": "منها ~{n} تقديريًا لـ {stories} قصة بلا حالات",
+        "upd_note_regression_fair_estimate": "خطة الانحدار على Jira + Zephyr تعدّ كل اختبار مرتبط بالقصة وليس مجلدات QA Studio فقط، والقصص التي ليس لها اختبارات تحصل على تقدير حسب حجمها (يظهر ~N) بدلًا من 0 ساعة."
+    },
+    "fr": {
+        "reg_counting_linked": "Comptage des cas de test liés à chaque story dans {store} — {done} / {total}…",
+        "reg_estimating": "Estimation de {n} stories sans cas de test (selon leur taille)…",
+        "reg_cases_est_tip": "Aucun cas de test pour l'instant — estimé selon la taille de la story (critères d'acceptation, description, titre)",
+        "reg_kpi_cases_est": "dont ~{n} estimés pour {stories} stories sans cas",
+        "upd_note_regression_fair_estimate": "Le plan de régression sur Jira + Zephyr compte tous les tests liés à une story, pas seulement les dossiers de QA Studio, et les stories sans test reçoivent une estimation selon leur taille (affichée ~N) au lieu de 0 h."
+    },
+    "tr": {
+        "reg_counting_linked": "{store} içinde her hikâyeye bağlı test senaryoları sayılıyor — {done} / {total}…",
+        "reg_estimating": "Test senaryosu olmayan {n} hikâye tahmin ediliyor (hikâye boyutuna göre)…",
+        "reg_cases_est_tip": "Henüz test senaryosu yok — hikâyenin boyutuna göre tahmin edildi (kabul kriterleri, açıklama, başlık)",
+        "reg_kpi_cases_est": "senaryosu olmayan {stories} hikâye için tahmini ~{n} dahil",
+        "upd_note_regression_fair_estimate": "Jira + Zephyr'de Regresyon Planı yalnızca QA Studio klasörlerini değil, hikâyeye bağlı tüm testleri sayar; testi olmayan hikâyeler 0 saat yerine boyutlarına göre bir tahmin alır (~N olarak gösterilir)."
+    },
+    "es": {
+        "reg_counting_linked": "Contando los casos de prueba vinculados a cada historia en {store} — {done} / {total}…",
+        "reg_estimating": "Estimando {n} historias sin casos de prueba (según su tamaño)…",
+        "reg_cases_est_tip": "Aún sin casos de prueba — estimado según el tamaño de la historia (criterios de aceptación, descripción, título)",
+        "reg_kpi_cases_est": "incl. ~{n} estimados para {stories} historias sin casos",
+        "upd_note_regression_fair_estimate": "El plan de regresión en Jira + Zephyr cuenta todas las pruebas vinculadas a una historia, no solo las carpetas de QA Studio, y las historias sin pruebas reciben una estimación según su tamaño (se muestra ~N) en lugar de 0 h."
+    },
+    "de": {
+        "reg_counting_linked": "Mit jeder Story verknüpfte Testfälle in {store} werden gezählt — {done} / {total}…",
+        "reg_estimating": "{n} Storys ohne Testfälle werden geschätzt (nach Story-Größe)…",
+        "reg_cases_est_tip": "Noch keine Testfälle — nach Größe der Story geschätzt (Akzeptanzkriterien, Beschreibung, Titel)",
+        "reg_kpi_cases_est": "inkl. ~{n} geschätzt für {stories} Storys ohne Fälle",
+        "upd_note_regression_fair_estimate": "Der Regressionsplan für Jira + Zephyr zählt alle mit einer Story verknüpften Tests, nicht nur die QA-Studio-Ordner, und Storys ohne Tests erhalten statt 0 h eine Schätzung nach ihrer Größe (als ~N angezeigt)."
+    },
+    "nl": {
+        "reg_counting_linked": "Testgevallen die aan elke story in {store} gekoppeld zijn tellen — {done} / {total}…",
+        "reg_estimating": "{n} stories zonder testgevallen schatten (op basis van grootte)…",
+        "reg_cases_est_tip": "Nog geen testgevallen — geschat op basis van de grootte van de story (acceptatiecriteria, beschrijving, titel)",
+        "reg_kpi_cases_est": "incl. ~{n} geschat voor {stories} stories zonder gevallen",
+        "upd_note_regression_fair_estimate": "Het regressieplan op Jira + Zephyr telt alle tests die aan een story gekoppeld zijn, niet alleen de QA Studio-mappen, en stories zonder tests krijgen een schatting op basis van hun grootte (getoond als ~N) in plaats van 0 u."
+    }
+}
+_REG_EST_I18N["en"]["reg_est_explain"] = 'Stories with no test cases get an estimate shown as ~N: about 1 case per {words} words of acceptance criteria (description and title count less), {lo}–{hi} cases.'
+_REG_EST_I18N["ar"]["reg_est_explain"] = 'القصص التي ليس لها حالات اختبار تحصل على تقدير يظهر ~N: حالة تقريبًا لكل {words} كلمة من معايير القبول (الوصف والعنوان يُحسبان بوزن أقل)، من {lo} إلى {hi} حالة.'
+_REG_EST_I18N["fr"]["reg_est_explain"] = "Les stories sans cas de test reçoivent une estimation affichée ~N : environ 1 cas par {words} mots de critères d'acceptation (description et titre comptent moins), de {lo} à {hi} cas."
+_REG_EST_I18N["tr"]["reg_est_explain"] = 'Test senaryosu olmayan hikâyeler ~N olarak gösterilen bir tahmin alır: kabul kriterlerinin her {words} kelimesi için yaklaşık 1 senaryo (açıklama ve başlık daha az sayılır), {lo}–{hi} senaryo.'
+_REG_EST_I18N["es"]["reg_est_explain"] = 'Las historias sin casos de prueba reciben una estimación mostrada como ~N: aprox. 1 caso por cada {words} palabras de criterios de aceptación (descripción y título cuentan menos), de {lo} a {hi} casos.'
+_REG_EST_I18N["de"]["reg_est_explain"] = 'Storys ohne Testfälle erhalten eine Schätzung als ~N: etwa 1 Fall pro {words} Wörter Akzeptanzkriterien (Beschreibung und Titel zählen weniger), {lo}–{hi} Fälle.'
+_REG_EST_I18N["nl"]["reg_est_explain"] = 'Stories zonder testgevallen krijgen een schatting getoond als ~N: ongeveer 1 geval per {words} woorden acceptatiecriteria (beschrijving en titel tellen minder), {lo}–{hi} gevallen.'
+for _language, _values in _REG_EST_I18N.items():
+    _STRINGS[_language].update(_values)
+
+# Release note: Jira epics/status + Sprint Plan AI on Jira + collapse spinners.
+_JIRA_FIX_NOTE_I18N = {
+    "en": {
+        "upd_note_jira_epics_ai": "Regression and Sprint Plan on Jira show each story's real epic and status (a deleted story no longer blanks the whole list), Sprint Plan's AI scoring works on Jira, and long lists show a small spinner while a group opens."
+    },
+    "ar": {
+        "upd_note_jira_epics_ai": "تعرض خطة الانحدار وخطة السبرنت على Jira الملحمة (Epic) والحالة الحقيقية لكل قصة (ولم تعد قصة محذوفة تُفرغ القائمة كلها)، ويعمل تقييم الذكاء الاصطناعي في خطة السبرنت على Jira، وتعرض القوائم الطويلة مؤشر تحميل صغيرًا أثناء فتح مجموعة."
+    },
+    "fr": {
+        "upd_note_jira_epics_ai": "Les plans de régression et de sprint sur Jira affichent l'epic et le statut réels de chaque story (une story supprimée ne vide plus toute la liste), le score IA du plan de sprint fonctionne sur Jira, et les longues listes affichent un petit indicateur pendant l'ouverture d'un groupe."
+    },
+    "tr": {
+        "upd_note_jira_epics_ai": "Jira'da Regresyon ve Sprint Planı her hikâyenin gerçek epic'ini ve durumunu gösterir (silinmiş bir hikâye artık tüm listeyi boşaltmaz), Sprint Planı'nın yapay zekâ puanlaması Jira'da çalışır ve uzun listeler bir grup açılırken küçük bir yükleme göstergesi gösterir."
+    },
+    "es": {
+        "upd_note_jira_epics_ai": "Los planes de regresión y de sprint en Jira muestran el epic y el estado reales de cada historia (una historia eliminada ya no vacía toda la lista), la puntuación con IA del plan de sprint funciona en Jira y las listas largas muestran un pequeño indicador al abrir un grupo."
+    },
+    "de": {
+        "upd_note_jira_epics_ai": "Regressions- und Sprintplan für Jira zeigen das echte Epic und den Status jeder Story (eine gelöschte Story leert nicht mehr die ganze Liste), die KI-Bewertung im Sprintplan funktioniert mit Jira, und lange Listen zeigen beim Öffnen einer Gruppe einen kleinen Ladeindikator."
+    },
+    "nl": {
+        "upd_note_jira_epics_ai": "Regressie- en sprintplan op Jira tonen het echte epic en de status van elke story (een verwijderde story maakt niet meer de hele lijst leeg), de AI-score van het sprintplan werkt op Jira, en lange lijsten tonen een kleine laadindicator terwijl een groep opent."
+    }
+}
+for _language, _values in _JIRA_FIX_NOTE_I18N.items():
+    _STRINGS[_language].update(_values)
+
+# Sprint Plan: live AI scoring count in the provisional banner.
+_CP_PROG_I18N = {
+    "en": {
+        "reg_provisional_progress": "Provisional estimate — AI is scoring stories: {done} of {total}. Export, email and assign unlock automatically once it settles."
+    },
+    "ar": {
+        "reg_provisional_progress": "تقدير مبدئي — يقيّم الذكاء الاصطناعي القصص: {done} من {total}. سيُفتح التصدير والبريد والإسناد تلقائيًا عند اكتماله."
+    },
+    "fr": {
+        "reg_provisional_progress": "Estimation provisoire — l'IA évalue les stories : {done} sur {total}. L'export, l'e-mail et l'affectation se déverrouillent automatiquement une fois terminé."
+    },
+    "tr": {
+        "reg_provisional_progress": "Geçici tahmin — yapay zekâ hikâyeleri puanlıyor: {total} hikâyeden {done}. Dışa aktarma, e-posta ve atama tamamlanınca otomatik açılır."
+    },
+    "es": {
+        "reg_provisional_progress": "Estimación provisional — la IA está puntuando historias: {done} de {total}. Exportar, enviar por correo y asignar se desbloquean automáticamente al terminar."
+    },
+    "de": {
+        "reg_provisional_progress": "Vorläufige Schätzung — die KI bewertet Storys: {done} von {total}. Export, E-Mail und Zuweisung werden automatisch freigegeben, sobald sie fertig ist."
+    },
+    "nl": {
+        "reg_provisional_progress": "Voorlopige schatting — AI beoordeelt stories: {done} van {total}. Exporteren, e-mailen en toewijzen worden automatisch vrijgegeven zodra het klaar is."
+    }
+}
+for _language, _values in _CP_PROG_I18N.items():
+    _STRINGS[_language].update(_values)
+
+# Sprint Plan provisional banner: title, unlock note, count tooltip.
+_CP_BANNER_I18N = {
+    "en": {
+        "reg_prov_scoring": "AI is scoring stories — provisional estimate",
+        "reg_prov_unlock": "Export, email and assign unlock automatically once it settles.",
+        "reg_prov_count_tip": "Stories the AI has scored so far"
+    },
+    "ar": {
+        "reg_prov_scoring": "يقيّم الذكاء الاصطناعي القصص — تقدير مبدئي",
+        "reg_prov_unlock": "سيُفتح التصدير والبريد والإسناد تلقائيًا عند اكتماله.",
+        "reg_prov_count_tip": "القصص التي قيّمها الذكاء الاصطناعي حتى الآن"
+    },
+    "fr": {
+        "reg_prov_scoring": "L'IA évalue les stories — estimation provisoire",
+        "reg_prov_unlock": "L'export, l'e-mail et l'affectation se déverrouillent automatiquement une fois terminé.",
+        "reg_prov_count_tip": "Stories déjà évaluées par l'IA"
+    },
+    "tr": {
+        "reg_prov_scoring": "Yapay zekâ hikâyeleri puanlıyor — geçici tahmin",
+        "reg_prov_unlock": "Dışa aktarma, e-posta ve atama tamamlanınca otomatik açılır.",
+        "reg_prov_count_tip": "Yapay zekânın şu ana kadar puanladığı hikâyeler"
+    },
+    "es": {
+        "reg_prov_scoring": "La IA está puntuando historias — estimación provisional",
+        "reg_prov_unlock": "Exportar, enviar por correo y asignar se desbloquean automáticamente al terminar.",
+        "reg_prov_count_tip": "Historias que la IA ya ha puntuado"
+    },
+    "de": {
+        "reg_prov_scoring": "Die KI bewertet Storys — vorläufige Schätzung",
+        "reg_prov_unlock": "Export, E-Mail und Zuweisung werden automatisch freigegeben, sobald sie fertig ist.",
+        "reg_prov_count_tip": "Bisher von der KI bewertete Storys"
+    },
+    "nl": {
+        "reg_prov_scoring": "AI beoordeelt stories — voorlopige schatting",
+        "reg_prov_unlock": "Exporteren, e-mailen en toewijzen worden automatisch vrijgegeven zodra het klaar is.",
+        "reg_prov_count_tip": "Stories die de AI tot nu toe heeft beoordeeld"
+    }
+}
+for _language, _values in _CP_BANNER_I18N.items():
     _STRINGS[_language].update(_values)
 
 def t(key, **kw):

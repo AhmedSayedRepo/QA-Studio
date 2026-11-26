@@ -132,12 +132,13 @@ _SIM = textwrap.dedent("""
     col = app._log_col
     assert app._run_issue_n == 2, app._run_issue_n
     app._set_run_log_filter(True)
-    assert [c.visible for c in col.controls] == [False, False, True, True, True]
+    # The story header shows on Issues because its story has issues (grouped like Automation).
+    assert [c.visible for c in col.controls] == [True, False, True, True, True]
     app._copy_run_log()
-    assert clips[-1].count('\\n') == 2 and '[103] failed' in clips[-1], clips[-1]
+    assert clips[-1].count('\\n') == 3 and '[103] failed' in clips[-1], clips[-1]
     app._log_lines += [{'tone': 'ok', 'msg': 'more'}, {'tone': 'err', 'msg': 'again'}]
     app._refresh_run()
-    assert [c.visible for c in col.controls] == [False, False, True, True, True, False, True]
+    assert [c.visible for c in col.controls] == [True, False, True, True, True, False, True]
     assert app._run_issue_n == 3
     chip = app._run_log_filter_ctr.content.controls[1].content.value
     assert chip.endswith(' 3'), chip

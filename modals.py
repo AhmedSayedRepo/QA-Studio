@@ -268,6 +268,10 @@ def open_create_plan(app):
     # orchestration; other backends get a plain plan.
     import backend_setup as _bs
     _is_azure = _bs.is_azure(getattr(app, "creds", {}) or {})
+    # Jira + Zephyr: the "plan" is a test-case folder; the same checkbox creates
+    # one sub-folder per chosen sprint story (Azure: requirement suites).
+    _is_zephyr = _bs.active(getattr(app, "creds", {}) or {}) == _bs.JIRA_ZEPHYR
+    _story_folders = _is_azure or _is_zephyr
 
     name_field = ft.TextField(
         hint_text=strings.t("mdl_plan_name_hint"),
@@ -283,7 +287,7 @@ def open_create_plan(app):
     modal_err = ft.Text("", size=12, color=T.RED, weight=ft.FontWeight.BOLD)
 
     # Auto-create requirement suites for every sprint story (PAT-only, no AI)
-    auto_suites = ft.Checkbox(value=_is_azure, disabled=not _is_azure, label="", scale=0.9,
+    auto_suites = ft.Checkbox(value=_story_folders, disabled=not _story_folders, label="", scale=0.9,
                               active_color=T.VIOLET, check_color="#FFFFFF")
 
     # ── Story picker: choose WHICH sprint stories get a requirement suite ──
@@ -313,7 +317,7 @@ def open_create_plan(app):
                             spacing=1, scroll=ft.ScrollMode.AUTO, height=180)
 
     def _stories_visible():
-        return _is_azure and bool(auto_suites.value)
+        return _story_folders and bool(auto_suites.value)
 
     def _refresh_count():
         n, m = len(stories_state["sel"]), len(stories_state["rows"])
@@ -439,9 +443,13 @@ def open_create_plan(app):
         try:
             lst = _bs.fetch_sprints(app, app.project)
             iters_cache["list"] = lst
-            iter_dd.options = [ft.DropdownOption(key=it["path"], text=it["path"]) for it in lst]
+            iter_dd.options = [ft.DropdownOption(key=it["path"], text=it.get("label") or it["path"])
+                               for it in lst]
             if lst:
-                iter_dd.value = lst[-1]["path"]
+                # Jira lists the active sprint first; Azure's latest is last.
+                _act = next((it for it in lst if it.get("state") == "active"), None)
+                _setup = next((it for it in lst if str(it["path"]) == str(getattr(app, "setup_sprint", "") or "")), None)
+                iter_dd.value = (_setup or _act or (lst[0] if lst[0].get("label") else lst[-1]))["path"]
                 path_box.value = iter_dd.value
                 iter_dd.hint_text = strings.t("mdl_select_sprint")
             else:
@@ -500,7 +508,7 @@ def open_create_plan(app):
             modal_err.value = strings.t("m2_select_iteration"); app.page.update(); return
         # Auto-suites on with stories loaded → require at least one pick, so a plan
         # isn't created with zero suites by an empty selection the user didn't mean.
-        if (_is_azure and auto_suites.value and stories_state["rows"]
+        if (_story_folders and auto_suites.value and stories_state["rows"]
                 and not stories_state["sel"]):
             modal_err.value = (strings.t("m2_pick_story_or_off"))
             app.page.update(); return
@@ -514,15 +522,34 @@ def open_create_plan(app):
                 if not _is_azure:
                     # Non-Azure backends (Jira+Zephyr, Jira+Xray, TestRail): route
                     # plan creation through the backend seam — Zephyr creates a
-                    # folder, Xray a test plan, TestRail a suite. The Azure-only
-                    # per-story requirement-suite orchestration doesn't apply, so
-                    # we create the plan itself (auto_suites is disabled here).
-                    _set_prog(0.2, strings.t("m2_creating_plan"))
-                    plan = _bs.get_backend(app).create_test_plan(app.project, nm, pth)
+                    # folder, Xray a test plan, TestRail a suite. On Jira + Zephyr
+                    # the checkbox also creates a folder per chosen sprint story
+                    # (named "<KEY> <title>", the folder generation then uses).
+                    _set_prog(0.1, strings.t("m2_creating_plan"))
+                    _be = _bs.get_backend(app)
+                    _proj = _bs._as_project(_be, app.project)
+                    plan = _be.create_test_plan(_proj, nm, pth)
                     app.plan_id = ((getattr(plan.ref, "id", "") or
                                     getattr(plan.ref, "key", "")) if plan else None)
                     app.plan_name = nm
-                    _set_prog(1.0, strings.t("m2_done"))
+                    _sel = (list(stories_state["sel"]) if (_is_zephyr and auto_suites.value) else [])
+                    if plan and _sel:
+                        from tracker.models import Ref as _Ref
+                        _stories = _be.fetch_stories([_Ref(id=str(x), key=str(x)) for x in _sel]) or []
+                        _made, _failed = 0, 0
+                        for _i, _st in enumerate(_stories, 1):
+                            _set_prog(0.1 + 0.9 * _i / max(1, len(_stories)),
+                                      f"Creating story folder {_i} of {len(_stories)}…")
+                            try:
+                                _be.ensure_suite_for_story(_proj, plan, _st)
+                                _made += 1
+                            except Exception:
+                                _failed += 1
+                        _set_prog(1.0, f"Done · {_made} story folders"
+                                  + (f" · {_failed} failed" if _failed else ""))
+                        import time as _t; _t.sleep(0.4)
+                    else:
+                        _set_prog(1.0, strings.t("m2_done"))
                     app._load_plans(); app._close_dialog(); app.render()
                     return
                 if not auto_suites.value:
@@ -619,6 +646,26 @@ def open_create_plan(app):
                     padding=ft.Padding.only(top=12)),
                 stories_box,
             ]
+        elif _is_zephyr:
+            # Jira + Zephyr: a test-case folder, plus (optional) one folder per
+            # chosen story of a sprint - the folders generation writes into.
+            rows += [
+                field_label(strings.t("setup_sprint_label"), req=False),
+                ft.Container(hover_field(iter_dd),
+                             padding=ft.Padding.only(top=4, bottom=4)),
+                ft.Container(
+                    ft.Row([
+                        auto_suites,
+                        ft.Column([
+                            ft.Text(strings.t("mdl_zephyr_story_folders"),
+                                    size=12.5, color=T.INK, weight=ft.FontWeight.BOLD),
+                            ft.Text(strings.t("mdl_zephyr_story_folders_sub"),
+                                    size=11, color=T.INK_3, weight=ft.FontWeight.W_500),
+                        ], spacing=1, expand=True),
+                    ], spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    padding=ft.Padding.only(top=12)),
+                stories_box,
+            ]
         else:
             rows += [
                 ft.Container(
@@ -647,7 +694,7 @@ def open_create_plan(app):
         _rows = _plan_modal_body()
         _mobile = platform_caps.is_mobile()
         _ph = getattr(getattr(app, "page", None), "height", None) or 800
-        _cap = max(240, min(440, int(_ph) - 300)) if _is_azure else None
+        _cap = max(240, min(440, int(_ph) - 300)) if _story_folders else None
         fields = ft.Column(_rows, spacing=0, tight=True,
                            scroll=(ft.ScrollMode.AUTO if _cap else None))
         footer = ft.Container(btn_row, padding=ft.Padding.only(top=14))
@@ -680,7 +727,10 @@ def open_create_plan(app):
 def open_sprint_summary(app):
     if not app.can("act.sprint_summary"):
         return app._toast(strings.t("mdl_no_perm_sprint_summary"))
-    if not (app.project and app.plan_id):
+    # Azure needs a test plan; Jira + Zephyr only a project + sprint (see
+    # main.py's _summary_ready).
+    _ready = getattr(app, "_summary_ready", None)
+    if not (app.project and (app.plan_id or (callable(_ready) and _ready()))):
         app._toast(strings.t("mdl_select_plan_first"))
         return
 
@@ -696,8 +746,21 @@ def open_sprint_summary(app):
         return "grey"
 
     # animated 'scanning' loading state — motion while the summary is generated
-    _sum_status = ft.Text(strings.t("mdl_connecting_azure"), size=12.5, color=T.INK_2,
+    # "Connecting to Jira + Zephyr Scale…" / "…Azure DevOps…" - the connected backend.
+    import backend_setup as _bs0
+    _sum_backend = _bs0.label_for(_bs0.active(getattr(app, "creds", {}) or {}))
+    _sum_connecting = strings.t("mdl_connecting_to", name=_sum_backend)
+    _sum_status = ft.Text(_sum_connecting, size=12.5, color=T.INK_2,
                           weight=ft.FontWeight.W_500)
+    # Indeterminate bar until the backend reports real progress (Jira + Zephyr
+    # fills it with the actual fraction); Azure keeps the moving bar.
+    _sum_bar_box = ft.Container(
+        ft.ProgressBar(value=None, color=T.VIOLET, bgcolor=T.CARD_2, bar_height=6,
+                       border_radius=99),
+        width=320)
+    _sum_hint = ft.Text(strings.t("sum_may_take_time"), size=11, color=T.INK_3,
+                        weight=ft.FontWeight.W_500, text_align=ft.TextAlign.CENTER,
+                        width=360)
     _scan = ft.Column([
         ft.Container(ft.Stack([
             ft.ProgressRing(width=76, height=76, stroke_width=3,
@@ -711,16 +774,34 @@ def open_sprint_summary(app):
                 color=T.INK),
         ft.Container(height=5),
         _sum_status,
+        ft.Container(height=10),
+        _sum_bar_box,
+        ft.Container(height=10),
+        _sum_hint,
     ], horizontal_alignment=ft.CrossAxisAlignment.CENTER,
        alignment=ft.MainAxisAlignment.CENTER, spacing=0)
     body_col = ft.Column(
         [ft.Container(_scan, alignment=ft.Alignment.CENTER, height=380, expand=True)],
         spacing=12, tight=True, scroll=ft.ScrollMode.AUTO)
 
-    # cycle the status line every ~0.9s until the data arrives
+    # cycle the status line every ~0.9s until the data arrives - unless the
+    # backend reports real progress (Jira + Zephyr), shown as text + % + bar.
     app._sum_loading = True
+    app._sum_real_progress = False
+
+    def _sum_progress(frac, text):
+        app._sum_real_progress = True
+
+        def upd():
+            _sum_status.value = f"{text}  ·  {int(round(frac * 100))}%"
+            _sum_bar_box.visible = True
+            _sum_bar_box.content.value = frac
+            for c in (_sum_status, _sum_bar_box):
+                try: c.update()
+                except Exception: pass
+        app.ui_safe(upd)
     def _cycle_status():
-        msgs = [strings.t("mdl_connecting_azure"), strings.t("m2_fetching_results"),
+        msgs = [_sum_connecting, strings.t("m2_fetching_results"),
                 strings.t("m2_counting_cases"), strings.t("m2_summarizing")]
         ev = threading.Event()
         i = 0
@@ -728,6 +809,8 @@ def open_sprint_summary(app):
             ev.wait(0.9)
             if not getattr(app, "_sum_loading", False):
                 break
+            if getattr(app, "_sum_real_progress", False):
+                continue        # the backend reports real progress (_sum_progress)
             i += 1
             def upd(m=msgs[i % len(msgs)]):
                 _sum_status.value = m
@@ -842,7 +925,7 @@ def open_sprint_summary(app):
         # non-Azure connection, say so honestly instead of calling E.sprint_summary
         # and surfacing its misleading "Not found (404) — check project spelling".
         import backend_setup as _bs
-        if not _bs.sprint_reports_available(app):
+        if not _bs.sprint_summary_available(app):
             app._sum_loading = False
             _label = _bs.plan_link_label(app) if hasattr(_bs, "plan_link_label") else strings.t("m2_this_backend")
             def show_unavail():
@@ -857,7 +940,9 @@ def open_sprint_summary(app):
             app.ui_safe(show_unavail)
             return
         try:
-            data = E.sprint_summary(app.project, app.plan_id)
+            # Azure: engine's summary (unchanged). Jira + Zephyr: Setup's sprint
+            # stories with their linked Zephyr test case counts.
+            data = _bs.sprint_summary(app, app.plan_id, progress=_sum_progress)
         except Exception as ex:
             app._sum_loading = False
             # Capture the message NOW, not inside show_err(). `except X as ex`
@@ -900,9 +985,21 @@ def open_sprint_summary(app):
                 app._confirm(
                     strings.t("au_remove_story_q"),
                     f"Remove story {sid} from this summary and recalculate the "
-                    "totals? This doesn't change anything in Azure DevOps.",
+                    f"totals? This doesn't change anything in {_sum_backend}.",
                     _do, yes_label=strings.t("mdl_remove"))
             return _d
+
+        # Status-card filter: clicking a card shows only that status's stories;
+        # clicking it again (or "Show all") clears. View-only — totals, tiles
+        # and the email still use every story.
+        sum_filter = {"state": None}
+        # Bugs card: which status's list is open, and how many rows it shows.
+        bug_sel = {"state": None, "shown": 0}
+        _BUG_PAGE = 100
+
+        def _set_filter(state):
+            sum_filter["state"] = (None if sum_filter["state"] == state else state)
+            render_summary()
 
         def render_summary():
             app._sum_data = data
@@ -916,6 +1013,9 @@ def open_sprint_summary(app):
             by_state = {}
             for s in data["stories"]:
                 by_state[s["state"]] = by_state.get(s["state"], 0) + 1
+            if sum_filter["state"] not in by_state:
+                sum_filter["state"] = None      # e.g. its last story was removed
+            _flt = sum_filter["state"]
 
             # Header line
             header = ft.Column([
@@ -936,6 +1036,9 @@ def open_sprint_summary(app):
                 stat_tile(strings.t("au_md_test_cases"), total_tc, tone="green"),
                 stat_tile(strings.t("au_md_statuses"), len(by_state), tone="amber"),
             ]
+            _bugs = data.get("bugs")          # None: backend has no bug data (Azure)
+            if _bugs is not None:
+                _tiles.append(stat_tile(strings.t("sum_bugs"), len(_bugs), tone="red"))
             if platform_caps.is_mobile():
                 # Inside this dialog the usable width is only ~300 logical px on
                 # a phone, so three expand=True tiles got ~93px each and
@@ -1001,6 +1104,7 @@ def open_sprint_summary(app):
                 _raw = (_avail - (10 * (_n_cards - 1))) / _n_cards
                 _card_w = max(_MIN_W, min(_MAX_W, _raw))
             def _status_card(label, count, fg, width):
+                _on = (_flt == label)
                 return ft.Container(
                     ft.Column([
                         ft.Text(str(count), size=22, weight=ft.FontWeight.BOLD, color=fg),
@@ -1008,10 +1112,15 @@ def open_sprint_summary(app):
                                 max_lines=2, overflow=ft.TextOverflow.ELLIPSIS,
                                 text_align=ft.TextAlign.CENTER),
                     ], spacing=1, horizontal_alignment=ft.CrossAxisAlignment.CENTER, tight=True),
-                    bgcolor=ft.Colors.with_opacity(0.14, fg), border_radius=T.R,
-                    border=ft.Border.all(1, ft.Colors.with_opacity(0.30, fg)),
+                    bgcolor=ft.Colors.with_opacity(0.30 if _on else 0.14, fg),
+                    border_radius=T.R,
+                    border=ft.Border.all(2 if _on else 1,
+                                         fg if _on else ft.Colors.with_opacity(0.30, fg)),
                     padding=ft.Padding.symmetric(vertical=12, horizontal=10),
-                    width=width, tooltip=f"{label}: {count}")
+                    opacity=(0.45 if (_flt and not _on) else 1.0),
+                    width=width,
+                    tooltip=strings.t("sum_filter_tip", status=label, n=count),
+                    ink=True, on_click=lambda e, st=label: _set_filter(st))
             state_cards = []
             for st, cnt in _sorted_states:
                 state_cards.append(_status_card(st, cnt, _state_color[st], _card_w))
@@ -1071,8 +1180,9 @@ def open_sprint_summary(app):
                 ft.Container(width=_COL_DEL),
             ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
+            _shown = [s for s in data["stories"] if not _flt or s["state"] == _flt]
             story_rows = []
-            for i, s in enumerate(data["stories"]):
+            for i, s in enumerate(_shown):
                 rtl = any('\u0600' <= c <= '\u06ff' for c in s["title"])
                 id_link = ft.Row([
                     _id_link(app, s["id"], color=T.VIOLET_INK,
@@ -1123,6 +1233,164 @@ def open_sprint_summary(app):
                 story_rows = [ft.Text(strings.t("mdl_no_stories_found"),
                                       size=12, color=T.INK_3, weight=ft.FontWeight.W_500)]
 
+            # Bugs card: total + regression count, a chip per status (same
+            # colours as the Sprint Report), and a chip click lists that
+            # status's bugs, each a link to its Jira issue.
+            # Bugs card: total + regression count, a chip per status (same
+            # colours as the Sprint Report); a chip lists that status's bugs,
+            # each a link to its Jira issue. It lives in its own cell and is
+            # rebuilt alone (in the background, with a spinner on the clicked
+            # chip) — never the whole summary — since a status can hold 800+.
+            bugs_cell = None
+            if _bugs is not None:
+                import sprint_titles as _spt
+                _b_by = {}
+                for b in _bugs:
+                    _b_by.setdefault(b.get("state") or "Unknown", []).append(b)
+                _b_states = sorted(_b_by.items(), key=lambda x: -len(x[1]))
+                if bug_sel["state"] not in _b_by:
+                    bug_sel["state"] = None
+                _reg = sum(1 for b in _bugs
+                           if "regression" in (b.get("tags") or "").lower())
+                bugs_cell = ft.Container()
+
+                def _spin():
+                    return ft.ProgressRing(width=12, height=12, stroke_width=2,
+                                           color=T.VIOLET)
+
+                def _rebuild_bugs(busy_row=None, busy_idx=None, change=None):
+                    """Spinner first (in place), then rebuild the card off the
+                    UI thread and patch only this cell."""
+                    if busy_row is not None:
+                        try:
+                            busy_row.controls[busy_idx] = _spin()
+                            busy_row.update()
+                        except Exception:
+                            pass
+
+                    def work():
+                        if change:
+                            change()
+                        card = _build_bugs_card()
+
+                        def show():
+                            bugs_cell.content = card
+                            try:
+                                bugs_cell.update()
+                            except Exception:
+                                pass
+                        app.ui_safe(show)
+                    app._bg(work)
+
+                def _toggle_bug_state(st, row):
+                    def change():
+                        bug_sel["state"] = None if bug_sel["state"] == st else st
+                        bug_sel["shown"] = _BUG_PAGE
+                    _rebuild_bugs(row, 3, change)
+
+                def _bug_chip(st, n):
+                    fg = _spt.status_dot_color(st)
+                    _on = (bug_sel["state"] == st)
+                    row = ft.Row([ft.Container(width=8, height=8, border_radius=99, bgcolor=fg),
+                                  ft.Text(st, size=11.5, weight=ft.FontWeight.BOLD, color=T.INK),
+                                  ft.Text(str(n), size=11.5, weight=ft.FontWeight.BOLD, color=fg),
+                                  ft.Icon(ft.Icons.EXPAND_LESS if _on else ft.Icons.EXPAND_MORE,
+                                          size=14, color=T.INK_3)],
+                                 spacing=6, tight=True,
+                                 vertical_alignment=ft.CrossAxisAlignment.CENTER)
+                    return ft.Container(
+                        row,
+                        padding=ft.Padding.symmetric(vertical=6, horizontal=11),
+                        bgcolor=ft.Colors.with_opacity(0.22 if _on else 0.10, fg),
+                        border=ft.Border.all(2 if _on else 1,
+                                             fg if _on else ft.Colors.with_opacity(0.30, fg)),
+                        border_radius=99, ink=True,
+                        tooltip=strings.t("sum_bugs_chip_tip", status=st, n=n),
+                        on_click=lambda e, x=st, r=row: _toggle_bug_state(x, r))
+
+                def _bug_line(b, i):
+                    url = b.get("url") or ""
+                    key = str(b.get("id") or "")
+                    rtl_b = any('\u0600' <= c <= '\u06ff' for c in (b.get("title") or ""))
+                    return ft.Container(
+                        ft.Row([
+                            ft.Text(key, size=11, weight=ft.FontWeight.BOLD,
+                                    color=(T.VIOLET_INK if url else T.INK_2),
+                                    font_family=T.F_MONO, width=96),
+                            ft.Text(b.get("title") or strings.t("m2_no_title"), size=12,
+                                    color=T.INK, expand=True, max_lines=2,
+                                    overflow=ft.TextOverflow.ELLIPSIS,
+                                    font_family=(T.F_AR if rtl_b else None),
+                                    text_align=(ft.TextAlign.RIGHT if rtl_b else ft.TextAlign.LEFT)),
+                            *([ft.Icon(ft.Icons.OPEN_IN_NEW, size=12, color=T.INK_3)]
+                              if url else []),
+                        ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                        padding=ft.Padding.symmetric(vertical=6, horizontal=12),
+                        bgcolor=(T.CARD if i % 2 == 0 else T.CARD_2),
+                        ink=bool(url), tooltip=(key if url else None),
+                        on_click=((lambda e, u=url: app._open_url(u)) if url else None))
+
+                def _more_row(left):
+                    row = ft.Row([ft.Icon(ft.Icons.EXPAND_MORE, size=14, color=T.VIOLET_INK),
+                                  ft.Text(strings.t("spr_bug_show_more",
+                                                    n=min(left, _BUG_PAGE), left=left),
+                                          size=11.5, weight=ft.FontWeight.BOLD,
+                                          color=T.VIOLET_INK)],
+                                 spacing=6, tight=True,
+                                 vertical_alignment=ft.CrossAxisAlignment.CENTER)
+
+                    def change():
+                        bug_sel["shown"] += _BUG_PAGE
+                    return ft.Container(
+                        row, padding=ft.Padding.symmetric(vertical=8, horizontal=12),
+                        ink=True, border_radius=T.R_SM,
+                        on_click=lambda e: _rebuild_bugs(row, 0, change))
+
+                def _build_bugs_card():
+                    _open_list = []
+                    if bug_sel["state"]:
+                        _lst = _b_by[bug_sel["state"]]
+                        _n = min(len(_lst), bug_sel["shown"] or _BUG_PAGE)
+                        _rows = [_bug_line(b, i) for i, b in enumerate(_lst[:_n])]
+                        if len(_lst) > _n:
+                            _rows.append(_more_row(len(_lst) - _n))
+                        _open_list = [ft.Container(
+                            ft.Column(_rows, spacing=0, scroll=ft.ScrollMode.AUTO,
+                                      height=min(220, 34 * len(_rows) + 8)),
+                            margin=ft.Margin.only(top=10), border_radius=T.R,
+                            border=ft.Border.all(1, T.BORDER),
+                            clip_behavior=ft.ClipBehavior.HARD_EDGE)]
+                    return ft.Container(
+                        ft.Column([
+                            ft.Row([
+                                ft.Icon(ft.Icons.BUG_REPORT_OUTLINED, size=16, color=T.RED),
+                                ft.Text(strings.t("sum_bugs"), size=12.5,
+                                        weight=ft.FontWeight.BOLD, color=T.INK),
+                                ft.Container(ft.Text(str(len(_bugs)), size=11,
+                                                     weight=ft.FontWeight.BOLD, color=T.RED),
+                                             padding=ft.Padding.symmetric(vertical=1, horizontal=8),
+                                             bgcolor=ft.Colors.with_opacity(0.14, T.RED),
+                                             border_radius=99),
+                                ft.Container(expand=True),
+                                ft.Text(strings.t("sum_bugs_split", reg=_reg,
+                                                  sprint=len(_bugs) - _reg),
+                                        size=11, color=T.INK_3, weight=ft.FontWeight.BOLD),
+                            ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                            ft.Container(height=10),
+                            (ft.Row([_bug_chip(st, len(lst)) for st, lst in _b_states],
+                                    wrap=not platform_caps.is_mobile(), spacing=8,
+                                    run_spacing=8,
+                                    scroll=(ft.ScrollMode.AUTO if platform_caps.is_mobile()
+                                            else None))
+                             if _b_states else ft.Text(strings.t("sum_bugs_none"), size=12,
+                                                       color=T.INK_3)),
+                            *_open_list,
+                        ], spacing=0),
+                        padding=ft.Padding.symmetric(vertical=12, horizontal=14),
+                        bgcolor=T.CARD, border=ft.Border.all(1, T.BORDER), border_radius=T.R)
+
+                bugs_cell.content = _build_bugs_card()
+
             body_col.controls = [
                 header,
                 ft.Container(height=4),
@@ -1132,8 +1400,23 @@ def open_sprint_summary(app):
                 ft.Container(height=8),
                 ft.Text(strings.t("mdl_status_breakdown"), size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
                 status_row,
+                *([ft.Container(height=4), bugs_cell] if bugs_cell else []),
                 ft.Container(height=6),
-                ft.Text(strings.t("mdl_stories"), size=10.5, weight=ft.FontWeight.BOLD, color=T.INK_3),
+                ft.Row([
+                    ft.Text(strings.t("mdl_stories"), size=10.5, weight=ft.FontWeight.BOLD,
+                            color=T.INK_3),
+                    *([ft.Container(
+                        ft.Row([
+                            ft.Text(strings.t("sum_filter_showing", status=_flt,
+                                              n=len(_shown), total=total),
+                                    size=11, weight=ft.FontWeight.BOLD, color=T.VIOLET_INK),
+                            ft.Icon(ft.Icons.CLOSE, size=13, color=T.VIOLET_INK),
+                        ], spacing=4, tight=True),
+                        bgcolor=T.VIOLET_SOFT, border_radius=20, ink=True,
+                        padding=ft.Padding.symmetric(vertical=3, horizontal=10),
+                        tooltip=strings.t("sum_filter_clear"),
+                        on_click=lambda e: _set_filter(_flt))] if _flt else []),
+                ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                 ft.Container(
                     ft.Row([ft.Column([
                                 ft.Container(table_header,

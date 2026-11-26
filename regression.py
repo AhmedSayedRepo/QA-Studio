@@ -57,6 +57,12 @@ from ui import hover_field
 
 # ── Effort model (HARDCODED — change here if your team's numbers differ) ───────
 AVG_MINUTES_PER_CASE = 8          # manual execution time per existing test case
+# Stories with NO test cases still need regression time: their case count is
+# ESTIMATED from story size (same content units as Sprint Plan: acceptance
+# criteria words count most, then description, then title) and shown as "~N".
+EST_UNITS_PER_CASE = 30           # ~one testable rule per 30 weighted words
+EST_MIN_CASES = 1                 # even an empty story gets one check
+EST_MAX_CASES = 20                # cap so one essay-length story can't dominate
 DEFAULT_PRIORITY     = 3          # used when a story has no ADO priority set
 PRIORITY_BOOST = {1: 1.30, 2: 1.15, 3: 1.00, 4: 0.90}
 WORK_DAY_HOURS = 8                # hours/day used to convert estimated effort to days
@@ -234,7 +240,7 @@ def clear_caches(app):
     are just a speed-up and are rebuilt from Azure on the next generate."""
     for attr in ("_reg_case_count_cache", "_reg_meta_cache", "_reg_suite_cache",
                  "_reg_feature_name_cache", "_reg_story_features", "_reg_plan_cache",
-                 "_cp_sprint_story_cache"):
+                 "_cp_sprint_story_cache", "_story_dto_cache"):
         try:
             setattr(app, attr, {})
         except Exception:
@@ -262,6 +268,36 @@ def perf_on():
 # ═══════════════════════════════════════════════════════════════════════════════
 #  DATA GATHERING  (Azure DevOps — reference existing only)
 # ═══════════════════════════════════════════════════════════════════════════════
+_STORY_DTO_TTL = 600     # seconds a fetched Jira story is reused across steps
+
+
+def _story_dtos(app, ids):
+    """Non-Azure Story DTOs for `ids`, fetched ONCE and shared: Sprint Plan's
+    meta (state/epic) and its text (for the AI) both need the same stories and
+    ran two identical full fetches side by side. A lock makes the second
+    caller wait for the first instead of fetching again; entries live
+    _STORY_DTO_TTL seconds so a later Regenerate still sees fresh data."""
+    import threading as _th
+    lock = getattr(app, "_story_dto_lock", None)
+    if lock is None:
+        lock = app._story_dto_lock = _th.Lock()
+    with lock:
+        cache = getattr(app, "_story_dto_cache", None)
+        if cache is None:
+            cache = app._story_dto_cache = {}
+        now = _time.time()
+        want = [_sid(i) for i in ids if i]
+        missing = [i for i in want
+                   if i not in cache or now - cache[i][0] > _STORY_DTO_TTL]
+        if missing:
+            backend = backend_setup.get_backend(app)
+            from tracker.models import Ref
+            for st in backend.fetch_stories([Ref(id=str(i), key=str(i))
+                                             for i in missing]) or []:
+                cache[_sid(st.ref.key or st.ref.id)] = (now, st)
+        return [cache[i][1] for i in want if i in cache]
+
+
 def _fetch_meta(app, ids):
     """Fetch work item metadata with per-story caching (fast on re-generate)."""
     cache = getattr(app, "_reg_meta_cache", {})
@@ -272,16 +308,13 @@ def _fetch_meta(app, ids):
         # equivalent, so it falls back to DEFAULT_PRIORITY — exactly what the
         # Azure path does when the field is absent — rather than being faked.
         try:
-            backend = backend_setup.get_backend(app)
-            from tracker.models import Ref
             # Pre-warm the feature-NAME cache from the epic carried inline on the
             # Story DTO, so _fetch_feature_names resolves the group titles with no
             # extra round-trip (the epic key+name came back with the story).
             _fnc = getattr(app, "_reg_feature_name_cache", None)
             if _fnc is None:
                 _fnc = app._reg_feature_name_cache = {}
-            for st in backend.fetch_stories([Ref(id=str(i), key=str(i))
-                                             for i in missing]) or []:
+            for st in _story_dtos(app, missing):
                 # Key by the canonical id (issue KEY on Jira, work-item id on
                 # Azure) matching what callers pass in — never int(), which
                 # dropped every Jira story here (see _sid / ADR-001).
@@ -297,8 +330,14 @@ def _fetch_meta(app, ids):
                 _en = getattr(st, "epic_name", "") or ""
                 if _epic and _en:
                     _fnc[_epic] = _en
-        except Exception:
-            pass
+        except Exception as _ex:
+            # Was a silent pass: a failed fetch left every story "Unknown"
+            # with no epic ("No Feature") and nothing said why.
+            try:
+                import diag_log
+                diag_log.log("regression._fetch_meta (non-Azure)", _ex)
+            except Exception:
+                pass
         app._reg_meta_cache = cache
         return {i: cache.get(i, {}) for i in ids}
     if missing:
@@ -462,18 +501,21 @@ def _cp_fetch_fields(app, ids):
         # strips it to word-countable text exactly like the Azure branch.
         out = {}
         try:
-            backend = backend_setup.get_backend(app)
-            from tracker.models import Ref
-            for st in backend.fetch_stories([Ref(id=str(i), key=str(i))
-                                             for i in ids]) or []:
+            for st in _story_dtos(app, ids):
                 key = _sid(st.ref.key or st.ref.id)
                 out[key] = {
                     "title": getattr(st, "title", "") or "",
                     "desc": _cp_plain(getattr(st, "description", "") or ""),
                     "crit": _cp_plain(getattr(st, "acceptance_criteria", "") or ""),
                 }
-        except Exception:
-            pass
+        except Exception as _ex:
+            # Was a silent pass: no story text means the AI is never asked
+            # ("AI scored 0/0") and every story gets the same flat estimate.
+            try:
+                import diag_log
+                diag_log.log("regression._cp_fetch_fields (non-Azure)", _ex)
+            except Exception:
+                pass
         return out
     org, proj = E.AZURE_ORG, app.project
     flds = ("System.Id,System.Title,System.Description,"
@@ -568,7 +610,15 @@ def _fetch_cp_complexity(app, ids):
 _CP_CHUNK_SIZE = 10   # stories per AI call — big enough to keep call count low
                       # for a large sprint, small enough to avoid truncation/
                       # attention dilution on a weak model (Fable's rec)
-_CP_AI_WORKERS = 2
+_CP_AI_WORKERS = 2                # free/local providers (rate limits, one GPU)
+_CP_AI_WORKERS_PAID = 6           # hosted paid APIs handle parallel calls fine:
+                                  # 266 stories = 27 calls, ~14 rounds at 2 vs 5 at 6
+_CP_AI_LOW_CONCURRENCY = {"ollama", "groq", "cerebras", "nvidia", "openrouter"}
+
+
+def _cp_ai_workers():
+    prov = (getattr(E, "AI_PROVIDER", "") or "").lower()
+    return _CP_AI_WORKERS if prov in _CP_AI_LOW_CONCURRENCY else _CP_AI_WORKERS_PAID
 _CP_FACET_WEIGHTS = {"rules": 1.0, "surfaces": 1.5, "actors": 0.5, "negatives": 0.75}
 _CP_FACET_CAPS = {"rules": 25, "surfaces": 5, "actors": 10, "negatives": 15}
 
@@ -628,7 +678,7 @@ def _cp_facet_score(rec):
             + (2.0 if ambiguous else 0.0))
 
 
-def _fetch_cp_ai_complexity(app, texts):
+def _fetch_cp_ai_complexity(app, texts, progress=None):
     """Returns {story_id: ai_score} — missing ids simply mean 'no AI signal
     for this one,' handled by _cp_blend_complexity falling back to the
     heuristic alone for those. Best-effort and fully non-fatal throughout:
@@ -747,8 +797,26 @@ def _fetch_cp_ai_complexity(app, texts):
             return   # this chunk's ids simply fall back to the heuristic
 
     import concurrent.futures as _cf
-    with _cf.ThreadPoolExecutor(max_workers=_CP_AI_WORKERS) as ex:
-        list(ex.map(_do_chunk, chunks))
+    _done = {"n": 0}
+    _total = len(ids)
+
+    def _do_chunk_tracked(chunk_ids):
+        _do_chunk(chunk_ids)
+        if progress:
+            with lock:
+                _done["n"] += len(chunk_ids)
+                n = min(_done["n"], _total)
+            try:
+                progress(n, _total)
+            except Exception:
+                pass
+    if progress:
+        try:
+            progress(0, _total)
+        except Exception:
+            pass
+    with _cf.ThreadPoolExecutor(max_workers=_cp_ai_workers()) as ex:
+        list(ex.map(_do_chunk_tracked, chunks))
     # Recovery pass: weak models sometimes OMIT a few ids from the list even
     # with ample tokens. Re-request the CONTENTFUL ids that came back unscored
     # (a near-empty story is excluded by the content guard on purpose, so a
@@ -761,7 +829,7 @@ def _fetch_cp_ai_complexity(app, texts):
     if _retry:
         _rchunks = [_retry[k:k + _CP_CHUNK_SIZE]
                     for k in range(0, len(_retry), _CP_CHUNK_SIZE)]
-        with _cf.ThreadPoolExecutor(max_workers=_CP_AI_WORKERS) as ex2:
+        with _cf.ThreadPoolExecutor(max_workers=_cp_ai_workers()) as ex2:
             list(ex2.map(_do_chunk, _rchunks))
     _missing = [i for i in ids if i not in out]
     if _missing:
@@ -871,6 +939,100 @@ def _discover_suite_map(app, plan_id, story_ids):
 
 
 def _count_cases(app, selected, progress=None):
+    """Test cases per story. Backends that track test-to-story links (Jira +
+    Zephyr's Coverage) count EVERY linked test first — tests written outside
+    QA Studio don't live in its "KEY Title" folders, so folder counting alone
+    found 15 cases for 266 stories. Stories still at 0 then get the folder
+    count as a fallback."""
+    def _report(done, total, phase):
+        if progress:
+            try:
+                progress(done, total, phase)
+            except TypeError:
+                progress(done, total)      # older 2-arg callbacks
+            except Exception:
+                pass
+    linked = _count_linked_cases(app, selected, _report)
+    if linked is None:
+        return _count_folder_cases(app, selected, progress)
+    rest = [s for s in selected if not linked.get(_sid(s["id"]))]
+    if rest:
+        folder = _count_folder_cases(app, rest, progress)
+        for sid, n in folder.items():
+            linked[sid] = max(linked.get(sid, 0), n)
+    return linked
+
+
+def _count_linked_cases(app, selected, report):
+    """{story_id: linked test count} via the backend's link lookup (parallel,
+    cached per story), or None when the backend has no such lookup (Azure,
+    TestRail hybrids) — those keep the suite/folder count."""
+    import concurrent.futures as _cf
+    creds = getattr(app, "creds", {}) or {}
+    if backend_setup.is_azure(creds):
+        return None
+    try:
+        backend = backend_setup.get_backend(app)
+    except Exception:
+        return None
+    fn = getattr(backend, "linked_test_case_count", None)
+    if not callable(fn):
+        return None
+    cache = getattr(app, "_reg_case_count_cache", None)
+    if cache is None:
+        cache = app._reg_case_count_cache = {}
+    counts, todo = {}, []
+    for s in selected:
+        sid = _sid(s["id"])
+        if ("linked:" + sid) in cache:
+            counts[sid] = cache["linked:" + sid]
+        else:
+            todo.append(sid)
+
+    def _one(sid):
+        try:
+            return sid, int(fn(sid) or 0)
+        except Exception:
+            return sid, 0
+    total, done = len(todo), 0
+    report(0, total, "linked")
+    if todo:
+        with _cf.ThreadPoolExecutor(max_workers=min(12, total)) as ex:
+            for _f in _cf.as_completed([ex.submit(_one, sid) for sid in todo]):
+                sid, n = _f.result()
+                counts[sid] = n
+                cache["linked:" + sid] = n
+                done += 1
+                if done % 5 == 0 or done == total:
+                    report(done, total, "linked")
+                if done % 8 == 0:
+                    _time.sleep(0.01)
+    return counts
+
+
+def _cases_txt(r):
+    """'~5' for an estimated count, '5' for a counted one (text exports + UI)."""
+    return ("~%d" % r["cases"]) if r.get("cases_est") else str(r["cases"])
+
+
+def _estimate_cases(app, story_ids):
+    """{story_id: estimated case count} from story size, for stories with no
+    test cases at all (see EST_* above). Uses Sprint Plan's content units."""
+    if not story_ids:
+        return {}
+    try:
+        units, _texts = _fetch_cp_complexity(app, list(story_ids))
+    except Exception:
+        units = {}
+    out = {}
+    for sid in story_ids:
+        u = float(units.get(_sid(sid), 1.0) or 1.0)
+        out[_sid(sid)] = int(max(EST_MIN_CASES,
+                                 min(EST_MAX_CASES, round(u / EST_UNITS_PER_CASE))))
+    return out
+
+
+def _count_folder_cases(app, selected, progress=None):
     """Phase 1: suite map per plan (1 call/plan, parallel, cached).
     Phase 2: test case count per suite (parallel, up to 16 workers).
 
@@ -882,8 +1044,20 @@ def _count_cases(app, selected, progress=None):
     for s in selected:
         by_plan.setdefault(s.get("plan_id"), []).append(_sid(s["id"]))
 
+    def _report(done, total, phase):
+        # phase "find" = locating each story's suite/folder, "count" = counting
+        # the cases in them; the UI shows both on one bar.
+        if progress:
+            try:
+                progress(done, total, phase)
+            except TypeError:
+                progress(done, total)      # older 2-arg callbacks
+            except Exception:
+                pass
+
     tasks = []
     plan_items = [(pid, sids) for pid, sids in by_plan.items() if pid]
+    _report(0, len(selected), "find")
     with _cf.ThreadPoolExecutor(max_workers=min(8, len(plan_items) or 1)) as ex:
         futs = {ex.submit(_discover_suite_map, app, pid, sids): (pid, sids)
                 for pid, sids in plan_items}
@@ -893,6 +1067,7 @@ def _count_cases(app, selected, progress=None):
                 suite_id = smap.get(sid)
                 if suite_id:
                     tasks.append((sid, pid, suite_id))
+    _report(len(selected), len(selected), "find")
 
     # Per-suite count cache: a suite's case count doesn't change between
     # generates in a session, so re-generating (or tweaking resources and
@@ -922,9 +1097,7 @@ def _count_cases(app, selected, progress=None):
         # thread's GIL share, which is what made renders freeze during a parallel
         # generate. Fewer concurrent JSON parses = a more responsive UI.
         _total, _done = len(todo), 0
-        if progress:
-            try: progress(0, _total)
-            except Exception: pass
+        _report(0, _total, "count")
         with _cf.ThreadPoolExecutor(max_workers=min(16, _total)) as ex:
             _futs = [ex.submit(_one, t) for t in todo]
             for _f in _cf.as_completed(_futs):    # as-completed -> accurate progress
@@ -932,9 +1105,8 @@ def _count_cases(app, selected, progress=None):
                 counts[sid] = n
                 cache[suite_id] = n
                 _done += 1
-                if progress and (_done % 5 == 0 or _done == _total):
-                    try: progress(_done, _total)
-                    except Exception: pass
+                if _done % 5 == 0 or _done == _total:
+                    _report(_done, _total, "count")
                 if _done % 8 == 0:
                     _time.sleep(0.01)             # yield GIL so the UI stays responsive
     return counts
@@ -963,6 +1135,19 @@ def build_rows(app, selected, progress=None):
         meta = _fetch_meta(app, ids)
     _brc_t.join()
     counts = _brc.get("counts", {}) or {}
+    # Fair estimate: a story with NO test cases still needs regression time —
+    # estimate its case count from its size instead of counting it as 0 h.
+    estimated = {}
+    if getattr(app, "_reg_effort_mode", True):
+        _zero = [_sid(s["id"]) for s in selected if not counts.get(_sid(s["id"]))]
+        if _zero:
+            if progress:
+                try:
+                    progress(0, len(_zero), "estimate")
+                except Exception:
+                    pass
+            with _perf(f"build_rows.estimate_cases ({len(_zero)} stories)"):
+                estimated = _estimate_cases(app, _zero)
     _cache_save(app)   # persist freshly-fetched counts/meta/features for next launch
     story_features = getattr(app, "_reg_story_features", {})
     feat_cache = getattr(app, "_reg_feature_name_cache", {}) or {}
@@ -982,7 +1167,9 @@ def build_rows(app, selected, progress=None):
         sid = _sid(s["id"])
         m = meta.get(sid, {})
         pri = m.get("priority", DEFAULT_PRIORITY)
-        cases = counts.get(sid, 0)
+        real = counts.get(sid, 0)
+        is_est = (not real) and sid in estimated
+        cases = estimated[sid] if is_est else real
         boost = PRIORITY_BOOST.get(pri, 1.0)
         hours = round(cases * (AVG_MINUTES_PER_CASE / 60.0) * boost, 2)
         _pfeat = parent_of.get(sid)
@@ -991,7 +1178,8 @@ def build_rows(app, selected, progress=None):
                  or (feat_cache.get(_pfeat) if _pfeat else "") or "")
         rows.append({"id": sid, "title": m.get("title", "") or s.get("title", ""),
                      "state": m.get("state", "Unknown"), "priority": pri,
-                     "cases": cases, "boost": boost, "hours": hours,
+                     "cases": cases, "cases_est": is_est, "cases_real": real,
+                     "boost": boost, "hours": hours,
                      "plan_id": s.get("plan_id"), "assignee": "",
                      "feature_id": fid, "feature_name": fname})
     # Feature ids come from meta (free); names normally come from the cache that
@@ -1046,6 +1234,8 @@ def plan_payload(app):
     load = assign_resources(rows, names)
     count = app._reg_res_count or len(names) or 1
     total_cases = sum(r["cases"] for r in rows)
+    est_cases = sum(r["cases"] for r in rows if r.get("cases_est"))
+    est_stories = sum(1 for r in rows if r.get("cases_est"))
     total_hours = round(sum(r["hours"] for r in rows), 2)
     per_person = round(total_hours / count, 2) if count else total_hours
     # Section 3 toggle: when effort mode is off, hours are always 0 (build_rows
@@ -1086,6 +1276,7 @@ def plan_payload(app):
             "priority_boost": PRIORITY_BOOST, "resources_count": count,
             "resource_names": names, "stories": rows, "workload": workload,
             "total_stories": len(rows), "total_cases": total_cases,
+            "est_cases": est_cases, "est_stories": est_stories,
             "total_hours": total_hours, "hours_per_person": per_person,
             "effort_mode": effort_on,
             "total_days": total_days, "hours_per_person_days": per_person_days,
@@ -1637,7 +1828,7 @@ def export_docx(app):
             c = tbl.add_row().cells
             _vals = ([str(s["id"]), s["title"], s["state"],
                       _PRI_FULL.get(s["priority"], str(s["priority"]))]
-                     + ([str(s["cases"])] if show_cases else [])
+                     + ([_cases_txt(s)] if show_cases else [])
                      + [str(s["hours"]), s.get("assignee") or "—"])
             _last = len(_vals) - 1
             for i, v in enumerate(_vals):
@@ -1771,7 +1962,7 @@ def export_pdf(app):
     for s in d["stories"]:
         data.append([_id_cell(s["id"]), _ar((s["title"] or "")[:38]), _ar(s["state"]),
                      str(s["priority"])]
-                    + ([str(s["cases"])] if show_cases else [])
+                    + ([_cases_txt(s)] if show_cases else [])
                     + [str(s["hours"]), _ar(s.get("assignee") or "—")])
     data.append(["", "", "", "TOT"]
                 + ([str(d["total_cases"])] if show_cases else [])
@@ -2038,6 +2229,36 @@ def _feature_header(app, label, count, collapsed, on_toggle):
                                    colors=[T.VIOLET, T.VIOLET_INK]),
         shadow=ft.BoxShadow(blur_radius=8, spread_radius=-3, offset=ft.Offset(0, 3),
                             color=ft.Colors.with_opacity(0.40, T.VIOLET)))
+    # Chevron slot: swapped for a small spinner the moment the header is
+    # clicked, then the (slow, big-plan) rebuild runs off the UI thread. The
+    # rebuild replaces this header, so the spinner goes away by itself.
+    chev_slot = ft.Container(ft.Icon(chev, size=22, color=T.VIOLET_INK),
+                             width=22, height=22, alignment=ft.Alignment.CENTER)
+    busy = {"on": False}
+
+    def _clicked(e):
+        if busy["on"]:
+            return                     # ignore double-clicks while rebuilding
+        busy["on"] = True
+        try:
+            chev_slot.content = ft.ProgressRing(width=16, height=16, stroke_width=2,
+                                                color=T.VIOLET_INK)
+            chev_slot.update()
+        except Exception:
+            pass
+
+        def work():
+            try:
+                on_toggle(e)
+            finally:
+                busy["on"] = False
+        # ui_safe = the app's serialized off-event-loop runner for UI work,
+        # so the spinner paints before the rebuild starts.
+        runner = getattr(app, "ui_safe", None)
+        if callable(runner):
+            runner(work)
+        else:
+            work()
     count_badge = ft.Container(
         ft.Text(f"{count} {'story' if count == 1 else 'stories'}",
                 size=11, weight=ft.FontWeight.W_800, color=T.VIOLET_INK),
@@ -2051,9 +2272,9 @@ def _feature_header(app, label, count, collapsed, on_toggle):
                     count_badge],
                    spacing=10, expand=True,
                    vertical_alignment=ft.CrossAxisAlignment.CENTER),
-            ft.Icon(chev, size=22, color=T.VIOLET_INK),
+            chev_slot,
         ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-        on_click=on_toggle, ink=True,
+        on_click=_clicked, ink=True,
         tooltip=strings.t("reg_collapse_expand"),
         padding=ft.Padding.only(left=10, right=12, top=9, bottom=9),
         margin=ft.Margin.only(top=10, bottom=4, left=2, right=2),
@@ -2829,10 +3050,16 @@ def _cp_load_iterations(app):
             its = backend_setup.fetch_sprints(app, _proj) or []
         except Exception:
             its = []
-        sprints = [it for it in its if _cp_is_sprint(it)] or its
-        # Ascending by sprint number (Sprint 0, 1, 2, …) so Sprint 0 reads first
-        # instead of being stranded at the end; un-numbered iterations sort last.
-        sprints.sort(key=lambda it: (_sprint_sort_key(it) < 0, _sprint_sort_key(it)))
+        if any(it.get("label") for it in its):
+            # Jira (non-Azure): every row is a real sprint with its full name,
+            # already ordered active → future → closed. Filtering on "Sprint N"
+            # and re-sorting by that number is Azure-only.
+            sprints = list(its)
+        else:
+            sprints = [it for it in its if _cp_is_sprint(it)] or its
+            # Ascending by sprint number (Sprint 0, 1, 2, …) so Sprint 0 reads first
+            # instead of being stranded at the end; un-numbered iterations sort last.
+            sprints.sort(key=lambda it: (_sprint_sort_key(it) < 0, _sprint_sort_key(it)))
         app._cp_iter_loading = False
         if app.project != _proj:      # project changed mid-load → drop stale result
             app._cp_iter_for = None
@@ -3177,6 +3404,31 @@ def flush_typed_emails(app, sync_key=None):
 
 def email_recipient_picker(app, state_key, *, is_open_key, sync_key, height=260,
                            trailing=None, on_change=None):
+    """Email recipient picker. When the project's members finish loading in
+    the background, ONLY this picker is rebuilt — it used to call
+    app.render(), which redrew the whole screen a second or two after Connect
+    (Setup's picker loads members right after connecting). The same Column is
+    returned as before; a reload swaps its children in place."""
+    col = [None]
+
+    def _build():
+        return _email_recipient_picker_body(
+            app, state_key, is_open_key=is_open_key, sync_key=sync_key,
+            height=height, trailing=trailing, on_change=on_change,
+            on_members_loaded=_members_loaded)
+
+    def _members_loaded():
+        try:
+            col[0].controls = _build().controls
+            col[0].update()
+        except Exception:
+            app.render()     # picker no longer mounted: previous behaviour
+    col[0] = _build()
+    return col[0]
+
+
+def _email_recipient_picker_body(app, state_key, *, is_open_key, sync_key, height=260,
+                                 trailing=None, on_change=None, on_members_loaded=None):
     """Searchable multiselect for email recipients — same search + multiselect
     pattern as the stories/plans/sprints pickers above (_checkbox_multiselect),
     sourced from the Azure DevOps project's team members, PLUS a small field to
@@ -3247,7 +3499,7 @@ def email_recipient_picker(app, state_key, *, is_open_key, sync_key, height=260,
             app._members_cache = mem
             app._members_cache_project = _proj
             app._members_loading = False
-            app.ui_safe(app.render)
+            app.ui_safe(on_members_loaded if callable(on_members_loaded) else app.render)
         threading.Thread(target=_load_members, daemon=True).start()
 
     members = getattr(app, "_members_cache", None) or []
@@ -3667,6 +3919,7 @@ def _cp_load_stories(app):
     # _cp_stories_loading (which clears the moment the list is usable): the plan
     # badges itself "provisional" and locks Export/Email while this is True.
     app._cp_enriching = True
+    app._cp_ai_progress = None      # fresh count in the banner
     app._cp_rows = []
     app._cp_all_rows = []
     app._cp_story_ids = []
@@ -3803,8 +4056,28 @@ def _cp_ai_scores(app, texts):
     """
     if not texts:
         return {}
+
+    def _progress(done, total):
+        # Live count + bar in the provisional banner (in place, no render).
+        app._cp_ai_progress = (done, total)     # survives a re-render
+        parts = getattr(app, "_cp_prov_parts", None)
+        if not parts:
+            return
+        def _upd():
+            try:
+                cnt, bar = parts
+                cnt.value = f"{done} / {total}"
+                bar.value = (done / total) if total else None
+                cnt.update()
+                bar.update()
+            except Exception:
+                pass
+        try:
+            app.ui_safe(_upd)
+        except Exception:
+            pass
     try:
-        return _fetch_cp_ai_complexity(app, texts) or {}
+        return _fetch_cp_ai_complexity(app, texts, progress=_progress) or {}
     except Exception:
         return {}
 
@@ -3916,6 +4189,7 @@ def _cp_replan(app):
     app._cp_stories_gen = getattr(app, "_cp_stories_gen", 0) + 1
     _gen = app._cp_stories_gen
     app._cp_enriching = True
+    app._cp_ai_progress = None      # fresh count in the banner
     # Keep the current plan on screen; badge it provisional while re-enriching.
     # Prefer an in-place refresh so re-clicking Regenerate doesn't jump the scroll.
     if not _cp_refresh_inplace(app):
@@ -4090,7 +4364,7 @@ def _create_screen(app):
         for p in app._cp_sprint_paths:
             it = next((x for x in app._cp_iterations if x["path"] == p), None)
             if it:
-                names.append(_sprint_num(it["name"]) or it["name"])
+                names.append(it["name"] if it.get("label") else (_sprint_num(it["name"]) or it["name"]))
         return names
 
     def _after_sprint_change():
@@ -4125,7 +4399,8 @@ def _create_screen(app):
         ft.Container(_txt(strings.t("reg_loading_sprints"), color=T.INK_3, size=12), padding=10)
         if app._cp_iter_loading else
         _checkbox_multiselect(
-            [(it["path"], (_sprint_num(it["name"]) or it["name"]) + f"   ·   {it['path']}")
+            [(it["path"], it.get("label") or
+              ((_sprint_num(it["name"]) or it["name"]) + f"   ·   {it['path']}"))
              for it in app._cp_iterations],
             app._cp_sprint_paths, _toggle_sprint, _all_sprints,
             is_open=app._cp_sprint_open, on_open=_open_sprints,
@@ -4758,15 +5033,20 @@ def _create_screen(app):
                         except Exception:
                             app.render()
                     return _h
-                pager = ft.Row([
-                    ghost_btn(strings.t("reg_prev"), on_click=(None if pg == 0 else _cp_go(-1))),
-                    _txt(f"Page {pg + 1} of {total}  ·  "
-                         f"rows {pg * _CP_PAGE + 1}–{min((pg + 1) * _CP_PAGE, len(allrows))} "
-                         f"of {len(allrows)}", size=12, color=T.INK_3),
-                    ghost_btn(strings.t("reg_next"), on_click=(None if pg >= total - 1 else _cp_go(1))),
-                ], alignment=ft.MainAxisAlignment.CENTER, spacing=16)
-                out = out + [ft.Container(pager,
-                                          padding=ft.Padding.symmetric(vertical=10))]
+                def _pager():
+                    # Built twice — above AND below the rows — so the next page
+                    # is reachable from either end: a page flip keeps the
+                    # scroll position (see _keep_scroll), and this Flet build
+                    # can't reliably scroll to the table's top.
+                    return ft.Container(ft.Row([
+                        ghost_btn(strings.t("reg_prev"), on_click=(None if pg == 0 else _cp_go(-1))),
+                        _txt(f"Page {pg + 1} of {total}  ·  "
+                             f"rows {pg * _CP_PAGE + 1}–{min((pg + 1) * _CP_PAGE, len(allrows))} "
+                             f"of {len(allrows)}", size=12, color=T.INK_3),
+                        ghost_btn(strings.t("reg_next"), on_click=(None if pg >= total - 1 else _cp_go(1))),
+                    ], alignment=ft.MainAxisAlignment.CENTER, spacing=16),
+                        padding=ft.Padding.symmetric(vertical=10))
+                out = [_pager()] + out + [_pager()]
             return out
 
         # Column of paired Rows → exactly 2 tiles per line on mobile (see
@@ -4912,13 +5192,42 @@ def _create_screen(app):
         # completion repaint (see _cp_load_stories._work finally) rebuilds this
         # card with _cp_enriching False, which clears the badge + unlocks.
         _cp_prov = bool(getattr(app, "_cp_enriching", False))
+        # Brand-cyan banner: title + unlock note on the left, a bold
+        # "done / total" count badge on the right, and a progress bar under
+        # them — the AI step updates the badge and bar in place.
+        _prog = getattr(app, "_cp_ai_progress", None) or (0, 0)
+        _cnt_txt = ft.Text((f"{_prog[0]} / {_prog[1]}" if _prog[1] else "…"),
+                           size=15, weight=ft.FontWeight.W_900, color=T.VIOLET_INK,
+                           font_family=T.F_MONO, no_wrap=True)
+        _cnt_badge = ft.Container(
+            ft.Row([ft.Icon(ft.Icons.AUTO_AWESOME, size=15, color=T.VIOLET_INK), _cnt_txt],
+                   spacing=6, tight=True, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=ft.Padding.symmetric(vertical=6, horizontal=12), border_radius=999,
+            bgcolor=ft.Colors.with_opacity(0.16, T.VIOLET),
+            border=ft.Border.all(1, ft.Colors.with_opacity(0.45, T.VIOLET)),
+            tooltip=strings.t("reg_prov_count_tip"))
+        _prov_bar = ft.ProgressBar(value=((_prog[0] / _prog[1]) if _prog[1] else None),
+                                   color=T.VIOLET, bgcolor=ft.Colors.with_opacity(0.15, T.VIOLET),
+                                   bar_height=6, border_radius=99)
+        app._cp_prov_parts = (_cnt_txt, _prov_bar)   # updated in place by the AI step
         prov_badge = ft.Container(
-            ft.Row([ft.ProgressRing(width=14, height=14, stroke_width=2, color=T.AMBER),
-                    _txt(strings.t("reg_provisional"),
-                         color=T.AMBER, size=12, weight=ft.FontWeight.W_500, expand=True)],
-                   spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-            padding=10, bgcolor=T.AMBER_SOFT, border_radius=T.R,
-            border=ft.Border.all(1, "#EAD9A8"),
+            ft.Column([
+                ft.Row([
+                    ft.ProgressRing(width=16, height=16, stroke_width=2.5, color=T.VIOLET),
+                    ft.Column([
+                        _txt(strings.t("reg_prov_scoring"), color=T.INK, size=13,
+                             weight=ft.FontWeight.BOLD, no_wrap=False),
+                        _txt(strings.t("reg_prov_unlock"), color=T.INK_2, size=11.5,
+                             weight=ft.FontWeight.W_500, no_wrap=False),
+                    ], spacing=2, expand=True, tight=True),
+                    _cnt_badge,
+                ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                ft.Container(height=10),
+                _prov_bar,
+            ], spacing=0, tight=True),
+            padding=ft.Padding.symmetric(vertical=12, horizontal=14),
+            bgcolor=getattr(T, "VIOLET_SOFT", T.CARD_2), border_radius=T.R,
+            border=ft.Border.all(1, ft.Colors.with_opacity(0.40, T.VIOLET)),
             margin=ft.Margin.only(top=12), visible=_cp_prov)
 
         # Did the AI actually contribute? A prominent banner — icon chip + bold
@@ -5509,16 +5818,47 @@ def screen(app):
             pass
 
         def _work():
-            def _progress(done, total):
-                # Live count feedback in the spinner so a long cold count clearly
-                # reads as "working", not stuck. Throttled by _count_cases.
+            _phases = {}
+
+            def _progress(done, total, phase="count"):
+                # Live feedback: text + a real bar. Finding each story's
+                # test-case folder is the first half, counting the cases the
+                # second, so the bar moves through both. Throttled by
+                # _count_cases.
+                f = (done / total) if total else 1.0
+                store = backend_setup.case_store_label(app)
+                if phase == "linked":
+                    # Linked-test count (Jira + Zephyr) is the main work here.
+                    _phases["linked"] = True
+                    frac = 0.8 * f
+                    text = strings.t("reg_counting_linked", done=done, total=total, store=store)
+                elif phase == "estimate":
+                    frac = None
+                    text = strings.t("reg_estimating", n=total)
+                elif _phases.get("linked"):
+                    # Folder fallback for stories with no linked tests.
+                    frac = (0.8 + 0.05 * f) if phase == "find" else (0.85 + 0.1 * f)
+                    text = (strings.t("reg_finding_suites", done=done, total=total, store=store)
+                            if phase == "find" else
+                            strings.t("reg_counting", done=done, total=total))
+                else:
+                    frac = 0.5 * f if phase == "find" else 0.5 + 0.5 * f
+                    if phase == "find" and done < total:
+                        frac = None        # one bulk lookup: a moving bar
+                    text = (strings.t("reg_finding_suites", done=done, total=total, store=store)
+                            if phase == "find" else
+                            strings.t("reg_counting", done=done, total=total))
+
                 def _upd():
                     sp = getattr(app, "_reg_gen_spinner", None)   # the on-screen one
                     if sp is None:
                         return
                     try:
-                        sp.content.controls[1].value = (
-                            strings.t("reg_counting", done=done, total=total))
+                        lbl, bar = getattr(app, "_reg_gen_parts", (None, None))
+                        if lbl is not None:
+                            lbl.value = text
+                        if bar is not None:
+                            bar.value = frac
                         sp.visible = True
                         sp.update()
                     except Exception:
@@ -5556,7 +5896,8 @@ def screen(app):
         # caches (_reg_story_features / _reg_feature_name_cache): feature names rarely
         # change, and re-resolving them on every regenerate is what made it slow and
         # briefly drop the grouping. (Use Settings → Clear caches for a full reset.)
-        for _attr in ("_reg_case_count_cache", "_reg_meta_cache", "_reg_suite_cache"):
+        for _attr in ("_reg_case_count_cache", "_reg_meta_cache", "_reg_suite_cache",
+                      "_story_dto_cache"):
             try:
                 setattr(app, _attr, {})
             except Exception:
@@ -6107,6 +6448,10 @@ def screen(app):
                         f"{round(5.7 / WORK_DAY_HOURS, 2)} d (1 workday = "
                         f"{WORK_DAY_HOURS}h).", size=11.5, color=T.INK_3,
                         weight=ft.FontWeight.W_500),
+                ft.Container(height=6),
+                ft.Text(strings.t("reg_est_explain", words=EST_UNITS_PER_CASE,
+                                  lo=EST_MIN_CASES, hi=EST_MAX_CASES),
+                        size=11.5, color=T.AMBER, weight=ft.FontWeight.W_500),
             ]
         return [
             effort_header,
@@ -6211,7 +6556,8 @@ def screen(app):
                     ft.Container(_bar(s["hours"] / maxh_story), width=70),
                     _txt(str(s["hours"]), color=T.INK, weight=ft.FontWeight.BOLD),
                 ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER)
-                cases_ctl = _txt(str(s["cases"]), color=T.INK_2)
+                cases_ctl = _txt(_cases_txt(s), color=(T.AMBER if s.get("cases_est") else T.INK_2),
+                                 tooltip=(strings.t("reg_cases_est_tip") if s.get("cases_est") else None))
             else:
                 # Effort mode off — cases weren't counted and hours are always
                 # 0, so a dash reads clearer than a misleading "0".
@@ -6290,25 +6636,28 @@ def screen(app):
                         rows.append(_reg_row_for(s, _ri))
                         _ri += 1
 
-            _pager = ft.Container()
             if _total > 1:
                 def _go(delta, pg=_pg, tot=_total):
                     def _h2(e):
                         app._reg_table_page = max(0, min(pg + delta, tot - 1))
                         _refresh_table()
                     return _h2
-                _pager = ft.Row([
-                    ghost_btn(strings.t("reg_prev"),
-                              on_click=(None if _pg == 0 else _go(-1))),
-                    _txt(f"Page {_pg + 1} of {_total}  ·  "
-                         f"rows {_pg*_PAGE+1}–{min((_pg+1)*_PAGE, len(_all))} "
-                         f"of {len(_all)}",
-                         size=12, color=T.INK_3),
-                    ghost_btn(strings.t("reg_next"),
-                              on_click=(None if _pg >= _total - 1 else _go(1))),
-                ], alignment=ft.MainAxisAlignment.CENTER, spacing=16)
 
-            return rows + ([_pager] if _total > 1 else [])
+                def _mk_pager():
+                    # Above AND below the rows (see the Sprint Plan pager).
+                    return ft.Container(ft.Row([
+                        ghost_btn(strings.t("reg_prev"),
+                                  on_click=(None if _pg == 0 else _go(-1))),
+                        _txt(f"Page {_pg + 1} of {_total}  ·  "
+                             f"rows {_pg*_PAGE+1}–{min((_pg+1)*_PAGE, len(_all))} "
+                             f"of {len(_all)}",
+                             size=12, color=T.INK_3),
+                        ghost_btn(strings.t("reg_next"),
+                                  on_click=(None if _pg >= _total - 1 else _go(1))),
+                    ], alignment=ft.MainAxisAlignment.CENTER, spacing=16),
+                        padding=ft.Padding.symmetric(vertical=8))
+                return [_mk_pager()] + rows + [_mk_pager()]
+            return rows
 
         table_body_col = ft.Column(_build_table_body(), spacing=0)
 
@@ -6347,13 +6696,16 @@ def screen(app):
             # "591.46 h · 73.93d" was wrapping mid-number and looked cramped.
             _e = dd.get("effort_mode", True)
             cases_val = str(dd["total_cases"]) if _e else "—"
+            cases_sub = (strings.t("reg_kpi_cases_est", n=dd.get("est_cases", 0),
+                                   stories=dd.get("est_stories", 0))
+                         if _e and dd.get("est_cases") else None)
             effort_val = f"{dd['total_hours']} h" if _e else "—"
             effort_sub = f"≈ {dd['total_days']} workdays" if _e else None
             person_val = f"{dd['hours_per_person']} h" if _e else "—"
             person_sub = f"≈ {dd['hours_per_person_days']} workdays" if _e else None
             return kpi_tiles_mobile([
                 _kpi_tile(strings.t("reg_kpi_stories"), str(dd["total_stories"])),
-                _kpi_tile(strings.t("reg_kpi_test_cases"), cases_val),
+                _kpi_tile(strings.t("reg_kpi_test_cases"), cases_val, sub=cases_sub),
                 _kpi_tile(strings.t("reg_kpi_total_effort"), effort_val, T.VIOLET, sub=effort_sub),
                 _kpi_tile(strings.t("reg_kpi_per_person"), person_val, T.GREEN, sub=person_sub),
             ])
@@ -6526,11 +6878,20 @@ def screen(app):
     # on any screen with back-to-back renders and was reverted app-wide;
     # see main.py's _scroll_to_key docstring.)
 
+    _gen_lbl = ft.Text(strings.t("reg_generating_reading", store=backend_setup.case_store_label(app)),
+                       size=12.5, color=T.INK_3, weight=ft.FontWeight.W_500,
+                       no_wrap=False, expand=True)
+    _gen_bar = ft.ProgressBar(value=None, color=T.VIOLET, bgcolor=T.CARD_2,
+                              bar_height=6, border_radius=99)
+    app._reg_gen_parts = (_gen_lbl, _gen_bar)
     gen_spinner = ft.Container(
-        ft.Row([ft.ProgressRing(width=18, height=18, stroke_width=2.5, color=T.VIOLET),
-                ft.Text(strings.t("reg_generating_reading", store=backend_setup.case_store_label(app)),
-                        size=12.5, color=T.INK_3, weight=ft.FontWeight.W_500)],
-               spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        ft.Column([
+            ft.Row([ft.ProgressRing(width=18, height=18, stroke_width=2.5, color=T.VIOLET),
+                    _gen_lbl],
+                   spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            ft.Container(height=8),
+            _gen_bar,
+        ], spacing=0, tight=True),
         padding=ft.Padding.symmetric(vertical=10, horizontal=12),
         margin=ft.Margin.only(top=10),
         bgcolor=getattr(T, "VIOLET_SOFT", T.CARD_2), border_radius=T.R,

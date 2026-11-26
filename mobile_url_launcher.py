@@ -69,3 +69,41 @@ def open(url):
         return True
     except Exception:
         return False
+
+
+def open_front(url, fallback=None, timeout=4.0):
+    """Open `url` from the QA Studio WINDOW process so the browser comes to the
+    front, over the app.
+
+    On Windows the Flet window belongs to flet.exe, while Python runs as a
+    separate background process. Windows only lets the foreground process hand
+    focus to the window it opens, so os.startfile()/webbrowser.open() from
+    Python can open the browser BEHIND QA Studio. The UrlLauncher service runs
+    inside flet.exe (the window the user just clicked), so its ShellExecute is
+    allowed to raise the browser, like a link in any native app.
+
+    Unlike open(), failure is detected: if the launch raises, reports False,
+    or doesn't answer within `timeout` seconds, `fallback(url)` runs instead.
+    Returns True once scheduled; False (caller handles it) if the service isn't
+    attached."""
+    if _launcher is None or _page is None:
+        return False
+
+    async def _go():
+        import asyncio
+        ok = False
+        try:
+            res = await asyncio.wait_for(_launcher.launch_url(url), timeout)
+            ok = res is not False
+        except Exception:
+            ok = False
+        if not ok and callable(fallback):
+            try:
+                fallback(url)
+            except Exception:
+                pass
+    try:
+        _page.run_task(_go)
+        return True
+    except Exception:
+        return False

@@ -139,6 +139,74 @@ def flat_visibility(lines, issues_only=False):
     return out
 
 
+# ---- Generate (Run) log: grouped by story, like the Automation log's cases ----
+
+def run_build(lines):
+    """Group the Generate log by story: each "story" line heads a group that
+    runs to the next story line. {"group", "headers", "status", "counts"} -
+    counts[gid] = {"ok": n, "warn": n, "err": n} over the group's test-case
+    lines (lines with an id)."""
+    group, headers, status, counts = [], {}, {}, {}
+    current = None
+    for i, line in enumerate(lines or []):
+        if (line.get("tone") or "") == "story":
+            current = len(headers)
+            headers[current], status[current] = i, "ok"
+            counts[current] = {"ok": 0, "warn": 0, "err": 0}
+            group.append(current)
+            continue
+        group.append(current)
+        if current is None:
+            continue
+        tone = line.get("tone") or "dim"
+        level = "err" if tone == "err" else ("warn" if tone in ISSUE_TONES else "ok")
+        if _RANK[level] > _RANK[status[current]]:
+            status[current] = level
+        if line.get("id") and tone in ("ok", "err", "warn", "review"):
+            counts[current][level] += 1
+    return {"group": group, "headers": headers, "status": status, "counts": counts}
+
+
+def run_is_open(model, gid, toggles=None):
+    """A story group shows its lines when the user opened it, else only the
+    latest story stays open (earlier ones fold away as the run moves on)."""
+    toggles = toggles or {}
+    if gid in toggles:
+        return toggles[gid]
+    return bool(model["headers"]) and gid == max(model["headers"])
+
+
+def run_visibility(lines, toggles=None, issues_only=False, model=None):
+    """One visible flag per Generate log line. All: headers and lines outside
+    a story always show; a story's lines when it is open. Issues: warn/err
+    lines (plus their indented detail) and the headers of stories with one."""
+    model = model or run_build(lines)
+    out, show_detail = [], False
+    for i, line in enumerate(lines or []):
+        gid = model["group"][i]
+        is_header = gid is not None and model["headers"].get(gid) == i
+        if issues_only:
+            if is_header:
+                out.append(model["status"][gid] != "ok")
+            elif line.get("indent"):
+                out.append(show_detail)
+            else:
+                show_detail = is_issue(line)
+                out.append(show_detail)
+            continue
+        out.append(gid is None or is_header or run_is_open(model, gid, toggles))
+    return out
+
+
+def run_lines_to_copy(lines, issues_only=False):
+    """Copy / Save on the Generate log: every line on All (collapsed stories
+    included); on Issues what that tab shows."""
+    lines = list(lines or [])
+    if not issues_only:
+        return lines
+    return [line for line, shown in zip(lines, run_visibility(lines, None, True)) if shown]
+
+
 def flat_lines_to_copy(lines, issues_only=False):
     lines = list(lines or [])
     if not issues_only:
@@ -169,7 +237,10 @@ def format_lines(lines):
         glyph = line.get("ico") or _GLYPH.get(line.get("tone") or "", " ")
         indent = "    " if line.get("indent") else ""
         tag = ("[%s] " % line["id"] if line.get("id") else "") + ("#%s " % line["seq"] if line.get("seq") else "")
-        out.append("%s  %s %s%s%s" % (clock, glyph, indent, tag, msg.strip() if indent else msg.rstrip()))
+        body = msg.strip() if indent else msg.rstrip()
+        if line.get("detail"):          # the case's time, shown inline in the row
+            body += "  ·  " + str(line["detail"]).strip()
+        out.append("%s  %s %s%s%s" % (clock, glyph, indent, tag, body))
     return out
 
 

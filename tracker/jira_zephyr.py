@@ -38,6 +38,7 @@ from __future__ import annotations
 import ipaddress
 import re
 import threading
+from datetime import date
 from typing import Any, Dict, Iterable, List, Optional
 from urllib.parse import urlparse
 
@@ -208,7 +209,7 @@ class JiraZephyrBackend(Backend):
         self._email = email or ""
         self._allow_any_host = bool(allow_any_host)
         self._lock = threading.RLock()
-        self._board_cache: Dict[str, Optional[int]] = {}
+        self._board_cache: Dict[str, list] = {}   # project key -> [(board id, name)]
         self._sprint_field: Optional[str] = None
         self._folder_cache: Dict[str, int] = {}
 
@@ -361,55 +362,115 @@ class JiraZephyrBackend(Backend):
                                name=row.get("name") or row.get("key") or ""))
         return out
 
+    def zephyr_enabled_project_keys(self):
+        """Jira project keys Zephyr is turned on for (Zephyr's GET /projects;
+        a row without an `enabled` flag counts as enabled). None when it can't
+        be read (no Zephyr token, network, an API change) - callers then just
+        don't use it. Lets Connect land on a project that works instead of
+        the first one in the list."""
+        try:
+            rows = list(self._need_zephyr().paginate(
+                "projects", cursor="startAt", limit_param="maxResults",
+                extract=lambda p: (p or {}).get("values") or []))
+        except Exception:
+            return None
+        return [str(r.get("key")) for r in rows
+                if isinstance(r, dict) and r.get("key") and r.get("enabled", True) is not False]
+
     # ── core: sprints (D3) ────────────────────────────────────────────────
-    def _board_for(self, project_key):
-        """First scrum board for a project. Cached — board lists rarely change
-        and this is on the path of every sprint refresh."""
+    def _boards_for(self, project_key):
+        """The project's boards as [(id, name)], best first. Boards LOCATED in
+        the project (board.location.projectKey) win - a company site has many
+        boards whose filters include a project's issues (old team boards,
+        cross-project boards), and taking simply the first one returned showed
+        another board's old sprints. Scrum boards are asked for first; if a
+        project has none located in it, the first board returned is kept (the
+        previous behaviour). Cached per project."""
         with self._lock:
             if project_key in self._board_cache:
                 return self._board_cache[project_key]
-        board_id = None
-        # Try scrum-typed boards first (only those have sprints), then fall back
-        # to ANY board for the project. A team-managed ("next-gen") project's
-        # board isn't always returned under type=scrum by the classic Agile API,
-        # which is why a real fresh project reported "no board" while clearly
-        # being a scrum project. The untyped query catches it; sprint listing
-        # below still no-ops harmlessly if the board turns out to have none.
-        for params in ({"projectKeyOrId": project_key, "type": "scrum",
-                        "maxResults": 50},
+        rows = []
+        # Try scrum-typed boards first (only those have sprints), then ANY
+        # board: a team-managed ("next-gen") project's board isn't always
+        # returned under type=scrum by the classic Agile API.
+        for params in ({"projectKeyOrId": project_key, "type": "scrum", "maxResults": 50},
                        {"projectKeyOrId": project_key, "maxResults": 50}):
             try:
                 payload = self._need_jira().get("agile/1.0/board", params=params)
             except Exception:
                 payload = None
-            for row in (payload or {}).get("values") or []:
-                if isinstance(row, dict) and row.get("id"):
-                    board_id = int(row["id"])
-                    break
-            if board_id is not None:
+            rows = [r for r in (payload or {}).get("values") or [] if isinstance(r, dict) and r.get("id")]
+            if rows:
                 break
+        own = [r for r in rows
+               if str(((r.get("location") or {}).get("projectKey") or "")).upper() == project_key.upper()]
+        chosen = (own or rows[:1])[:5]
+        boards = [(int(r["id"]), str(r.get("name") or r["id"])) for r in chosen]
         with self._lock:
-            self._board_cache[project_key] = board_id
-        return board_id
+            self._board_cache[project_key] = boards
+        return boards
+
+    def _board_for(self, project_key):
+        """First (best) board id for a project, or None."""
+        boards = self._boards_for(project_key)
+        return boards[0][0] if boards else None
+
+    @staticmethod
+    def _sprint_date(value):
+        try:
+            return date.fromisoformat(str(value or "")[:10]) if value else None
+        except ValueError:
+            return None
+
+    def sprint_board(self, sprint_id):
+        """Board name a listed sprint came from ('' if unknown)."""
+        return (self.__dict__.get("_sprint_boards") or {}).get(str(sprint_id), "")
 
     def fetch_sprints(self, project):
+        """The project's sprints from its own board(s), de-duplicated (a sprint
+        can show on more than one board): active first, then future (soonest
+        first), then closed (most recent first). Full Jira names, dates and
+        state are kept; the board each came from is in sprint_board()."""
         key = self._project_key(project)
-        board_id = self._board_for(key)
-        if board_id is None:
-            # No scrum board => no sprints. Empty list, not an error: a
-            # kanban-only project is a legitimate configuration.
+        boards = self._boards_for(key)
+        if not boards:
+            # No board => no sprints. Empty list, not an error: a project
+            # without a scrum board is a legitimate configuration.
             return []
-        out = []
-        for row in self._need_jira().paginate(
-                f"agile/1.0/board/{board_id}/sprint",
-                extract=lambda p: (p or {}).get("values") or []):
-            if not isinstance(row, dict):
+        seen, out = {}, []
+        names = self.__dict__.setdefault("_sprint_boards", {})
+        for board_id, board_name in boards:
+            try:
+                rows = list(self._need_jira().paginate(
+                    f"agile/1.0/board/{board_id}/sprint",
+                    extract=lambda p: (p or {}).get("values") or []))
+            except Exception:
+                if board_id == boards[0][0] and len(boards) == 1:
+                    raise
                 continue
-            sid = str(row.get("id") or "")
-            out.append(Sprint(ref=Ref(id=sid, key=row.get("name") or sid),
-                              name=row.get("name") or sid,
-                              path=sid,          # opaque token: the sprint id
-                              state=(row.get("state") or "").lower()))
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                sid = str(row.get("id") or "")
+                if not sid or sid in seen:
+                    continue
+                seen[sid] = True
+                names[sid] = board_name
+                out.append(Sprint(ref=Ref(id=sid, key=row.get("name") or sid),
+                                  name=row.get("name") or sid,
+                                  path=sid,          # opaque token: the sprint id
+                                  state=(row.get("state") or "").lower(),
+                                  start=self._sprint_date(row.get("startDate")),
+                                  end=self._sprint_date(row.get("endDate") or row.get("completeDate"))))
+        rank = {"active": 0, "future": 1}
+
+        def order(sp):
+            r = rank.get(sp.state, 2)
+            if r == 1:
+                return (r, sp.start or date.max, int(sp.path) if sp.path.isdigit() else 0)
+            d = sp.end or sp.start or date.min
+            return (r, -d.toordinal(), -(int(sp.path) if sp.path.isdigit() else 0))
+        out.sort(key=order)
         return out
 
     def _sprint_field_id(self):
@@ -508,6 +569,22 @@ class JiraZephyrBackend(Backend):
         return "issuetype in (%s)" % ", ".join(
             '"%s"' % jql_escape(n) for n in self._story_issue_types(project_key))
 
+    _SUMMARY_FIELDS = ["summary", "status", "assignee", "issuetype"]
+
+    def fetch_story_summaries_in_sprint(self, project, sprint_path):
+        """Like fetch_stories_in_sprint but only key / title / status / assignee
+        (no "*all" payload with descriptions and every custom field) - what the
+        Sprint Summary needs, several times faster on big sprints."""
+        pkey = self._project_key(project)
+        jql = (f'project = "{jql_escape(pkey)}" AND {self._sprint_clause(sprint_path)} '
+               f'AND {self._issuetype_clause(pkey)} ORDER BY Rank ASC')
+        try:
+            issues = self._search(jql, fields=self._SUMMARY_FIELDS)
+        except Exception:
+            issues = self._search(jql.replace("ORDER BY Rank ASC", "ORDER BY key ASC"),
+                                  fields=self._SUMMARY_FIELDS)
+        return [self._to_story(i, sprint_path) for i in issues]
+
     def fetch_backlog_stories(self, project, limit=100):
         """Open stories of the project that aren't in a sprint view: the story
         picker's fallback when the board has no (active) sprint, or the sprint
@@ -523,11 +600,18 @@ class JiraZephyrBackend(Backend):
             issues = self._search(base + " ORDER BY updated DESC", fields=self._STORY_FIELDS, limit=limit)
         return [self._to_story(i, "") for i in issues[:max(1, int(limit))]]
 
+    @staticmethod
+    def _sprint_clause(sprint_path):
+        """JQL for one sprint. A sprint is listed by its numeric ID, which must
+        be UNQUOTED: `sprint = "526"` is read as a sprint NAMED "526" and finds
+        nothing (confirmed on a live site: unquoted 200 issues, quoted 0)."""
+        sp = str(sprint_path or "").strip()
+        return f"sprint = {sp}" if sp.isdigit() else f'sprint = "{jql_escape(sp)}"'
+
     def fetch_stories_in_sprint(self, project, sprint_path):
         pkey = self._project_key(project)
         key = jql_escape(pkey)
-        sprint = jql_escape(sprint_path)
-        base = (f'project = "{key}" AND sprint = "{sprint}" '
+        base = (f'project = "{key}" AND {self._sprint_clause(sprint_path)} '
                 f'AND {self._issuetype_clause(pkey)}')
         # Order by the board's manual Rank so the multiselect / plan match the
         # sprint board's top-to-bottom order (the Azure board-order parity). Rank
@@ -549,26 +633,69 @@ class JiraZephyrBackend(Backend):
         the report can count bugs — and split regression vs sprint bugs by the
         "regression" label. `tags` is the space-joined Jira labels."""
         key = jql_escape(self._project_key(project))
-        sprint = jql_escape(sprint_path)
-        jql = (f'project = "{key}" AND sprint = "{sprint}" '
+        jql = (f'project = "{key}" AND {self._sprint_clause(sprint_path)} '
                f'AND issuetype = Bug ORDER BY key ASC')
         out = []
-        for i in self._search(jql, fields=["status", "labels"]):
+        for i in self._search(jql, fields=["status", "labels", "summary"]):
             f = i.get("fields") or {}
+            key = i.get("key") or ""
             out.append({
-                "id": i.get("key") or str(i.get("id") or ""),
+                "id": key or str(i.get("id") or ""),
+                "title": f.get("summary") or "",
                 "state": ((f.get("status") or {}).get("name") or "") or "Unknown",
                 "tags": " ".join(f.get("labels") or []),
+                # The report lists each bug as a link to its Jira issue.
+                "url": f"{self.site}/browse/{key}" if self.site and key else "",
             })
         return out
 
+    #: Keys per `key IN (...)` query. Jira rejects the WHOLE query when any
+    #: one key no longer exists (deleted / moved), so batches are kept small
+    #: and a failing batch is split until the bad key is isolated and skipped.
+    _KEY_BATCH = 50
+
     def fetch_stories(self, refs):
         keys = [(r.key or r.id) if isinstance(r, Ref) else str(r) for r in refs]
+        keys = [k for k in keys if k]
         if not keys:
             return []
+        issues = []
+        for i in range(0, len(keys), self._KEY_BATCH):
+            issues.extend(self._search_keys(keys[i:i + self._KEY_BATCH]))
+        return [self._to_story(i) for i in issues]
+
+    def _search_keys(self, keys):
+        """`key IN (...)` for one batch; on an error, split it in halves so one
+        missing key costs only itself (it's skipped and logged), not the batch."""
         joined = ", ".join(f'"{jql_escape(k)}"' for k in keys)
-        return [self._to_story(i)
-                for i in self._search(f"key IN ({joined})", fields=self._STORY_FIELDS)]
+        try:
+            return self._search(f"key IN ({joined})", fields=self._STORY_FIELDS)
+        except Exception as exc:
+            if len(keys) == 1:
+                try:
+                    import diag_log
+                    diag_log.log("jira.fetch_stories skipped %s" % keys[0], exc)
+                except Exception:
+                    pass
+                return []
+            mid = len(keys) // 2
+            return self._search_keys(keys[:mid]) + self._search_keys(keys[mid:])
+
+    def _epic_link_field_id(self):
+        """Company-managed projects that still use the classic "Epic Link"
+        custom field (instead of `parent`): its id varies per site, so look it
+        up by name once. "" = this site has none."""
+        if getattr(self, "_epic_link_fid", None) is None:
+            fid = ""
+            try:
+                for row in self._need_jira().get("api/3/field") or []:
+                    if isinstance(row, dict) and (row.get("name") or "").strip().lower() == "epic link":
+                        fid = row.get("id") or ""
+                        break
+            except Exception:
+                fid = ""
+            self._epic_link_fid = fid
+        return self._epic_link_fid
 
     def _ac_field_id(self):
         """Acceptance-criteria is a custom field with no fixed id; match by name."""
@@ -605,6 +732,15 @@ class JiraZephyrBackend(Backend):
         if isinstance(_par, dict):
             epic_id = _par.get("key") or ""
             epic_name = ((_par.get("fields") or {}).get("summary")) or ""
+        if not epic_id:
+            # Classic "Epic Link" (company-managed): the field holds the epic's
+            # KEY only; the plan resolves its name (fetch_stories on that key).
+            _fid = self._epic_link_field_id() if fields else ""
+            _el = fields.get(_fid) if _fid else None
+            if isinstance(_el, str) and _el.strip():
+                epic_id = _el.strip()
+            elif isinstance(_el, dict):
+                epic_id = _el.get("key") or ""
         return Story(
             ref=Ref(id=str(issue.get("id") or key), key=key),
             title=fields.get("summary") or "",
@@ -644,15 +780,53 @@ class JiraZephyrBackend(Backend):
         except TrackerError as exc:
             raise self._zephyr_project_error(exc, project_key) from exc
 
+    @staticmethod
+    def _folder_names(name):
+        """A story folder's name as written AND as Zephyr stores it:
+        _create_folder replaces / and \\ (and trims to 255), so a story whose
+        title has a slash was never found again — counted as 0 cases and given
+        a duplicate folder on every run."""
+        raw = str(name or "").strip()
+        safe = (re.sub(r"[/\\]", "-", raw) or "Untitled")[:255]
+        return {raw, safe}
+
     def _find_folder(self, project_key, name, parent_id=None):
+        names = self._folder_names(name)
         for row in self._folders(project_key):
             if not isinstance(row, dict):
                 continue
-            if (row.get("name") or "") == name:
+            if (row.get("name") or "") in names:
                 pid = row.get("parentId")
                 if parent_id is None or str(pid or "") == str(parent_id):
                     return row
         return None
+
+    def find_suites_for_stories(self, project, plan, stories):
+        """Batch form of find_suite_for_story: ONE folder listing for all the
+        stories instead of a full listing per story (266 stories = 266 full
+        downloads — what made Regression Plan's "reading test cases" crawl).
+        Returns {story key: Suite}; stories without a folder are left out."""
+        key = self._project_key(project)
+        plan_id = str(getattr(plan.ref, "id", "") or "")
+        by_name = {}
+        for row in self._folders(key):
+            if not isinstance(row, dict):
+                continue
+            if plan_id and str(row.get("parentId") or "") != plan_id:
+                continue
+            by_name.setdefault(row.get("name") or "", row)
+        out = {}
+        for story in stories or []:
+            name = f"{story.ref.key} {story.title}".strip()
+            row = next((by_name[n] for n in self._folder_names(name) if n in by_name), None)
+            fid = str((row or {}).get("id") or "")
+            if not fid:
+                continue
+            with self._lock:
+                self._folder_cache[f"{key}:{plan.ref.id}:{story.ref.id}"] = fid
+            out[story.ref.key or story.ref.id] = Suite(
+                ref=Ref(id=fid), name=name, parent_ref=plan.ref, story_ref=story.ref)
+        return out
 
     def _create_folder(self, project_key, name, parent_id=None,
                        folder_type="TEST_CASE"):
@@ -777,13 +951,96 @@ class JiraZephyrBackend(Backend):
         # here must not lose the case we just created — the case is the valuable
         # artifact; the link is recoverable on a later run.
         if story is not None and case_key:
+            # The case already exists, so a failed link must not fail the
+            # case - but it must not be silent either: remember Zephyr's
+            # reason for the run log (pop_link_error).
             try:
                 self._need_zephyr().post(
                     f"testcases/{case_key}/links/issues",
                     json={"issueId": int(story.ref.id)})
-            except (TrackerError, ValueError, TypeError):
-                pass
+            except (TrackerError, ValueError, TypeError) as exc:
+                with self._lock:
+                    self.__dict__.setdefault("_link_errors", {})[case_key] = (
+                        f"{getattr(story.ref, 'key', '') or story.ref.id}: "
+                        f"{getattr(exc, 'message', '') or exc}"[:300])
         return case
+
+    # ── Zephyr test plans / test cycles (optional "add to a test cycle") ──
+    def fetch_zephyr_test_plans(self, project):
+        """Zephyr's own Test Plans (SS-P1 …) as [(key, name)]. These group
+        test CYCLES; they are not the folders QA Studio writes cases into."""
+        key = self._project_key(project)
+        rows = list(self._need_zephyr().paginate(
+            "testplans", params={"projectKey": key},
+            cursor="startAt", limit_param="maxResults",
+            extract=lambda p: (p or {}).get("values") or []))
+        return [(str(r.get("key")), str(r.get("name") or r.get("key")))
+                for r in rows if isinstance(r, dict) and r.get("key")]
+
+    def create_cycle_for_cases(self, project, name, case_keys, plan_key=None, status="Not Executed"):
+        """Create a Zephyr test cycle holding `case_keys` (one "Not Executed"
+        execution each) and, when `plan_key` is given, link it to that Zephyr
+        test plan. Returns {"cycle", "added", "failed": [(key, reason)],
+        "plan_error"}; raises only when the cycle itself can't be created."""
+        key = self._project_key(project)
+        z = self._need_zephyr()
+        try:
+            row = z.post("testcycles", json={
+                "projectKey": key, "name": (name or "QA Studio run").strip()[:255],
+                "description": "Created by QA Studio for the test cases it generated."}) or {}
+        except TrackerError as exc:
+            raise self._zephyr_project_error(exc, key) from exc
+        cycle = str(row.get("key") or row.get("id") or "")
+        out = {"cycle": cycle, "added": 0, "failed": [], "plan_error": ""}
+        for ck in dict.fromkeys(str(k) for k in case_keys if k):
+            try:
+                z.post("testexecutions", json={"projectKey": key, "testCaseKey": ck,
+                                               "testCycleKey": cycle, "statusName": status})
+                out["added"] += 1
+            except TrackerError as exc:
+                out["failed"].append((ck, (getattr(exc, "message", "") or str(exc))[:200]))
+        if plan_key and cycle:
+            try:
+                z.post(f"testplans/{plan_key}/links/testcycles", json={"testCycleIdOrKey": cycle})
+            except TrackerError as exc:
+                out["plan_error"] = (getattr(exc, "message", "") or str(exc))[:200]
+        return out
+
+    def linked_test_case_count(self, story_key):
+        """How many Zephyr test cases are linked to a Jira issue (Traceability)."""
+        rows = self._need_zephyr().get(f"issuelinks/{story_key}/testcases") or []
+        if isinstance(rows, dict):
+            rows = rows.get("values") or []
+        return len(rows)
+
+    def linked_test_case_keys(self, story_key):
+        """Keys of the Zephyr test cases linked to a Jira issue."""
+        rows = self._need_zephyr().get(f"issuelinks/{story_key}/testcases") or []
+        if isinstance(rows, dict):
+            rows = rows.get("values") or []
+        return [str(r.get("key")) for r in rows if isinstance(r, dict) and r.get("key")]
+
+    def linked_test_case_titles(self, story_key, limit=80):
+        """Names of the test cases linked to a story, wherever they sit - so a
+        regeneration doesn't recreate tests the story already has."""
+        from concurrent.futures import ThreadPoolExecutor
+        keys = self.linked_test_case_keys(story_key)[:limit]
+        z = self._need_zephyr()
+
+        def _name(k):
+            try:
+                return ((z.get(f"testcases/{k}") or {}).get("name") or "").strip()
+            except TrackerError:
+                return ""
+        if not keys:
+            return []
+        with ThreadPoolExecutor(max_workers=min(8, len(keys))) as ex:
+            return [n for n in ex.map(_name, keys) if n]
+
+    def pop_link_error(self, case_key):
+        """Why linking `case_key` to its story failed ('' when it didn't)."""
+        with self._lock:
+            return (self.__dict__.get("_link_errors") or {}).pop(str(case_key), "")
 
     def fetch_case_labels(self, refs):
         out = {}
@@ -1234,7 +1491,7 @@ class JiraZephyrBackend(Backend):
         key = jql_escape(self._project_key(project))
         clauses = [f'project = "{key}"']
         if sprint_path:
-            clauses.append(f'sprint = "{jql_escape(sprint_path)}"')
+            clauses.append(self._sprint_clause(sprint_path))
         if assignee:
             clauses.append(f'assignee = "{jql_escape(assignee)}"')
         issues = self._search(" AND ".join(clauses),

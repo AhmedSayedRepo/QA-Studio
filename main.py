@@ -1743,14 +1743,19 @@ class QAStudio:
             expand=True, alignment=ft.Alignment.CENTER, padding=ft.Padding.all(40))
 
     IDLE_MINUTES_DEFAULT = 30              # default; admins can change it in Settings
+    # Settings' defaults — what a fresh install starts with, what Settings shows
+    # when nothing is saved, and what "Restore preferences" goes back to. Setup's
+    # toggles are per-run overrides of these and never rewrite them.
+    PREF_DEFAULTS = {"theme": "light", "lang": "ar", "ui_lang": "en",
+                     "tool": "steps", "case_style": "manual", "perf": True}
     IDLE_MINUTES_CHOICES = (0, 5, 15, 30, 60)   # 0 = off (never auto-logout)
     IDLE_WARN_SECONDS = 60                 # final-minute "renew or logout" countdown
 
     def _idle_minutes(self):
         return idle_watch.idle_minutes(self)
 
-    def _set_idle_minutes(self, minutes):
-        return idle_watch.set_idle_minutes(self, minutes)
+    def _set_idle_minutes(self, minutes, render=True):
+        return idle_watch.set_idle_minutes(self, minutes, render=render)
 
     def _start_idle_watch(self):
         # Desktop concept (mobile Phase 1 gating): on a phone the OS lifecycle
@@ -2055,11 +2060,14 @@ class QAStudio:
                 and getattr(self, "_desktop_rail", None) is not None
                 and getattr(self, "_rail_scroll", None) is not None):
             self._rail_scroll.controls = nav_items
+            # The kept rail still needs a fresh connection card: Connect renders
+            # with preserve_rail=True, so the card used to stay on "Not connected"
+            # after a successful connection.
+            card = getattr(self, "_rail_conn_card", None)
+            if card is not None:
+                card.content = self._rail_conn_row()
             return self._desktop_rail
-        conn_color  = T.GREEN if self.connected else T.INK_3
         _prov = self.current_provider()
-        conn_text   = (T.disp_name(_prov) + " · Claude") if (self.connected and _prov=="anthropic")                       else (T.disp_name(_prov) if self.connected else strings.t("conn_not_connected"))
-        conn_sub    = strings.t("conn_connected") if self.connected else strings.t("conn_enter_creds")
         brand_logo = self._organization_logo(48)
         self._rail_brand_logo = brand_logo
         return ft.Container(
@@ -2180,27 +2188,40 @@ class QAStudio:
                     border=ft.Border.all(1, T.RAIL_LINE),
                     offset=ft.Offset(0, 0), animate_offset=140,
                     on_hover=self._rail_btn_hover(ft.Colors.with_opacity(0.04, "#FFFFFF"))),
-                ft.Container(
-                    ft.Row([
-                        ft.Container(
-                            self._provider_logo(_prov, 30) if self.connected
-                            else ft.Container(width=10, height=10, bgcolor=conn_color,
-                                              border_radius=5),
-                            width=30, height=30,
-                            bgcolor=(None if self.connected else T.RAIL_2),
-                            border_radius=8, alignment=ft.Alignment.CENTER),
-                        ft.Column([
-                            ft.Text(conn_text, size=12, weight=ft.FontWeight.BOLD, color=T.RAIL_INK),
-                            ft.Row([
-                                ft.Container(width=7, height=7, bgcolor=conn_color, border_radius=4),
-                                ft.Text(conn_sub, size=10.5, color=T.RAIL_DIM, weight=ft.FontWeight.BOLD),
-                            ], spacing=5, tight=True),
-                        ], spacing=2, expand=True),
-                    ], spacing=9),
-                    padding=14, margin=ft.Margin.all(10), bgcolor=ft.Colors.with_opacity(0.04, "#FFFFFF"),
-                    border_radius=10, border=ft.Border.all(1, T.RAIL_LINE)),
+                self._new_rail_conn_card(),
             ], spacing=0, expand=True),
         )
+
+    def _rail_conn_row(self):
+        """Inside of the desktop rail's connection card (logo, name, status)."""
+        conn_color = T.GREEN if self.connected else T.INK_3
+        _prov = self.current_provider()
+        conn_text = ((T.disp_name(_prov) + " · Claude") if (self.connected and _prov == "anthropic")
+                     else (T.disp_name(_prov) if self.connected else strings.t("conn_not_connected")))
+        conn_sub = strings.t("conn_connected") if self.connected else strings.t("conn_enter_creds")
+        return ft.Row([
+            ft.Container(
+                self._provider_logo(_prov, 30) if self.connected
+                else ft.Container(width=10, height=10, bgcolor=conn_color,
+                                  border_radius=5),
+                width=30, height=30,
+                bgcolor=(None if self.connected else T.RAIL_2),
+                border_radius=8, alignment=ft.Alignment.CENTER),
+            ft.Column([
+                ft.Text(conn_text, size=12, weight=ft.FontWeight.BOLD, color=T.RAIL_INK),
+                ft.Row([
+                    ft.Container(width=7, height=7, bgcolor=conn_color, border_radius=4),
+                    ft.Text(conn_sub, size=10.5, color=T.RAIL_DIM, weight=ft.FontWeight.BOLD),
+                ], spacing=5, tight=True),
+            ], spacing=2, expand=True),
+        ], spacing=9)
+
+    def _new_rail_conn_card(self):
+        self._rail_conn_card = ft.Container(
+            self._rail_conn_row(),
+            padding=14, margin=ft.Margin.all(10), bgcolor=ft.Colors.with_opacity(0.04, "#FFFFFF"),
+            border_radius=10, border=ft.Border.all(1, T.RAIL_LINE))
+        return self._rail_conn_card
 
     def _account_chip(self, compact=None):
         """Signed-in user pill (avatar + name + role) with a sign-out button — lives
@@ -3110,23 +3131,25 @@ class QAStudio:
             T.apply_theme("light")
         except Exception:
             pass
-        self.lang = "en"
-        self.run_lang = "en"
-        self.ui_lang = "en"
+        D = self.PREF_DEFAULTS
+        self.lang = D["lang"]
+        self.run_lang = D["lang"]
+        self.ui_lang = D["ui_lang"]
+        self.tool = D["tool"]
+        self.case_style = D["case_style"]
         try:
-            strings.set_ui_lang("en")
+            strings.set_ui_lang(D["ui_lang"])
             self.page.rtl = strings.ui_is_rtl()
         except Exception:
             pass
         try:
-            regression.set_perf(True)
+            regression.set_perf(D["perf"])
         except Exception:
             pass
         try:
-            self.creds["theme"] = "light"
-            self.creds["lang"] = "en"
-            self.creds["ui_lang"] = "en"
-            self.creds["perf"] = True
+            for _k in ("theme", "lang", "ui_lang", "tool", "case_style", "perf"):
+                self.creds[_k] = D[_k]
+            self.creds["idle_minutes"] = self.IDLE_MINUTES_DEFAULT
             store.save(self.creds)
         except Exception:
             pass
@@ -3383,6 +3406,20 @@ class QAStudio:
         # Opportunistically check for a newer version when the user navigates.
         self._maybe_check_update_on_nav()
 
+    def _log_render_caller(self):
+        """Performance log (Settings → Performance log): one line per full
+        render naming the code path that asked for it, so an unexpected extra
+        render (e.g. two draws on Connect) shows its trigger in qa_perf.log."""
+        try:
+            if not regression.perf_on():
+                return
+            import traceback as _tb
+            frames = _tb.extract_stack(limit=8)[:-2]     # drop this + render()
+            chain = " < ".join(f"{f.name}:{f.lineno}" for f in reversed(frames[-5:]))
+            regression._perf_log(f"render-call[{getattr(self, 'active', '?')}] {chain}")
+        except Exception:
+            pass
+
     def render(self, preserve_rail=False, preserve_setup_scroll=False):
         """Entry point for every screen (re)render.
 
@@ -3399,6 +3436,7 @@ class QAStudio:
         mechanism itself (_reg_render_with_overlay in regression.py) is still
         used, but now only at the ONE call site that's genuinely slow — the
         Generate button's completion callback — not for every render()."""
+        self._log_render_caller()
         self._render_body(preserve_rail=preserve_rail,
                           preserve_setup_scroll=preserve_setup_scroll)
 
@@ -3547,6 +3585,9 @@ class QAStudio:
             if getattr(self, "_desktop_shell_reused", False):
                 with self._render_lock:
                     self.page.update()
+                regression._perf_log(
+                    f"render[{self.active}] (shell reused): "
+                    f"{(_pt.perf_counter() - _r0) * 1000:.0f} ms")
                 # The normal path preserves the actual scrolling control.  A
                 # screen without a reusable scroller still gets the previous
                 # best-effort restore instead of being left at offset zero.
@@ -5154,7 +5195,9 @@ class QAStudio:
         # shared attribute read everywhere. Without this split, overriding
         # the tool on Setup made Settings' toggle visually flip too, looking
         # like the saved default had silently changed when it hadn't.
-        _cur_tool = (self.creds.get("tool", self.tool) if persist else self.tool)
+        _saved_tool = self.creds.get("tool")
+        _cur_tool = ((_saved_tool if _saved_tool in ("titles", "steps")
+                      else self.PREF_DEFAULTS["tool"]) if persist else self.tool)
         def seg(label, icon, key):
             sel = (_cur_tool == key)
             c = ft.Container(
@@ -5183,14 +5226,18 @@ class QAStudio:
                     except Exception:
                         pass
                 c.on_hover = _h
-            if not persist:
-                try:
-                    segments = getattr(self, "_setup_tool_segments", {})
-                    segments[key] = c
-                    self._setup_tool_segments = segments
-                except Exception:
-                    pass
+            try:
+                _attr = "_settings_tool_segments" if persist else "_setup_tool_segments"
+                segments = getattr(self, _attr, None) or {}
+                segments[key] = c
+                setattr(self, _attr, segments)
+            except Exception:
+                pass
             return c
+        if persist:
+            self._settings_tool_segments = {}
+        else:
+            self._setup_tool_segments = {}
         _t = strings.t("main_gen_titles") if compact else strings.t("main_tool_titles")
         _s = strings.t("main_gen_steps") if compact else strings.t("main_tool_steps")
         return ft.Container(
@@ -5213,10 +5260,23 @@ class QAStudio:
             except Exception:
                 pass
 
-    def _case_style_segment(self):
-        """Manual / Automation test-case style for the generator. Saved at once
-        and updated in place (no render)."""
-        self._case_style_segs = {}
+    def _case_style_segment(self, persist=False):
+        """Manual / Automation test-case style, updated in place (no render).
+
+        persist=True is Settings: shows and saves the DEFAULT (creds) and also
+        applies it to this session. persist=False is Setup: a per-run override
+        of that default for this session only — same split as _tool_segment /
+        _lang_segment, so Settings' selection is what every session starts
+        with."""
+        segs = {}
+        if persist:
+            self._case_style_segs_settings = segs
+            _saved = self.creds.get("case_style")
+            _cur = (_saved if _saved in ("manual", "automation")
+                    else self.PREF_DEFAULTS["case_style"])
+        else:
+            self._case_style_segs = segs
+            _cur = getattr(self, "case_style", self.PREF_DEFAULTS["case_style"])
 
         def _paint(c, sel):
             c.bgcolor = T.VIOLET_SOFT if sel else None
@@ -5225,19 +5285,23 @@ class QAStudio:
                 ctl.color = T.VIOLET_INK if sel else T.INK_2
 
         def _pick(e, k):
+            if getattr(self, "readonly", False):
+                return
             self.case_style = k
-            try:
-                self.creds["case_style"] = k
-                store.save(self.creds)
-            except Exception:
-                pass
-            for key, c in self._case_style_segs.items():
+            if persist:
+                try:
+                    self.creds["case_style"] = k
+                    store.save(self.creds)
+                except Exception:
+                    pass
+            for key, c in segs.items():
                 _paint(c, key == k)
                 try:
                     c.update()
                 except Exception:
                     pass
-            hint = getattr(self, "_case_style_hint", None)
+            hint = getattr(self, ("_case_style_hint_settings" if persist
+                                  else "_case_style_hint"), None)
             if hint is not None:
                 hint.value = strings.t("s_style_hint_" + k)
                 try:
@@ -5252,8 +5316,8 @@ class QAStudio:
                 height=40, expand=True, padding=ft.Padding.symmetric(horizontal=9, vertical=0),
                 alignment=ft.Alignment.CENTER, border_radius=T.R_SM,
                 on_click=lambda e, k=key: _pick(e, k))
-            _paint(c, self.case_style == key)
-            self._case_style_segs[key] = c
+            _paint(c, _cur == key)
+            segs[key] = c
             return c
 
         return ft.Container(
@@ -5294,29 +5358,15 @@ class QAStudio:
                 self._fetch_estimate()
             except Exception:
                 pass
+        # Settings: the saved default changed — repaint its two segments in
+        # place (a render remounts the page and jumps the scroll to the top).
+        if persist and getattr(self, "active", "") == "settings":
+            if self._paint_tool_segments(getattr(self, "_settings_tool_segments", {}), k):
+                return
         # Setup's generator selection is session-only. Rebuilding the page for
         # it remounts the scrolling Setup column and snaps it back to the top.
         if not persist and getattr(self, "active", "") == "setup":
-            patched = False
-            try:
-                for key, control in getattr(self, "_setup_tool_segments", {}).items():
-                    selected = key == k
-                    control.bgcolor = T.VIOLET_SOFT if selected else None
-                    control.border = ft.Border.all(
-                        1, T.VIOLET if selected else ft.Colors.TRANSPARENT)
-                    control.shadow = (ft.BoxShadow(
-                        blur_radius=10, spread_radius=-4,
-                        color=ft.Colors.with_opacity(0.35, T.VIOLET),
-                        offset=ft.Offset(0, 3)) if selected else None)
-                    try:
-                        control.content.controls[0].color = T.VIOLET_INK if selected else T.INK_2
-                        control.content.controls[1].color = T.VIOLET_INK if selected else T.INK_2
-                    except Exception:
-                        pass
-                    control.update()
-                    patched = True
-            except Exception:
-                pass
+            patched = self._paint_tool_segments(getattr(self, "_setup_tool_segments", {}), k)
             try:
                 desc = getattr(self, "_setup_desc_cell", None)
                 build_desc = getattr(self, "_setup_desc_build", None)
@@ -5338,6 +5388,33 @@ class QAStudio:
             if patched:
                 return
         self.render()
+
+    @staticmethod
+    def _paint_tool_segments(segments, k):
+        """Repaint a Titles/Steps segment pair in place. True if any updated."""
+        patched = False
+        for key, control in (segments or {}).items():
+            try:
+                selected = key == k
+                control.bgcolor = T.VIOLET_SOFT if selected else None
+                control.border = ft.Border.all(
+                    1, T.VIOLET if selected else ft.Colors.TRANSPARENT)
+                control.shadow = (ft.BoxShadow(
+                    blur_radius=10, spread_radius=-4,
+                    color=ft.Colors.with_opacity(0.35, T.VIOLET),
+                    offset=ft.Offset(0, 3)) if selected else None)
+                try:
+                    control.content.controls[0].color = T.VIOLET_INK if selected else T.INK_2
+                    control.content.controls[1].color = T.VIOLET_INK if selected else T.INK_2
+                except Exception:
+                    pass
+                if selected:
+                    control.on_hover = None  # the selected one must not hover-clear
+                control.update()
+                patched = True
+            except Exception:
+                pass
+        return patched
 
     # ---- output-language segment ----
     def _lang_segment(self, persist=True):
@@ -5404,7 +5481,8 @@ class QAStudio:
                 store.save(self.creds)
             except Exception:
                 pass
-            self.render()
+            if getattr(self, "active", "") != "settings":
+                self.render()
             return
         # Setup: per-RUN override for THIS session only. Update IN PLACE
         # (like the provider/model pickers) so the page never jump-scrolls.
@@ -6177,17 +6255,7 @@ class QAStudio:
         # filter field in a way that's inconsistent with how the other two
         # actually render/behave, so it's dropped here to match rather than
         # to guess at a middle ground.
-        _plan_tip = next((f"[{p['id']}] {p['name']}" for p in self._plans if p["id"] == self.plan_id), None)
-        self.plan_dd = searchable_dropdown(
-            value=(str(self.plan_id) if self.plan_id else None),
-            hint_text=strings.t("main_search_plan"),
-            options=[ft.DropdownOption(key=str(p["id"]), text=f"[{p['id']}] {p['name']}") for p in self._plans],
-            on_select=self._on_plan_change,
-            tooltip=_plan_tip,
-            border_color=(T.RED if "plan" in _inv0 else T.BORDER),
-            focused_border_color=T.VIOLET, border_radius=T.R,
-            content_padding=ft.Padding.symmetric(vertical=12, horizontal=8),
-            text_size=13, expand=True)
+        self.plan_dd = self._build_plan_dd(_inv0)
 
         self.plan_id_field = ft.TextField(
             value=(str(self.plan_id) if self.plan_id else ""), read_only=True,
@@ -6245,6 +6313,9 @@ class QAStudio:
                     self._est_sub.update()
             except Exception:
                 pass
+
+        self._setup_rebuild_chips = _build_chips
+        self._setup_update_summary = _update_summary_inplace
 
         def _remove_story(sid):
             self.story_ids = [s for s in self.story_ids if s != sid]
@@ -6437,7 +6508,8 @@ class QAStudio:
                    else ((_note or "No stories in this plan") if self.plan_id
                          else strings.t("main_select_plan_first")))
             return regression._checkbox_multiselect(
-                [(str(s["id"]), f"[{s['id']}] {(s['title'] or '')[:60]}") for s in _ss],
+                [(str(s["id"]), f"[{s['id']}] {(s['title'] or '')[:60]}"
+                  + (f"  ·  {s['sprint']}" if s.get("sprint") else "")) for s in _ss],
                 [str(s) for s in self.story_ids],
                 _toggle_setup_story, _all_setup_stories,
                 is_open=self._setup_story_open, on_open=_open_setup_stories,
@@ -6455,7 +6527,11 @@ class QAStudio:
             try:
                 self._setup_story_cell.content = _build_story_picker()
                 self._setup_story_cell.update()
-            except Exception:
+            except Exception as _ex:
+                try:
+                    regression._perf_log(f"story-cell fallback render: {_ex!r}"[:200])
+                except Exception:
+                    pass
                 self.render()
         self._sync_setup_story_cell = _sync_setup_story_cell
 
@@ -6469,9 +6545,9 @@ class QAStudio:
             self, "emails", is_open_key="_email_open", sync_key="setup_emails",
             on_change=self._refresh_email_summary)
 
-        # Sprint summary button — green (like Create) when a plan is selected,
-        # grey/disabled when no plan is chosen yet.
-        _sum_enabled = bool(self.plan_id) and self.can("act.sprint_summary")
+        # Sprint summary button — green (like Create) when it can run (see
+        # _summary_ready), grey/disabled otherwise.
+        _sum_enabled = self._summary_ready()
         self._summary_btn = ft.FilledButton(
             strings.t("main_sprint_summary_btn"),
             icon=ft.Icons.SUMMARIZE_OUTLINED, height=42,
@@ -6507,6 +6583,8 @@ class QAStudio:
                 shape=ft.RoundedRectangleBorder(radius=T.R)),
             width=46, height=46)
 
+        # Stable cell: a project switch swaps only its content (_switch_project_inplace).
+        self._plan_cell = ft.Container(hover_field(self.plan_dd), padding=ft.Padding.only(top=4))
         rows = [
             sec_head("3", strings.t("main_task_head"),
                      ft.Row([ft.Icon(ft.Icons.ARROW_FORWARD, size=13, color=T.INK_3),
@@ -6518,10 +6596,10 @@ class QAStudio:
             ft.Container(hover_field(self.project_dd), padding=ft.Padding.only(top=4, bottom=12)),
             # Row 2 — Test Plan (50%) · Test Plan ID (50%)
             ft.Row([
-                ft.Column([field_label(strings.t("au_test_plan"), req=True),
-                           ft.Container(hover_field(self.plan_dd), padding=ft.Padding.only(top=4))],
+                ft.Column([field_label(self._plan_word("au_test_plan"), req=True),
+                           self._plan_cell],
                           expand=1, spacing=0),
-                ft.Column([field_label(strings.t("au_test_plan_id"), hint="auto"),
+                ft.Column([field_label(self._plan_word("au_test_plan_id"), hint="auto"),
                            ft.Container(
                                ft.Row([self.plan_id_field, self._open_plan_btn],
                                       spacing=8,
@@ -6533,18 +6611,37 @@ class QAStudio:
             # Row 3 — Create Plan (50%) · Sprint Summary (50%)
             ft.Row([
                 ft.Container(
-                    green_btn(strings.t("main_create_plan_btn"), icon=ft.Icons.ADD, expand=True,
+                    green_btn(self._plan_word("main_create_plan_btn"), icon=ft.Icons.ADD, expand=True,
                               on_click=lambda e: self._open_create_plan(),
                               disabled=not self.can("act.create_plan"), ignore_ro=True),
                     expand=1),
                 ft.Container(_summary_row, expand=1),
             ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
             ft.Container(height=14),
+        ]
+        # Jira backends: pick WHICH sprint the stories come from (a Jira test
+        # plan is only a Zephyr/Xray folder - it doesn't know its stories).
+        self._sprint_cell = None
+        if not backend_setup.reads_stories_from_azure(self.creds):
+            if self.connected and self.project and getattr(self, "_setup_sprints_for", None) != self.project:
+                self._load_setup_sprints()      # sets the loading flag first, patches the cell when done
+            self._sprint_cell = ft.Container(self._build_sprint_picker(), padding=ft.Padding.only(top=4))
+            rows += [field_label(strings.t("setup_sprint_label"), hint=strings.t("setup_sprint_hint")),
+                     self._sprint_cell, ft.Container(height=14)]
+        rows += [
             field_label(strings.t("au_user_story_ids"), req=True, hint=strings.t("au_comma_separated")),
             ft.Container(story_box, padding=ft.Padding.only(top=4, bottom=2)),
             self._story_err,
         ]
 
+        # Jira + Zephyr (optional): also put this run's test cases in a Zephyr
+        # test cycle, linked to one of Zephyr's own Test Plans if chosen.
+        self._zcycle_cell = None
+        if backend_setup.active(self.creds) == backend_setup.JIRA_ZEPHYR:
+            self._zcycle_cell = ft.Container(self._build_zcycle_row(), padding=ft.Padding.only(bottom=12))
+            rows.append(self._zcycle_cell)
+            if self.connected and self.project and getattr(self, "_zplans_for", None) != self.project:
+                self._load_zephyr_plans()
         rows += [
             field_label(strings.t("au_report_emails"), hint="optional", req=False),
             ft.Container(self.email_picker, padding=ft.Padding.only(top=4)),
@@ -6569,8 +6666,284 @@ class QAStudio:
     def _set_existing(self, k):
         self.existing_mode = k; self.render()
 
+    def _build_plan_dd(self, invalid=None):
+        """The Test Plan picker (rebuilt in place on a project switch)."""
+        invalid = invalid if invalid is not None else getattr(self, "_invalid", set())
+        _plan_tip = next((f"[{p['id']}] {p['name']}" for p in (self._plans or [])
+                          if p["id"] == self.plan_id), None)
+        return searchable_dropdown(
+            value=(str(self.plan_id) if self.plan_id else None),
+            hint_text=self._plan_word("main_search_plan"),
+            options=[ft.DropdownOption(key=str(p["id"]), text=f"[{p['id']}] {p['name']}")
+                     for p in (self._plans or [])],
+            on_select=self._on_plan_change,
+            tooltip=_plan_tip,
+            border_color=(T.RED if "plan" in invalid else T.BORDER),
+            focused_border_color=T.VIOLET, border_radius=T.R,
+            content_padding=ft.Padding.symmetric(vertical=12, horizontal=8),
+            text_size=13, expand=True)
+
+    # Jira + Zephyr writes test cases into FOLDERS; Zephyr's own "Test Plans"
+    # are something else - so on that backend Setup says "folder", not "plan".
+    _ZEPHYR_WORDS = {"au_test_plan": "setup_zephyr_folder", "au_test_plan_id": "setup_zephyr_folder_id",
+                     "main_create_plan_btn": "setup_zephyr_create_folder",
+                     "main_search_plan": "setup_zephyr_search_folder",
+                     "main_sum_testplan": "setup_zephyr_folder"}
+
+    def _plan_word(self, key):
+        if backend_setup.active(getattr(self, "creds", {}) or {}) == backend_setup.JIRA_ZEPHYR:
+            return strings.t(self._ZEPHYR_WORDS.get(key, key))
+        return strings.t(key)
+
+    # ── Optional Zephyr test cycle for a run's test cases ──────────────────
+    def _build_zcycle_row(self):
+        on = bool(self.creds.get("zephyr_cycle_on"))
+        plans = getattr(self, "_zplans", None) or []
+        cur = self.creds.get("zephyr_cycle_plan") or ""
+        if cur and cur not in {k for k, _ in plans}:
+            cur = cur if getattr(self, "_zplans_loading", False) else ""
+        box = ft.Checkbox(value=on, scale=0.9, active_color=T.VIOLET, check_color="#FFFFFF",
+                          on_change=lambda e: self._set_zcycle(on=bool(e.control.value)))
+        head = ft.Row([box, ft.Column([
+            ft.Text(strings.t("zcycle_label"), size=12.5, color=T.INK, weight=ft.FontWeight.BOLD),
+            ft.Text(strings.t("zcycle_sub"), size=11, color=T.INK_3, weight=ft.FontWeight.W_500)],
+            spacing=1, expand=True)], spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+        if not on:
+            return head
+        if getattr(self, "_zplans_loading", False):
+            picker = regression._loading_field(strings.t("zcycle_loading_plans"))
+        else:
+            opts = [ft.DropdownOption(key="__none__", text=strings.t("zcycle_no_plan"))]
+            opts += [ft.DropdownOption(key=k, text=f"{k}  ·  {n}") for k, n in plans]
+            picker = ft.Dropdown(value=(cur or "__none__"), options=opts,
+                                 on_select=lambda e: self._set_zcycle(
+                                     plan=(getattr(e, "data", None) or getattr(e.control, "value", "") or "")),
+                                 border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
+                                 content_padding=ft.Padding.symmetric(vertical=12, horizontal=8),
+                                 text_size=13, filled=True, bgcolor=T.CARD, expand=True)
+        return ft.Column([head, ft.Container(
+            ft.Column([field_label(strings.t("zcycle_plan_label"), hint="optional", req=False),
+                       ft.Container(picker, padding=ft.Padding.only(top=4))], spacing=0),
+            padding=ft.Padding.only(left=34, top=6))], spacing=0)
+
+    def _sync_zcycle_cell(self):
+        cell = getattr(self, "_zcycle_cell", None)
+        if cell is None:
+            return
+        try:
+            cell.content = self._build_zcycle_row()
+            cell.update()
+        except Exception:
+            pass
+
+    def _set_zcycle(self, on=None, plan=None):
+        if on is not None:
+            self.creds["zephyr_cycle_on"] = bool(on)
+        if plan is not None:
+            plan = str(plan).split("  ·  ")[0].strip()
+            self.creds["zephyr_cycle_plan"] = "" if plan in ("", "__none__") else plan
+        threading.Thread(target=lambda c=dict(self.creds): store.save(c), daemon=True).start()
+        if on and getattr(self, "_zplans_for", None) != self.project:
+            self._load_zephyr_plans()
+        self._sync_zcycle_cell()
+
+    def _load_zephyr_plans(self):
+        project = self.project
+        self._zplans_for = project
+        self._zplans_loading = True
+
+        def work():
+            plans = backend_setup.zephyr_test_plans(self, project)
+            if project != self.project:
+                return
+            self._zplans = plans
+            self._zplans_loading = False
+            self.ui_safe(self._sync_zcycle_cell)
+        self._bg(work)
+
+    def _add_run_to_zephyr_cycle(self):
+        """After a Jira + Zephyr run (when the option is on): a new test cycle
+        with the run's test cases, linked to the chosen Zephyr test plan."""
+        if backend_setup.active(self.creds) != backend_setup.JIRA_ZEPHYR or not self.creds.get("zephyr_cycle_on"):
+            return
+        keys = list(dict.fromkeys(getattr(self, "_run_case_keys", None) or []))
+        if not keys:
+            return
+        import datetime as _dt
+        name = "QA Studio · %s · %s" % (self.plan_name or self.plan_id or "",
+                                         _dt.datetime.now().strftime("%Y-%m-%d %H:%M"))
+        plan = self.creds.get("zephyr_cycle_plan") or ""
+        try:
+            res = backend_setup.add_run_to_zephyr_cycle(self, name, keys, plan_key=plan)
+        except Exception as ex:
+            self._log_lines.append({"tone": "warn", "ico": "⚠",
+                                    "msg": strings.t("zcycle_failed", err=str(ex)[:160])})
+            self._refresh_run()
+            return
+        self._log_lines.append({"tone": "ok", "ico": "✓", "msg": strings.t(
+            "zcycle_done", cycle=res.get("cycle", ""), n=res.get("added", 0),
+            plan=(plan or strings.t("zcycle_no_plan")))})
+        for ck, why in (res.get("failed") or [])[:10]:
+            self._log_lines.append({"tone": "warn", "ico": "⚠", "indent": True,
+                                    "msg": strings.t("zcycle_case_failed", case=ck, err=why)})
+        if res.get("plan_error"):
+            self._log_lines.append({"tone": "warn", "ico": "⚠", "msg": strings.t(
+                "zcycle_plan_failed", plan=plan, err=res["plan_error"])})
+        self._refresh_run()
+
+    # ── Setup's Sprint picker (Jira backends) ──────────────────────────────
+    _SPRINT_ACTIVE, _SPRINT_BACKLOG = "", "__backlog__"
+
+    def _build_sprint_picker(self):
+        if getattr(self, "_setup_sprints_loading", False):
+            return regression._loading_field(strings.t("reg_loading_sprints"))
+        sprints = getattr(self, "_setup_sprints", None) or []
+        opts = [ft.DropdownOption(key="__active__", text=strings.t("setup_sprint_all_active"))]
+        opts += [ft.DropdownOption(key=str(sp["path"]), text=sp.get("label") or sp["name"]) for sp in sprints]
+        opts.append(ft.DropdownOption(key=self._SPRINT_BACKLOG, text=strings.t("setup_sprint_backlog")))
+        cur = getattr(self, "setup_sprint", "") or ""
+        if cur and cur != self._SPRINT_BACKLOG and cur not in {str(sp["path"]) for sp in sprints}:
+            cur = ""
+        return searchable_dropdown(
+            value=(cur or "__active__"), options=opts, on_select=self._on_setup_sprint_change,
+            hint_text=strings.t("setup_sprint_all_active"),
+            border_color=T.BORDER, focused_border_color=T.VIOLET, border_radius=T.R,
+            content_padding=ft.Padding.symmetric(vertical=12, horizontal=8), text_size=13, expand=True)
+
+    def _sync_sprint_cell(self):
+        cell = getattr(self, "_sprint_cell", None)
+        if cell is None:
+            return
+        try:
+            cell.content = self._build_sprint_picker()
+            cell.update()
+        except Exception:
+            pass
+
+    def _load_setup_sprints(self):
+        """Fetch the project's sprints in the background and patch the Sprint
+        cell in place (no full render)."""
+        project = self.project
+        self._setup_sprints_for = project
+        self._setup_sprints_loading = True
+
+        def work():
+            try:
+                rows = backend_setup.fetch_sprints(self, project) or []
+            except Exception:
+                rows = []
+            if project != self.project:
+                return
+            self._setup_sprints = rows
+            self._setup_sprints_loading = False
+            self.ui_safe(self._sync_sprint_cell)
+        self._bg(work)
+
+    def _on_setup_sprint_change(self, e):
+        val = None
+        for _src in (getattr(e, "data", None), getattr(getattr(e, "control", None), "value", None)):
+            if _src is not None and str(_src).strip():
+                val = str(_src).strip()
+                break
+        if val is None:
+            return
+        # Editable dropdowns can return the option TEXT; map it back to a key.
+        sprints = getattr(self, "_setup_sprints", None) or []
+        keys = {str(sp["path"]) for sp in sprints} | {"__active__", self._SPRINT_BACKLOG}
+        if val not in keys:
+            by_text = {(sp.get("label") or sp["name"]): str(sp["path"]) for sp in sprints}
+            by_text[strings.t("setup_sprint_all_active")] = "__active__"
+            by_text[strings.t("setup_sprint_backlog")] = self._SPRINT_BACKLOG
+            val = by_text.get(val, "__active__")
+        new = "" if val == "__active__" else val
+        if new == (getattr(self, "setup_sprint", "") or ""):
+            return
+        self.setup_sprint = new
+        # Jira + Zephyr's Sprint Summary needs only the sprint — enable it now.
+        self._refresh_summary_btn()
+        # Stories belong to a sprint: reload the picker for the new one; keep
+        # only the selected stories that are still listed (done after load).
+        self._setup_keep_after_sprint = True
+        if self.plan_id:
+            self._load_setup_stories_inplace()
+
+    def _summary_ready(self):
+        """Can Sprint Summary run now? Azure summarizes a test PLAN, so it needs
+        one. Jira + Zephyr reads the stories of Setup's chosen sprint (or all
+        active sprints), so a project + sprint is enough — no test case folder
+        needed. The backlog isn't a sprint, so it stays disabled there."""
+        try:
+            if not self.can("act.sprint_summary") or not self.project:
+                return False
+            if self.plan_id:
+                return True
+            if backend_setup.is_azure(getattr(self, "creds", {}) or {}):
+                return False
+            return (getattr(self, "setup_sprint", "") or "") != self._SPRINT_BACKLOG
+        except Exception:
+            return bool(getattr(self, "plan_id", None))
+
+    def _refresh_summary_btn(self):
+        """Restyle the Sprint Summary button in place (no render)."""
+        try:
+            self._style_plan_buttons()
+            for c in (getattr(self, "_summary_btn", None),
+                      getattr(self, "_summary_shadow", None)):
+                if c is not None:
+                    c.update()
+        except Exception:
+            pass
+
+    def _style_plan_buttons(self):
+        """Open-plan + Sprint Summary buttons: enabled look when a plan is
+        chosen (and allowed), grey/disabled otherwise. Same styles as the
+        Setup build. Caller updates the controls."""
+        _can_open = self.can("act.open_plan")
+        btn = getattr(self, "_open_plan_btn", None)
+        if btn is not None:
+            on = bool(self.plan_id) and _can_open
+            btn.disabled = not on
+            btn.icon_color = T.VIOLET_INK if on else T.INK_3
+            btn.tooltip = ((backend_setup.plan_link_label(self) if self.plan_id
+                            else strings.t("main_select_plan_first")) if _can_open
+                           else btn.tooltip)
+            btn.style = ft.ButtonStyle(bgcolor={"": T.VIOLET_SOFT} if self.plan_id else {"": T.CARD_2},
+                                       shape=ft.RoundedRectangleBorder(radius=T.R))
+        sb = getattr(self, "_summary_btn", None)
+        if sb is not None:
+            on = self._summary_ready()
+            sb.disabled = not on
+            sb.style = ft.ButtonStyle(
+                bgcolor={"": (T.GREEN if on else T.CARD_2)},
+                color={"": ("#FFFFFF" if on else T.INK_3)}, elevation=0,
+                shape=ft.RoundedRectangleBorder(radius=T.R),
+                side=(None if on else ft.BorderSide(1, T.BORDER)),
+                padding=ft.Padding.symmetric(horizontal=16, vertical=0))
+            if getattr(self, "_summary_shadow", None) is not None:
+                self._summary_shadow.shadow = _btn_shadow(T.GREEN, 0.5) if on else None
+
+    def _remember_project(self):
+        """Save the chosen project per backend, so the next Connect reselects it."""
+        try:
+            key = "last_project_" + (backend_setup.active(self.creds) or "azure")
+            if self.project and self.creds.get(key) != self.project:
+                self.creds[key] = self.project
+                threading.Thread(target=lambda c=dict(self.creds): store.save(c), daemon=True).start()
+        except Exception:
+            pass
+
     def _on_project_change(self, e):
-        self.project = self.project_dd.value
+        # Resolve from the EVENT first (the stored control ref can lag), as
+        # _on_plan_change does.
+        new = None
+        for _src in (getattr(e, "data", None), getattr(getattr(e, "control", None), "value", None),
+                     getattr(self.project_dd, "value", None)):
+            if _src is not None and str(_src).strip():
+                new = str(_src).strip()
+                break
+        if not new or new == self.project:
+            return
+        self.project = new
         self.plan_id = None; self.plan_name = None
         # Project changed → drop project-scoped caches so EVERY dependent picker/
         # dropdown (member & email pickers across Regression / Sprint / Task
@@ -6578,8 +6951,91 @@ class QAStudio:
         # instead of showing the previous project's data.
         self._members_cache = None
         self._members_cache_project = None
-        self._load_plans()
-        self.render()
+        self._remember_project()
+        if not self._switch_project_inplace():
+            self._load_plans()
+            self.render()
+
+    def _switch_project_inplace(self):
+        """Project switch without a full render (no scroll jump): clear the
+        previous project's plan + stories, show a spinner in the Test Plan cell,
+        load the plans in the background, then patch only the affected
+        controls. Returns False when Setup's controls aren't mounted (the
+        caller falls back to load + render)."""
+        cell = getattr(self, "_plan_cell", None)
+        if cell is None or self.active != "setup":
+            return False
+        project = self.project
+        self._plans = []
+        self._setup_stories = None
+        self._setup_stories_loading = False
+        self._stories_source_note = ""
+        self.story_ids = []
+        self.setup_sprint = ""
+        self._setup_sprints = None
+        self._setup_sprints_for = None
+        if getattr(self, "_sprint_cell", None) is not None:
+            self._load_setup_sprints()
+            self._sync_sprint_cell()
+        try:
+            self.project_dd.tooltip = project
+            self.project_dd.update()
+        except Exception:
+            pass
+        try:
+            cell.content = regression._loading_field(strings.t("reg_loading_test_plans"))
+            cell.update()
+        except Exception:
+            return False
+        # Everything that showed the old project's plan / stories.
+        try:
+            if hasattr(self, "story_field"):
+                self.story_field.value = ""
+            rebuild = getattr(self, "_setup_rebuild_chips", None)
+            if callable(rebuild):
+                rebuild()
+                self._chip_row.update(); self._chip_wrap.update()
+        except Exception:
+            pass
+        for patch in (
+                lambda: (setattr(self.plan_id_field, "value", ""), self.plan_id_field.update()),
+                lambda: (self._style_plan_buttons(), self._open_plan_btn.update(), self._summary_btn.update(),
+                         self._summary_shadow.update()),
+                lambda: (setattr(self._sum_project, "value", project or "—"),
+                         setattr(self._sum_project, "tooltip", project), self._sum_project.update()),
+                lambda: (setattr(self._sum_plan, "value", "—"), self._sum_plan.update()),
+                lambda: self._setup_update_summary(),
+                lambda: self._sync_setup_story_cell(),
+                lambda: self._fetch_estimate()):
+            try:
+                patch()
+            except Exception:
+                pass
+
+        def work():
+            err = None
+            try:
+                plans = backend_setup.fetch_plans(self, project)
+            except Exception as ex:
+                plans, err = [], ex
+            if project != self.project:     # switched again mid-load: drop this one
+                return
+
+            def apply():
+                self._plans = plans
+                try:
+                    self.plan_dd = self._build_plan_dd()
+                    cell.content = hover_field(self.plan_dd)
+                    cell.update()
+                except Exception:
+                    self.render()
+                if err is not None:
+                    # e.g. "Zephyr isn't enabled for the Jira project DA. Ask a
+                    # project admin to turn it on: …" (tracker/jira_zephyr.py)
+                    self._err(strings.t("main_could_not_load_plans", err=err))
+            self.ui_safe(apply)
+        self._bg(work)
+        return True
 
     def _on_plan_change(self, e):
         # Remember where the user was BEFORE selecting — Flet's editable dropdown
@@ -6738,6 +7194,25 @@ class QAStudio:
                 pass
             self._setup_stories = ss
             self._setup_stories_loading = False
+            if getattr(self, "_setup_keep_after_sprint", False):
+                self._setup_keep_after_sprint = False
+                listed = {str(s.get("id")) for s in (ss or [])}
+                kept = [s for s in (self.story_ids or []) if str(s) in listed]
+                if kept != list(self.story_ids or []):
+                    self.story_ids = kept
+
+                    def _resync():
+                        try:
+                            self.story_field.value = ", ".join(str(s) for s in self.story_ids)
+                            rebuild = getattr(self, "_setup_rebuild_chips", None)
+                            if callable(rebuild):
+                                rebuild()
+                                self._chip_row.update(); self._chip_wrap.update()
+                            self._setup_update_summary()
+                        except Exception:
+                            pass
+                        self._fetch_estimate()
+                    self.ui_safe(_resync)
             self.ui_safe(getattr(self, "_sync_setup_story_cell", self.render))
         self._bg(work)
 
@@ -6855,7 +7330,7 @@ class QAStudio:
             _sum_label = {"Generator": strings.t("main_sum_generator"),
                           "Language": strings.t("main_sum_language"),
                           "Project": strings.t("main_sum_project"),
-                          "Test plan": strings.t("main_sum_testplan"),
+                          "Test plan": self._plan_word("main_sum_testplan"),
                           "Stories": strings.t("main_sum_stories"),
                           "Email": strings.t("main_sum_email"),
                           "Existing": strings.t("main_sum_existing")}
@@ -6864,6 +7339,8 @@ class QAStudio:
                                    tooltip=full_vals.get(k))
                 if k == "Generator":
                     self._sum_generator = val_text
+                if k == "Project":
+                    self._sum_project = val_text
                 if k == "Stories":
                     self._sum_stories = val_text
                 if k == "Test plan":
@@ -7125,7 +7602,14 @@ class QAStudio:
                 self.last_report = None
                 self.nav_state = {"setup": "active"}
                 if self._projects:
-                    self.project = self._projects[0]
+                    # Reselect the last project used with this backend; on Jira +
+                    # Zephyr prefer a project Zephyr is enabled for (not simply
+                    # the first in the list, which may not have Zephyr on).
+                    try:
+                        self.project = backend_setup.preferred_project(self, self._projects)
+                    except Exception:
+                        self.project = self._projects[0]
+                    self._remember_project()
                     self._load_plans()
                 completed = True
             except Exception as ex:
@@ -7891,6 +8375,7 @@ class QAStudio:
         self._progress = {"pct": 0, "label": "Starting…"}
         self._log_lines = []
         self._rendered_count = 0
+        self._run_log_toggles = {}
         self._run_log_ui_lock = threading.Lock()
         self._current_wip = None
         self._story_prog = {}
@@ -7943,9 +8428,9 @@ class QAStudio:
                         self._log_lines.append(payload)
                     self._refresh_run()
                     return
+                # A case's "⏱ 0:03" (payload["detail"]) is shown inside its own
+                # row now (_render_one_log), not as a separate line under it.
                 self._log_lines.append(payload)
-                if payload.get("detail"):
-                    self._log_lines.append({"tone": "dim", "indent": True, "msg": payload["detail"]})
             elif ev == "done":
                 self.last_report = payload
                 # The run has ended on ANY 'done' (success, stop, or credit) — clear
@@ -8015,6 +8500,11 @@ class QAStudio:
                     self._log_lines.append({"tone":"err","ico":"✕","msg":f"Run failed: {emsg[:120]}"})
                     self.last_report = {"summary": f"Run failed: {emsg[:80]}", "errors": 1}
                 self._refresh_run()
+            # Optional (Jira + Zephyr): this run's test cases → a Zephyr test cycle.
+            try:
+                self._add_run_to_zephyr_cycle()
+            except Exception:
+                pass
             # Send email report if configured
             rpt = self.last_report or {}
             if not self.emails.strip():
@@ -8076,7 +8566,9 @@ class QAStudio:
                 try:
                     for _it in (list(rpt.get("action_items", []))
                                 + list(rpt.get("skipped_items", []))
-                                + list(rpt.get("per_story", []))):
+                                + list(rpt.get("per_story", []))
+                                # the created test cases in the email's log section
+                                + [l for l in email_log if l.get("id")]):
                         _id = _it.get("id") if isinstance(_it, dict) else None
                         if _id and str(_id) not in _url_map:
                             _u = backend_setup.item_url(self, _id) or ""
@@ -8091,8 +8583,12 @@ class QAStudio:
                                             plan_url=plan_url,
                                             total_secs=_secs,
                                             log_lines=email_log,
-                                            org=E.AZURE_ORG, project=self.project,
-                                            url_map=_url_map)
+                                            # Off Azure, no dev.azure.com fallback: an id
+                                            # missing from url_map gets no link, not a wrong one.
+                                            org=(E.AZURE_ORG if backend_setup.is_azure(self.creds) else None),
+                                            project=self.project,
+                                            url_map=_url_map,
+                                            plan_label=backend_setup.plan_link_label(self))
                 ok, err = E.send_report(to, f"QA Studio — {tool_name} report", html)
                 if not ok:
                     self._log_lines.append({"tone":"warn","ico":"✉",
@@ -8300,7 +8796,36 @@ class QAStudio:
             return ft.Text("⏭", size=12, color=T.AMBER, weight=ft.FontWeight.BOLD)
         return None
 
+    def _run_story_header(self, ln):
+        """A story line in the Generate log, drawn like the Automation log's
+        case header: chevron + status pill + title + created count. Clicking it
+        folds the story's lines (_apply_run_log_view wires the click)."""
+        log_view.stamp(ln)
+        _msg = ln.get("msg", "")
+        _ar = any("\u0600" <= c <= "\u06ff" for c in _msg)
+        chev = ft.Icon(ft.Icons.EXPAND_MORE, size=16, color=T.INK_3)
+        pill_txt = ft.Text("\u2713", size=11, weight=ft.FontWeight.BOLD, color=T.GREEN)
+        pill = ft.Container(pill_txt, width=20, height=20, border_radius=10,
+                            alignment=ft.Alignment.CENTER, bgcolor=T.CARD_2)
+        count = ft.Text("", size=11, color=T.INK_3, weight=ft.FontWeight.BOLD,
+                        font_family=T.F_MONO)
+        row = ft.Container(
+            ft.Row([chev, pill,
+                    ft.Text(_msg if _ar else ("\u200e" + _msg), size=12.5, color=T.STORY,
+                            weight=ft.FontWeight.BOLD, expand=True,
+                            font_family=(T.F_AR if _ar else T.F_UI),
+                            max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
+                    count],
+                   spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=ft.Padding.symmetric(vertical=6, horizontal=8),
+            margin=ft.Margin.only(top=4), border_radius=8, bgcolor=T.CARD,
+            border=ft.Border.all(1, T.BORDER), ink=True)
+        row._qa_chev, row._qa_pill_txt, row._qa_count = chev, pill_txt, count
+        return row
+
     def _render_one_log(self, ln):
+        if (ln.get("tone") or "") == "story":
+            return self._run_story_header(ln)
         # design log colors: ok=green, err=red, warn=amber, dim=ink-3,
         # story=story-violet (bold), info=violet-ink
         tone_color = {"ok": T.GREEN, "err": T.RED, "warn": T.AMBER, "info": T.VIOLET_INK,
@@ -8352,6 +8877,9 @@ class QAStudio:
         # Left cluster = icon + id + seq (always on the left margin for consistency)
         left = [c for c in (icon, idtxt, seqtxt) if c is not None]
         row_children = left + [txt]
+        if ln.get("detail"):        # the case's time, e.g. "⏱ 0:03", at the row's end
+            row_children.append(ft.Text(str(ln["detail"]), size=11, color=T.INK_3,
+                                        weight=ft.FontWeight.W_500, font_family=T.F_MONO))
         indent = ln.get("indent")
         row = ft.Row(row_children, spacing=7,
                      alignment=ft.MainAxisAlignment.START,
@@ -8525,10 +9053,21 @@ class QAStudio:
         try:
             import os as _os
             if _os.name == "nt":
-                # Windows: ShellExecute 'open' (os.startfile) foregrounds the
-                # browser window over the app, instead of opening it behind
-                # us like webbrowser.open can.
-                _os.startfile(url)   # noqa: S606 — trusted, user-initiated links
+                # Windows: open from the WINDOW process (flet.exe, the one the
+                # user just clicked) via the UrlLauncher service, so Windows lets
+                # the browser come to the FRONT. os.startfile from this Python
+                # process is a background launch and could open the browser
+                # behind QA Studio; it's now only the fallback (also used if the
+                # service fails or doesn't answer).
+                def _shell_open(u):
+                    _os.startfile(u)   # noqa: S606 — trusted, user-initiated links
+                try:
+                    import mobile_url_launcher
+                    if mobile_url_launcher.open_front(url, fallback=_shell_open):
+                        return
+                except Exception:
+                    pass
+                _shell_open(url)
                 return
         except Exception:
             pass
@@ -9387,8 +9926,8 @@ class QAStudio:
 
     def _copy_run_log(self, e=None):
         # Copy follows the All / Issues filter, like the Automation log.
-        lines = log_view.flat_lines_to_copy(getattr(self, "_log_lines", []),
-                                            bool(getattr(self, "_run_log_issues", False)))
+        lines = log_view.run_lines_to_copy(getattr(self, "_log_lines", []),
+                                           bool(getattr(self, "_run_log_issues", False)))
         self._copy_log_text(log_view.format_lines(lines))
 
     def _save_log_lines(self, lines, screen):
@@ -9411,15 +9950,51 @@ class QAStudio:
         self._save_log_lines(list(getattr(self, "_log_lines", [])), "generate")
 
     def _apply_run_log_view(self, col=None):
-        """All / Issues filter on the Generate log: rows stay 1:1 with
-        self._log_lines; only `visible` changes. Caller updates the column."""
+        """Story groups + the All / Issues filter on the Generate log: rows stay
+        1:1 with self._log_lines; only `visible` changes, and each story
+        header's pill, count, chevron and click are refreshed. Caller updates
+        the column."""
         col = col if col is not None else getattr(self, "_log_col", None)
         lines = getattr(self, "_log_lines", [])
         if col is None or len(col.controls) != len(lines):
             return
-        for ctrl, shown in zip(col.controls, log_view.flat_visibility(
-                lines, bool(getattr(self, "_run_log_issues", False)))):
+        toggles = getattr(self, "_run_log_toggles", None) or {}
+        model = log_view.run_build(lines)
+        for ctrl, shown in zip(col.controls, log_view.run_visibility(
+                lines, toggles, bool(getattr(self, "_run_log_issues", False)), model)):
             ctrl.visible = shown
+        tone_col = {"ok": T.GREEN, "warn": T.AMBER, "err": T.RED}
+        glyph = {"ok": "\u2713", "warn": "\u26a0", "err": "\u2717"}
+        for gid, idx in model["headers"].items():
+            hdr = col.controls[idx]
+            if getattr(hdr, "_qa_pill_txt", None) is None:
+                continue
+            st, cnt = model["status"][gid], model["counts"][gid]
+            hdr._qa_pill_txt.value, hdr._qa_pill_txt.color = glyph[st], tone_col[st]
+            bits = [strings.t("runlog_cases", n=cnt["ok"])] if cnt["ok"] else []
+            if cnt["warn"] + cnt["err"]:
+                bits.append(strings.t("runlog_issues", n=cnt["warn"] + cnt["err"]))
+            hdr._qa_count.value = "  \u00b7  ".join(bits)
+            _glyph = (ft.Icons.EXPAND_MORE if log_view.run_is_open(model, gid, toggles)
+                      else ft.Icons.CHEVRON_RIGHT)
+            for _attr in ("icon", "name"):     # Flet renamed Icon.name -> Icon.icon
+                try:
+                    setattr(hdr._qa_chev, _attr, _glyph)
+                except Exception:
+                    pass
+            hdr.on_click = (lambda e, g=gid: self._toggle_run_group(g))
+
+    def _toggle_run_group(self, gid):
+        lines = getattr(self, "_log_lines", [])
+        model = log_view.run_build(lines)
+        toggles = self._run_log_toggles = getattr(self, "_run_log_toggles", None) or {}
+        toggles[gid] = not log_view.run_is_open(model, gid, toggles)
+        col = getattr(self, "_log_col", None)
+        try:
+            self._apply_run_log_view(col)
+            col.update()
+        except Exception:
+            pass
 
     def _set_run_log_filter(self, issues_only):
         self._run_log_issues = bool(issues_only)
@@ -9448,6 +10023,7 @@ class QAStudio:
     def _clear_run_log(self, e=None):
         self._log_lines = []
         self._rendered_count = 0   # so the next appended line renders, not skipped
+        self._run_log_toggles = {}
         self._refresh_run_log_chips()
         # Scoped update — see _clear_auto_log below for the full reasoning
         # (same pattern: swap the log column's own content in place instead of

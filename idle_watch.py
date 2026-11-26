@@ -28,8 +28,9 @@ def idle_minutes(app):
     return v if v in app.IDLE_MINUTES_CHOICES else app.IDLE_MINUTES_DEFAULT
 
 
-def set_idle_minutes(app, minutes):
-    """Persist this user's idle-logout preference and reset their idle clock."""
+def set_idle_minutes(app, minutes, render=True):
+    """Persist this user's idle-logout preference and reset their idle clock.
+    render=False: the caller (Settings) repaints its own options in place."""
     app.creds["idle_minutes"] = int(minutes)
     try:
         import store
@@ -38,7 +39,8 @@ def set_idle_minutes(app, minutes):
         pass
     app._last_activity = time.time()
     app._toast((strings.t("idle_autologout_off") if not minutes else strings.t("idle_autologout_set", minutes=minutes)))
-    app.render()
+    if render:
+        app.render()
 
 
 def start_idle_watch(app):

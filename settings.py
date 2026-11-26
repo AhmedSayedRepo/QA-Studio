@@ -50,9 +50,12 @@ def screen(app):
         ro = bool(getattr(app, "readonly", False))   # no 'act.settings' → read-only
 
         def srow(title, desc, control):
+            # desc may be a ready Text (kept so a control can update it in place)
+            desc_ctl = (ft.Text(desc, size=12, color=T.INK_3, weight=ft.FontWeight.W_500)
+                        if isinstance(desc, str) else desc)
             title_col = ft.Column([
                 ft.Text(title, size=13.5, weight=ft.FontWeight.BOLD, color=T.INK),
-                ft.Text(desc, size=12, color=T.INK_3, weight=ft.FontWeight.W_500),
+                desc_ctl,
             ], spacing=2, expand=True)
             if platform_caps.is_mobile():
                 # A wide, non-shrinking control (e.g. the idle-auto-logout
@@ -141,6 +144,13 @@ def screen(app):
                         vertical_alignment=ft.CrossAxisAlignment.CENTER)),
         ], spacing=0))
 
+        _saved_style = (getattr(app, "creds", {}) or {}).get("case_style")
+        _style_key = (_saved_style if _saved_style in ("manual", "automation")
+                      else app.PREF_DEFAULTS["case_style"])
+        _style_hint = ft.Text(strings.t("s_style_hint_" + _style_key), size=12,
+                              color=T.INK_3, weight=ft.FontWeight.W_500)
+        app._case_style_hint_settings = _style_hint
+
         appearance = card(ft.Column([
             ft.Text(strings.t("set_appearance"), size=11, weight=ft.FontWeight.BOLD, color=T.INK_3),
             ft.Container(height=4),
@@ -157,6 +167,12 @@ def screen(app):
             srow(strings.t("set_generate"),
                  strings.t("set_generate_desc"),
                  app._tool_segment(compact=True)),
+            divider(),
+            # Default test style (Manual / Automation). Setup's toggle is a
+            # per-run override of this; the hint under the title follows the
+            # pick in place.
+            srow(strings.t("s_test_style"), _style_hint,
+                 ft.Container(app._case_style_segment(persist=True), width=300)),
         ], spacing=0))
 
         perf_switch = ft.Switch(value=regression.perf_on(), active_color=T.VIOLET,
@@ -185,18 +201,37 @@ def screen(app):
         cur = app._idle_minutes()
 
         def _idle_seg():
+            # Repainted in place on a pick (no render, no scroll jump).
+            idle_state = {"cur": cur}
+            opts = {}
+
+            def _paint(c, sel):
+                c.bgcolor = T.VIOLET_SOFT if sel else None
+                c.border = ft.Border.all(1, T.VIOLET if sel else ft.Colors.TRANSPARENT)
+                c.content.color = T.VIOLET_INK if sel else T.INK_2
+
+            def _pick(m):
+                if idle_state["cur"] == m:
+                    return
+                app._set_idle_minutes(m, render=False)
+                idle_state["cur"] = m
+                for mm, c in opts.items():
+                    _paint(c, mm == m)
+                    try:
+                        c.update()
+                    except Exception:
+                        pass
+
             def opt(label, mins):
-                sel = (cur == mins)
-                return ft.Container(
-                    ft.Text(label, size=12, weight=ft.FontWeight.BOLD,
-                            color=(T.VIOLET_INK if sel else T.INK_2)),
+                c = ft.Container(
+                    ft.Text(label, size=12, weight=ft.FontWeight.BOLD),
                     height=34, alignment=ft.Alignment.CENTER,
                     padding=ft.Padding.symmetric(vertical=0, horizontal=14),
-                    bgcolor=(T.VIOLET_SOFT if sel else None), border_radius=T.R_SM,
-                    border=ft.Border.all(1, T.VIOLET if sel else ft.Colors.TRANSPARENT),
-                    on_click=(None if ro else
-                              (lambda e, m=mins: (None if cur == m
-                                                  else app._set_idle_minutes(m)))))
+                    border_radius=T.R_SM,
+                    on_click=(None if ro else (lambda e, m=mins: _pick(m))))
+                _paint(c, cur == mins)
+                opts[mins] = c
+                return c
             labels = [(strings.t("set_idle_off"), 0), ("5m", 5), ("15m", 15), ("30m", 30), ("60m", 60)]
             return ft.Container(
                 ft.Row([opt(l, m) for l, m in labels], spacing=4, tight=True),

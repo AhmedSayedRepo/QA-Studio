@@ -110,8 +110,31 @@ def _kind_label(kind):
     return strings.t("rr_kind_steps") if kind == "steps" else strings.t("rr_kind_titles")
 
 
+def _prog_text(prog):
+    """'40% · 4 of 10  ·  2 of 5 stories' from the run's latest progress/stat
+    events ('' until the worker reports anything)."""
+    bits = []
+    if prog.get("label"):
+        bits.append(str(prog["label"]))
+    if prog.get("total_stories"):
+        bits.append(strings.t("rr_row_stories", done=prog.get("stories_done", 0),
+                              total=prog["total_stories"]))
+    return "  ·  ".join(bits)
+
+
+def _prog_value(prog):
+    try:
+        pct = prog.get("pct")
+        return max(0.0, min(1.0, float(pct) / 100.0)) if pct is not None else None
+    except Exception:
+        return None
+
+
 def _run_row(app, run):
     status = run.get("status") or "queued"
+    rid = run.get("id")
+    live = status not in _TERMINAL
+    prog = (getattr(app, "_rr_list_prog", {}) or {}).get(rid) or {}
     story_ids = run.get("story_ids") or []
     _n = len(story_ids)
     subtitle = strings.t("rr_row_subtitle_one" if _n == 1 else "rr_row_subtitle_many",
@@ -125,6 +148,7 @@ def _run_row(app, run):
             ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
             ft.Text(subtitle, size=11.5, color=T.INK_3, weight=ft.FontWeight.W_500,
                    max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+            *(_prog_controls(app, rid, prog) if live else []),
         ], spacing=3, expand=True, tight=True),
         ft.Column([
             ft.Text(_relative(run.get("created_at")), size=11, color=T.INK_3,
@@ -137,6 +161,21 @@ def _run_row(app, run):
         bgcolor=T.CARD, border=ft.Border.all(1, T.BORDER_2), border_radius=T.R,
         margin=ft.Margin.only(bottom=8), ink=True,
         on_click=lambda e, rid=run.get("id"): _open_run(app, rid))
+
+
+def _prog_controls(app, rid, prog):
+    """Live run: a thin bar + 'NN% · x of y · n of m stories', registered so
+    the list poller can update them in place (no render, no scroll jump)."""
+    bar = ft.ProgressBar(value=_prog_value(prog), color=T.VIOLET, bgcolor=T.CARD_2,
+                         bar_height=4, border_radius=99)
+    txt = ft.Text(_prog_text(prog) or strings.t("rr_row_waiting"), size=11,
+                  color=T.VIOLET_INK, weight=ft.FontWeight.W_600,
+                  max_lines=1, overflow=ft.TextOverflow.ELLIPSIS)
+    cells = getattr(app, "_rr_row_cells", None)
+    if cells is None:
+        cells = app._rr_row_cells = {}
+    cells[rid] = (bar, txt)
+    return [ft.Container(bar, padding=ft.Padding.only(top=4)), txt]
 
 
 def _list_screen(app):
@@ -166,7 +205,10 @@ def _list_screen(app):
             ft.Icons.CLOUD_QUEUE_OUTLINED, strings.t("rr_none_title"),
             strings.t("rr_none_body"))
     else:
+        app._rr_row_cells = {}
         body_content = ft.Column([_run_row(app, r) for r in runs], spacing=0)
+    app._rr_list_col = body_content if runs else None
+    _start_list_poll(app)
 
     body = ft.Column([
         ft.Row([ft.Container(expand=True), refresh_btn]),
@@ -175,6 +217,104 @@ def _list_screen(app):
     ], spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
     return app.shell(strings.t("remote_runs"), strings.t("rr_list_subtitle"),
                      body)
+
+
+def _list_sig(runs):
+    return [(r.get("id"), r.get("status")) for r in runs or []]
+
+
+def _poll_list_once(app):
+    """One refresh of the list: re-read the runs, pull NEW events for the live
+    ones (incremental by seq) to update their progress, then patch the screen
+    in place. Returns True while any run is still queued/running."""
+    old = getattr(app, "_rr_list", None) or []
+    runs = auth.list_remote_runs(limit=50) or []
+    prog = getattr(app, "_rr_list_prog", None)
+    if prog is None:
+        prog = app._rr_list_prog = {}
+    seqs = getattr(app, "_rr_list_seq", None)
+    if seqs is None:
+        seqs = app._rr_list_seq = {}
+    live = [r for r in runs if (r.get("status") or "queued") not in _TERMINAL]
+    for r in live:
+        rid = r.get("id")
+        try:
+            evs = auth.get_remote_run_events(rid, after_seq=seqs.get(rid, 0)) or []
+        except Exception:
+            evs = []
+        p = prog.setdefault(rid, {})
+        for ev in evs:
+            seqs[rid] = max(seqs.get(rid, 0), int(ev.get("seq") or 0))
+            pay = ev.get("payload") or {}
+            if ev.get("kind") == "progress":
+                if pay.get("label"):
+                    p["label"] = pay["label"]
+                if pay.get("pct") is not None:
+                    p["pct"] = pay["pct"]
+            elif ev.get("kind") == "stat":
+                for k in ("stories_done", "total_stories"):
+                    if pay.get(k) is not None:
+                        p[k] = pay[k]
+    app._rr_list = runs
+    structural = _list_sig(runs) != _list_sig(old)
+
+    def apply():
+        if getattr(app, "active", "") != "remote_runs" or getattr(app, "_rr_view_id", None):
+            return
+        col = getattr(app, "_rr_list_col", None)
+        if structural or col is None:
+            if col is not None:
+                try:
+                    app._rr_row_cells = {}
+                    col.controls = [_run_row(app, r) for r in runs]
+                    col.update()
+                    return
+                except Exception:
+                    pass
+            app.render()          # first run appeared / list not mounted yet
+            return
+        for rid, (bar, txt) in list((getattr(app, "_rr_row_cells", {}) or {}).items()):
+            p = prog.get(rid) or {}
+            try:
+                bar.value = _prog_value(p)
+                txt.value = _prog_text(p) or strings.t("rr_row_waiting")
+                bar.update()
+                txt.update()
+            except Exception:
+                pass
+    app.ui_safe(apply)
+    return bool(live)
+
+
+def _start_list_poll(app):
+    """Auto-refresh the list while it's on screen: every 4 s while a run is
+    queued/running (so progress shows without opening the run), every 15 s
+    otherwise (a run started from another device still appears). One poller
+    at a time; it stops when the screen changes or a run is opened. Bounded
+    (~3 h) so a forgotten-open screen can't poll forever."""
+    if getattr(app, "_rr_list_poll_on", False):
+        return
+    app._rr_list_poll_on = True
+
+    def work():
+        try:
+            deadline = time.time() + 3 * 3600
+            live = any((r.get("status") or "queued") not in _TERMINAL
+                       for r in (getattr(app, "_rr_list", None) or []))
+            while time.time() < deadline:
+                time.sleep(4.0 if live else 15.0)
+                if getattr(app, "active", "") != "remote_runs" or \
+                        getattr(app, "_rr_view_id", None):
+                    break
+                try:
+                    live = _poll_list_once(app)
+                except Exception:
+                    pass
+        finally:
+            app._rr_list_poll_on = False
+    # A plain daemon thread (like the detail poller): a long-lived loop must
+    # not hold one of Flet's run_thread workers.
+    threading.Thread(target=work, daemon=True).start()
 
 
 # ── DETAIL ───────────────────────────────────────────────────────────────────
