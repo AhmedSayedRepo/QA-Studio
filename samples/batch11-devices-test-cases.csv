@@ -1,0 +1,11 @@
+﻿Test Case ID,Test Case Title,Step,Action,Expected Result,Element Type,Preferred Locator,Frame Context,Automation Note
+DV01,Login page on an iPhone 14 screen,1,Switch to an iPhone 14 screen,,,,,
+DV01,Login page on an iPhone 14 screen,2,Open https://the-internet.herokuapp.com/login,"The page shows ""Login Page"". The page looks the same as the visual baseline ""login-phone""",,,,
+DV02,Checkboxes on an iPad in landscape,1,Use an iPad screen in landscape mode,,,,,
+DV02,Checkboxes on an iPad in landscape,2,Open https://the-internet.herokuapp.com/checkboxes,"The page shows ""Checkboxes""",,,,
+DV03,Rotate a Pixel 7 to landscape,1,Switch to a Pixel 7 screen,,,,,
+DV03,Rotate a Pixel 7 to landscape,2,Open https://the-internet.herokuapp.com/hovers,"The page shows ""Hovers""",,,,
+DV03,Rotate a Pixel 7 to landscape,3,Rotate to landscape,"The page shows ""Hovers""",,,,
+DV04,"Custom window size, then back to desktop",1,Resize the window to 1024x768,,,,,
+DV04,"Custom window size, then back to desktop",2,Open https://the-internet.herokuapp.com/tables,"The page shows ""Data Tables""",,,,
+DV04,"Custom window size, then back to desktop",3,Switch back to desktop,"The page shows ""Data Tables""",,,,

@@ -107,3 +107,91 @@ def lines_to_copy(lines, issues_only=False, model=None):
         return lines
     vis = visibility(lines, False, None, True, model)
     return [line for line, shown in zip(lines, vis) if shown]
+
+
+# ---- Shared by every activity log (Generate, Automation, …) ----
+
+_GLYPH = {"ok": "✓", "err": "✗", "warn": "⚠", "review": "⚠", "story": "▸"}
+
+
+def is_issue(line):
+    return (line.get("tone") or "") in ISSUE_TONES
+
+
+def issue_count(lines):
+    """Warn / error lines, for the 'Issues 3' chip."""
+    return sum(1 for line in (lines or []) if is_issue(line))
+
+
+def flat_visibility(lines, issues_only=False):
+    """All / Issues filter for a log without case groups (Generate): on Issues,
+    warn/err lines show, plus the indented detail lines right under them."""
+    out, show_detail = [], False
+    for line in lines or []:
+        if not issues_only:
+            out.append(True)
+            continue
+        if line.get("indent"):
+            out.append(show_detail)
+            continue
+        show_detail = is_issue(line)
+        out.append(show_detail)
+    return out
+
+
+def flat_lines_to_copy(lines, issues_only=False):
+    lines = list(lines or [])
+    if not issues_only:
+        return lines
+    return [line for line, shown in zip(lines, flat_visibility(lines, True)) if shown]
+
+
+def stamp(line, now=None):
+    """Give a log line its time once (kept when the line is edited in place)."""
+    if isinstance(line, dict) and line.get("ts") is None:
+        import time
+        line["ts"] = now if now is not None else time.time()
+    return line
+
+
+def format_lines(lines):
+    """Copy / save text: 'HH:MM:SS  ✓ message', one line per log line, so a
+    pasted log reads the same from every screen. Spinner-only lines are kept;
+    empty ones are dropped."""
+    import time
+    out = []
+    for line in lines or []:
+        msg = str(line.get("msg") or "").replace("\x1f", " ")
+        if not msg.strip():
+            continue
+        ts = line.get("ts")
+        clock = time.strftime("%H:%M:%S", time.localtime(ts)) if ts is not None else "        "
+        glyph = line.get("ico") or _GLYPH.get(line.get("tone") or "", " ")
+        indent = "    " if line.get("indent") else ""
+        tag = ("[%s] " % line["id"] if line.get("id") else "") + ("#%s " % line["seq"] if line.get("seq") else "")
+        out.append("%s  %s %s%s%s" % (clock, glyph, indent, tag, msg.strip() if indent else msg.rstrip()))
+    return out
+
+
+def save_path(screen, folder=None, now=None):
+    """Where 'Save log' writes: Downloads (or home) / qa-studio-<screen>-<time>.log."""
+    import os
+    import time
+    if folder is None:
+        home = os.path.expanduser("~")
+        down = os.path.join(home, "Downloads")
+        folder = down if os.path.isdir(down) else home
+    stamp_txt = time.strftime("%Y%m%d-%H%M%S", time.localtime(now))
+    safe = re.sub(r"[^a-z0-9]+", "-", str(screen or "log").lower()).strip("-") or "log"
+    return os.path.join(folder, "qa-studio-%s-%s.log" % (safe, stamp_txt))
+
+
+def save_lines(lines, screen, folder=None):
+    """Write the formatted log; returns the path, or '' when there is nothing."""
+    text = format_lines(lines)
+    if not text:
+        return ""
+    path = save_path(screen, folder)
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write("\n".join(text) + "\n")
+    return path

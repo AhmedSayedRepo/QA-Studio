@@ -419,6 +419,9 @@ def fetch_stories_for_plan(app, plan_id):
     """
     creds = getattr(app, "creds", {}) or {}
     project = getattr(app, "project", "") or ""
+    # Why the picker shows what it shows (backlog fallback / nothing found);
+    # main.py's story picker reads it. Empty = the normal source.
+    app._stories_source_note = ""
     # Azure — either the single-backend, OR the Azure→TestRail hybrid, whose
     # STORIES come from Azure (only the WRITE target is TestRail). Both read the
     # plan's requirement-suite stories the same way.
@@ -453,6 +456,21 @@ def fetch_stories_for_plan(app, plan_id):
                 sid = st.ref.key or st.ref.id
                 if sid and sid not in seen:
                     seen[sid] = {"id": sid, "title": st.title}
+        if seen:
+            return list(seen.values())
+        # No sprint (Kanban / business project, or no board) or the sprint holds
+        # no stories: fall back to the project's open backlog stories, and say so.
+        key = getattr(getattr(proj, "ref", None), "key", "") or str(project)
+        backlog = getattr(backend, "fetch_backlog_stories", None)
+        for st in ((backlog(proj, 100) or []) if callable(backlog) else []):
+            sid = st.ref.key or st.ref.id
+            if sid and sid not in seen:
+                seen[sid] = {"id": sid, "title": st.title}
+        if seen:
+            app._stories_source_note = strings.t(
+                "stories_note_backlog_empty_sprint" if chosen else "stories_note_backlog_no_sprint")
+        else:
+            app._stories_source_note = strings.t("stories_note_none", project=key)
         return list(seen.values())
     except Exception as exc:
         try:
@@ -915,8 +933,13 @@ def case_url(app, case_id, project=None):
     try:
         from tracker.models import Ref
         backend = get_backend(app)
-        return backend.item_url(Ref(id=str(case_id), key=str(case_id)),
-                                _as_project(backend, project)) or ""
+        ref, proj = Ref(id=str(case_id), key=str(case_id)), _as_project(backend, project)
+        # Jira + Zephyr: test cases live in the Zephyr app page, not /browse/.
+        # (A hybrid's CompositeBackend has no case_url and keeps item_url.)
+        builder = getattr(backend, "case_url", None)
+        if callable(builder):
+            return builder(ref, proj) or ""
+        return backend.item_url(ref, proj) or ""
     except Exception:
         return ""
 
@@ -1066,8 +1089,16 @@ def generation_ops(app):
         absorbed a duplicate's scope), and MUST be a dict, never None.
         """
         import engine as E
+        from tracker.base import Capability
         empty = {"removed": [], "kept": [], "groups": 0, "keeper_ids": []}
         proj, plan, suite = _proj(project), _plan(plan_id), _suite(suite_id)
+        # A backend whose API can't delete test cases (Jira + Zephyr Scale):
+        # list the duplicates for the user to remove, delete nothing, and
+        # report nothing as removed.
+        can_delete = Capability.DELETE_TEST_CASE in (getattr(backend, "capabilities", ()) or ())
+        report_only = bool(do_delete) and not can_delete
+        if report_only:
+            do_delete = False
         try:
             cases = backend.fetch_test_cases_for_suite(proj, plan, suite) or []
         except Exception as exc:
@@ -1119,6 +1150,16 @@ def generation_ops(app):
                     cb("log", {"msg": f"  {'removed' if do_delete else 'duplicate'}: "
                                       f"{(victim.title or '')[:70]} "
                                       f"(same as #{_id_of(keeper)})", "tone": "dim"})
+        if report_only:
+            if cb and dup_groups:
+                _n = len(removed)
+                cb("log", {"msg": (f"Found {_n} duplicate test case{'s' if _n != 1 else ''} "
+                                   f"— {getattr(backend, 'label', '') or 'this tool'}'s API "
+                                   f"can't delete test cases, so remove them in the tool itself."),
+                           "tone": "warn", "ico": "⚠"})
+            elif cb:
+                cb("log", {"msg": "No duplicate test cases found in the suite.", "tone": "dim"})
+            return {"removed": [], "kept": kept, "groups": dup_groups, "keeper_ids": []}
         if cb:
             if dup_groups:
                 _n = len(removed)
@@ -1483,15 +1524,11 @@ def _section_header(ft, T, current_label):
 
 
 def _picker_hidden(current):
-    """Backends left out of the picker. Standalone TestRail always (reached via
-    the hybrids). Jira + Zephyr Scale until its auth is proven, except when it
-    is the CURRENT backend (so nobody is stranded) or a developer sets
-    QA_SHOW_ZEPHYR=1 to test it."""
-    import os
-    hidden = {TESTRAIL}
-    if current != JIRA_ZEPHYR and (os.environ.get("QA_SHOW_ZEPHYR") or "").strip() != "1":
-        hidden.add(JIRA_ZEPHYR)
-    return hidden
+    """Backends left out of the picker: only standalone TestRail (it has no
+    story source of its own - it is reached via the Azure/Jira -> TestRail
+    hybrids). Jira + Zephyr Scale is listed again; a Zephyr token the API
+    rejects is reported by validate_credentials with the exact cause."""
+    return {TESTRAIL}
 
 
 def picker_rows(app, field_label, hover_field):
@@ -1522,11 +1559,6 @@ def picker_rows(app, field_label, hover_field):
     # Picker options: hide the standalone TestRail (it has no story source of its
     # own — TestRail is reached via the Azure→/Jira→TestRail hybrids), and sort by
     # the test-management tool (the label) so the list reads alphabetically.
-    # Jira + Zephyr Scale is ALSO hidden for now — the Zephyr Scale REST auth
-    # (401) isn't resolved yet, so it can't be shipped as a working option. The
-    # backend, registry and code stay intact; this only drops it from the picker.
-    # It's still shown if it's the CURRENTLY active backend, so an already-
-    # connected user isn't stranded on an option they can't reselect.
     _hidden = _picker_hidden(current)
     _pick = sorted((b for b in BACKENDS
                     if b[0] in allowed and b[0] not in _hidden),

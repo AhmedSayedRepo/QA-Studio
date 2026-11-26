@@ -1,0 +1,28 @@
+This removes borders from all tables starting from that page until the end of the document.
+-------------------------------------------------------------------------------------------------
+
+Sub RemoveTableBordersFromSpecificPage()
+    Dim tbl As Table
+    Dim START_PAGE As Long
+    Dim tblPage As Long
+    
+    START_PAGE = 3   ' Change this to the page number you want
+    
+    For Each tbl In ActiveDocument.Tables
+        tblPage = tbl.Range.Information(wdActiveEndPageNumber)
+        
+        If tblPage >= START_PAGE Then
+            tbl.Borders.Enable = False
+        End If
+    Next tbl
+End Sub
+
+-------------------------------------------------------------------------------------------------
+How to run
+1. Press Alt + F11
+2. Click Insert → Module
+3. Paste the macro
+4. Change:
+START_PAGE = 3 to your required page number.
+5. Press F5
+

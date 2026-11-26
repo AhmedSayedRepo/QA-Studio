@@ -6,6 +6,8 @@ state off the app; handlers stay on the QAStudio instance.
 import flet as ft
 import theme as T
 import strings
+import log_panel
+import log_view
 from ui import card, _btn_shadow, primary_btn, stat_tile
 
 
@@ -155,28 +157,24 @@ def screen(app):
             app._log_col = _make_log_col()
             app._rendered_count = len(getattr(app, "_log_lines", []))
 
-        def _log_tool_btn(icon, tip, cb, danger=False):
-            # Same small rounded icon-button "chip" as the Automation screen's
-            # Activity log toolbar (automation.py) — kept visually identical.
-            return ft.Container(
-                ft.IconButton(
-                    icon, icon_size=15,
-                    icon_color=(T.RED if danger else T.INK_3),
-                    tooltip=tip, on_click=cb, width=26, height=26,
-                    style=ft.ButtonStyle(padding=0,
-                                         shape=ft.RoundedRectangleBorder(radius=7))),
-                bgcolor=(T.RED_SOFT if danger else T.CARD),
-                border=ft.Border.all(1, (T.RED_SOFT if danger else T.BORDER)),
-                border_radius=8)
+        # Shared log toolbar (log_panel.py): the same buttons and All / Issues
+        # chips as the Automation log. Rows stay 1:1 with app._log_lines; the
+        # filter only flips `visible` (main.py's _apply_run_log_view).
+        _log_tool_btn = log_panel.tool_btn
+        app._run_issue_n = log_view.issue_count(getattr(app, "_log_lines", []))
+        app._run_log_filter_ctr = ft.Container(log_panel.filter_chips(
+            bool(getattr(app, "_run_log_issues", False)), app._run_issue_n, app._set_run_log_filter))
+        app._apply_run_log_view(app._log_col)
 
         log_card = card(ft.Column([
-            ft.Row([ft.Text(strings.t("run_recent_activity"), size=11, weight=ft.FontWeight.BOLD, color=T.INK_3),
+            ft.Row([ft.Text(strings.t("run_recent_activity"), size=11, weight=ft.FontWeight.BOLD, color=T.INK_3,
+                            no_wrap=True),
                     ft.Container(expand=True),
-                    ft.Text(strings.t("run_select_to_copy"), size=10, color=T.INK_3,
-                            weight=ft.FontWeight.W_500),
-                    ft.Container(width=8),
+                    app._run_log_filter_ctr,
+                    ft.Container(width=6),
                     _log_tool_btn(ft.Icons.COPY_ALL_OUTLINED, strings.t("run_copy_log_tip"),
                                  app._copy_run_log),
+                    *([] if _pc.is_mobile() else [ft.Container(width=6), log_panel.save_btn(app._save_run_log)]),
                     ft.Container(width=6),
                     _log_tool_btn(ft.Icons.DELETE_OUTLINE, strings.t("run_clear_log_tip"),
                                  app._clear_run_log, danger=True)],

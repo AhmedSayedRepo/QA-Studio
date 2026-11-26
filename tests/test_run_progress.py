@@ -37,6 +37,36 @@ class Counter(unittest.TestCase):
         self.assertEqual(_feed(self.LOADED, "Launching Chrome…"), "")
 
 
+class StepsAfterReplay(unittest.TestCase):
+    REPLAYED = (Counter.LOADED, "  walking 'A'  [x]", "Replaying the 1 fully verified case(s) so", "    ✓ replay: A")
+
+    def test_chip_leaves_replaying_for_the_current_step(self):
+        cases = [
+            ("Generating self-healing automation for 1 story(ies)…", "Compiling"),
+            ("Downloading dependencies and compiling (mvn test-compile) — the first time", "Compiling"),
+            ("Installing dependencies (npm install) — the first time also downloads", "Installing"),
+            ("Running the tests with hidden browsers (npx playwright test)…", "Running tests"),
+            ("Tests finished: 5 passed", "Tests passed"),
+            ("Tests finished with failures (exit 1): 4 passed, 1 failed", "Tests failed"),
+            ("Pushing to https://github.com/u/r.git…", "Pushing to GitHub"),
+            ("Push complete.", "Pushed to GitHub"),
+            ("Waiting for the GitHub 'QA tests' run of this push…", "Waiting for GitHub run"),
+            ("GitHub run queued: https://github.com/u/r/actions/runs/1", "GitHub run queued"),
+            ("GitHub run in_progress: https://github.com/u/r/actions/runs/1", "GitHub run in progress"),
+            ("GitHub run finished: success — https://x", "GitHub run passed"),
+            ("GitHub run finished: failure — https://x", "GitHub run failed"),
+            ("Report emailed to a@b.com", "Report emailed"),
+        ]
+        for line, want in cases:
+            with self.subTest(line=line):
+                self.assertEqual(_feed(*self.REPLAYED, line), want)
+
+    def test_other_lines_leave_the_chip_unchanged(self):
+        self.assertEqual(_feed(*self.REPLAYED, "Push complete.", "Visual baselines pushed — the next run"),
+                         "Pushed to GitHub")
+        self.assertEqual(_feed(*self.REPLAYED, "Some unrelated note"), "Replaying 1 / 1")
+
+
 class CounterKeepsLogHeight(unittest.TestCase):
     def test_counter_lives_in_the_fixed_toolbar_row(self):
         src = open(os.path.join(ROOT, "automation.py"), encoding="utf-8").read()

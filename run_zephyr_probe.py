@@ -173,6 +173,8 @@ def main(argv=None):
         return f"{n} issue link(s) on {key}" if n else "no link found (D2 link may have failed silently)"
 
     def _delete():
+        if "delete_test_case" not in be.capabilities:
+            raise _Skip("Zephyr's API can't delete test cases - remove the probe case in Zephyr")
         be.delete_test_case(state["project"], state["plan"],
                             state["suite"], state["case"].ref)
         remaining = [ (c.ref.key or c.ref.id) for c in

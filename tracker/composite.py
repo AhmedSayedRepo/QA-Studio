@@ -119,6 +119,10 @@ class CompositeBackend(Backend):
     def fetch_stories_in_sprint(self, project, sprint_path):
         return self._src.fetch_stories_in_sprint(project, sprint_path)
 
+    def fetch_backlog_stories(self, project, limit=100):
+        fn = getattr(self._src, "fetch_backlog_stories", None)
+        return fn(project, limit) if callable(fn) else []
+
     def fetch_bugs_in_sprint(self, project, sprint_path):
         # Bugs live with the STORIES (read source), same as sprint_report_data.
         return self._src.fetch_bugs_in_sprint(project, sprint_path)

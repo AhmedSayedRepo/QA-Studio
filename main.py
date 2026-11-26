@@ -6430,8 +6430,11 @@ class QAStudio:
             if self.plan_id and self._setup_stories_loading:
                 return regression._loading_field(strings.t("reg_loading_stories"))
             _ss = self._setup_stories or []
-            _ph = ("Select stories" if _ss
-                   else ("No stories in this plan" if self.plan_id
+            # Jira backends: say where the stories came from (backlog fallback)
+            # or why there are none - backend_setup.fetch_stories_for_plan.
+            _note = getattr(self, "_stories_source_note", "") or ""
+            _ph = ((f"Select stories · {_note}" if _note else "Select stories") if _ss
+                   else ((_note or "No stories in this plan") if self.plan_id
                          else strings.t("main_select_plan_first")))
             return regression._checkbox_multiselect(
                 [(str(s["id"]), f"[{s['id']}] {(s['title'] or '')[:60]}") for s in _ss],
@@ -8303,6 +8306,7 @@ class QAStudio:
         tone_color = {"ok": T.GREEN, "err": T.RED, "warn": T.AMBER, "info": T.VIOLET_INK,
                       "skip": T.INK_3, "review": T.AMBER,
                       "dim": T.INK_3, "story": T.STORY}
+        log_view.stamp(ln)      # time for Copy / Save (set once, when first shown)
         tone = ln.get("tone", "dim")
         color = tone_color.get(tone, T.INK_2)
         icon = self._log_icon(ln, tone, color)
@@ -8434,6 +8438,8 @@ class QAStudio:
                     with self._run_log_ui_lock:
                         rendered = getattr(self, "_rendered_count", 0)
                         all_lines = getattr(self, "_log_lines", [])
+                        for _ln in all_lines[max(rendered, 0):] if rendered >= 0 else all_lines:
+                            log_view.stamp(_ln)
                         if rendered < 0 or (rendered == 0 and all_lines):
                             # full rebuild (placeholder swap or a wip line was removed)
                             self._log_col.controls = self._render_log_lines()
@@ -8441,6 +8447,10 @@ class QAStudio:
                             new_ctrls = [self._render_one_log(ln) for ln in all_lines[rendered:]]
                             self._log_col.controls.extend(new_ctrls)
                         self._rendered_count = len(all_lines)
+                        # All / Issues filter + the Issues chip's count.
+                        self._apply_run_log_view(self._log_col)
+                        if log_view.issue_count(all_lines) != getattr(self, "_run_issue_n", 0):
+                            self._refresh_run_log_chips()
                 self.page.update()
             except Exception:
                 pass
@@ -8622,6 +8632,46 @@ class QAStudio:
                 "todo": getattr(self, "_auto_todo", 0),
                 "skipped": getattr(self, "_auto_skipped", 0)}
 
+    def _auto_push_counts(self):
+        """Write the four activity cards' numbers in place while a run is going
+        (a full render would reset the scroll position mid-run)."""
+        def _upd():
+            ctl = getattr(self, "_auto_count_ctl", None) or {}
+            c = self._auto_count()
+            for key, num in ctl.items():
+                try:
+                    val = str(c.get(key, ""))
+                    if num.value != val:
+                        num.value = val
+                        num.update()
+                except Exception:
+                    pass   # not mounted yet: the next build reads the same numbers
+        self.ui_safe(_upd)
+
+    def _auto_live_stat(self, msg):
+        """Proven / Replay cards follow the log as it happens: each replayed case
+        moves Replay, the locator-proof line sets Proven. The totals set after
+        each phase (including reused cases) still win."""
+        import re as _re
+        m = msg or ""
+        if m.startswith("Replaying every case") or m.startswith("Replaying the "):
+            self._auto_replay_live = [0, 0]
+            self._auto_stats = dict(getattr(self, "_auto_stats", None) or {}, replay="0/0")
+        elif m.lstrip().startswith(("\u2713 replay:", "\u2717 replay:")):
+            live = getattr(self, "_auto_replay_live", None) or [0, 0]
+            live[1] += 1
+            if m.lstrip().startswith("\u2713"):
+                live[0] += 1
+            self._auto_replay_live = live
+            self._auto_stats = dict(getattr(self, "_auto_stats", None) or {}, replay="%d/%d" % tuple(live))
+        else:
+            hit = _re.match(r"Locator proof \S+ (\d+) proven", m)
+            if not hit:
+                return False
+            self._auto_stats = dict(getattr(self, "_auto_stats", None) or {}, proven=hit.group(1))
+        self._auto_push_counts()
+        return True
+
     def _auto_counts_header(self):
         # Restyled to match Run screen's stat_tile (ui.py) cards exactly —
         # neutral card background + border, a small label row with a tone
@@ -8725,6 +8775,13 @@ class QAStudio:
                 except Exception:
                     pass
             hdr.on_click = (lambda e, g=gid: self._toggle_log_group(g))
+        # The Issues chip shows the warning / error count: refresh it when it changes.
+        n_issues = log_view.issue_count(lines)
+        if n_issues != getattr(self, "_auto_issue_n", 0):
+            self._auto_issue_n = n_issues
+            refresh = getattr(self, "_auto_refresh_log_filter", None)
+            if callable(refresh):
+                refresh()
 
     def _toggle_log_group(self, gid):
         col = getattr(self, "_auto_log_col", None)
@@ -8989,6 +9046,7 @@ class QAStudio:
             self.ui_safe(_upd_skipped)
             return
         self._auto_track_progress(msg)
+        self._auto_live_stat(msg)
         # drop consecutive duplicate lines (e.g. repeated "Paused…" notices).
         # Guarded by the same lock upd() uses below for the UI-sync read —
         # now that Automation's compile/dedupe loops call this from multiple
@@ -9047,13 +9105,13 @@ class QAStudio:
                     msg = f"{msg}  ·  ×{_n_map[_key]} waits so far"
                 _i = _idx_map.get(_key)
                 if _i is not None and 0 <= _i < len(self._auto_log):
-                    self._auto_log[_i] = {"msg": msg, "tone": tone}
+                    self._auto_log[_i] = log_view.stamp({"msg": msg, "tone": tone})
                     _pend.add(_i)
                     _inplace = True
                 else:
                     _idx_map[_key] = len(self._auto_log)   # appended just below
             if not _inplace:
-                self._auto_log.append({"msg": msg, "tone": tone})
+                self._auto_log.append(log_view.stamp({"msg": msg, "tone": tone}))
             # Coalesce: ui_safe() hands upd() to page.run_thread, which spins up
             # a BRAND-NEW thread per call. Compile/dedupe worker threads can each
             # call this several times a second, especially right as Stop makes
@@ -9325,14 +9383,72 @@ class QAStudio:
         # Copy follows the tab: the Issues tab copies only the issue lines.
         lines = log_view.lines_to_copy(getattr(self, "_auto_log", []),
                                        bool(getattr(self, "_auto_log_issues", False)))
-        self._copy_log_text([ln.get("msg", "") for ln in lines])
+        self._copy_log_text(log_view.format_lines(lines))
 
     def _copy_run_log(self, e=None):
-        self._copy_log_text([ln.get("msg", "") for ln in getattr(self, "_log_lines", [])])
+        # Copy follows the All / Issues filter, like the Automation log.
+        lines = log_view.flat_lines_to_copy(getattr(self, "_log_lines", []),
+                                            bool(getattr(self, "_run_log_issues", False)))
+        self._copy_log_text(log_view.format_lines(lines))
+
+    def _save_log_lines(self, lines, screen):
+        """'Save log': the whole log (every line, with times) to a .log file in
+        Downloads; the toast names the file."""
+        try:
+            path = log_view.save_lines(lines, screen)
+        except Exception as ex:
+            self._snack(strings.t("log_save_failed", err=str(ex)[:120]), T.RED, ft.Icons.ERROR_OUTLINE)
+            return
+        if not path:
+            self._toast(strings.t("log_nothing_save"))
+            return
+        self._toast(strings.t("log_saved", path=path))
+
+    def _save_auto_log(self, e=None):
+        self._save_log_lines(list(getattr(self, "_auto_log", [])), "automation")
+
+    def _save_run_log(self, e=None):
+        self._save_log_lines(list(getattr(self, "_log_lines", [])), "generate")
+
+    def _apply_run_log_view(self, col=None):
+        """All / Issues filter on the Generate log: rows stay 1:1 with
+        self._log_lines; only `visible` changes. Caller updates the column."""
+        col = col if col is not None else getattr(self, "_log_col", None)
+        lines = getattr(self, "_log_lines", [])
+        if col is None or len(col.controls) != len(lines):
+            return
+        for ctrl, shown in zip(col.controls, log_view.flat_visibility(
+                lines, bool(getattr(self, "_run_log_issues", False)))):
+            ctrl.visible = shown
+
+    def _set_run_log_filter(self, issues_only):
+        self._run_log_issues = bool(issues_only)
+        col = getattr(self, "_log_col", None)
+        try:
+            self._apply_run_log_view(col)
+            col.update()
+        except Exception:
+            pass
+        self._refresh_run_log_chips()
+
+    def _refresh_run_log_chips(self):
+        ctr = getattr(self, "_run_log_filter_ctr", None)
+        if ctr is None:
+            return
+        import log_panel
+        lines = getattr(self, "_log_lines", [])
+        self._run_issue_n = log_view.issue_count(lines)
+        try:
+            ctr.content = log_panel.filter_chips(bool(getattr(self, "_run_log_issues", False)),
+                                                 self._run_issue_n, self._set_run_log_filter)
+            ctr.update()
+        except Exception:
+            pass
 
     def _clear_run_log(self, e=None):
         self._log_lines = []
         self._rendered_count = 0   # so the next appended line renders, not skipped
+        self._refresh_run_log_chips()
         # Scoped update — see _clear_auto_log below for the full reasoning
         # (same pattern: swap the log column's own content in place instead of
         # a full app.render(), which would rebuild the whole Run screen).
@@ -9362,6 +9478,10 @@ class QAStudio:
     def _clear_auto_log(self, e=None):
         self._auto_log = []
         self._auto_log_toggles = {}
+        self._auto_issue_n = 0
+        _refresh_chips = getattr(self, "_auto_refresh_log_filter", None)
+        if callable(_refresh_chips):
+            _refresh_chips()
         self._auto_result = None
         self._reset_auto_retry_state()
         rctr = getattr(self, "_auto_result_ctr", None)
@@ -10267,6 +10387,8 @@ class QAStudio:
         self._auto_todo = 0          # live TODO tally, reset for this run
         self._auto_skipped = 0       # live duplicate-skip tally, reset for this run
         self._auto_stats = {}        # proven / replay card values, reset for this run
+        self._auto_replay_live = [0, 0]
+        self._auto_push_counts()     # cards back to "—" / 0 now, not at the next render
         self._auto_result = None     # end-of-run banner: (kind, detail)
         self._auto_log_toggles = {}  # user expand/collapse per case group
         self._auto_run_start = time.time()
@@ -10723,6 +10845,7 @@ class QAStudio:
                     self._auto_stats = dict(getattr(self, "_auto_stats", None) or {},
                                             proven=str(_reused_steps), replay="%d/%d" % (_reused, _reused))
                     self._auto_todo = 0
+                    self._auto_push_counts()
                 elif walk_payload and self.auto_live_inspection:
                     cb(strings.t("auto_inspection_start"), "info")
                     inspection = E.explore_and_map(
@@ -10732,7 +10855,9 @@ class QAStudio:
                          # {{OTP}} steps: the authenticator secret from the
                          # environment or the project's .env (never saved).
                          "otp_secret": (getattr(self, "auto_otp_secret", "") or "").strip()
-                         or E.read_env_value(project_dir, "OTP_SECRET")},
+                         or E.read_env_value(project_dir, "OTP_SECRET"),
+                         # Phone / tablet screen picked on the Framework card.
+                         "device": self.creds.get("auto_device") or ""},
                         self.auto_site_url.strip(), cb=cb,
                         # Pause blocks here between test cases (the browser
                         # stays open); Stop ends the walk.
@@ -10757,6 +10882,7 @@ class QAStudio:
                                             proven=str(int(_stats.get("verified") or 0) + _reused_steps))
                     self._auto_todo = (int(_stats.get("snapshot") or 0)
                                        + int(_stats.get("guess") or 0))
+                    self._auto_push_counts()
                     cb(strings.t("auto_inspection_done",
                                  live=int(_stats.get("live") or 0),
                                  pending=int(_stats.get("snapshot") or 0)
@@ -10775,7 +10901,9 @@ class QAStudio:
                          # {{OTP}} steps: the authenticator secret from the
                          # environment or the project's .env (never saved).
                          "otp_secret": (getattr(self, "auto_otp_secret", "") or "").strip()
-                         or E.read_env_value(project_dir, "OTP_SECRET")},
+                         or E.read_env_value(project_dir, "OTP_SECRET"),
+                         # Phone / tablet screen picked on the Framework card.
+                         "device": self.creds.get("auto_device") or ""},
                         self.auto_site_url.strip(), cb=cb,
                         # Pause blocks here between test cases (the browser
                         # stays open); Stop ends the walk.
@@ -10791,6 +10919,7 @@ class QAStudio:
                         _rp += _reused
                         self._auto_stats = dict(getattr(self, "_auto_stats", None) or {},
                                                 replay="%d/%d" % (_rp, _rp + _rf))
+                        self._auto_push_counts()
                     if self._auto_stop:
                         cb("Stopped after replay.", "warn")
                         return
@@ -10857,6 +10986,8 @@ class QAStudio:
                 try:
                     E.apply_run_browsers(project_dir, getattr(self, "_auto_target", "selenium"),
                                          self.creds.get("auto_browsers"), cb=cb)
+                    E.apply_run_device(project_dir, getattr(self, "_auto_target", "selenium"),
+                                       self.creds.get("auto_device"), cb=cb)
                 except Exception as _browser_err:
                     cb(f"Couldn't save the browser choice: {_browser_err}", "warn")
 
@@ -10911,6 +11042,7 @@ class QAStudio:
         import base64 as _b64
         params = {"target": getattr(self, "_auto_target", "selenium"),
                   "browsers": list(self.creds.get("auto_browsers") or ["chrome"]),
+                  "device": self.creds.get("auto_device") or "",
                   "site_url": (self.auto_site_url or "").strip(),
                   "login_url": (self.auto_login_url or "").strip(),
                   "login_user": (self.auto_login_user or "").strip(),

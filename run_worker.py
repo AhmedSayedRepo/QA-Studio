@@ -224,7 +224,8 @@ def _run_automation(E, run, cb):
         proj, payload, {"site_url": p.get("site_url"), "login_url": p.get("login_url"),
                         "login_user": p.get("login_user"), "login_pass": sec.get("app_pass") or "",
                         "otp_secret": sec.get("otp_secret") or "", "target": p.get("target"),
-                        "browsers": p.get("browsers"), "allow_unverified": p.get("allow_unverified"),
+                        "browsers": p.get("browsers"), "device": p.get("device") or "",
+                        "allow_unverified": p.get("allow_unverified"),
                         "report_to": ",".join(run.get("email_recipients") or [])},
         cb=acb, should_stop=_should_stop, gate=_gate, on_error=_on_ai_error)
     if result.get("status") == "generated" and not _should_stop():

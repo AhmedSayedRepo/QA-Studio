@@ -3989,6 +3989,11 @@ Test Case ID,Test Case Title,Step,Action,Expected Result,Element Type,Preferred 
    - Two-factor login: Type \"{{OTP}}\" in the \"Code\" field   (the current authenticator code; the secret is set as OTP_SECRET in .env, never in the case)
    - Accessibility (Expected Result): The page has no accessibility violations   (serious and critical issues fail; or: no critical accessibility violations)
    - Visual check (Expected Result): The page looks the same as the visual baseline \"home\"   (optional: ignoring \"#clock\" and \".ads\", within 2%). The first run saves the baseline screenshot.
+   - Phone / tablet screen (Action): Switch to an iPhone 14 screen   (also: an iPad screen in landscape, Rotate to landscape, Resize the window to 1024x768, Switch back to desktop) — put it before opening the page.
+   - Toast / notification (Expected Result): A toast \"Saved successfully\" appears   (also: The notification \"X\" is shown). Action to close it: Close the toast message
+   - Keyboard shortcut on the page (Action): Press the keyboard shortcut Ctrl+K   (also: Press Escape, Press \"/\" on the page). A key pressed in a field stays: Press Enter in the \"Search\" field
+   - Drag-and-drop upload (Action): Drop a file onto the \"Drag files here\" area   (drops the test file qastudio-upload.txt; check it with: The page shows \"qastudio-upload.txt\")
+   - Menu with sub-menus (Action): Hover \"Products\" > \"Laptops\", then click \"Gaming\"   (only hover: Hover \"Products\" > \"Laptops\")
 
 Now write the CSV."""
 
@@ -10001,6 +10006,7 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
     _set_login_url((login or {}).get("url") or site_url)
     cb = cb or (lambda *a, **k: None)
     _set_run_otp(login, cb, stories_payload)
+    _set_run_device(login)
     should_stop = should_stop or (lambda: False)
     from selenium import webdriver
     from selenium.webdriver.chrome.options import Options
@@ -10051,6 +10057,7 @@ def explore_and_map(stories_payload, login, site_url, cb=None, should_stop=None,
     # accept/dismiss operation handles it explicitly.
     opts.set_capability("unhandledPromptBehavior", "ignore")
 
+    _apply_run_device_options(opts, cb)
     cb("Launching Chrome…", "dim")
     driver = webdriver.Chrome(options=opts)
     _fit_inspection_window(driver, headless)
@@ -11656,6 +11663,80 @@ def write_inspection_screens(out_dir, result, cb=None):
         return ""
 
 
+def _devices_java(pkg):
+    """Devices.java: the shared phone / tablet table (same as device_spec)."""
+    rows = "\n".join('        T.put("%s", new Object[]{"%s", %d, %d, %s, "%s"});' % (n.lower(), n, w, h, repr(float(d)), ua)
+                     for n, (w, h, d, ua) in _DEVICES.items())
+    aliases = "\n".join('        A.put("%s", "%s");' % (a, n) for a, n in _DEVICE_ALIASES.items())
+    return ("""package __PKG__.core;
+
+import java.util.HashMap;
+import java.util.Locale;
+import java.util.Map;
+
+/** Phone / tablet screens: the DEVICE (.env) / device= (config.properties)
+ *  setting and the "Switch to an iPhone 14 screen" step. Chrome and Edge
+ *  emulate the device fully; Firefox gets the window size and user agent. */
+public final class Devices {
+    private Devices() { }
+
+    public static final class Spec {
+        public final String name, base, ua;
+        public final int width, height;
+        public final double dpr;
+        public final boolean mobile;
+        Spec(String name, String base, int width, int height, double dpr, String ua, boolean mobile) {
+            this.name = name; this.base = base; this.width = width; this.height = height;
+            this.dpr = dpr; this.ua = ua; this.mobile = mobile;
+        }
+    }
+
+    private static final Map<String, Object[]> T = new HashMap<>();
+    private static final Map<String, String> A = new HashMap<>();
+    static {
+__ROWS__
+__ALIASES__
+    }
+
+    /** 'iPhone 14', 'iPad landscape', 'iPhone 14|landscape', '375x812'; null = desktop. */
+    public static Spec spec(String value) {
+        String v = (value == null ? "" : value).replace('|', ' ').trim().replaceAll(" +", " ");
+        String low = v.toLowerCase(Locale.ROOT);
+        boolean land = low.matches(".*\\\\blandscape\\\\b.*");
+        v = v.replaceAll("(?i)\\\\b(landscape|portrait)\\\\b", "").trim();
+        low = v.toLowerCase(Locale.ROOT);
+        if (v.isEmpty() || low.equals("desktop") || low.equals("none") || low.equals("default")) return null;
+        Spec s;
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("^(\\\\d{3,4})\\\\s*[x\u00d7]\\\\s*(\\\\d{3,4})$").matcher(low);
+        if (m.matches()) {
+            int w = Integer.parseInt(m.group(1)), h = Integer.parseInt(m.group(2));
+            s = new Spec(w + "x" + h, w + "x" + h, w, h, 1.0, "", w < 800);
+        } else {
+            Object[] r = T.get(low);
+            if (r == null && A.containsKey(low)) r = T.get(A.get(low).toLowerCase(Locale.ROOT));
+            if (r == null) return null;
+            s = new Spec((String) r[0], (String) r[0], (Integer) r[1], (Integer) r[2], (Double) r[3], (String) r[4], true);
+        }
+        if (!land) return s;
+        return new Spec(s.name + " landscape", s.base, s.height, s.width, s.dpr, s.ua, s.mobile);
+    }
+
+    /** Chrome / Edge 'mobileEmulation' option. */
+    public static Map<String, Object> mobileEmulation(Spec d) {
+        Map<String, Object> metrics = new HashMap<>();
+        metrics.put("width", d.width);
+        metrics.put("height", d.height);
+        metrics.put("pixelRatio", d.dpr);
+        metrics.put("touch", true);
+        Map<String, Object> out = new HashMap<>();
+        out.put("deviceMetrics", metrics);
+        if (!d.ua.isEmpty()) out.put("userAgent", d.ua);
+        return out;
+    }
+}
+""".replace("__ROWS__", rows).replace("__ALIASES__", aliases).replace("__PKG__", pkg))
+
+
 def _driver_factory(pkg):
     return ("""package __PKG__.core;
 
@@ -11749,6 +11830,9 @@ public final class DriverFactory {
         String b = id(browser == null ? "" : browser.toLowerCase(Locale.ROOT));
         if (b.isEmpty()) b = "chrome";
         boolean onGrid = !gridName().isEmpty();
+        // Phone / tablet screen (DEVICE / device=): emulated from the start.
+        Devices.Spec dev = Devices.spec(Config.setting("DEVICE", ""));
+        if (dev != null) System.out.println("[screen] " + dev.name + " " + dev.width + "x" + dev.height);
         boolean headless = !onGrid && "true".equalsIgnoreCase(Config.setting("HEADLESS", "false"));
         File downloads = new File(DOWNLOADS, b);
         downloads.mkdirs();
@@ -11774,8 +11858,12 @@ public final class DriverFactory {
             options.addPreference("network.http.phishy-userpass-length", 255);
             options.addPreference("signon.rememberSignons", false);
             options.setUnhandledPromptBehaviour(UnexpectedAlertBehaviour.IGNORE);
+            if (dev != null && !dev.ua.isEmpty()) options.addPreference("general.useragent.override", dev.ua);
             driver = onGrid ? remote(b, options) : start("Firefox", () -> new FirefoxDriver(options));
-            try { driver.manage().window().maximize(); } catch (Exception ignored) { }
+            try {
+                if (dev != null) driver.manage().window().setSize(new org.openqa.selenium.Dimension(dev.width, dev.height + 85));
+                else driver.manage().window().maximize();
+            } catch (Exception ignored) { }
         } else if ("edge".equals(b)) {
             // Microsoft moved msedgedriver downloads to msedgedriver.microsoft.com;
             // the old hosts (msedgedriver.azureedge.net, msedgewebdriverstorage
@@ -11797,11 +11885,13 @@ public final class DriverFactory {
             }
             EdgeOptions options = new EdgeOptions();
             chromium(options, headless, downloads);
+            if (dev != null) options.setExperimentalOption("mobileEmulation", Devices.mobileEmulation(dev));
             driver = onGrid ? remote(b, options) : start("Edge", () -> new EdgeDriver(options));
         } else {
             if (!onGrid) synchronized (DriverFactory.class) { WebDriverManager.chromedriver().setup(); }
             ChromeOptions options = new ChromeOptions();
             chromium(options, headless, downloads);
+            if (dev != null) options.setExperimentalOption("mobileEmulation", Devices.mobileEmulation(dev));
             driver = onGrid ? remote(b, options) : start("Chrome", () -> new ChromeDriver(options));
         }
         String version = "";
@@ -12884,7 +12974,7 @@ def _github_ensure_repo(owner, repo, token, cb, public=False):
     an error, when it's already there). Returns (ok, msg)."""
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
     try:
-        r = requests.get(f"https://api.github.com/repos/{owner}/{repo}",
+        r = _gh_call(requests.get, f"https://api.github.com/repos/{owner}/{repo}",
                          headers=headers, timeout=15)
         if r.status_code == 200:
             return True, "exists"
@@ -12896,7 +12986,7 @@ def _github_ensure_repo(owner, repo, token, cb, public=False):
     cb(f"Repo {owner}/{repo} doesn't exist on GitHub yet — creating it ({'public' if public else 'private'})…", "dim")
     my_login = None
     try:
-        me = requests.get("https://api.github.com/user", headers=headers, timeout=15)
+        me = _gh_call(requests.get, "https://api.github.com/user", headers=headers, timeout=15)
         if me.status_code == 200:
             my_login = (me.json() or {}).get("login")
     except Exception:
@@ -12905,7 +12995,7 @@ def _github_ensure_repo(owner, repo, token, cb, public=False):
                  if my_login and my_login.lower() == owner.lower()
                  else f"https://api.github.com/orgs/{owner}/repos")
     try:
-        r = requests.post(create_url, headers=headers, timeout=20,
+        r = _gh_call(requests.post, create_url, headers=headers, timeout=20,
                           json={"name": repo, "private": not public,
                                 "description": "Automation tests generated by QA Studio"})
         if r.status_code == 201:
@@ -13068,7 +13158,13 @@ def push_to_git(repo_dir, remote_url, token, branch="main", message="Add QA Stud
     # targets). A hardcoded Maven-only .gitignore used to be force-written here
     # unconditionally, silently clobbering the Playwright/Cypress .gitignore
     # (and undoing the sync above) on every single push.
-    run(["git", "add", "-A"])
+    a = run(["git", "add", "-A"])
+    if a.returncode != 0:
+        time.sleep(2)                      # a file still held open by the test run
+        a = run(["git", "add", "-A"])
+    if a.returncode != 0:
+        why = (a.stderr or a.stdout or "").strip()
+        return False, "git couldn't stage the project files: %s" % (why[-600:] or "exit %s" % a.returncode)
     # ensure identity exists (use a neutral default if unset)
     if run(["git", "config", "user.email"]).stdout.strip() == "":
         run(["git", "config", "user.email", "qastudio@local"])
@@ -13076,6 +13172,11 @@ def push_to_git(repo_dir, remote_url, token, branch="main", message="Add QA Stud
     c = run(["git", "commit", "-m", message])
     if c.returncode != 0 and "nothing to commit" not in (c.stdout + c.stderr).lower():
         cb(c.stdout + c.stderr, "warn")
+    if run(["git", "rev-parse", "--verify", "HEAD"]).returncode != 0:
+        # Nothing was ever committed: pushing would only fail with "src refspec
+        # main does not match any".
+        return False, ("Nothing to push: git committed no files in %s. %s" % (
+            repo_dir, ((c.stdout or "") + (c.stderr or "")).strip()[-400:]))
 
     # set remote — always the plain, token-less URL; see _auth_header above
     run(["git", "remote", "remove", "origin"])
@@ -14729,7 +14830,13 @@ def _table_parts(value):
 #           alt, title, placeholder, value, id/name, or a CSS selector) whose
 #           attribute contains / is / does not contain a value, or is absent
 _PAGE_CHECKS = ("url", "title", "count", "sorted", "pattern", "attr")
+_TOAST_SEL = ("[role=alert],[role=status],[aria-live=polite],[aria-live=assertive],.toast,.Toastify__toast,"
+              ".notyf__toast,.snackbar,.mat-mdc-snack-bar-container,.mat-snack-bar-container,.MuiSnackbar-root,"
+              ".MuiAlert-root,.ant-message-notice,.ant-notification-notice,.el-message,.el-notification,.v-snack,"
+              ".swal2-toast,.notification,.alert,[data-sonner-toast],[class*=toast i],[class*=snackbar i],"
+              "[class*=notif i],[id*=toast i],[id*=flash i],[class*=flash i]")
 _PAGE_CHECK_FN = r"""function(check, value, doc, loc) {
+  var TOAST_SEL = __TOAST_SEL__;
   function norm(s) { return String(s == null ? '' : s).replace(/\s+/g, ' ').trim().toLowerCase(); }
   function shown(el) {
     var r = el.getBoundingClientRect(), st = doc.defaultView.getComputedStyle(el);
@@ -14850,8 +14957,16 @@ _PAGE_CHECK_FN = r"""function(check, value, doc, loc) {
     if (cval == null) return false;
     return cop === 'exists' ? true : cop === 'is' ? norm(cval) === cwant : norm(cval).indexOf(cwant) >= 0;
   }
+  if (check === 'toast') {
+    // Toasts, snackbars and flash messages ('' = any one shown).
+    var tw = norm(value);
+    return [].slice.call(doc.querySelectorAll(TOAST_SEL)).some(function (el) {
+      var tx = norm(el.innerText || el.textContent);
+      return tx && tx.indexOf(tw) >= 0 && shown(el);
+    });
+  }
   return false;
-}"""
+}""".replace("__TOAST_SEL__", json.dumps(_TOAST_SEL))
 _PAGE_CHECK_JS = "return (" + _PAGE_CHECK_FN + ")(arguments[0], arguments[1], document, location);"
 _REMEMBER_FN = r"""function(pattern, doc) {
   try {
@@ -14874,9 +14989,10 @@ _DISMISS_FN = r"""function(name, doc) {
     var r = el.getBoundingClientRect(), st = doc.defaultView.getComputedStyle(el);
     return r.width > 0 && r.height > 0 && st.visibility !== 'hidden' && st.display !== 'none' && st.opacity !== '0';
   }
-  var want = norm(name);
+  var toast = name === '@toast';   // 'Close the toast message'
+  var want = toast ? '' : norm(name);
   var words = want ? [want] : ['close', 'dismiss', 'no thanks', 'not now', 'accept', 'accept all', 'got it', 'ok', '\u00d7', 'x'];
-  var scope = want ? [doc] : [].slice.call(doc.querySelectorAll(
+  var scope = want ? [doc] : [].slice.call(doc.querySelectorAll(toast ? __TOAST_SEL__ :
     '[role=dialog],[aria-modal=true],.modal,.popup,.overlay,[class*=cookie],[id*=cookie],[class*=consent],[id*=consent],[class*=banner]'))
     .filter(shown);
   for (var w = 0; w < words.length; w++) {
@@ -14895,7 +15011,7 @@ _DISMISS_FN = r"""function(name, doc) {
     }
   }
   return '';
-}"""
+}""".replace("__TOAST_SEL__", json.dumps(_TOAST_SEL))
 _DISMISS_JS = "return (" + _DISMISS_FN + ")(arguments[0], document);"
 
 # ---- Batch 6-8: pagination, cookies / storage, basic & digest auth ----
@@ -15206,6 +15322,12 @@ def _page_action_in(action):
     got = _api_action_in(a) or _batch68_action_in(a, low)
     if got:
         return got
+    b11 = _b11b_action_in(a, low)
+    if b11:
+        return b11
+    dev = _device_action_in(a)
+    if dev:
+        return "device", dev[0]
     if re.search(r"\bif\s+(?:it\s+is\s+|it's\s+|one\s+is\s+|any\s+is\s+|they\s+are\s+)?"
                  r"(?:shown|present|visible|displayed|open|there|appears)\b", low) and \
             re.match(r"\s*(close|dismiss|click|press|accept|tap)\b", low):
@@ -15246,6 +15368,12 @@ def _clear_field(el):
 
 def _page_action_label(verb, value=""):
     v = str(value or "")
+    if verb == "device":
+        return _device_label(v)
+    if verb in _B11B_VERBS:
+        return _b11b_label(verb, v)
+    if verb == "dismiss_if_present" and v == "@toast":
+        return "Close the toast message"
     if verb == "next_page":
         return ('Go to the next page until "%s" is shown' % v) if v else "Go to the next page"
     if verb == "go_to_page":
@@ -15300,6 +15428,11 @@ def _after_page_change(driver):
 
 def _run_page_action(driver, verb, value="", wait=4, login=None):
     """Inspection / replay: run a page action with Selenium. Returns a log line."""
+    if verb == "device":
+        _emulate_device(driver, value)
+        return _device_label(value)
+    if verb in _B11B_VERBS:
+        return _run_b11b_action(driver, verb, value, wait, login)
     if verb in ("next_page", "go_to_page"):
         target = _fill_tokens(value, login).strip()
         if verb == "go_to_page" or not target:
@@ -16412,6 +16545,21 @@ _CI_PLACEHOLDER_HOSTS = ("example.com", "your-app", "your-login")
 _CI_PUSH_SECRETS = ("APP_USER", "APP_PASS", "OTP_SECRET")
 
 
+_GH_NET_ERRORS = (requests.exceptions.ConnectionError, requests.exceptions.Timeout)
+
+
+def _gh_call(fn, url, attempts=4, **kw):
+    """A GitHub API call that rides out short network blips (connect timeouts
+    to api.github.com happen now and then): up to 4 tries, 2/4/6 s apart."""
+    for i in range(attempts):
+        try:
+            return fn(url, **kw)
+        except _GH_NET_ERRORS:
+            if i == attempts - 1:
+                raise
+            time.sleep(2 * (i + 1))
+
+
 def _ci_project_settings(repo_dir):
     """({variable: value}, {secret: value}) found in the project."""
     vals = {k: read_env_value(repo_dir, k) for k in ("APP_BASE_URL", "APP_LOGIN_URL") + _CI_PUSH_SECRETS}
@@ -16455,13 +16603,13 @@ def github_ci_settings(repo_dir, remote_url, token, cb=None):
                "X-GitHub-Api-Version": "2022-11-28"}
     denied = False
     for name, value in variables.items():
-        r = requests.get("%s/variables/%s" % (api, name), headers=headers, timeout=15)
+        r = _gh_call(requests.get, "%s/variables/%s" % (api, name), headers=headers, timeout=15)
         if r.status_code == 200:
             continue                                  # already set on GitHub: keep it
         if r.status_code in (401, 403):
             denied = True
             break
-        r = requests.post(api + "/variables", headers=headers, json={"name": name, "value": value}, timeout=15)
+        r = _gh_call(requests.post, api + "/variables", headers=headers, json={"name": name, "value": value}, timeout=15)
         if r.status_code in (200, 201):
             done["variables"].append(name)
         elif r.status_code in (401, 403):
@@ -16475,7 +16623,7 @@ def github_ci_settings(repo_dir, remote_url, token, cb=None):
             have_nacl = False
         missing = []
         for name in secrets:
-            r = requests.get("%s/secrets/%s" % (api, name), headers=headers, timeout=15)
+            r = _gh_call(requests.get, "%s/secrets/%s" % (api, name), headers=headers, timeout=15)
             if r.status_code in (401, 403):
                 denied = True
                 break
@@ -16485,14 +16633,14 @@ def github_ci_settings(repo_dir, remote_url, token, cb=None):
             cb("GitHub secrets %s were not added: that needs the PyNaCl package (py -3.12 -m pip install pynacl), "
                "or add them in the repository's Settings > Secrets and variables > Actions." % ", ".join(missing), "warn")
         elif missing and not denied:
-            r = requests.get(api + "/secrets/public-key", headers=headers, timeout=15)
+            r = _gh_call(requests.get, api + "/secrets/public-key", headers=headers, timeout=15)
             if r.status_code in (401, 403):
                 denied = True
             elif r.status_code == 200:
                 key = r.json()
                 for name in missing:
                     body = {"encrypted_value": _seal_secret(key["key"], secrets[name]), "key_id": key["key_id"]}
-                    r = requests.put("%s/secrets/%s" % (api, name), headers=headers, json=body, timeout=15)
+                    r = _gh_call(requests.put, "%s/secrets/%s" % (api, name), headers=headers, json=body, timeout=15)
                     if r.status_code in (201, 204):
                         done["secrets"].append(name)
                     elif r.status_code in (401, 403):
@@ -16696,7 +16844,7 @@ def _github_run_failure_reasons(api, run_id, headers):
     step it failed at."""
     out = []
     try:
-        r = requests.get("%s/runs/%s/jobs" % (api, run_id), headers=headers, timeout=20)
+        r = _gh_call(requests.get, "%s/runs/%s/jobs" % (api, run_id), headers=headers, timeout=20)
         jobs = (r.json() or {}).get("jobs") or [] if r.status_code == 200 else []
     except Exception:
         return out
@@ -16705,7 +16853,7 @@ def _github_run_failure_reasons(api, run_id, headers):
             continue
         notes = []
         try:
-            a = requests.get(job["check_run_url"].rstrip("/") + "/annotations", headers=headers, timeout=20)
+            a = _gh_call(requests.get, job["check_run_url"].rstrip("/") + "/annotations", headers=headers, timeout=20)
             notes = [n.get("message", "").strip() for n in (a.json() or [])
                      if a.status_code == 200 and n.get("annotation_level") == "failure" and n.get("message")]
         except Exception:
@@ -16746,8 +16894,12 @@ def github_fetch_ci_baselines(repo_dir, remote_url, token, branch="main", cb=Non
         if should_stop():
             cb("Stopped waiting for GitHub.", "warn")
             return []
-        r = requests.get("%s/workflows/qa-tests.yml/runs" % api, headers=headers,
+        try:
+            r = _gh_call(requests.get, "%s/workflows/qa-tests.yml/runs" % api, headers=headers,
                          params={"head_sha": sha, "per_page": 5}, timeout=20)
+        except _GH_NET_ERRORS:
+            time.sleep(poll)           # GitHub unreachable for a moment: keep waiting
+            continue
         if r.status_code in (401, 403, 404):
             cb("Can't follow the GitHub run (HTTP %s): the token needs the 'repo' scope "
                "(fine-grained: Actions: Read)." % r.status_code, "warn")
@@ -16773,12 +16925,12 @@ def github_fetch_ci_baselines(repo_dir, remote_url, token, branch="main", cb=Non
     if concl != "success":
         for why in _github_run_failure_reasons(api, run["id"], headers):
             cb("   " + why, "warn")
-    r = requests.get("%s/runs/%s/artifacts" % (api, run["id"]), headers=headers, timeout=20)
+    r = _gh_call(requests.get, "%s/runs/%s/artifacts" % (api, run["id"]), headers=headers, timeout=20)
     arts = [a for a in ((r.json() or {}).get("artifacts") or []) if a.get("name") == "qa-visual-baselines"] \
         if r.status_code == 200 else []
     if not arts:
         return []
-    z = requests.get(arts[0]["archive_download_url"], headers=headers, timeout=120)
+    z = _gh_call(requests.get, arts[0]["archive_download_url"], headers=headers, timeout=120)
     if z.status_code != 200:
         cb("Couldn't download the CI visual baselines (HTTP %s)." % z.status_code, "warn")
         return []
@@ -16845,6 +16997,471 @@ def _ci_pipelines_safe(out_dir, target, browsers, cb=None):
         return []
 
 
+# ---- Batch 11a: phone and tablet screens (device emulation) ----
+#   Run setting: DEVICE in .env / device= in config.properties ("" or desktop =
+#   the normal window), e.g. "iPhone 14" or "iPad landscape" or "375x812".
+#   Step (page action "device"): "Switch to an iPhone 14 screen", "Rotate to
+#   landscape", "Resize the window to 1024x768", "Switch back to desktop".
+#   Chrome / Edge emulate the device fully (size, pixel density, touch, mobile
+#   user agent); Firefox only gets the window size and user agent.
+_UA_IPHONE = ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 "
+              "(KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1")
+_UA_IPAD = ("Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15 "
+            "(KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1")
+_UA_ANDROID = ("Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 "
+               "(KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36")
+_UA_ANDROID_TAB = ("Mozilla/5.0 (Linux; Android 14; SM-X700) AppleWebKit/537.36 "
+                   "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36")
+# name: (width, height, pixel ratio, user agent) - portrait CSS pixels
+_DEVICES = {
+    "iPhone SE": (375, 667, 2, _UA_IPHONE),
+    "iPhone 14": (390, 844, 3, _UA_IPHONE),
+    "iPhone 14 Pro Max": (430, 932, 3, _UA_IPHONE),
+    "Pixel 7": (412, 915, 2.625, _UA_ANDROID),
+    "Galaxy S20": (360, 800, 3, _UA_ANDROID),
+    "iPad Mini": (768, 1024, 2, _UA_IPAD),
+    "iPad": (820, 1180, 2, _UA_IPAD),
+    "Galaxy Tab S8": (800, 1280, 2, _UA_ANDROID_TAB),
+}
+_DEVICE_ALIASES = {"mobile": "iPhone 14", "phone": "iPhone 14", "iphone": "iPhone 14", "android": "Pixel 7",
+                   "android phone": "Pixel 7", "tablet": "iPad", "ipad air": "iPad", "pixel": "Pixel 7",
+                   "samsung": "Galaxy S20", "galaxy": "Galaxy S20", "smartphone": "iPhone 14"}
+
+
+def device_spec(value):
+    """{name, width, height, dpr, ua, mobile, landscape} for a device setting or
+    step value ('iPhone 14', 'iPad landscape', 'iPhone 14|landscape', '375x812'),
+    or None for the desktop window."""
+    v = re.sub(r"\s+", " ", str(value or "").replace("|", " ")).strip()
+    land = bool(re.search(r"\blandscape\b", v, re.I))
+    v = re.sub(r"\b(?:landscape|portrait)\b", "", v, flags=re.I).strip(" ,")
+    if not v or v.lower() in ("desktop", "none", "default", "off", "normal"):
+        return None
+    m = re.match(r"^(\d{3,4})\s*[x×]\s*(\d{3,4})$", v, re.I)
+    if m:
+        w, h = int(m.group(1)), int(m.group(2))
+        spec = {"name": "%dx%d" % (w, h), "width": w, "height": h, "dpr": 1, "ua": "", "mobile": w < 800}
+    else:
+        name = next((n for n in _DEVICES if n.lower() == v.lower()), None) or \
+            _DEVICE_ALIASES.get(v.lower())
+        if not name:
+            return None
+        w, h, dpr, ua = _DEVICES[name]
+        spec = {"name": name, "width": w, "height": h, "dpr": dpr, "ua": ua, "mobile": True}
+    if land:
+        spec["width"], spec["height"] = spec["height"], spec["width"]
+        spec["name"] += " landscape"
+    spec["landscape"] = land
+    return spec
+
+
+def _devices_json():
+    """The device table for the generated JavaScript runtimes."""
+    return json.dumps({n: {"width": w, "height": h, "dpr": d, "ua": ua} for n, (w, h, d, ua) in _DEVICES.items()},
+                      separators=(",", ":"))
+
+
+_PAGE_ACTIONS = _PAGE_ACTIONS + ("device",)
+_DEVICE_NAME_RE = "|".join(sorted([re.escape(n) for n in _DEVICES] + [re.escape(a) for a in _DEVICE_ALIASES],
+                                  key=len, reverse=True))
+_DEVICE_STEP_RE = re.compile(
+    r"\b(?:switch(?:es|ed)?\s+(?:back\s+)?to|change\s+(?:the\s+screen\s+)?to|go\s+back\s+to|use|emulate|"
+    r"(?:view|open|show|test)\s+(?:it|the\s+(?:page|site))?\s*on|resize\s+(?:the\s+)?(?:window|browser|screen|viewport)\s+to|"
+    r"set\s+(?:the\s+)?(?:screen|viewport|window)(?:\s+size)?\s+to)\s+"
+    r"(?:an?\s+|the\s+)?(" + _DEVICE_NAME_RE + r"|desktop|\d{3,4}\s*[x×]\s*\d{3,4})"
+    r"(?:\s+(?:screen|view|size|layout|viewport|device|browser|window))?"
+    r"(?:\s+in\s+(landscape|portrait)(?:\s+mode)?)?\b"
+    r"|\brotate\s+(?:the\s+(?:device|phone|tablet|screen)\s+)?to\s+(landscape|portrait)\b", re.I)
+
+
+def _device_action_in(t):
+    """(value, phrase) for a device-switch step, or None."""
+    m = _DEVICE_STEP_RE.search(t or "")
+    if not m:
+        return None
+    if m.group(3):
+        return "|" + m.group(3).lower(), m.group(0)
+    raw = m.group(1)
+    if raw.lower() == "desktop":
+        return "desktop", m.group(0)
+    spec = device_spec(raw)
+    if not spec:
+        return None
+    base = spec["name"]
+    return (base + ("|landscape" if (m.group(2) or "").lower() == "landscape" else "")), m.group(0)
+
+
+def _device_label(value):
+    v = str(value or "")
+    if v in ("|landscape", "|portrait"):
+        return "rotate the screen to " + v[1:]
+    spec = device_spec(v)
+    if not spec:
+        return "switch back to the desktop window"
+    return "switch to the %s screen (%d×%d)" % (spec["name"], spec["width"], spec["height"])
+
+
+# The run's device (Automation screen 'Screen' setting) for live inspection and
+# replay, so locators are found on the same layout the tests will use.
+_DEVICE_RUN = {"value": ""}
+
+
+def _set_run_device(login=None):
+    _DEVICE_RUN["value"] = str((login or {}).get("device") or "").strip()
+
+
+def _mobile_emulation(spec):
+    """Chrome's mobileEmulation option for a device spec."""
+    out = {"deviceMetrics": {"width": spec["width"], "height": spec["height"],
+                             "pixelRatio": spec["dpr"], "touch": True}}
+    if spec.get("ua"):
+        out["userAgent"] = spec["ua"]
+    return out
+
+
+def _apply_run_device_options(opts, cb=None):
+    spec = device_spec(_DEVICE_RUN["value"])
+    if spec:
+        opts.add_experimental_option("mobileEmulation", _mobile_emulation(spec))
+        if cb:
+            cb("Screen: %s (%d×%d)" % (spec["name"], spec["width"], spec["height"]), "dim")
+    return spec
+
+
+def _emulate_device(driver, value, state=None):
+    """Live inspection / replay side of the 'device' step (Chrome via CDP)."""
+    state = state if state is not None else _DEVICE_RUN
+    v = str(value or "")
+    if v in ("|landscape", "|portrait"):
+        cur = device_spec(state.get("current") or state.get("value"))
+        if not cur:
+            return True
+        base = re.sub(r"\s+landscape$", "", cur["name"])
+        v = base + ("|landscape" if v == "|landscape" else "")
+    spec = device_spec(v)
+    state["current"] = v if spec else ""
+    if not spec:
+        driver.execute_cdp_cmd("Emulation.clearDeviceMetricsOverride", {})
+        driver.execute_cdp_cmd("Emulation.setTouchEmulationEnabled", {"enabled": False})
+        return True
+    driver.execute_cdp_cmd("Emulation.setDeviceMetricsOverride", {
+        "width": spec["width"], "height": spec["height"], "deviceScaleFactor": spec["dpr"],
+        "mobile": bool(spec["mobile"])})
+    driver.execute_cdp_cmd("Emulation.setTouchEmulationEnabled", {"enabled": True})
+    if spec.get("ua"):
+        driver.execute_cdp_cmd("Emulation.setUserAgentOverride", {"userAgent": spec["ua"]})
+    return True
+
+
+_ENV_DEVICE_NOTE = ("# Screen the tests emulate: desktop, iPhone SE, iPhone 14, iPhone 14 Pro Max, Pixel 7,\n"
+                    "# Galaxy S20, iPad Mini, iPad, Galaxy Tab S8 (add 'landscape'), or WIDTHxHEIGHT.")
+
+
+def apply_run_device(out_dir, target, device, cb=None):
+    """Write the Automation screen's 'Screen' setting into the project:
+    device= in config.properties (Selenium) or DEVICE= in .env (Playwright /
+    Cypress). Returns the written value ('' = desktop)."""
+    spec = device_spec(device)
+    value = spec["name"] if spec else ""
+    if (target or "selenium") == "selenium":
+        path, key = os.path.join(out_dir, "config.properties"), "device"
+    else:
+        path, key = os.path.join(out_dir, ".env"), "DEVICE"
+    if not os.path.isfile(path):
+        return value
+    with open(path, "r", encoding="utf-8") as f:
+        text = f.read()
+    line = "%s=%s" % (key, value)
+    pat = re.compile(r"(?m)^[ \t]*%s[ \t]*=.*$" % re.escape(key))
+    if pat.search(text):
+        new = pat.sub(lambda _m: line, text, count=1)
+    else:
+        note = "\n".join(("# " + l.lstrip("# ")) for l in _ENV_DEVICE_NOTE.splitlines())
+        new = text + ("" if not text or text.endswith("\n") else "\n") + note + "\n" + line + "\n"
+    if new != text:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(new)
+    if cb and spec:
+        cb("Screen for the generated tests: %s (%d×%d)" % (spec["name"], spec["width"], spec["height"]), "info")
+    return value
+
+
+# ---- Batch 11b: toasts, page keyboard shortcuts, drag-and-drop upload, hover menus ----
+#   toast (check)     'Saved successfully' ('' = any toast); short-lived messages are
+#                     polled, so one shown for a second or two still counts
+#   dismiss_if_present '@toast'  closes a toast / notification (its close button)
+#   shortcut          'CONTROL+K' / 'ESCAPE' pressed on the page (the focused element)
+#   drop_file         'Drag files here' (drop-area text, id or class; '' = the first
+#                     drop area): drops the test file qastudio-upload.txt on it
+#   menu_path         'click|Products|Laptops|Gaming' hovers each level, clicks the last
+#                     ('hover|Products|Laptops' only hovers)
+_PAGE_CHECKS = _PAGE_CHECKS + ("toast",)
+_PAGE_ACTIONS = _PAGE_ACTIONS + ("shortcut", "drop_file", "menu_path")
+_B11B_VERBS = ("shortcut", "drop_file", "menu_path")
+_DROP_FILE_NAME = "qastudio-upload.txt"
+
+# Drops a small text file on the drop area named `zone` (its text, aria-label,
+# id or class). Returns what happened, or "" when no drop area is shown yet.
+_DROP_FILE_FN = r"""function(zone, doc) {
+  function norm(s) { return String(s == null ? '' : s).replace(/\s+/g, ' ').trim().toLowerCase(); }
+  function flat(s) { return norm(s).replace(/[^a-z0-9]+/g, ''); }
+  function shown(el) {
+    var r = el.getBoundingClientRect(), st = doc.defaultView.getComputedStyle(el);
+    return r.width > 0 && r.height > 0 && st.visibility !== 'hidden' && st.display !== 'none';
+  }
+  var HINT = '[ondrop],[dropzone],.dropzone,.drop-zone,.dropzone-area,.drop-area,.file-drop,.upload-area,' +
+             '[class*=drop i],[id*=drop i],[class*=upload i],[id*=upload i],[data-testid*=drop i]';
+  var win = doc.defaultView, want = norm(zone), wflat = flat(zone), el = null;
+  if (want) {
+    var hits = [].slice.call(doc.querySelectorAll('body *')).filter(function (e) {
+      if (!shown(e) || /^(script|style|input)$/i.test(e.tagName)) return false;
+      return norm(e.innerText || e.textContent).indexOf(want) >= 0 ||
+             norm(e.getAttribute('aria-label')) === want || (wflat && flat(e.id) === wflat);
+    });
+    hits = hits.filter(function (e) { return !hits.some(function (o) { return o !== e && e.contains(o); }); });
+    if (!hits.length) {
+      hits = [].slice.call(doc.querySelectorAll('[class],[id]')).filter(function (e) {
+        return shown(e) && wflat && (flat(e.id).indexOf(wflat) >= 0 || flat(e.className && e.className.baseVal != null
+          ? e.className.baseVal : e.className).indexOf(wflat) >= 0);
+      });
+    }
+    el = hits[0] || null;
+    if (el) { var up = el.closest(HINT); if (up && up !== doc.body) el = up; }
+  } else {
+    el = [].slice.call(doc.querySelectorAll(HINT)).filter(function (e) {
+      return shown(e) && !/^(input|button|a)$/i.test(e.tagName);
+    })[0] || null;
+  }
+  if (!el) return '';
+  var file = new win.File(['QA Studio upload test file\n'], '__NAME__', { type: 'text/plain' });
+  var dt = new win.DataTransfer();
+  dt.items.add(file);
+  function fire(type) {
+    var ev;
+    try { ev = new win.DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt }); }
+    catch (e) { ev = new win.Event(type, { bubbles: true, cancelable: true }); try { ev.dataTransfer = dt; } catch (x) {} }
+    return el.dispatchEvent(ev);
+  }
+  fire('dragenter'); fire('dragover');
+  var handled = !fire('drop');
+  if (handled) return 'dropped __NAME__';
+  var inp = el.querySelector('input[type=file]') || (el.closest('form') || doc).querySelector('input[type=file]');
+  if (inp) {
+    inp.files = dt.files;
+    inp.dispatchEvent(new win.Event('input', { bubbles: true }));
+    inp.dispatchEvent(new win.Event('change', { bubbles: true }));
+    return 'added __NAME__ to the drop area file field';
+  }
+  return 'dropped __NAME__ (the page did not answer the drop)';
+}""".replace("__NAME__", _DROP_FILE_NAME)
+_DROP_FILE_JS = "return (" + _DROP_FILE_FN + ")(arguments[0], document);"
+
+# The visible menu item showing `label` (exact text, aria-label or title), its
+# clickable element first; after a hover (`prev`) items near it win.
+_MENU_ITEM_FN = r"""function(label, doc, prev) {
+  function norm(s) { return String(s == null ? '' : s).replace(/\s+/g, ' ').trim().toLowerCase(); }
+  function shown(el) {
+    var r = el.getBoundingClientRect(), st = doc.defaultView.getComputedStyle(el);
+    return r.width > 0 && r.height > 0 && st.visibility !== 'hidden' && st.display !== 'none' && st.opacity !== '0';
+  }
+  var CLICK = 'a,button,[role=menuitem],[role=menuitemradio],[role=menuitemcheckbox],[role=tab],[role=button],summary';
+  var want = norm(label);
+  var all = [].slice.call(doc.querySelectorAll(CLICK + ',li,span,div,label,p'));
+  var hits = all.filter(function (e) { return norm(e.innerText || e.textContent) === want && shown(e); });
+  if (!hits.length) hits = all.filter(function (e) {
+    return shown(e) && (norm(e.getAttribute('aria-label')) === want || norm(e.getAttribute('title')) === want);
+  });
+  hits = hits.filter(function (e) { return !hits.some(function (o) { return o !== e && e.contains(o); }); });
+  hits = hits.map(function (e) { return e.closest(CLICK) || e; });
+  if (prev && prev.nodeType === 1) {
+    var box = prev.closest('li,[role=none],[role=presentation],[role=menuitem]') || prev.parentElement;
+    var near = hits.filter(function (e) { return e !== prev && box && box.contains(e); });
+    if (near.length) return near[0];
+    var menus = hits.filter(function (e) {
+      return e !== prev && e.closest('[role=menu],[role=menubar],nav,ul,ol,.dropdown-menu,.submenu,.sub-menu,.menu,[class*=menu i]');
+    });
+    if (menus.length) return menus[0];
+  }
+  return hits[0] || null;
+}"""
+_MENU_ITEM_JS = "return (" + _MENU_ITEM_FN + ")(arguments[0], document, arguments[1]);"
+
+_TOAST_WORDS = r"(?:toast|snackbar|notification|flash|pop-?up|alert)(?:\s+(?:message|banner|bar|notification))?"
+_TOAST_SHOWN = r"(?:appears|is\s+shown|is\s+displayed|pops\s+up|shows\s+up|is\s+visible)"
+
+
+def _toast_checks_in(t, add):
+    """'A toast "Saved" appears', 'The notification "Saved" is shown', 'The toast
+    says "Saved"', '"Saved" appears in a toast', 'A toast message appears'."""
+    spans = []
+
+    def put(m, value, phrase):
+        if any(a <= m.start() < b for a, b in spans):
+            return
+        spans.append((m.start(), m.end()))
+        add(m, "toast", value, phrase)
+    for m in re.finditer(r"\b(?:an?\s+|the\s+)?" + _TOAST_WORDS + r"\s+(?:with\s+(?:the\s+)?(?:text|message)\s+)?"
+                         + _Q_TEXT + r"\s+" + _TOAST_SHOWN, t, re.I):
+        put(m, m.group(1), m.group(1))
+    for m in re.finditer(r"\b(?:an?\s+|the\s+)?" + _TOAST_WORDS + r"\s+(?:says|reads|shows|displays|contains)\s+"
+                         + _Q_TEXT, t, re.I):
+        put(m, m.group(1), m.group(1))
+    for m in re.finditer(_Q_TEXT + r"\s+" + _TOAST_SHOWN + r"\s+(?:in|as)\s+(?:an?\s+|the\s+)?" + _TOAST_WORDS,
+                         t, re.I):
+        put(m, m.group(1), m.group(1))
+    for m in re.finditer(r"\b(?:an?\s+|the\s+)(?:toast|snackbar|notification)(?:\s+message)?\s+" + _TOAST_SHOWN, t, re.I):
+        put(m, "", "")
+
+
+_MENU_SEP_RE = re.compile(r"\s*(?:>|›|→|»|->|=>)\s*")
+_HOVER_START_RE = re.compile(r"^\s*(?:hover(?:\s+over|\s+on)?|mouse\s+over|point\s+(?:at|to)|"
+                             r"move\s+(?:the\s+)?(?:mouse|pointer|cursor)\s+(?:over|to|onto))\b", re.I)
+_MENU_CLICK_RE = re.compile(r"\b(?:click|select|choose|open|tap|pick|go\s+to|navigate\s+to)\b", re.I)
+
+
+def _menu_path_in(a, low):
+    quoted = _quoted_phrases(a)
+    hover = bool(_HOVER_START_RE.match(a))
+    if re.search(r"\b(?:type|enter|fill|write|input|paste)\b", low) or not (
+            hover or re.search(r"\bmenu|\bnav(?:igation)?\b", low) or
+            re.match(r"\s*(?:click|select|choose|open|go\s+to|navigate\s+to)\b", low)):
+        return None
+    items = []
+    for q in quoted:
+        parts = [p.strip() for p in _MENU_SEP_RE.split(q) if p.strip()]
+        if len(parts) >= 2:
+            items = parts
+            break
+    sep_between = bool(re.search(r"[\"”]\s*(?:>|›|→|»|->|=>|,?\s*then)\s*(?:(?:hover|click|select|"
+                                 r"choose|open|tap)\s+(?:on\s+|over\s+)?)?[\"“]", a, re.I))
+    if not items and hover and len(quoted) >= 2:
+        click_last = bool(_MENU_CLICK_RE.search(a[_HOVER_START_RE.match(a).end():]))
+        if len(quoted) >= 3 or sep_between or click_last:
+            items = quoted
+    if not items and not quoted and (hover or re.search(r"\bmenu\b|\bnav(?:igation)?\b", low)):
+        m = re.search(r"([A-Za-z0-9][^<>›→»\"]*?(?:\s*(?:>|›|→|»|->|=>)\s*[A-Za-z0-9][^<>›→»\"]*?)+)"
+                      r"(?=\s+(?:in|from|on)\s+the\b|[.;]?\s*$)", a)
+        if m:
+            path = re.sub(r"^(?:(?:open|select|choose|click|tap|go\s+to|navigate\s+to|hover(?:\s+over)?|in|from|"
+                          r"on|the|main|top|menu|navigation|nav|bar|item)\s+)+", "", m.group(1), flags=re.I)
+            parts = [p.strip(" .") for p in _MENU_SEP_RE.split(path) if p.strip(" .")]
+            if len(parts) >= 2:
+                items = parts
+    if len(items) < 2:
+        return None
+    rest = a[_HOVER_START_RE.match(a).end():] if hover else a
+    click = bool(_MENU_CLICK_RE.search(rest)) or not hover
+    return "menu_path", ("click|" if click else "hover|") + "|".join(items)
+
+
+def _shortcut_action_in(a, low):
+    """'Press Ctrl+K' / 'Press the keyboard shortcut Shift+?' / 'Press Escape on the
+    page' -> ('shortcut', 'CONTROL+K'); a key pressed IN a field stays a key_press."""
+    if not re.search(r"\b(?:press|hit|use|type)\b", low):
+        return None
+    if re.search(r"\b(?:in|into|inside|within|on)\s+(?:the\s+)?[\"“]", a) or \
+            re.search(r"\b(?:in|into|inside|within)\s+(?:the\s+)?(?:\w+\s+){0,2}(?:field|input|box|textbox|"
+                      r"textarea|text\s+area|editor)\b", low):
+        return None
+    page = bool(re.search(r"\bshortcut\b|\bhotkey\b|\b(?:on|anywhere\s+on)\s+the\s+(?:page|site|screen|window|"
+                          r"browser)\b|\bon\s+the\s+keyboard\b|\bglobal(?:ly)?\b", low))
+    m = re.search(r"\b(?:press|hit|use|type)\s+(?:the\s+)?(?:keyboard\s+)?(?:shortcut\s+|hotkey\s+|keys?\s+)?"
+                  r"[\"\u201c]?((?:(?:%s)\s*\+\s*)*)([/?]|f(?:[1-9]|1[0-2])|%s|[a-z0-9])(?![\w])" % (_KEY_MODS, _KEY_NAMES),
+                  low)
+    if not m:
+        return None
+    mods = {"ctrl": "CONTROL", "control": "CONTROL", "shift": "SHIFT", "alt": "ALT", "option": "ALT",
+            "meta": "META", "cmd": "META", "command": "META"}
+    parts = [mods[p.strip()] for p in re.split(r"\s*\+\s*", m.group(1)) if p.strip()]
+    key = re.sub(r"\s+", "", m.group(2)).upper()
+    key = {"RETURN": "ENTER", "ESC": "ESCAPE"}.get(key, key)
+    if not (page or parts or key in ("ESCAPE", "/", "?") or re.match(r"F\d+$", key)):
+        return None
+    return "shortcut", "+".join(parts + [key])
+
+
+def _b11b_action_in(a, low):
+    if re.match(r"\s*(?:close|dismiss|hide)\s+(?:the\s+|a\s+|any\s+)?" + _TOAST_WORDS + r"\b", low) and \
+            re.search(r"\b(?:toast|snackbar|notification|flash)\b", low):
+        return "dismiss_if_present", "@toast"
+    if re.search(r"\b(?:drop|drag(?:\s+(?:and|&|n)\s+drop)?)\s+(?:a\s+|an\s+|the\s+)?(?:test\s+)?files?\b", low) or \
+            re.search(r"\bupload\s+(?:a\s+|the\s+)?(?:test\s+)?files?\s+by\s+(?:dragging|drag(?:\s+and\s+drop)?|dropping)", low):
+        m = re.search(r"\b(?:onto|into|on\s+to|on|to|in|over)\s+(?:the\s+)?" + _Q_TEXT, a, re.I)
+        return "drop_file", (m.group(1) if m else "")
+    got = _menu_path_in(a, low)
+    if got:
+        return got
+    return _shortcut_action_in(a, low)
+
+
+def _shortcut_label(value):
+    names = {"CONTROL": "Ctrl", "META": "Cmd", "ESCAPE": "Esc", "ALT": "Alt", "SHIFT": "Shift"}
+    return "+".join(names.get(p, p.capitalize() if len(p) > 1 else p) for p in str(value or "").split("+"))
+
+
+def _b11b_label(verb, value):
+    v = str(value or "")
+    if verb == "shortcut":
+        return "Press the keyboard shortcut %s on the page" % _shortcut_label(v)
+    if verb == "drop_file":
+        return ('Drop the test file onto "%s"' % v) if v else "Drop the test file onto the drop area"
+    if verb == "menu_path":
+        p = v.split("|")
+        items = [x for x in p[1:] if x]
+        if p[0] == "click" and items:
+            hov = " > ".join('"%s"' % x for x in items[:-1])
+            return 'Hover %s, then click "%s"' % (hov, items[-1])
+        return "Hover " + " > ".join('"%s"' % x for x in items)
+    return verb
+
+
+def _run_b11b_action(driver, verb, value, wait=4, login=None):
+    """Inspection / replay side of the Batch 11b page actions (Selenium)."""
+    from selenium.webdriver.common.action_chains import ActionChains
+    if verb == "shortcut":
+        ActionChains(driver).send_keys(*_selenium_keys(value)).perform()
+        return "pressed %s" % _shortcut_label(value)
+    if verb == "drop_file":
+        zone = _fill_tokens(value, login).strip()
+        end = time.time() + max(wait, 6)
+        while True:
+            try:
+                got = str(driver.execute_script(_DROP_FILE_JS, zone) or "")
+            except Exception:
+                got = ""
+            if got:
+                return got
+            if time.time() >= end:
+                raise ValueError('no drop area%s is shown' % ((' "%s"' % zone) if zone else ""))
+            time.sleep(0.3)
+    if verb == "menu_path":
+        p = _fill_tokens(value, login).split("|")
+        click, items = p[0] == "click", [x.strip() for x in p[1:] if x.strip()]
+        prev = None
+        for i, label in enumerate(items):
+            end, el = time.time() + max(wait, 6), None
+            while el is None:
+                try:
+                    el = driver.execute_script(_MENU_ITEM_JS, label, prev)
+                except Exception:
+                    el = None
+                if el is None:
+                    if time.time() >= end:
+                        raise ValueError('menu item "%s" was not found' % label)
+                    time.sleep(0.25)
+            if click and i == len(items) - 1:
+                try:
+                    el.click()
+                except Exception:
+                    driver.execute_script("arguments[0].click();", el)
+            else:
+                ActionChains(driver).move_to_element(el).perform()
+                time.sleep(0.3)
+            prev = el
+        return ("clicked " if click else "hovered ") + " > ".join(items)
+    raise ValueError("unknown page action " + str(verb))
+
+
 def _page_checks_in(text):
     """Page-level checks an expected result names, in order: [(check, value, phrase)]."""
     t = str(text or "")
@@ -16898,6 +17515,7 @@ def _page_checks_in(text):
     _api_checks_in(t, add)
     _a11y_checks_in(t, add)
     _visual_checks_in(t, add)
+    _toast_checks_in(t, add)
     found.sort(key=lambda x: x[0])
     return [(c, v, p) for _, c, v, p in found]
 
@@ -16980,6 +17598,8 @@ def _page_check_label(check, value):
         name, ignore, pct = _visual_parts(value)
         return ("page looks the same as the visual baseline" + (' "%s"' % name if name else "")
                 + (" (ignoring %s)" % ignore if ignore else "") + (" within %g%%" % pct))
+    if check == "toast":
+        return ('toast message "%s" is shown' % value) if value else "a toast message is shown"
     if check == "a11y":
         lvl = str(value or "serious")
         return "no %s accessibility violations" % ("critical" if lvl == "critical" else lvl + " or worse")
@@ -17657,6 +18277,7 @@ def replay_verify(stories_payload, login, site_url, cb=None, should_stop=None,
     is blocked for those anyway)."""
     _set_login_url((login or {}).get("url") or site_url)
     _set_run_otp(login)
+    _set_run_device(login)
     cb = cb or (lambda *a, **k: None)
     sequenced = sequence_verified_inspection_plans(stories_payload)
     if not sequenced:
@@ -17699,6 +18320,7 @@ def replay_verify(stories_payload, login, site_url, cb=None, should_stop=None,
             "safebrowsing.enabled": True,
         })
         opts.set_capability("unhandledPromptBehavior", "ignore")
+        _apply_run_device_options(opts)
         drv = webdriver.Chrome(options=opts)
         _fit_inspection_window(drv, headless)
         drv.set_page_load_timeout(45)
@@ -18420,6 +19042,57 @@ public final class Healer {
     private static final String PAGE_CHECK_JS = __PAGE_CHECK_JS__;
     private static final String REMEMBER_JS = __REMEMBER_JS__;
     private static final String DISMISS_JS = __DISMISS_JS__;
+    private static final String DROP_FILE_JS = __DROP_FILE_JS__;
+    private static final String MENU_ITEM_JS = __MENU_ITEM_JS__;
+
+    /** "Drop a file onto the 'Drag files here' area": drops the test file
+     *  qastudio-upload.txt on the drop area (its text, id or class). */
+    private void dropFile(String zone) {
+        long end = System.currentTimeMillis() + 8000;
+        String got = "";
+        while (true) {
+            try {
+                Object o = ((JavascriptExecutor) driver).executeScript(DROP_FILE_JS, zone);
+                got = o == null ? "" : o.toString();
+            } catch (Exception ignored) { got = ""; }
+            if (!got.isEmpty() || System.currentTimeMillis() >= end) break;
+            try { Thread.sleep(300); } catch (InterruptedException ignored) { }
+        }
+        if (got.isEmpty()) throw new AssertionError("No drop area " + (zone.isEmpty() ? "" : "'" + zone + "' ") + "is shown");
+        System.out.println("[heal] " + got);
+    }
+
+    /** "Hover 'Products' > 'Laptops', then click 'Gaming'": value
+     *  "click|Products|Laptops|Gaming" (or "hover|..." to only hover). */
+    private void menuPath(String value) {
+        String[] p = value.split("[|]", -1);
+        boolean click = "click".equals(p[0]);
+        java.util.List<String> labels = new java.util.ArrayList<>();
+        for (int i = 1; i < p.length; i++) if (!p[i].trim().isEmpty()) labels.add(p[i].trim());
+        WebElement prev = null;
+        for (int i = 0; i < labels.size(); i++) {
+            WebElement el = null;
+            long end = System.currentTimeMillis() + 6000;
+            while (true) {
+                try {
+                    Object o = ((JavascriptExecutor) driver).executeScript(MENU_ITEM_JS, labels.get(i), prev);
+                    if (o instanceof WebElement) el = (WebElement) o;
+                } catch (Exception ignored) { }
+                if (el != null || System.currentTimeMillis() >= end) break;
+                try { Thread.sleep(250); } catch (InterruptedException ignored) { }
+            }
+            if (el == null) throw new AssertionError("Menu item '" + labels.get(i) + "' was not found");
+            boolean last = i == labels.size() - 1;
+            if (click && last) {
+                try { el.click(); } catch (Exception e) { ((JavascriptExecutor) driver).executeScript("arguments[0].click();", el); }
+            } else {
+                new Actions(driver).moveToElement(el).perform();
+                try { Thread.sleep(300); } catch (InterruptedException ignored) { }
+            }
+            System.out.println("[heal] menu: " + (click && last ? "clicked '" : "hovered '") + labels.get(i) + "'");
+            prev = el;
+        }
+    }
     // Wait-and-scroll before actions, pagination, storage (batch 6-8).
     private static final String READY_JS = __READY_JS__;
     private static final String SCROLL_PAGE_JS = __SCROLL_PAGE_JS__;
@@ -18804,8 +19477,57 @@ public final class Healer {
     /** Page/browser steps with no element: back, forward, refresh, and
      *  "close X if it is shown" (pop-ups, ads, cookie banners - not a failure
      *  when nothing is shown). */
+    private String deviceNow = null;     // the screen a "device" step switched to
+
+    /** "Switch to an iPhone 14 screen" / "Rotate to landscape" / "Switch back to
+     *  desktop": Chrome / Edge via DevTools, other browsers by window size. Put the
+     *  step before opening the page so the site also sees the mobile user agent. */
+    private void emulate(String value) {
+        String v = value == null ? "" : value;
+        if (v.startsWith("|")) {
+            Devices.Spec cur = Devices.spec(deviceNow != null ? deviceNow : Config.setting("DEVICE", ""));
+            if (cur == null) { System.out.println("[heal] rotate: no phone / tablet screen to rotate"); return; }
+            v = cur.base + ("|landscape".equals(v) ? " landscape" : "");
+        }
+        Devices.Spec d = Devices.spec(v);
+        deviceNow = d == null ? "" : v;
+        if (driver instanceof org.openqa.selenium.chromium.HasCdp) {
+            org.openqa.selenium.chromium.HasCdp c = (org.openqa.selenium.chromium.HasCdp) driver;
+            Map<String, Object> touch = new java.util.HashMap<>();
+            touch.put("enabled", d != null);
+            if (d == null) {
+                c.executeCdpCommand("Emulation.clearDeviceMetricsOverride", new java.util.HashMap<>());
+            } else {
+                Map<String, Object> m = new java.util.HashMap<>();
+                m.put("width", d.width);
+                m.put("height", d.height);
+                m.put("deviceScaleFactor", d.dpr);
+                m.put("mobile", d.mobile);
+                c.executeCdpCommand("Emulation.setDeviceMetricsOverride", m);
+                if (!d.ua.isEmpty()) {
+                    Map<String, Object> ua = new java.util.HashMap<>();
+                    ua.put("userAgent", d.ua);
+                    c.executeCdpCommand("Emulation.setUserAgentOverride", ua);
+                }
+            }
+            c.executeCdpCommand("Emulation.setTouchEmulationEnabled", touch);
+        } else if (d == null) {
+            driver.manage().window().maximize();
+        } else {
+            driver.manage().window().setSize(new org.openqa.selenium.Dimension(d.width, d.height + 85));
+        }
+        System.out.println("[heal] screen: " + (d == null ? "desktop" : d.name + " " + d.width + "x" + d.height));
+    }
+
     public void pageAction(String verb, String value) {
         switch (verb) {
+            case "device": emulate(value); break;
+            case "shortcut":
+                new Actions(driver).sendKeys(keyChord(value)).perform();
+                System.out.println("[heal] pressed " + value);
+                break;
+            case "drop_file": dropFile(fill(value == null ? "" : value)); break;
+            case "menu_path": menuPath(fill(value == null ? "" : value)); break;
             case "go_back": driver.navigate().back(); break;
             case "go_forward": driver.navigate().forward(); break;
             case "refresh": driver.navigate().refresh(); break;
@@ -18878,6 +19600,8 @@ public final class Healer {
             browser = ((HasCapabilities) driver).getCapabilities().getBrowserName().toLowerCase(java.util.Locale.ROOT);
             if (browser.contains("edge")) browser = "edge";
         } catch (Exception ignored) { }
+        Devices.Spec screen = Devices.spec(deviceNow != null ? deviceNow : Config.setting("DEVICE", ""));
+        if (screen != null) browser += "-" + screen.name;       // each screen keeps its own baseline
         // The OS is part of the name: fonts draw differently on Windows and on the
         // Linux CI machines, so each keeps its own baseline.
         String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
@@ -19383,6 +20107,8 @@ public final class Healer {
             .replace("__PAGE_CHECK_JS__", json.dumps(_PAGE_CHECK_JS))
             .replace("__REMEMBER_JS__", json.dumps(_REMEMBER_JS))
             .replace("__DISMISS_JS__", json.dumps(_DISMISS_JS))
+            .replace("__DROP_FILE_JS__", json.dumps(_DROP_FILE_JS))
+            .replace("__MENU_ITEM_JS__", json.dumps(_MENU_ITEM_JS))
             .replace("__READY_JS__", json.dumps(_READY_JS))
             .replace("__SCROLL_PAGE_JS__", json.dumps(_SCROLL_PAGE_JS))
             .replace("__PAGINATE_JS__", json.dumps(_PAGINATE_JS))
@@ -21061,6 +21787,7 @@ def build_selfhealing_project(out_dir, sequenced, base_url, login=None,
         if not os.path.exists(_rc):
             _w(_rc, _idea_maven_config(_name, _goals, _opts))
     _w(os.path.join(src_main, "DriverFactory.java"), _driver_factory(pkg))
+    _w(os.path.join(src_main, "Devices.java"), _devices_java(pkg))
     _w(os.path.join(src_main, "VideoRecorder.java"), _video_recorder(pkg))
     _w(os.path.join(src_main, "ProgressWindow.java"), _progress_window(pkg))
     _w(os.path.join(src_main, "Config.java"),
@@ -21451,7 +22178,8 @@ def run_automation_pipeline(project_dir, stories_payload, opts, cb=None, should_
     site = resolve_site_url(opts.get("site_url") or "", stories_payload)
     login_url = resolve_site_url(opts["login_url"]) if (opts.get("login_url") or "").strip() else site
     login = {"url": login_url, "user": opts.get("login_user") or "",
-             "password": opts.get("login_pass") or "", "otp_secret": opts.get("otp_secret") or ""}
+             "password": opts.get("login_pass") or "", "otp_secret": opts.get("otp_secret") or "",
+             "device": opts.get("device") or ""}
     n_cases = sum(len(p.get("test_cases") or []) for p in stories_payload)
     stats = {"Stories": len(stories_payload), "Test cases": n_cases}
     if not stories_payload or not n_cases:
@@ -21491,6 +22219,7 @@ def run_automation_pipeline(project_dir, stories_payload, opts, cb=None, should_
                 "summary": "Generation blocked: live inspection did not verify every required locator (see the log)."}
     try:
         apply_run_browsers(project_dir, target, opts.get("browsers") or ["chrome"], cb=cb)
+        apply_run_device(project_dir, target, opts.get("device") or "", cb=cb)
     except Exception as exc:
         cb("Couldn't save the browser choice: %s" % exc, "warn")
     stats["Files"] = len(generated or [])

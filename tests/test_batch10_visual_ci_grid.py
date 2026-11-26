@@ -118,7 +118,7 @@ class VisualEmitted(unittest.TestCase):
         for s in ("check === 'visual'", "function _qaVisual(value)", "cy.task('qaVisual'"):
             self.assertIn(s, cy)
         self.assertIn("qaVisual({ op, key, shot, diff })", tasks)
-        self.assertIn("qaVisual: tasks.qaVisual", A._CY_CONFIG)
+        self.assertIn("qaVisual: tasks.qaVisual", A._with_batch2_js(A._CY_CONFIG))
         for text in (pw, cy, tasks):
             self.assertNotRegex(text, r"__VISUAL_[A-Z]+__")
 
@@ -128,7 +128,7 @@ class VisualEmitted(unittest.TestCase):
         for name, text in (("healer.js", A._with_batch2_js(A._PW_HEALER_JS)),
                            ("cy-healer.js", A._with_batch2_js(A._CY_HEALER_JS).replace("__UI_LOCALE__", "en")),
                            ("cy-tasks.js", A._with_batch2_js(A._CY_TASKS_JS)),
-                           ("browsers.js", A._PW_BROWSERS_JS),
+                           ("browsers.js", A._with_batch2_js(A._PW_BROWSERS_JS)),
                            ("run-browsers.js", A._CY_RUN_BROWSERS_JS)):
             path = os.path.join(d, name)
             with open(path, "w", encoding="utf-8") as f:
@@ -151,7 +151,7 @@ class Grids(unittest.TestCase):
         d = tempfile.mkdtemp()
         path = os.path.join(d, "browsers.js")
         with open(path, "w", encoding="utf-8") as f:
-            f.write(A._PW_BROWSERS_JS.replace("require('dotenv').config();", ""))
+            f.write(A._with_batch2_js(A._PW_BROWSERS_JS).replace("require('dotenv').config();", ""))
         js = "const b = require(%s); const out = []; try { out.push(b.gridEndpoint('chrome')); } " \
              "catch (e) { out.push('ERR ' + e.message); } " \
              "try { out.push(JSON.stringify(b.projects()[0].use)); } catch (e) { out.push(''); } " \
@@ -530,6 +530,56 @@ class RunAndPush(unittest.TestCase):
             self.assertIn('strings.t("auto_git_public")', f.read())
         for lang in LANGS:
             self.assertTrue(strings._STRINGS[lang].get("auto_git_public"), lang)
+
+    def test_push_stops_when_git_stages_nothing(self):
+        import subprocess as sp
+        calls = []
+
+        def fake_run(args, **kw):
+            calls.append(args[:3])
+            rc = 0
+            if args[:3] == ["git", "add", "-A"]:
+                return sp.CompletedProcess(args, 128, "", "fatal: LF would be replaced by CRLF in x.yml")
+            return sp.CompletedProcess(args, rc, "", "")
+        with mock.patch("subprocess.run", fake_run), mock.patch.object(E.time, "sleep", lambda s: None), \
+                mock.patch.object(E, "_github_ensure_repo", lambda *a, **k: (True, "")), \
+                mock.patch.object(E, "sync_project_readme", lambda *a, **k: None):
+            ok, msg = E.push_to_git(self.d, "https://github.com/me/r.git", "t", cb=self.cb)
+        self.assertFalse(ok)
+        self.assertIn("LF would be replaced", msg)
+        self.assertNotIn(["git", "push", "-u"], calls)
+
+    def test_push_stops_when_nothing_was_committed(self):
+        import subprocess as sp
+
+        def fake_run(args, **kw):
+            if args[:3] == ["git", "rev-parse", "--verify"]:
+                return sp.CompletedProcess(args, 128, "", "fatal: Needed a single revision")
+            if args[:2] == ["git", "commit"]:
+                return sp.CompletedProcess(args, 1, "nothing added to commit but untracked files present", "")
+            return sp.CompletedProcess(args, 0, "", "")
+        with mock.patch("subprocess.run", fake_run), \
+                mock.patch.object(E, "_github_ensure_repo", lambda *a, **k: (True, "")), \
+                mock.patch.object(E, "sync_project_readme", lambda *a, **k: None):
+            ok, msg = E.push_to_git(self.d, "https://github.com/me/r.git", "t", cb=self.cb)
+        self.assertFalse(ok)
+        self.assertIn("Nothing to push", msg)
+
+    def test_github_calls_retry_on_a_network_blip(self):
+        tries = []
+
+        def flaky(url, **kw):
+            tries.append(url)
+            if len(tries) < 3:
+                raise E.requests.exceptions.ConnectTimeout("timed out")
+            return "ok"
+        with mock.patch.object(E.time, "sleep", lambda s: None):
+            self.assertEqual(E._gh_call(flaky, "https://api.github.com/x"), "ok")
+        self.assertEqual(len(tries), 3)
+        import inspect
+        src = (inspect.getsource(E.github_ci_settings) + inspect.getsource(E.github_fetch_ci_baselines)
+               + inspect.getsource(E._github_ensure_repo))
+        self.assertNotRegex(src, r"(?<!_gh_call\()requests\.(get|post|put)\(")
 
     def test_checkbox_and_flow_are_wired(self):
         with open(os.path.join(ROOT, "automation.py"), encoding="utf-8") as f:

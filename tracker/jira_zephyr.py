@@ -192,7 +192,10 @@ class JiraZephyrBackend(Backend):
         Capability.STORY_LINKS, Capability.CHILD_TASKS,
         Capability.TESTER_FIELD, Capability.TASK_STATS,
         Capability.EXECUTION_STATUS, Capability.SPRINT_REPORTS,
-        Capability.ATTACHMENTS, Capability.DELETE_TEST_CASE,
+        Capability.ATTACHMENTS,
+        # NOT DELETE_TEST_CASE: Zephyr Scale Cloud's REST API v2 has no endpoint
+        # to delete a test case (or a folder) - only the Zephyr UI can. Without
+        # the capability, dedupe reports duplicates instead of failing on them.
         # Zephyr steps DO carry testData, unlike Azure's steps XML.
         Capability.STEP_TEST_DATA,
         # List a story's sub-tasks and edit their fields (Task Manager).
@@ -427,7 +430,7 @@ class JiraZephyrBackend(Backend):
         return self._sprint_field
 
     # ── core: stories ─────────────────────────────────────────────────────
-    def _search(self, jql, fields=None):
+    def _search(self, jql, fields=None, limit=None):
         """Run a JQL search via the CURRENT endpoint, /rest/api/3/search/jql.
 
         The old /rest/api/3/search was REMOVED from Jira Cloud (410 Gone —
@@ -454,7 +457,7 @@ class JiraZephyrBackend(Backend):
                 params["nextPageToken"] = token
             payload = sess.get("api/3/search/jql", params=params) or {}
             issues.extend(payload.get("issues") or [])
-            if payload.get("isLast"):
+            if payload.get("isLast") or (limit and len(issues) >= limit):
                 break
             token = payload.get("nextPageToken")
             if not token or token in seen_tokens:  # absent, or the loop-forever bug
@@ -468,12 +471,64 @@ class JiraZephyrBackend(Backend):
     # need it (every AI prompt reads it), so they pay for the wider payload; the
     # generic _search default stays lean for callers that don't.
     _STORY_FIELDS = ["*all"]
+    #: Issue types that are never "stories" for test generation: bugs (the
+    #: Sprint Report reads those separately), epics and test-management issue
+    #: types (Xray's Test / Test Plan / …).
+    _NOT_STORY_TYPES = {"bug", "epic", "sub-task", "subtask", "test", "test plan", "test set",
+                        "test execution", "precondition", "pre-condition", "test case"}
+    _DEFAULT_STORY_TYPES = ("Story", "User Story", "Task")
+
+    def _story_issue_types(self, project_key):
+        """The project's own story-level issue types (Story, Task, a custom
+        "Feature" / "Requirement" / "قصة مستخدم" …): standard level, not a
+        sub-task, not a bug / epic / test type. Falls back to the classic three
+        when the project's types can't be read. Cached per project."""
+        cache = self.__dict__.setdefault("_story_types_cache", {})
+        if project_key in cache:
+            return cache[project_key]
+        names = []
+        try:
+            row = self._need_jira().get(f"api/3/project/{project_key}") or {}
+            for it in row.get("issueTypes") or []:
+                if not isinstance(it, dict) or it.get("subtask"):
+                    continue
+                level = it.get("hierarchyLevel")
+                if level not in (None, 0):
+                    continue
+                name = (it.get("name") or "").strip()
+                if name and name.lower() not in self._NOT_STORY_TYPES and name not in names:
+                    names.append(name)
+        except Exception:
+            names = []
+        out = tuple(names) or self._DEFAULT_STORY_TYPES
+        cache[project_key] = out
+        return out
+
+    def _issuetype_clause(self, project_key):
+        return "issuetype in (%s)" % ", ".join(
+            '"%s"' % jql_escape(n) for n in self._story_issue_types(project_key))
+
+    def fetch_backlog_stories(self, project, limit=100):
+        """Open stories of the project that aren't in a sprint view: the story
+        picker's fallback when the board has no (active) sprint, or the sprint
+        holds no stories. Board order (Rank) first, newest-updated as backup."""
+        pkey = self._project_key(project)
+        base = (f'project = "{jql_escape(pkey)}" AND statusCategory != Done '
+                f'AND {self._issuetype_clause(pkey)}')
+        try:
+            issues = self._search(base + " ORDER BY Rank ASC", fields=self._STORY_FIELDS, limit=limit)
+        except Exception:
+            issues = []
+        if not issues:
+            issues = self._search(base + " ORDER BY updated DESC", fields=self._STORY_FIELDS, limit=limit)
+        return [self._to_story(i, "") for i in issues[:max(1, int(limit))]]
 
     def fetch_stories_in_sprint(self, project, sprint_path):
-        key = jql_escape(self._project_key(project))
+        pkey = self._project_key(project)
+        key = jql_escape(pkey)
         sprint = jql_escape(sprint_path)
         base = (f'project = "{key}" AND sprint = "{sprint}" '
-                f'AND issuetype in (Story, "User Story", Task)')
+                f'AND {self._issuetype_clause(pkey)}')
         # Order by the board's manual Rank so the multiselect / plan match the
         # sprint board's top-to-bottom order (the Azure board-order parity). Rank
         # is standard JQL on any sprint-using project, but guard defensively: if
@@ -562,11 +617,32 @@ class JiraZephyrBackend(Backend):
             epic_id=epic_id, epic_name=epic_name)
 
     # ── core: plans & suites (D1/D2) ──────────────────────────────────────
+    _ZEPHYR_NO_PROJECT = re.compile(r"project\s+'?([^'\"]+?)'?\s+not\s+found", re.I)
+
+    def _zephyr_project_error(self, exc, project_key=""):
+        """Zephyr answers 400 "Project 'DA' Not Found" when Zephyr isn't turned
+        on for that Jira project (it's enabled per project). Say that, with the
+        fix, instead of the raw API text. Other errors pass through unchanged."""
+        if not isinstance(exc, TrackerError):
+            return exc
+        m = self._ZEPHYR_NO_PROJECT.search(getattr(exc, "message", "") or str(exc))
+        if not m:
+            return exc
+        key = (m.group(1) or project_key or "").strip()
+        return NotFound(
+            f"Zephyr isn't enabled for the Jira project {key}. Ask a project admin to turn it on: "
+            f"Jira → project {key} → Project settings → Apps → Zephyr → enable Zephyr for this "
+            f"project, then pick the project again.",
+            backend="zephyr", status=getattr(exc, "status", None))
+
     def _folders(self, project_key, folder_type="TEST_CASE"):
-        return list(self._need_zephyr().paginate(
-            "folders", params={"projectKey": project_key, "folderType": folder_type},
-            cursor="startAt", limit_param="maxResults",
-            extract=lambda p: (p or {}).get("values") or []))
+        try:
+            return list(self._need_zephyr().paginate(
+                "folders", params={"projectKey": project_key, "folderType": folder_type},
+                cursor="startAt", limit_param="maxResults",
+                extract=lambda p: (p or {}).get("values") or []))
+        except TrackerError as exc:
+            raise self._zephyr_project_error(exc, project_key) from exc
 
     def _find_folder(self, project_key, name, parent_id=None):
         for row in self._folders(project_key):
@@ -582,9 +658,12 @@ class JiraZephyrBackend(Backend):
                        folder_type="TEST_CASE"):
         # Zephyr rejects / and \ in folder names; story titles contain both.
         safe = re.sub(r"[/\\]", "-", str(name or "").strip()) or "Untitled"
-        return self._need_zephyr().post("folders", json={
-            "projectKey": project_key, "name": safe[:255],
-            "parentId": parent_id, "folderType": folder_type})
+        try:
+            return self._need_zephyr().post("folders", json={
+                "projectKey": project_key, "name": safe[:255],
+                "parentId": parent_id, "folderType": folder_type})
+        except TrackerError as exc:
+            raise self._zephyr_project_error(exc, project_key) from exc
 
     def fetch_test_plans(self, project):
         key = self._project_key(project)
@@ -656,17 +735,21 @@ class JiraZephyrBackend(Backend):
     def fetch_test_cases_for_suite(self, project, plan, suite):
         key = self._project_key(project)
         out = []
-        for row in self._need_zephyr().paginate(
+        try:
+            rows = list(self._need_zephyr().paginate(
                 "testcases", params={"projectKey": key, "folderId": suite.ref.id},
                 cursor="startAt", limit_param="maxResults",
-                extract=lambda p: (p or {}).get("values") or []):
+                extract=lambda p: (p or {}).get("values") or []))
+        except TrackerError as exc:
+            raise self._zephyr_project_error(exc, key) from exc
+        for row in rows:
             if not isinstance(row, dict):
                 continue
             out.append(TestCase(
                 ref=Ref(id=str(row.get("id") or ""), key=row.get("key") or ""),
                 title=row.get("name") or "", suite_ref=suite.ref,
                 story_ref=suite.story_ref,
-                url=f"{self.site}/browse/{row.get('key')}" if self.site else ""))
+                url=self._case_url(str(row.get("id") or ""), row.get("key") or "", key)))
         return out
 
     def create_test_case(self, project, plan, suite, title, story=None, labels=()):
@@ -681,12 +764,15 @@ class JiraZephyrBackend(Backend):
                 pass
         if story is not None and story.acceptance_criteria:
             payload["objective"] = story.acceptance_criteria[:4000]
-        row = self._need_zephyr().post("testcases", json=payload) or {}
+        try:
+            row = self._need_zephyr().post("testcases", json=payload) or {}
+        except TrackerError as exc:
+            raise self._zephyr_project_error(exc, key) from exc
         case_key = row.get("key") or ""
         case = TestCase(ref=Ref(id=str(row.get("id") or case_key), key=case_key),
                         title=title, suite_ref=suite.ref if suite else None,
                         story_ref=(story.ref if story else None),
-                        url=f"{self.site}/browse/{case_key}" if self.site else "")
+                        url=self._case_url(str(row.get("id") or ""), case_key, key))
         # D2: the issue link is what Jira-side coverage reporting reads. Failure
         # here must not lose the case we just created — the case is the valuable
         # artifact; the link is recoverable on a later run.
@@ -731,11 +817,45 @@ class JiraZephyrBackend(Backend):
                                  json={"mode": "OVERWRITE", "items": items})
 
     def delete_test_case(self, project, plan, suite, ref):
-        self._need_zephyr().delete(f"testcases/{ref.key or ref.id}")
+        # Zephyr Scale Cloud's API can't delete test cases: say so plainly
+        # (BackendUnsupported) instead of sending a DELETE that always fails.
+        self.require(Capability.DELETE_TEST_CASE, "deleting test cases (Zephyr's API has no delete)")
+
+    _ZEPHYR_CASE_KEY = re.compile(r"^([A-Z][A-Z0-9_]*)-T\d+$")
+
+    def _case_url(self, case_id="", case_key="", project_key=""):
+        """A Zephyr test case opens inside Jira's Zephyr app page, not at
+        /browse/ (test case keys like PROJ-T12 aren't Jira issues)."""
+        if not self.site:
+            return ""
+        m = self._ZEPHYR_CASE_KEY.match(case_key or "")
+        proj = (m.group(1) if m else "") or (project_key or "")
+        if not proj:
+            return ""
+        page = (f"{self.site}/projects/{proj}?selectedItem=com.atlassian.plugins."
+                f"atlassian-connect-plugin:com.kanoah.test-manager__main-project-page")
+        if str(case_id).isdigit() and case_id != case_key:
+            return f"{page}#!/v2/testCase/{case_id}"
+        if m:
+            return f"{page}#!/testCase/{case_key}"
+        return f"{page}#!/v2/testCases"
+
+    def case_url(self, ref, project=None):
+        """Link for a Zephyr test case (backend_setup.case_url prefers this).
+        Subclasses whose test cases ARE Jira issues (Xray) keep item_url."""
+        if self.name != "jira_zephyr":
+            return self.item_url(ref, project)
+        key = ref.key if self._ZEPHYR_CASE_KEY.match(ref.key or "") else ""
+        cid = ref.id if (ref.id or "").isdigit() else ""
+        if not key and not cid:
+            return self.item_url(ref, project)
+        return self._case_url(cid, key, self._project_key(project) if project else "")
 
     def item_url(self, ref, project=None):
         if not self.site:
             return ""
+        if self.name == "jira_zephyr" and self._ZEPHYR_CASE_KEY.match(ref.key or ref.id or ""):
+            return self._case_url(ref.id or "", ref.key or ref.id or "")
         return f"{self.site}/browse/{ref.key or ref.id}"
 
     # ── extended ──────────────────────────────────────────────────────────

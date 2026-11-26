@@ -322,6 +322,55 @@ def screen(app):
             return ft.Checkbox(label=label, value=(key in _picked_browsers()),
                                active_color=T.VIOLET, on_change=_flip)
 
+        def _screen_picker():
+            # Phone / tablet screen the tests (and live inspection) emulate. Saved
+            # immediately; generation writes it as DEVICE / device= into the project.
+            import engine as E
+            cur = str(app.creds.get("auto_device") or "")
+            land = "landscape" in cur.lower()
+            base = cur.replace("landscape", "").replace("|", "").strip() or "desktop"
+            names = ["desktop"] + list(E._DEVICES.keys())
+            if base not in names:
+                base = "desktop"
+
+            def _save(dev, landscape):
+                val = "" if dev == "desktop" else (dev + (" landscape" if landscape else ""))
+                app.creds["auto_device"] = val
+                try:
+                    import store
+                    store.save(app.creds)
+                except Exception:
+                    pass
+
+            def _pick(e):
+                state["dev"] = e.control.value or "desktop"
+                rot.disabled = state["dev"] == "desktop"
+                try:
+                    rot.update()
+                except Exception:
+                    pass
+                _save(state["dev"], bool(rot.value))
+
+            def _rotate(e):
+                _save(state["dev"], bool(e.control.value))
+
+            state = {"dev": base}
+            opts = [ft.DropdownOption(key=n, text=(strings.t("auto_screen_desktop") if n == "desktop" else
+                                                    "%s  (%d×%d)" % (n, E._DEVICES[n][0], E._DEVICES[n][1])))
+                    for n in names]
+            kw = dict(value=base, options=opts, on_select=_pick, border_color=T.BORDER,
+                      focused_border_color=T.VIOLET, border_radius=T.R, text_size=12, filled=True,
+                      bgcolor=T.CARD, width=240,
+                      content_padding=ft.Padding.symmetric(vertical=6, horizontal=10))
+            try:
+                dd = ft.Dropdown(menu_height=320, **kw)
+            except TypeError:
+                dd = ft.Dropdown(**kw)
+            rot = ft.Checkbox(label=strings.t("auto_screen_landscape"), value=land,
+                              disabled=(base == "desktop"), active_color=T.VIOLET, on_change=_rotate)
+            return ft.Row([ft.Text(strings.t("auto_screen"), size=12, color=T.INK_2, weight=ft.FontWeight.W_600),
+                           dd, rot], spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER, wrap=True)
+
         def _source_option(key, title, desc, icon, enabled=True):
             active = (("file" if file_source else "backend") == key)
             def _pick(e, value=key):
@@ -431,6 +480,10 @@ def screen(app):
                 _browser_box("firefox", "Firefox"),
             ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER, wrap=True),
             ft.Text(strings.t("auto_browsers_note"),
+                    size=11, color=T.INK_3, weight=ft.FontWeight.W_500),
+            ft.Container(height=8),
+            _screen_picker(),
+            ft.Text(strings.t("auto_screen_note"),
                     size=11, color=T.INK_3, weight=ft.FontWeight.W_500),
         ], spacing=0))
 
@@ -807,35 +860,18 @@ def screen(app):
                    if app._auto_running else ft.Icon(ft.Icons.TERMINAL, size=15, color=T.INK_3))
         app._auto_spinner_ctr = ft.Container(spinner)
 
-        def _log_tool_btn(icon, tip, cb, danger=False):
-            # Small square icon-button "chip": rounded like the delete button on
-            # Useful Links, tinted red for the destructive Clear action so it
-            # reads differently from the neutral Copy action at a glance.
-            return ft.Container(
-                ft.IconButton(
-                    icon, icon_size=15,
-                    icon_color=(T.RED if danger else T.INK_3),
-                    tooltip=tip, on_click=cb, width=26, height=26,
-                    style=ft.ButtonStyle(padding=0,
-                                         shape=ft.RoundedRectangleBorder(radius=7))),
-                bgcolor=(T.RED_SOFT if danger else T.CARD),
-                border=ft.Border.all(1, (T.RED_SOFT if danger else T.BORDER)),
-                border_radius=8)
+        # Shared log toolbar pieces (log_panel.py): the same Copy / Save / Clear
+        # buttons and All / Issues chips as the Generate log.
+        import log_panel
+        import log_view
+        _log_tool_btn = log_panel.tool_btn
 
-        # All / Issues filter: two small chips, refreshed in place on toggle.
+        # All / Issues filter: two small chips, refreshed in place on toggle
+        # (and when the issue count changes - main.py's _auto_logmsg).
         def _filter_chips():
-            issues = bool(getattr(app, "_auto_log_issues", False))
-            def chip(label, active, value):
-                return ft.Container(
-                    ft.Text(label, size=10.5, weight=ft.FontWeight.BOLD,
-                            color=(T.VIOLET_INK if active else T.INK_3)),
-                    padding=ft.Padding.symmetric(horizontal=8, vertical=4),
-                    border_radius=7, bgcolor=(T.VIOLET_SOFT if active else T.CARD),
-                    border=ft.Border.all(1, T.VIOLET if active else T.BORDER),
-                    on_click=lambda e, v=value: app._set_log_filter(v))
-            return ft.Row([chip(strings.t("auto_log_all"), not issues, False),
-                           chip(strings.t("auto_log_issues"), issues, True)],
-                          spacing=4, tight=True)
+            return log_panel.filter_chips(bool(getattr(app, "_auto_log_issues", False)),
+                                          log_view.issue_count(getattr(app, "_auto_log", [])),
+                                          app._set_log_filter)
         app._auto_log_filter_ctr = ft.Container(_filter_chips())
 
         def _refresh_log_filter():
@@ -872,6 +908,7 @@ def screen(app):
                     app._auto_log_filter_ctr,
                     _log_tool_btn(ft.Icons.COPY_ALL_OUTLINED, strings.t("auto_copy_log"),
                                  app._copy_auto_log),
+                    *([] if platform_caps.is_mobile() else [log_panel.save_btn(app._save_auto_log)]),
                     _log_tool_btn(ft.Icons.DELETE_OUTLINE, strings.t("auto_clear_log"),
                                  app._clear_auto_log, danger=True)],
                    spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER),

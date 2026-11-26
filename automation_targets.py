@@ -57,6 +57,8 @@ def _with_batch2_js(text):
                 .replace("__PAGE_CHECK_FN__", json.dumps(_E._PAGE_CHECK_FN))
                 .replace("__REMEMBER_FN__", json.dumps(_E._REMEMBER_FN))
                 .replace("__DISMISS_FN__", json.dumps(_E._DISMISS_FN))
+                .replace("__DROP_FILE_FN__", json.dumps(_E._DROP_FILE_FN))
+                .replace("__MENU_ITEM_FN__", json.dumps(_E._MENU_ITEM_FN))
                 .replace("__READY_FN__", json.dumps(_E._READY_FN))
                 .replace("__SCROLL_PAGE_FN__", json.dumps(_E._SCROLL_PAGE_FN))
                 .replace("__PAGINATE_FN__", json.dumps(_E._PAGINATE_FN))
@@ -69,6 +71,7 @@ def _with_batch2_js(text):
                 .replace("__VISUAL_CMP_FN__", json.dumps(_E._VISUAL_CMP_FN))
                 .replace("__VISUAL_MAX__", repr(float(_E._VISUAL_MAX_PCT)))
                 .replace("__VISUAL_DELTA__", str(_E._VISUAL_PIXEL_DELTA))
+                .replace("__DEVICES_JSON__", _E._devices_json())
                 .replace("__AXE_CDN__", _E._AXE_CDN)
                 .replace("__AXE_VER__", _E._AXE_VERSION)
                 .replace("__SCROLL_SEARCH_STEPS__", str(_E._SCROLL_SEARCH_STEPS))
@@ -777,6 +780,31 @@ const CLOUD = {
   browserstack: { chromium: 'playwright-chromium', chrome: 'chrome', edge: 'edge', firefox: 'playwright-firefox' },
   lambdatest: { chromium: 'Chrome', chrome: 'Chrome', edge: 'MicrosoftEdge', firefox: 'pw-firefox' },
 };
+// Phone / tablet screens (DEVICE in .env, or a "Switch to an iPhone 14 screen" step).
+const QA_DEVICES = __DEVICES_JSON__;
+const QA_DEVICE_ALIASES = { mobile: 'iPhone 14', phone: 'iPhone 14', iphone: 'iPhone 14', android: 'Pixel 7',
+  'android phone': 'Pixel 7', tablet: 'iPad', 'ipad air': 'iPad', pixel: 'Pixel 7', samsung: 'Galaxy S20',
+  galaxy: 'Galaxy S20', smartphone: 'iPhone 14' };
+function qaDeviceSpec(value) {
+  let v = String(value || '').replace(/[|]/g, ' ').replace(/ +/g, ' ').trim();
+  const land = /landscape/i.test(v);
+  v = v.replace(/landscape|portrait/ig, '').trim();
+  const low = v.toLowerCase();
+  if (!v || ['desktop', 'none', 'default', 'off', 'normal'].includes(low)) return null;
+  let s = null;
+  const m = /^(\\d{3,4}) *[x×] *(\\d{3,4})$/i.exec(v);
+  if (m) {
+    s = { name: m[1] + 'x' + m[2], base: m[1] + 'x' + m[2], width: +m[1], height: +m[2], dpr: 1, ua: '', mobile: +m[1] < 800 };
+  } else {
+    const name = Object.keys(QA_DEVICES).find((n) => n.toLowerCase() === low) || QA_DEVICE_ALIASES[low];
+    if (!name) return null;
+    const d = QA_DEVICES[name];
+    s = { name, base: name, width: d.width, height: d.height, dpr: d.dpr, ua: d.ua, mobile: true };
+  }
+  if (land) s = Object.assign({}, s, { name: s.name + ' landscape', width: s.height, height: s.width });
+  return s;
+}
+
 let gridNoted = false;
 function gridNote(msg) { if (!gridNoted) console.log('[grid] ' + msg); gridNoted = true; }
 function gridEndpoint(b) {
@@ -820,15 +848,26 @@ function gridEndpoint(b) {
   return null;
 }
 
+function deviceUse(b) {
+  const d = qaDeviceSpec(process.env.DEVICE);
+  if (!d) return {};
+  const use = { viewport: { width: d.width, height: d.height }, deviceScaleFactor: d.dpr, hasTouch: true };
+  if (d.ua) use.userAgent = d.ua;
+  if (b !== 'firefox') use.isMobile = !!d.mobile;     // Firefox has no mobile mode
+  return use;
+}
+
 function projects() {
+  const d = qaDeviceSpec(process.env.DEVICE);
+  if (d) console.log('[screen] ' + d.name + ' ' + d.width + 'x' + d.height);
   return selected().map((b) => {
     const ws = gridEndpoint(b);
-    const use = ws ? Object.assign({}, BROWSERS[b].use, { connectOptions: { wsEndpoint: ws } }) : BROWSERS[b].use;
+    const use = Object.assign({}, BROWSERS[b].use, deviceUse(b), ws ? { connectOptions: { wsEndpoint: ws } } : {});
     return { name: BROWSERS[b].label, use };
   });
 }
 
-module.exports = { selected, projects, BROWSERS, gridEndpoint };
+module.exports = { selected, projects, BROWSERS, gridEndpoint, qaDeviceSpec };
 
 if (require.main === module && process.argv.includes('--install')) {
   const need = new Set(['chromium']);   // global-setup.js logs in with Chromium
@@ -1199,11 +1238,38 @@ const VISUAL_PREP_FN = __VISUAL_PREP_FN__;
 const VISUAL_CMP_FN = __VISUAL_CMP_FN__;
 const VISUAL_MAX = __VISUAL_MAX__;
 const VISUAL_DELTA = __VISUAL_DELTA__;
+// Phone / tablet screens (DEVICE in .env, or a "Switch to an iPhone 14 screen" step).
+const QA_DEVICES = __DEVICES_JSON__;
+const QA_DEVICE_ALIASES = { mobile: 'iPhone 14', phone: 'iPhone 14', iphone: 'iPhone 14', android: 'Pixel 7',
+  'android phone': 'Pixel 7', tablet: 'iPad', 'ipad air': 'iPad', pixel: 'Pixel 7', samsung: 'Galaxy S20',
+  galaxy: 'Galaxy S20', smartphone: 'iPhone 14' };
+function qaDeviceSpec(value) {
+  let v = String(value || '').replace(/[|]/g, ' ').replace(/ +/g, ' ').trim();
+  const land = /landscape/i.test(v);
+  v = v.replace(/landscape|portrait/ig, '').trim();
+  const low = v.toLowerCase();
+  if (!v || ['desktop', 'none', 'default', 'off', 'normal'].includes(low)) return null;
+  let s = null;
+  const m = /^(\\d{3,4}) *[x×] *(\\d{3,4})$/i.exec(v);
+  if (m) {
+    s = { name: m[1] + 'x' + m[2], base: m[1] + 'x' + m[2], width: +m[1], height: +m[2], dpr: 1, ua: '', mobile: +m[1] < 800 };
+  } else {
+    const name = Object.keys(QA_DEVICES).find((n) => n.toLowerCase() === low) || QA_DEVICE_ALIASES[low];
+    if (!name) return null;
+    const d = QA_DEVICES[name];
+    s = { name, base: name, width: d.width, height: d.height, dpr: d.dpr, ua: d.ua, mobile: true };
+  }
+  if (land) s = Object.assign({}, s, { name: s.name + ' landscape', width: s.height, height: s.width });
+  return s;
+}
 const qaApiFn = (...a) => (new Function('return ' + API_FN)())(...a);
 const qaTotp = (secret) => (new Function('return ' + TOTP_FN)())(secret);
 const qaA11yFails = (raw, level) => (new Function('return ' + A11Y_FAILS_FN)())(raw, level);
 // "Close X if it is shown" (pop-ups, ads, cookie banners).
 const DISMISS_FN = __DISMISS_FN__;
+// Drag-and-drop upload (drop areas) and menus with sub-menus.
+const DROP_FILE_FN = __DROP_FILE_FN__;
+const MENU_ITEM_FN = __MENU_ITEM_FN__;
 // Wait-and-scroll before every action, pagination and storage steps (the same
 // scripts QA Studio's inspection uses).
 const READY_FN = __READY_FN__;
@@ -1643,6 +1709,68 @@ class Healer {
   }
 
   async pageAction(verb, value) {
+    if (verb === 'device') {
+      // A new size mid-test: Playwright fixes the user agent and mobile mode when the
+      // test starts, so for those set DEVICE in .env instead.
+      let v = String(value || '');
+      if (v.startsWith('|')) {
+        const cur = qaDeviceSpec(this.deviceNow != null ? this.deviceNow : process.env.DEVICE);
+        if (!cur) { console.log('[heal] rotate: no phone / tablet screen to rotate'); return; }
+        v = cur.base + (v === '|landscape' ? ' landscape' : '');
+      }
+      const d = qaDeviceSpec(v);
+      this.deviceNow = d ? v : '';
+      await this.page.setViewportSize(d ? { width: d.width, height: d.height } : { width: 1280, height: 720 });
+      console.log('[heal] screen: ' + (d ? d.name + ' ' + d.width + 'x' + d.height : 'desktop'));
+      return;
+    }
+    if (verb === 'shortcut') {
+      // A keyboard shortcut on the page: the focused element gets it, as with a real keyboard.
+      await this.page.keyboard.press(pwKey(value));
+      console.log('[heal] pressed ' + value);
+      return;
+    }
+    if (verb === 'drop_file') {
+      // Drops the test file qastudio-upload.txt on the drop area.
+      const zone = String(this.fill(value) || '').trim(), end = Date.now() + 8000;
+      let got = '';
+      do {
+        try { got = await this.page.evaluate('(' + DROP_FILE_FN + ')(' + JSON.stringify(zone) + ', document)'); }
+        catch (e) { got = ''; }
+        if (got) break;
+        await this.page.waitForTimeout(300);
+      } while (Date.now() < end);
+      if (!got) throw new Error('No drop area ' + (zone ? '"' + zone + '" ' : '') + 'is shown');
+      console.log('[heal] ' + got);
+      return;
+    }
+    if (verb === 'menu_path') {
+      // 'click|Products|Laptops|Gaming': hover each level, click the last.
+      const p = String(this.fill(value) || '').split('|'), click = p[0] === 'click';
+      const labels = p.slice(1).map((x) => x.trim()).filter(Boolean);
+      await this.page.evaluate('window.__qaMenuPrev = null');
+      for (let i = 0; i < labels.length; i++) {
+        const expr = '(' + MENU_ITEM_FN + ')(' + JSON.stringify(labels[i]) + ', document, window.__qaMenuPrev || null)';
+        const end = Date.now() + 6000;
+        let el = null;
+        do {
+          try {
+            const h = await this.page.evaluateHandle(expr);
+            el = h.asElement();
+            if (!el) await h.dispose();
+          } catch (e) { el = null; }
+          if (el) break;
+          await this.page.waitForTimeout(250);
+        } while (Date.now() < end);
+        if (!el) throw new Error('Menu item "' + labels[i] + '" was not found');
+        const last = i === labels.length - 1;
+        if (click && last) await el.click();
+        else { await el.hover(); await this.page.waitForTimeout(300); }
+        console.log('[heal] menu: ' + (click && last ? 'clicked "' : 'hovered "') + labels[i] + '"');
+        if (!last) await el.evaluate((n) => { window.__qaMenuPrev = n; });
+      }
+      return;
+    }
     if (verb === 'next_page' || verb === 'go_to_page') return this._pages(verb, String(this.fill(value) || '').trim());
     if (verb === 'set_cookie') {
       const v = String(this.fill(value) || ''), i = v.indexOf('=');
@@ -1748,7 +1876,9 @@ class Healer {
     let name = p[0].trim();
     this.visualCount = this.visualCount || {};
     if (!name) { this.visualCount[test] = (this.visualCount[test] || 0) + 1; name = 'check' + this.visualCount[test]; }
-    const browser = info && info.project && info.project.name ? info.project.name : 'browser';
+    let browser = info && info.project && info.project.name ? info.project.name : 'browser';
+    const screen = qaDeviceSpec(this.deviceNow != null ? this.deviceNow : process.env.DEVICE);
+    if (screen) browser += '-' + screen.name;          // each screen keeps its own baseline
     // The OS is part of the name: fonts draw differently on Windows and on the
     // Linux CI machines, so each keeps its own baseline.
     const key = (test + '-' + name + '-' + browser + '-' + process.platform).toLowerCase().replace(/[^a-z0-9_.-]/g, '_');
@@ -3308,7 +3438,7 @@ def build_playwright_project(out_dir, sequenced, cfg, seed_fn, harvest_js,
     _wif(os.path.join(support_dir, "report-mailer.js"), _report_mailer_js(), written, out_dir)
     _copy_logo(os.path.join(support_dir, "qa-logo.png"), written, out_dir)
     _wif(os.path.join(support_dir, "after-run.js"), _PW_AFTER_RUN_JS, written, out_dir)
-    _wif(os.path.join(support_dir, "browsers.js"), _PW_BROWSERS_JS, written, out_dir)
+    _wif(os.path.join(support_dir, "browsers.js"), _with_batch2_js(_PW_BROWSERS_JS), written, out_dir)
     _wif(os.path.join(support_dir, "progress.js"), _PROGRESS_JS, written, out_dir)
     _wif(os.path.join(support_dir, "QaProgressWindow.java"), progress_window_java(), written, out_dir)
     _wif(os.path.join(support_dir, "progress-reporter.js"), _PW_PROGRESS_REPORTER_JS, written, out_dir)
@@ -3610,6 +3740,30 @@ _CY_CONFIG = """// Cypress config. baseUrl + credentials come from the environme
 require('dotenv').config();
 const path = require('path');
 const { defineConfig } = require('cypress');
+// Phone / tablet screens (DEVICE in .env, or a "Switch to an iPhone 14 screen" step).
+const QA_DEVICES = __DEVICES_JSON__;
+const QA_DEVICE_ALIASES = { mobile: 'iPhone 14', phone: 'iPhone 14', iphone: 'iPhone 14', android: 'Pixel 7',
+  'android phone': 'Pixel 7', tablet: 'iPad', 'ipad air': 'iPad', pixel: 'Pixel 7', samsung: 'Galaxy S20',
+  galaxy: 'Galaxy S20', smartphone: 'iPhone 14' };
+function qaDeviceSpec(value) {
+  let v = String(value || '').replace(/[|]/g, ' ').replace(/ +/g, ' ').trim();
+  const land = /landscape/i.test(v);
+  v = v.replace(/landscape|portrait/ig, '').trim();
+  const low = v.toLowerCase();
+  if (!v || ['desktop', 'none', 'default', 'off', 'normal'].includes(low)) return null;
+  let s = null;
+  const m = /^(\\d{3,4}) *[x×] *(\\d{3,4})$/i.exec(v);
+  if (m) {
+    s = { name: m[1] + 'x' + m[2], base: m[1] + 'x' + m[2], width: +m[1], height: +m[2], dpr: 1, ua: '', mobile: +m[1] < 800 };
+  } else {
+    const name = Object.keys(QA_DEVICES).find((n) => n.toLowerCase() === low) || QA_DEVICE_ALIASES[low];
+    if (!name) return null;
+    const d = QA_DEVICES[name];
+    s = { name, base: name, width: d.width, height: d.height, dpr: d.dpr, ua: d.ua, mobile: true };
+  }
+  if (land) s = Object.assign({}, s, { name: s.name + ' landscape', width: s.height, height: s.width });
+  return s;
+}
 const tasks = require('./cy-tasks');
 // One browser of a cross-browser run (cypress/run-browsers.js): screenshots,
 // videos, downloads and its report go to its own folder, so browsers running at
@@ -3801,7 +3955,16 @@ module.exports = defineConfig({
         APP_USER: process.env.APP_USER || '',
         APP_PASS: process.env.APP_PASS || '',
         OTP_SECRET: process.env.OTP_SECRET || '',
+        DEVICE: process.env.DEVICE || '',
       });
+      // Phone / tablet screen (DEVICE in .env): size and user agent for every spec.
+      const dev = qaDeviceSpec(process.env.DEVICE);
+      if (dev) {
+        config.viewportWidth = dev.width;
+        config.viewportHeight = dev.height;
+        if (dev.ua) config.userAgent = dev.ua;
+        console.log('[screen] ' + dev.name + ' ' + dev.width + 'x' + dev.height);
+      }
       return config;
     },
   },
@@ -4389,11 +4552,38 @@ const VISUAL_PREP_FN = __VISUAL_PREP_FN__;
 const VISUAL_CMP_FN = __VISUAL_CMP_FN__;
 const VISUAL_MAX = __VISUAL_MAX__;
 const VISUAL_DELTA = __VISUAL_DELTA__;
+// Phone / tablet screens (DEVICE in .env, or a "Switch to an iPhone 14 screen" step).
+const QA_DEVICES = __DEVICES_JSON__;
+const QA_DEVICE_ALIASES = { mobile: 'iPhone 14', phone: 'iPhone 14', iphone: 'iPhone 14', android: 'Pixel 7',
+  'android phone': 'Pixel 7', tablet: 'iPad', 'ipad air': 'iPad', pixel: 'Pixel 7', samsung: 'Galaxy S20',
+  galaxy: 'Galaxy S20', smartphone: 'iPhone 14' };
+function qaDeviceSpec(value) {
+  let v = String(value || '').replace(/[|]/g, ' ').replace(/ +/g, ' ').trim();
+  const land = /landscape/i.test(v);
+  v = v.replace(/landscape|portrait/ig, '').trim();
+  const low = v.toLowerCase();
+  if (!v || ['desktop', 'none', 'default', 'off', 'normal'].includes(low)) return null;
+  let s = null;
+  const m = /^(\\d{3,4}) *[x×] *(\\d{3,4})$/i.exec(v);
+  if (m) {
+    s = { name: m[1] + 'x' + m[2], base: m[1] + 'x' + m[2], width: +m[1], height: +m[2], dpr: 1, ua: '', mobile: +m[1] < 800 };
+  } else {
+    const name = Object.keys(QA_DEVICES).find((n) => n.toLowerCase() === low) || QA_DEVICE_ALIASES[low];
+    if (!name) return null;
+    const d = QA_DEVICES[name];
+    s = { name, base: name, width: d.width, height: d.height, dpr: d.dpr, ua: d.ua, mobile: true };
+  }
+  if (land) s = Object.assign({}, s, { name: s.name + ' landscape', width: s.height, height: s.width });
+  return s;
+}
 const qaApiFn = (...a) => (new Function('return ' + API_FN)())(...a);
 const qaTotp = (secret) => (new Function('return ' + TOTP_FN)())(secret);
 const qaA11yFails = (raw, level) => (new Function('return ' + A11Y_FAILS_FN)())(raw, level);
 // "Close X if it is shown" (pop-ups, ads, cookie banners).
 const DISMISS_FN = __DISMISS_FN__;
+// Drag-and-drop upload (drop areas) and menus with sub-menus.
+const DROP_FILE_FN = __DROP_FILE_FN__;
+const MENU_ITEM_FN = __MENU_ITEM_FN__;
 // Wait-and-scroll before every action, pagination and storage steps (the same
 // scripts QA Studio's inspection uses).
 const READY_FN = __READY_FN__;
@@ -4618,7 +4808,9 @@ function _qaVisual(value) {
   let name = p[0].trim();
   if (!name) { __qaVisualCount[t] = (__qaVisualCount[t] || 0) + 1; name = 'check' + __qaVisualCount[t]; }
   const ignore = p[1].trim(), max = p[2].trim() ? Number(p[2]) : VISUAL_MAX;
-  const key = (t + '-' + name + '-' + Cypress.browser.name).toLowerCase().replace(/[^a-z0-9_.-]/g, '_');
+  const screen = qaDeviceSpec(__qaDeviceNow != null ? __qaDeviceNow : Cypress.env('DEVICE'));
+  const key = (t + '-' + name + '-' + Cypress.browser.name + (screen ? '-' + screen.name : ''))
+    .toLowerCase().replace(/[^a-z0-9_.-]/g, '_');
   const prep = (on) => cy.window({ log: false }).then((w) => { try { w.eval('(' + VISUAL_PREP_FN + ')')(ignore, on); } catch (e) { /* page busy */ } });
   let shot = '';
   return prep(true)
@@ -4687,8 +4879,99 @@ function _paginate(what, left) {
     return cy.wait(300, { log: false }).then(() => _paginate(what, left - 1));
   });
 }
+// A real pointer hover where possible (Chrome / Edge / Electron through
+// DevTools, so CSS :hover menus open too), plus the events a pointer fires.
+function _qaRealHover(el) {
+  const win = el.ownerDocument.defaultView;
+  el.scrollIntoView({ block: 'center' });
+  ['pointerover', 'pointerenter', 'mouseover', 'mouseenter', 'pointermove', 'mousemove'].forEach((t) => {
+    const Ev = t.indexOf('pointer') === 0 && win.PointerEvent ? win.PointerEvent : win.MouseEvent;
+    el.dispatchEvent(new Ev(t, { bubbles: t.slice(-5) !== 'enter', cancelable: true, view: win }));
+  });
+  if (!Cypress.isBrowser({ family: 'chromium' })) return null;
+  const r = el.getBoundingClientRect();
+  let fx = 0, fy = 0, scale = 1;
+  try {
+    const f = window.top.document.querySelector('iframe.aut-iframe');
+    const fr = f.getBoundingClientRect();
+    fx = fr.left; fy = fr.top; scale = f.offsetWidth ? fr.width / f.offsetWidth : 1;
+  } catch (e) { /* runner layout unknown: the events above still fired */ }
+  const x = fx + (r.left + r.width / 2) * scale, y = fy + (r.top + r.height / 2) * scale;
+  return Cypress.automation('remote:debugger:protocol', {
+    command: 'Input.dispatchMouseEvent', params: { type: 'mouseMoved', x, y } }).catch(() => null);
+}
+function _qaNode(el) { return el && el.jquery ? el.get(0) : el; }
+let __qaDeviceNow = null;
 Cypress.Commands.add('healPageAction', (verb, value) => {
+  if (verb === 'device') {
+    let v = String(value || '');
+    if (v.startsWith('|')) {
+      const cur = qaDeviceSpec(__qaDeviceNow != null ? __qaDeviceNow : Cypress.env('DEVICE'));
+      if (!cur) { Cypress.log({ name: 'screen', message: 'no phone / tablet screen to rotate' }); return; }
+      v = cur.base + (v === '|landscape' ? ' landscape' : '');
+    }
+    const d = qaDeviceSpec(v);
+    __qaDeviceNow = d ? v : '';
+    Cypress.log({ name: 'screen', message: d ? d.name + ' ' + d.width + 'x' + d.height : 'desktop' });
+    return d ? cy.viewport(d.width, d.height) : cy.viewport(Cypress.config('viewportWidth'), Cypress.config('viewportHeight'));
+  }
   const filled = String(qaFill(value) || '');
+  if (verb === 'shortcut') {
+    // A keyboard shortcut on the page: typed into the focused element (or the
+    // page body); keys Cypress can't type (Tab, F-keys…) fire key events.
+    const parts = filled.toUpperCase().split('+').map((x) => x.trim());
+    const mods = { CONTROL: '{ctrl}', CTRL: '{ctrl}', SHIFT: '{shift}', ALT: '{alt}', META: '{meta}', CMD: '{meta}' };
+    const k = parts.pop();
+    const prefix = parts.map((x) => mods[x] || '').join('');
+    const typed = _CY_KEYS[k] || (k.length === 1 ? k.toLowerCase() : '');
+    Cypress.log({ name: 'shortcut', message: filled });
+    return _scopeDoc().then((doc) => {
+      const t = doc.activeElement && doc.activeElement !== doc.body ? doc.activeElement : doc.body;
+      if (typed) return cy.wrap(t, { log: false }).type(prefix + typed, { force: true, log: false });
+      const opts = { key: k.charAt(0) + k.slice(1).toLowerCase(), bubbles: true, cancelable: true,
+        ctrlKey: parts.includes('CONTROL') || parts.includes('CTRL'), shiftKey: parts.includes('SHIFT'),
+        altKey: parts.includes('ALT'), metaKey: parts.includes('META') || parts.includes('CMD') };
+      t.dispatchEvent(new doc.defaultView.KeyboardEvent('keydown', opts));
+      t.dispatchEvent(new doc.defaultView.KeyboardEvent('keyup', opts));
+    });
+  }
+  if (verb === 'drop_file') {
+    // Drops the test file qastudio-upload.txt on the drop area.
+    const zone = filled.trim();
+    const poll = (left) => _scopeDoc().then((doc) => {
+      const got = doc.defaultView.eval('(' + DROP_FILE_FN + ')')(zone, doc);
+      if (got || left <= 0) return String(got || '');
+      return cy.wait(300, { log: false }).then(() => poll(left - 1));
+    });
+    return poll(26).then((got) => {
+      if (!got) throw new Error('No drop area ' + (zone ? '"' + zone + '" ' : '') + 'is shown');
+      Cypress.log({ name: 'drop', message: got });
+    });
+  }
+  if (verb === 'menu_path') {
+    // 'click|Products|Laptops|Gaming': hover each level, click the last.
+    const p = filled.split('|'), click = p[0] === 'click';
+    const labels = p.slice(1).map((x) => x.trim()).filter(Boolean);
+    let prev = null;
+    const find = (label, left) => _scopeDoc().then((doc) => {
+      const el = _qaNode(doc.defaultView.eval('(' + MENU_ITEM_FN + ')')(label, doc, prev));
+      if (el || left <= 0) return cy.wrap({ el: el || null }, { log: false });
+      return cy.wait(250, { log: false }).then(() => find(label, left - 1));
+    });
+    const step = (i) => {
+      if (i >= labels.length) return;
+      return find(labels[i], 24).then((box) => {
+        const el = box && box.el;
+        if (!el) throw new Error('Menu item "' + labels[i] + '" was not found');
+        const last = i === labels.length - 1;
+        Cypress.log({ name: 'menu', message: (click && last ? 'click ' : 'hover ') + labels[i] });
+        prev = el;
+        if (click && last) return cy.wrap(el, { log: false }).click({ force: true });
+        return cy.then(() => _qaRealHover(el)).wait(300, { log: false }).then(() => step(i + 1));
+      });
+    };
+    return step(0);
+  }
   if (verb === 'go_to_page' || (verb === 'next_page' && !filled.trim())) {
     const what = verb === 'go_to_page' ? filled.trim() : 'next';
     return _paginate(what, 13).then((got) => {
@@ -5125,7 +5408,7 @@ def build_cypress_project(out_dir, sequenced, cfg, seed_fn, harvest_js,
 
     cb("Writing self-healing Cypress framework (tasks bridge, AI · %s)…" % prov, "dim")
     _wif(os.path.join(out_dir, "package.json"), _CY_PKG_JSON, written, out_dir)
-    _wif(os.path.join(out_dir, "cypress.config.js"), _CY_CONFIG, written, out_dir)
+    _wif(os.path.join(out_dir, "cypress.config.js"), _with_batch2_js(_CY_CONFIG), written, out_dir)
     _wif(os.path.join(out_dir, "cy-tasks.js"),
          _with_batch2_js(_CY_TASKS_JS.replace("__PROVIDER__", prov)
                          .replace("__AI_BASE__", aibase).replace("__MODEL__", model)),
