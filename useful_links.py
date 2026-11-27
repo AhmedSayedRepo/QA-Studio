@@ -16,7 +16,7 @@ import strings
 # everyone else sees it read-only, same idea as any other admin-managed setting.
 STATIC_LINKS = [
     {"id": "qa_studio_site", "name": "QA Studio",
-     "url": "https://ahmedsayedrepo.github.io/QA-Studio/"},
+     "url": "https://qa-studio-tau.vercel.app/"},
 ]
 
 
