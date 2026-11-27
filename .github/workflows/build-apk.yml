@@ -277,7 +277,7 @@ jobs:
           echo "Stamping APK: versionName=$APP_VER versionCode=${{ github.run_number }}"
           yes | flet build apk --project "QA Studio" --org com.qastudio \
             --build-version "$APP_VER" --build-number ${{ github.run_number }} \
-            --android-adaptive-icon-background "#FFFFFF" --verbose
+            --android-adaptive-icon-background "#FFFFFF" --arch arm64-v8a --verbose
 
       # BIOMETRIC PROMPT PREREQUISITE #3 (see BIOMETRICS_FIX_PLAN.md): the host
       # Activity must extend FlutterFragmentActivity, because Android's
@@ -355,10 +355,10 @@ jobs:
           # NOTE: the FLUTTER CLI spells these --build-name / --build-number
           # (flet-cli spells the first one --build-version).
           APP_VER=$(cat VERSION 2>/dev/null | tr -d ' \r\n')
-          ( cd "$FLUTTER_DIR" && flutter build apk --release --split-per-abi --target-platform android-arm64 \
+          ( cd "$FLUTTER_DIR" && flutter build apk --release --target-platform android-arm64 \
               ${APP_VER:+--build-name "$APP_VER"} \
               --build-number ${{ github.run_number }} )
-          PATCHED_APK=$(find "$FLUTTER_DIR" -path '*outputs*' -name '*arm64-v8a*release*.apk' | head -n1)
+          PATCHED_APK=$(find "$FLUTTER_DIR" -path '*outputs*' -name '*release*.apk' | head -n1)
           if [ -z "$PATCHED_APK" ]; then
             echo "::error::patched release APK not produced — check the flutter build output above."
             exit 1
