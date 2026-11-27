@@ -309,13 +309,13 @@ class QAStudio:
             pass
         self.connected = False
         self.active = "setup"          # setup | run | report
-        # Android Back (BETA, session-only — see _on_back_confirm): screens
-        # visited this session, newest last. Never persisted: the switch is
-        # off again after every restart, so a bad device build can't stick.
+        # Android Back (see _on_back_confirm): screens visited this session,
+        # newest last. Confirmed on a real phone (v4.0.9), so it is always on
+        # — no Settings switch. Only mobile is affected (_apply_back_nav).
         self._nav_history = []
         self._nav_last = None
         self._nav_popping = False
-        self._back_beta = False
+        self._back_beta = True
         self._back_exit_until = 0.0
         self.tool = "steps"            # steps | titles
         self.lang = "ar"               # DEFAULT output language (persisted via Settings)
@@ -835,43 +835,20 @@ class QAStudio:
             return False
 
     def _start_hello_gate(self):
-        """Ask Windows Hello once at launch; on success restore the cached
-        session exactly like the normal silent restore. Any other outcome
-        leaves the ordinary sign-in screen up (never a lock-out)."""
+        """Desktop launch hook for "Unlock with Windows Hello". There is NO
+        prompt at launch: with Hello on, the cached session simply isn't
+        auto-restored (_hello_gate_active), so the sign-in screen shows, and
+        Windows Hello is asked only when a saved account is picked there —
+        passing it is what fills that account's password (login.py
+        _open_saved_accounts → _select). Here we only warm the availability
+        check so Settings never waits on it."""
         if platform_caps.is_mobile():
             return
         try:
             import desktop_hello
             desktop_hello.warm()
         except Exception:
-            return
-        if not auth.configured() or not self._hello_gate_active():
-            return
-
-        def work():
-            ok, reason = desktop_hello.verify(strings.t("set_hello_prompt"))
-            self._hello_passed = True    # one attempt per launch, pass or not
-            if not ok:
-                if reason != "canceled":
-                    try:
-                        self.ui_safe(lambda: self._toast(
-                            strings.t("main_hello_fallback")))
-                    except Exception:
-                        pass
-                return
-            try:
-                if self.user is None and not getattr(self, "_user_signed_out", False):
-                    u = auth.acquire_silent()
-                    if u:
-                        self.user = u
-                        self._switch_user_creds()
-                        self.ui_safe(self.render)
-            except Exception:
-                pass
-        try:
-            self._bg(work)
-        except Exception:
-            threading.Thread(target=work, daemon=True).start()
+            pass
 
     def can(self, capability):
         """True if the current user may use `capability`. When auth is unconfigured
@@ -2648,7 +2625,11 @@ class QAStudio:
             # the user can tap — the first-tap reliability fix (see
             # _ensure_nav_drawer).
             try:
-                self._ensure_nav_drawer()
+                _d = self._ensure_nav_drawer()
+                # Fill it NOW too: a left-edge swipe opens the drawer without
+                # the hamburger, and it used to slide in empty because content
+                # was only built on the hamburger tap (_open_nav_drawer).
+                _d.controls = [self._nav_drawer_content()]
             except Exception:
                 pass
             row.insert(0, ft.IconButton(ft.Icons.MENU, icon_size=24,
@@ -4093,11 +4074,10 @@ class QAStudio:
                 except Exception:
                     pass
 
-    # ── Android Back button (BETA) ─────────────────────────────────────────
+    # ── Android Back button ────────────────────────────────────────────────
     # Uses the ROOT view's PopScope (View.can_pop=False + on_confirm_pop), not
     # a page.views stack — the stack is what launched to a blank grey screen.
-    # Off by default and session-only (Settings → Beta), so if a device build
-    # misbehaves a restart restores Android's default Back.
+    # Always on for mobile (was a session-only beta until confirmed on device).
     _NAV_HISTORY_MAX = 15
 
     def _track_nav(self):

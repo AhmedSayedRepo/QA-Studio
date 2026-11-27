@@ -758,7 +758,7 @@ def login_gate(app):
         def _open_saved_accounts(_e=None):
             results = ft.Column([], spacing=6, scroll=ft.ScrollMode.AUTO, height=300)
 
-            def _select(em, pw):
+            def _fill(em, pw):
                 # Update the existing controls in place. Rendering the entire
                 # login gate here would lose keyboard focus and makes choosing
                 # an account look like a page refresh.
@@ -771,10 +771,49 @@ def login_gate(app):
                     pwd_tf.update()
                 except Exception:
                     pass
+
+            def _select(em, pw):
+                # Desktop "Unlock with Windows Hello": the saved PASSWORD is
+                # only filled after Windows Hello confirms it's you. The email
+                # fills at once; a failed or cancelled check leaves the
+                # password empty to type by hand.
+                _hello = None
+                if not platform_caps.is_mobile():
+                    try:
+                        import desktop_hello as _dh
+                        _hello = _dh if _dh.enabled() else None
+                    except Exception:
+                        _hello = None
+                _fill(em, "" if _hello else pw)
                 try:
                     app._close_dialog()
                 except Exception:
                     pass
+                if not _hello or not pw:
+                    return
+
+                # QA Studio's window, captured NOW while the user is clicking
+                # in it — Windows Hello's prompt is owned by (and shown in
+                # front of) this window.
+                _hwnd = _hello.foreground_window()
+
+                def _verify():
+                    ok, reason = _hello.verify(strings.t("set_hello_prompt"),
+                                               hwnd=_hwnd)
+
+                    def _done():
+                        if ok:
+                            # Only if the user hasn't picked another account
+                            # (or typed something) while the prompt was open.
+                            if (email_tf.value or "").strip() == em and not pwd_tf.value:
+                                _fill(em, pw)
+                        elif reason != "canceled":
+                            app._toast(strings.t("main_hello_fallback"))
+                    try:
+                        app.ui_safe(_done)
+                    except Exception:
+                        pass
+                threading.Thread(target=_verify, daemon=True).start()
 
             def _render_accounts(query=""):
                 q = (query or "").strip().lower()

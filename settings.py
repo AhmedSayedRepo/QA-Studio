@@ -331,7 +331,7 @@ def screen(app):
 
                 def _hello_change(e):
                     want = bool(e.control.value)
-                    if want and not _dh.available(refresh=True):
+                    if want and not (_dh.cached_available() or _dh.available(refresh=True)):
                         e.control.value = False
                         e.control.update()
                         app._err(strings.t("set_hello_unavailable"))
@@ -353,25 +353,6 @@ def screen(app):
                                               else _hello_change))),
                 ], spacing=0))
 
-        # Mobile: Android Back button (BETA). Session-only on purpose — it is
-        # off again after every restart until confirmed on real devices.
-        beta = None
-        if platform_caps.is_mobile():
-            def _back_change(e):
-                app.set_back_beta(bool(e.control.value))
-                app._toast(strings.t("set_back_beta_on") if e.control.value
-                           else strings.t("set_back_beta_off"))
-            beta = card(ft.Column([
-                ft.Text(strings.t("set_beta"), size=11,
-                        weight=ft.FontWeight.BOLD, color=T.INK_3),
-                ft.Container(height=4),
-                srow(strings.t("set_back_beta_title"),
-                     strings.t("set_back_beta_desc"),
-                     ft.Switch(value=bool(getattr(app, "_back_beta", False)),
-                               active_color=T.VIOLET,
-                               on_change=_back_change)),
-            ], spacing=0))
-
         reset = card(ft.Column([
             ft.Text(strings.t("set_help_reset"), size=11, weight=ft.FontWeight.BOLD, color=T.INK_3),
             ft.Container(height=4),
@@ -387,8 +368,7 @@ def screen(app):
         ], spacing=0))
 
         cards = ([profile, appearance, data, remote] + ([security] if security else [])
-                 + ([device_security] if device_security else [])
-                 + ([beta] if beta else []) + [reset])
+                 + ([device_security] if device_security else []) + [reset])
         body = ft.Column(cards, spacing=16, scroll=ft.ScrollMode.AUTO, expand=True)
         return app.shell(strings.t("settings"), strings.t("set_subtitle"), body)
 

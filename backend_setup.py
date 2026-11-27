@@ -1762,24 +1762,37 @@ def _section_header(ft, T, current_label):
     chip, the section title, and the currently-selected backend echoed as a
     badge. This is what makes the section 'unique' rather than just one more
     labelled dropdown in a flat column."""
+    try:
+        import platform_caps
+        _mobile = bool(platform_caps.is_mobile())
+    except Exception:
+        _mobile = False
+    badge = ft.Container(
+        ft.Text(current_label, size=11, weight=ft.FontWeight.BOLD,
+                color=T.VIOLET_INK),
+        bgcolor=T.VIOLET_SOFT, border_radius=8,
+        padding=ft.Padding.symmetric(vertical=5, horizontal=10))
+    texts = [
+        ft.Text(strings.t("bset_test_mgmt"), size=14, weight=ft.FontWeight.W_800,
+                color=T.INK),
+        ft.Text(strings.t("bset_test_mgmt_sub"),
+                size=11, color=T.INK_2, weight=ft.FontWeight.W_500),
+    ]
+    # Phone: the badge sat beside the title and squeezed it into a one-letter
+    # column ("Managemen / t"); there it goes UNDER the subtitle instead.
+    if _mobile:
+        texts.append(ft.Row([badge], spacing=0))
+    row = [
+        ft.Container(
+            ft.Icon(ft.Icons.HUB_OUTLINED, size=18, color=T.VIOLET_INK),
+            width=34, height=34, bgcolor=T.VIOLET_SOFT, border_radius=9,
+            alignment=ft.Alignment.CENTER),
+        ft.Column(texts, spacing=(4 if _mobile else 1), expand=True),
+    ]
+    if not _mobile:
+        row.append(badge)
     return ft.Container(
-        ft.Row([
-            ft.Container(
-                ft.Icon(ft.Icons.HUB_OUTLINED, size=18, color=T.VIOLET_INK),
-                width=34, height=34, bgcolor=T.VIOLET_SOFT, border_radius=9,
-                alignment=ft.Alignment.CENTER),
-            ft.Column([
-                ft.Text(strings.t("bset_test_mgmt"), size=14, weight=ft.FontWeight.W_800,
-                        color=T.INK),
-                ft.Text(strings.t("bset_test_mgmt_sub"),
-                        size=11, color=T.INK_2, weight=ft.FontWeight.W_500),
-            ], spacing=1, expand=True),
-            ft.Container(
-                ft.Text(current_label, size=11, weight=ft.FontWeight.BOLD,
-                        color=T.VIOLET_INK),
-                bgcolor=T.VIOLET_SOFT, border_radius=8,
-                padding=ft.Padding.symmetric(vertical=5, horizontal=10)),
-        ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        ft.Row(row, spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER),
         bgcolor=T.CARD_2, border=ft.Border.all(1, T.BORDER), border_radius=T.R_LG,
         padding=14, margin=ft.Margin.only(bottom=14))
 

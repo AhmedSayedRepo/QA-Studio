@@ -14,6 +14,7 @@ _PRE = textwrap.dedent("""
     class Ctl:
         def __init__(self, *a, **k):
             self.__dict__.update(k)
+            self.args = a
         def update(self): pass
     fl = mock.MagicMock()
     for n in ("Column", "Row", "Container", "TextField", "Text", "Icon", "IconButton", "Stack",
@@ -140,6 +141,38 @@ class BackBeta(unittest.TestCase):
         self.assertIn("OK", out)
 
 
+    def test_back_nav_always_on_and_no_settings_switch(self):
+        with open(os.path.join(ROOT, "main.py"), encoding="utf-8") as f:
+            src = f.read()
+        self.assertIn("self._back_beta = True", src)
+        with open(os.path.join(ROOT, "settings.py"), encoding="utf-8") as f:
+            self.assertNotIn("set_back_beta", f.read())
+
+    def test_left_swipe_drawer_is_filled_on_render(self):
+        with open(os.path.join(ROOT, "main.py"), encoding="utf-8") as f:
+            src = f.read()
+        self.assertIn("_d.controls = [self._nav_drawer_content()]", src)
+
+    def test_mobile_long_hint_wraps_below_label_and_header_badge_moves(self):
+        out = _run("""
+            import ui, backend_setup, theme as T
+            platform_caps.is_mobile = lambda: True
+            c = ui.field_label('Sender name', hint='shown to recipients instead of the address')
+            assert isinstance(c, fl.Column), type(c)
+            short = ui.field_label('Email Sender', hint='optional')
+            assert not isinstance(short, fl.Column)
+            h = backend_setup._section_header(fl, T, 'Jira + Zephyr Scale')
+            row = h.args[0]
+            assert len(row.args[0]) == 2, len(row.args[0])   # icon + texts only
+            platform_caps.is_mobile = lambda: False
+            assert not isinstance(ui.field_label('A', hint='shown to recipients instead'), fl.Column)
+            h = backend_setup._section_header(fl, T, 'Jira')
+            assert len(h.args[0].args[0]) == 3
+            print('OK')
+        """)
+        self.assertIn("OK", out)
+
+
 class WindowsHello(unittest.TestCase):
     def test_gate_only_on_desktop_when_enabled_and_not_passed(self):
         out = _run("""
@@ -159,44 +192,36 @@ class WindowsHello(unittest.TestCase):
         """)
         self.assertIn("OK", out)
 
-    def test_failed_hello_falls_back_without_restoring(self):
+    def test_no_prompt_at_launch_and_no_auto_restore(self):
         out = _run("""
             import desktop_hello
             platform_caps.is_mobile = lambda: False
             desktop_hello.enabled = lambda: True
             desktop_hello.warm = lambda: None
-            desktop_hello.verify = lambda msg: (False, 'failed')
+            asked = []
+            desktop_hello.verify = lambda msg: asked.append(msg) or (True, 'ok')
             main.auth.configured = lambda: True
             restored = []
             main.auth.acquire_silent = lambda: restored.append(1) or {'id': 'u'}
             app.user = None
             app._bg = lambda fn: fn()
             app._start_hello_gate()
-            assert not restored and app.user is None
-            assert toasts == [strings.t('main_hello_fallback')]
+            assert not asked and not restored and app.user is None
+            assert app._hello_gate_active() is True   # silent restore skipped
             print('OK')
         """)
         self.assertIn("OK", out)
 
-    def test_passed_hello_restores_session(self):
-        out = _run("""
-            import desktop_hello
-            platform_caps.is_mobile = lambda: False
-            desktop_hello.enabled = lambda: True
-            desktop_hello.warm = lambda: None
-            desktop_hello.verify = lambda msg: (True, 'ok')
-            main.auth.configured = lambda: True
-            main.auth.acquire_silent = lambda: {'id': 'u9'}
-            app.user = None
-            app._bg = lambda fn: fn()
-            switched, rendered = [], []
-            app._switch_user_creds = lambda: switched.append(1)
-            app.render = lambda: rendered.append(1)
-            app._start_hello_gate()
-            assert app.user == {'id': 'u9'} and switched and rendered
-            print('OK')
-        """)
-        self.assertIn("OK", out)
+    def test_saved_account_password_waits_for_hello(self):
+        with open(os.path.join(ROOT, "login.py"), encoding="utf-8") as f:
+            src = f.read()
+        sel = src[src.index("def _select(em, pw):"):src.index("def _render_accounts(")]
+        self.assertIn('_fill(em, "" if _hello else pw)', sel)
+        self.assertIn('_hello.verify(strings.t("set_hello_prompt"),', sel)
+        self.assertIn("hwnd=_hwnd", sel)
+        self.assertIn("_hwnd = _hello.foreground_window()", sel)
+        self.assertIn("if ok:", sel)
+        self.assertIn("threading.Thread(target=_verify", sel)
 
     def test_module_is_inert_off_windows(self):
         out = _run("""
@@ -205,6 +230,43 @@ class WindowsHello(unittest.TestCase):
             assert desktop_hello.available() is False
             assert desktop_hello.enabled() is False
             assert desktop_hello.verify('x') == (False, 'unavailable')
+            print('OK')
+        """)
+        self.assertIn("OK", out)
+
+    def test_check_works_from_inside_a_running_event_loop(self):
+        out = _run("""
+            import asyncio, desktop_hello
+            desktop_hello.supported_platform = lambda: True
+            class U:
+                @staticmethod
+                async def check_availability_async(): return 0
+                @staticmethod
+                async def request_verification_async(m): return 0
+            desktop_hello._ucv = lambda: U
+            desktop_hello._verify_for_window = lambda h, m, t: 0
+            async def main_loop():          # like a Flet switch handler
+                return (desktop_hello.available(refresh=True),
+                        desktop_hello.verify('x'))
+            got = asyncio.run(main_loop())
+            assert got == (True, (True, 'ok')), (got, desktop_hello.last_reason)
+            print('OK')
+        """)
+        self.assertIn("OK", out)
+
+    def test_window_owned_prompt_iid_and_result_mapping(self):
+        out = _run("""
+            import desktop_hello as d
+            assert d.async_result_iid() == 'fd596ffd-2318-558f-9dbe-d21df43764a5'
+            d.available = lambda refresh=False: True
+            seen = []
+            d._verify_for_window = lambda h, m, t: seen.append(h) or 6
+            assert d.verify('x', hwnd=4242) == (False, 'canceled') and seen == [4242]
+            d._verify_for_window = lambda h, m, t: 0
+            assert d.verify('x', hwnd=1) == (True, 'ok')
+            def boom(h, m, t): raise OSError('E_FAIL')
+            d._verify_for_window = boom
+            assert d.verify('x', hwnd=1) == (False, 'failed') and 'E_FAIL' in d.last_reason
             print('OK')
         """)
         self.assertIn("OK", out)

@@ -13836,11 +13836,11 @@ for _language, _values in _CP_UNSCORED_I18N.items():
 _BACK_HELLO_I18N = {
     "en": {
         "set_hello_title": "Unlock with Windows Hello",
-        "set_hello_desc": "Ask for your PIN, fingerprint or face when QA Studio opens before signing you back in. Cancel to sign in with your password.",
+        "set_hello_desc": "Ask for your PIN, fingerprint or face before a saved account's password is filled on the sign-in screen. You also won't be signed in automatically at launch.",
         "set_hello_unavailable": "Windows Hello isn't set up on this PC (or its component isn't installed), so this option is unavailable.",
-        "set_hello_on": "Windows Hello unlock is on — it applies from the next launch.",
+        "set_hello_on": "Windows Hello unlock is on — picking a saved account now asks for Windows Hello first.",
         "set_hello_off": "Windows Hello unlock is off.",
-        "set_hello_prompt": "Unlock QA Studio",
+        "set_hello_prompt": "Confirm it's you to fill the saved password",
         "main_hello_fallback": "Windows Hello didn't complete — sign in with your email and password.",
         "set_beta": "BETA",
         "set_back_beta_title": "Back button navigation",
@@ -13850,11 +13850,11 @@ _BACK_HELLO_I18N = {
     },
     "ar": {
         "set_hello_title": "فتح القفل باستخدام Windows Hello",
-        "set_hello_desc": "اطلب رمز PIN أو البصمة أو الوجه عند فتح QA Studio قبل إعادة تسجيل دخولك. ألغِ للدخول بكلمة المرور.",
+        "set_hello_desc": "اطلب رمز PIN أو البصمة أو الوجه قبل تعبئة كلمة مرور حساب محفوظ في شاشة تسجيل الدخول. ولن يتم تسجيل دخولك تلقائيًا عند التشغيل.",
         "set_hello_unavailable": "Windows Hello غير مُعدّ على هذا الجهاز (أو مكوّنه غير مثبّت)، لذا هذا الخيار غير متاح.",
-        "set_hello_on": "تم تفعيل فتح القفل بـ Windows Hello — يُطبَّق من التشغيل القادم.",
+        "set_hello_on": "تم تفعيل فتح القفل بـ Windows Hello — اختيار حساب محفوظ يطلب Windows Hello أولًا.",
         "set_hello_off": "تم إيقاف فتح القفل بـ Windows Hello.",
-        "set_hello_prompt": "افتح قفل QA Studio",
+        "set_hello_prompt": "أكّد هويتك لتعبئة كلمة المرور المحفوظة",
         "main_hello_fallback": "لم يكتمل Windows Hello — سجّل الدخول ببريدك الإلكتروني وكلمة المرور.",
         "set_beta": "تجريبي",
         "set_back_beta_title": "التنقل بزر الرجوع",
@@ -13864,11 +13864,11 @@ _BACK_HELLO_I18N = {
     },
     "fr": {
         "set_hello_title": "Déverrouiller avec Windows Hello",
-        "set_hello_desc": "Demander votre code PIN, empreinte ou visage à l'ouverture de QA Studio avant de vous reconnecter. Annulez pour vous connecter avec votre mot de passe.",
+        "set_hello_desc": "Demander votre code PIN, empreinte ou visage avant de remplir le mot de passe d'un compte enregistré sur l'écran de connexion. Vous ne serez plus connecté automatiquement au lancement.",
         "set_hello_unavailable": "Windows Hello n'est pas configuré sur ce PC (ou son composant n'est pas installé) ; cette option est indisponible.",
-        "set_hello_on": "Déverrouillage Windows Hello activé — effectif au prochain lancement.",
+        "set_hello_on": "Déverrouillage Windows Hello activé — choisir un compte enregistré demande d'abord Windows Hello.",
         "set_hello_off": "Déverrouillage Windows Hello désactivé.",
-        "set_hello_prompt": "Déverrouiller QA Studio",
+        "set_hello_prompt": "Confirmez votre identité pour remplir le mot de passe enregistré",
         "main_hello_fallback": "Windows Hello n'a pas abouti — connectez-vous avec votre e-mail et votre mot de passe.",
         "set_beta": "BÊTA",
         "set_back_beta_title": "Navigation avec le bouton Retour",
@@ -13878,11 +13878,11 @@ _BACK_HELLO_I18N = {
     },
     "tr": {
         "set_hello_title": "Windows Hello ile kilidi aç",
-        "set_hello_desc": "QA Studio açıldığında oturumunuzu geri yüklemeden önce PIN, parmak izi veya yüz doğrulaması iste. Parolayla giriş için iptal edin.",
+        "set_hello_desc": "Giriş ekranında kayıtlı bir hesabın parolası doldurulmadan önce PIN, parmak izi veya yüz doğrulaması iste. Açılışta otomatik giriş de yapılmaz.",
         "set_hello_unavailable": "Bu bilgisayarda Windows Hello kurulu değil (ya da bileşeni yüklü değil), bu seçenek kullanılamıyor.",
-        "set_hello_on": "Windows Hello kilidi açık — bir sonraki açılışta geçerli olur.",
+        "set_hello_on": "Windows Hello kilidi açık — kayıtlı bir hesap seçmek önce Windows Hello ister.",
         "set_hello_off": "Windows Hello kilidi kapalı.",
-        "set_hello_prompt": "QA Studio kilidini aç",
+        "set_hello_prompt": "Kayıtlı parolayı doldurmak için kimliğinizi doğrulayın",
         "main_hello_fallback": "Windows Hello tamamlanmadı — e-posta ve parolanızla giriş yapın.",
         "set_beta": "BETA",
         "set_back_beta_title": "Geri tuşuyla gezinme",
@@ -13892,11 +13892,11 @@ _BACK_HELLO_I18N = {
     },
     "es": {
         "set_hello_title": "Desbloquear con Windows Hello",
-        "set_hello_desc": "Pide tu PIN, huella o rostro al abrir QA Studio antes de volver a iniciar tu sesión. Cancela para entrar con tu contraseña.",
+        "set_hello_desc": "Pide tu PIN, huella o rostro antes de rellenar la contraseña de una cuenta guardada en la pantalla de inicio de sesión. Tampoco se iniciará sesión automáticamente al abrir la app.",
         "set_hello_unavailable": "Windows Hello no está configurado en este PC (o su componente no está instalado), así que esta opción no está disponible.",
-        "set_hello_on": "Desbloqueo con Windows Hello activado: se aplica desde el próximo inicio.",
+        "set_hello_on": "Desbloqueo con Windows Hello activado: elegir una cuenta guardada pide Windows Hello primero.",
         "set_hello_off": "Desbloqueo con Windows Hello desactivado.",
-        "set_hello_prompt": "Desbloquear QA Studio",
+        "set_hello_prompt": "Confirma que eres tú para rellenar la contraseña guardada",
         "main_hello_fallback": "Windows Hello no se completó: inicia sesión con tu correo y contraseña.",
         "set_beta": "BETA",
         "set_back_beta_title": "Navegación con el botón Atrás",
@@ -13906,11 +13906,11 @@ _BACK_HELLO_I18N = {
     },
     "de": {
         "set_hello_title": "Mit Windows Hello entsperren",
-        "set_hello_desc": "Beim Öffnen von QA Studio PIN, Fingerabdruck oder Gesicht abfragen, bevor Sie wieder angemeldet werden. Abbrechen, um sich mit dem Passwort anzumelden.",
+        "set_hello_desc": "Vor dem Ausfüllen des Passworts eines gespeicherten Kontos auf dem Anmeldebildschirm PIN, Fingerabdruck oder Gesicht abfragen. Beim Start erfolgt außerdem keine automatische Anmeldung.",
         "set_hello_unavailable": "Windows Hello ist auf diesem PC nicht eingerichtet (oder die Komponente ist nicht installiert), daher ist diese Option nicht verfügbar.",
-        "set_hello_on": "Windows-Hello-Entsperrung ist an – gilt ab dem nächsten Start.",
+        "set_hello_on": "Windows-Hello-Entsperrung ist an – die Auswahl eines gespeicherten Kontos fragt zuerst Windows Hello ab.",
         "set_hello_off": "Windows-Hello-Entsperrung ist aus.",
-        "set_hello_prompt": "QA Studio entsperren",
+        "set_hello_prompt": "Bestätigen Sie Ihre Identität, um das gespeicherte Passwort einzufügen",
         "main_hello_fallback": "Windows Hello wurde nicht abgeschlossen – melden Sie sich mit E-Mail und Passwort an.",
         "set_beta": "BETA",
         "set_back_beta_title": "Navigation mit der Zurück-Taste",
@@ -13920,11 +13920,11 @@ _BACK_HELLO_I18N = {
     },
     "nl": {
         "set_hello_title": "Ontgrendelen met Windows Hello",
-        "set_hello_desc": "Vraag bij het openen van QA Studio om je pincode, vingerafdruk of gezicht voordat je weer wordt aangemeld. Annuleer om met je wachtwoord in te loggen.",
+        "set_hello_desc": "Vraag om je pincode, vingerafdruk of gezicht voordat het wachtwoord van een opgeslagen account op het inlogscherm wordt ingevuld. Je wordt bij het starten ook niet meer automatisch aangemeld.",
         "set_hello_unavailable": "Windows Hello is niet ingesteld op deze pc (of het onderdeel is niet geïnstalleerd), dus deze optie is niet beschikbaar.",
-        "set_hello_on": "Ontgrendelen met Windows Hello staat aan — geldt vanaf de volgende start.",
+        "set_hello_on": "Ontgrendelen met Windows Hello staat aan — een opgeslagen account kiezen vraagt eerst om Windows Hello.",
         "set_hello_off": "Ontgrendelen met Windows Hello staat uit.",
-        "set_hello_prompt": "QA Studio ontgrendelen",
+        "set_hello_prompt": "Bevestig dat jij het bent om het opgeslagen wachtwoord in te vullen",
         "main_hello_fallback": "Windows Hello is niet voltooid — log in met je e-mail en wachtwoord.",
         "set_beta": "BÈTA",
         "set_back_beta_title": "Navigatie met de terugknop",
@@ -13934,6 +13934,53 @@ _BACK_HELLO_I18N = {
     }
 }
 for _language, _values in _BACK_HELLO_I18N.items():
+    _STRINGS[_language].update(_values)
+
+_RN_4010_I18N = {
+    "en": {
+        "upd_note_org_sender_isolation": "Managing another organization's report sender no longer changes your own: its sender email, name and App Password load and save only for the organization you picked.",
+        "upd_note_android_back": "Android: the Back button now returns to the previous screen, and pressing Back twice on the home screen closes the app.",
+        "upd_note_windows_hello": "Desktop: new “Unlock with Windows Hello” in Settings — picking a saved account asks for your PIN, fingerprint or face before its password is filled.",
+        "upd_note_mobile_menu_layout": "Phone fixes: swiping in from the left edge now shows the full menu, the Test Management header no longer wraps, and long field hints no longer run off the screen."
+    },
+    "ar": {
+        "upd_note_org_sender_isolation": "لم تعد إدارة مُرسِل تقارير مؤسسة أخرى تغيّر إعداداتك: يتم تحميل بريد المُرسِل واسمه وكلمة مرور التطبيق وحفظها للمؤسسة التي اخترتها فقط.",
+        "upd_note_android_back": "Android: زر الرجوع يعيدك الآن إلى الشاشة السابقة، والضغط على رجوع مرتين في الشاشة الرئيسية يغلق التطبيق.",
+        "upd_note_windows_hello": "سطح المكتب: خيار جديد «فتح القفل باستخدام Windows Hello» في الإعدادات — عند اختيار حساب محفوظ يُطلب رمز PIN أو البصمة أو الوجه قبل تعبئة كلمة المرور.",
+        "upd_note_mobile_menu_layout": "إصلاحات الهاتف: السحب من الحافة اليسرى يعرض القائمة كاملة، ولم يعد عنوان إدارة الاختبارات يلتف، ولم تعد التلميحات الطويلة تتجاوز حافة الشاشة."
+    },
+    "fr": {
+        "upd_note_org_sender_isolation": "Gérer l'expéditeur des rapports d'une autre organisation ne modifie plus le vôtre : son e-mail, son nom et son mot de passe d'application sont chargés et enregistrés uniquement pour l'organisation choisie.",
+        "upd_note_android_back": "Android : le bouton Retour revient désormais à l'écran précédent, et deux appuis sur Retour à l'accueil ferment l'application.",
+        "upd_note_windows_hello": "Bureau : nouveau « Déverrouiller avec Windows Hello » dans les Paramètres — choisir un compte enregistré demande votre code PIN, empreinte ou visage avant de remplir son mot de passe.",
+        "upd_note_mobile_menu_layout": "Correctifs mobile : glisser depuis le bord gauche affiche le menu complet, l'en-tête Gestion des tests ne se coupe plus et les longues indications ne dépassent plus de l'écran."
+    },
+    "tr": {
+        "upd_note_org_sender_isolation": "Başka bir kuruluşun rapor göndericisini yönetmek artık kendi ayarlarınızı değiştirmiyor: gönderici e-postası, adı ve Uygulama Parolası yalnızca seçtiğiniz kuruluş için yüklenir ve kaydedilir.",
+        "upd_note_android_back": "Android: Geri tuşu artık önceki ekrana döner; ana ekranda Geri'ye iki kez basmak uygulamayı kapatır.",
+        "upd_note_windows_hello": "Masaüstü: Ayarlar'da yeni “Windows Hello ile kilidi aç” — kayıtlı bir hesap seçildiğinde parolası doldurulmadan önce PIN, parmak izi veya yüz doğrulaması istenir.",
+        "upd_note_mobile_menu_layout": "Telefon düzeltmeleri: sol kenardan kaydırmak artık menünün tamamını gösterir, Test Yönetimi başlığı bölünmez ve uzun alan ipuçları ekrandan taşmaz."
+    },
+    "es": {
+        "upd_note_org_sender_isolation": "Gestionar el remitente de informes de otra organización ya no cambia el tuyo: su correo, nombre y contraseña de aplicación se cargan y guardan solo para la organización elegida.",
+        "upd_note_android_back": "Android: el botón Atrás ahora vuelve a la pantalla anterior, y pulsar Atrás dos veces en la pantalla de inicio cierra la app.",
+        "upd_note_windows_hello": "Escritorio: nuevo «Desbloquear con Windows Hello» en Ajustes: al elegir una cuenta guardada se pide tu PIN, huella o rostro antes de rellenar su contraseña.",
+        "upd_note_mobile_menu_layout": "Arreglos en el móvil: deslizar desde el borde izquierdo muestra el menú completo, el encabezado de Gestión de pruebas ya no se corta y las pistas largas ya no se salen de la pantalla."
+    },
+    "de": {
+        "upd_note_org_sender_isolation": "Die Verwaltung des Berichtsabsenders einer anderen Organisation ändert Ihren eigenen nicht mehr: E-Mail, Name und App-Passwort werden nur für die gewählte Organisation geladen und gespeichert.",
+        "upd_note_android_back": "Android: Die Zurück-Taste öffnet jetzt den vorherigen Bildschirm; zweimal Zurück auf dem Startbildschirm schließt die App.",
+        "upd_note_windows_hello": "Desktop: Neu in den Einstellungen „Mit Windows Hello entsperren“ – bei Auswahl eines gespeicherten Kontos werden PIN, Fingerabdruck oder Gesicht abgefragt, bevor das Passwort eingefügt wird.",
+        "upd_note_mobile_menu_layout": "Handy-Korrekturen: Wischen vom linken Rand zeigt jetzt das vollständige Menü, die Überschrift „Testverwaltung“ bricht nicht mehr um und lange Feldhinweise laufen nicht mehr über den Bildschirmrand."
+    },
+    "nl": {
+        "upd_note_org_sender_isolation": "Het beheren van de rapportafzender van een andere organisatie verandert die van jezelf niet meer: e-mail, naam en app-wachtwoord worden alleen voor de gekozen organisatie geladen en opgeslagen.",
+        "upd_note_android_back": "Android: de terugknop gaat nu naar het vorige scherm, en twee keer Terug op het startscherm sluit de app.",
+        "upd_note_windows_hello": "Desktop: nieuw “Ontgrendelen met Windows Hello” in Instellingen — bij het kiezen van een opgeslagen account wordt om je pincode, vingerafdruk of gezicht gevraagd voordat het wachtwoord wordt ingevuld.",
+        "upd_note_mobile_menu_layout": "Telefoonfixes: vegen vanaf de linkerrand toont nu het volledige menu, de kop Testbeheer loopt niet meer door en lange veldhints lopen niet meer van het scherm."
+    }
+}
+for _language, _values in _RN_4010_I18N.items():
     _STRINGS[_language].update(_values)
 
 def t(key, **kw):

@@ -163,13 +163,30 @@ def field_label(text, req=False, hint=None, info=None, info_url=None, on_info=No
             tooltip=(info or "How to get this"), on_click=on_info,
             style=ft.ButtonStyle(padding=ft.Padding.all(0)),
             width=24, height=24))
+    try:
+        import platform_caps
+        _mobile = bool(platform_caps.is_mobile())
+    except Exception:
+        _mobile = False
+    hint_chip = None
     if hint:
-        parts.append(ft.Container(
+        hint_chip = ft.Container(
             ft.Text(hint, size=10, color=T.INK_3, weight=ft.FontWeight.BOLD),
             padding=ft.Padding.symmetric(vertical=2, horizontal=7),
-            bgcolor=T.CARD_2, border_radius=10, margin=ft.Margin.only(left=4)))
-    return ft.Row(parts, spacing=4, tight=True, height=24,
-                  vertical_alignment=ft.CrossAxisAlignment.CENTER)
+            bgcolor=T.CARD_2, border_radius=10, margin=ft.Margin.only(left=4))
+        # Phone: a long hint chip ran past the screen edge in the one-line
+        # label row ("switching changes the cre…"). Short hints ("optional",
+        # "auto") still fit inline; longer ones wrap on their own line below.
+        if not (_mobile and len(str(hint)) > 14):
+            parts.append(hint_chip)
+            hint_chip = None
+    row = ft.Row(parts, spacing=4, tight=True, height=24,
+                 vertical_alignment=ft.CrossAxisAlignment.CENTER)
+    if hint_chip is None:
+        return row
+    return ft.Column([row, ft.Text(hint, size=11, color=T.INK_3,
+                                   weight=ft.FontWeight.W_600)],
+                     spacing=2, tight=True)
 
 def grad(stops, diagonal=True):
     """Build an ft.LinearGradient from a list of hex stops.
