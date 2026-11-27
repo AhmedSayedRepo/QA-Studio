@@ -13833,6 +13833,109 @@ _CP_UNSCORED_I18N = {
 for _language, _values in _CP_UNSCORED_I18N.items():
     _STRINGS[_language].update(_values)
 
+_BACK_HELLO_I18N = {
+    "en": {
+        "set_hello_title": "Unlock with Windows Hello",
+        "set_hello_desc": "Ask for your PIN, fingerprint or face when QA Studio opens before signing you back in. Cancel to sign in with your password.",
+        "set_hello_unavailable": "Windows Hello isn't set up on this PC (or its component isn't installed), so this option is unavailable.",
+        "set_hello_on": "Windows Hello unlock is on — it applies from the next launch.",
+        "set_hello_off": "Windows Hello unlock is off.",
+        "set_hello_prompt": "Unlock QA Studio",
+        "main_hello_fallback": "Windows Hello didn't complete — sign in with your email and password.",
+        "set_beta": "BETA",
+        "set_back_beta_title": "Back button navigation",
+        "set_back_beta_desc": "Back returns to the previous screen; press Back twice on the home screen to close the app. Turns itself off when the app restarts.",
+        "set_back_beta_on": "Back button beta on for this session.",
+        "set_back_beta_off": "Back button beta off — Android default restored."
+    },
+    "ar": {
+        "set_hello_title": "فتح القفل باستخدام Windows Hello",
+        "set_hello_desc": "اطلب رمز PIN أو البصمة أو الوجه عند فتح QA Studio قبل إعادة تسجيل دخولك. ألغِ للدخول بكلمة المرور.",
+        "set_hello_unavailable": "Windows Hello غير مُعدّ على هذا الجهاز (أو مكوّنه غير مثبّت)، لذا هذا الخيار غير متاح.",
+        "set_hello_on": "تم تفعيل فتح القفل بـ Windows Hello — يُطبَّق من التشغيل القادم.",
+        "set_hello_off": "تم إيقاف فتح القفل بـ Windows Hello.",
+        "set_hello_prompt": "افتح قفل QA Studio",
+        "main_hello_fallback": "لم يكتمل Windows Hello — سجّل الدخول ببريدك الإلكتروني وكلمة المرور.",
+        "set_beta": "تجريبي",
+        "set_back_beta_title": "التنقل بزر الرجوع",
+        "set_back_beta_desc": "زر الرجوع يعيدك إلى الشاشة السابقة؛ اضغط رجوع مرتين في الشاشة الرئيسية لإغلاق التطبيق. يتوقف تلقائيًا عند إعادة تشغيل التطبيق.",
+        "set_back_beta_on": "تم تفعيل زر الرجوع التجريبي لهذه الجلسة.",
+        "set_back_beta_off": "تم إيقاف زر الرجوع التجريبي — عاد سلوك Android الافتراضي."
+    },
+    "fr": {
+        "set_hello_title": "Déverrouiller avec Windows Hello",
+        "set_hello_desc": "Demander votre code PIN, empreinte ou visage à l'ouverture de QA Studio avant de vous reconnecter. Annulez pour vous connecter avec votre mot de passe.",
+        "set_hello_unavailable": "Windows Hello n'est pas configuré sur ce PC (ou son composant n'est pas installé) ; cette option est indisponible.",
+        "set_hello_on": "Déverrouillage Windows Hello activé — effectif au prochain lancement.",
+        "set_hello_off": "Déverrouillage Windows Hello désactivé.",
+        "set_hello_prompt": "Déverrouiller QA Studio",
+        "main_hello_fallback": "Windows Hello n'a pas abouti — connectez-vous avec votre e-mail et votre mot de passe.",
+        "set_beta": "BÊTA",
+        "set_back_beta_title": "Navigation avec le bouton Retour",
+        "set_back_beta_desc": "Retour revient à l'écran précédent ; appuyez deux fois sur Retour à l'accueil pour fermer l'application. Se désactive au redémarrage de l'application.",
+        "set_back_beta_on": "Bouton Retour bêta activé pour cette session.",
+        "set_back_beta_off": "Bouton Retour bêta désactivé — comportement Android par défaut rétabli."
+    },
+    "tr": {
+        "set_hello_title": "Windows Hello ile kilidi aç",
+        "set_hello_desc": "QA Studio açıldığında oturumunuzu geri yüklemeden önce PIN, parmak izi veya yüz doğrulaması iste. Parolayla giriş için iptal edin.",
+        "set_hello_unavailable": "Bu bilgisayarda Windows Hello kurulu değil (ya da bileşeni yüklü değil), bu seçenek kullanılamıyor.",
+        "set_hello_on": "Windows Hello kilidi açık — bir sonraki açılışta geçerli olur.",
+        "set_hello_off": "Windows Hello kilidi kapalı.",
+        "set_hello_prompt": "QA Studio kilidini aç",
+        "main_hello_fallback": "Windows Hello tamamlanmadı — e-posta ve parolanızla giriş yapın.",
+        "set_beta": "BETA",
+        "set_back_beta_title": "Geri tuşuyla gezinme",
+        "set_back_beta_desc": "Geri tuşu önceki ekrana döner; uygulamayı kapatmak için ana ekranda Geri'ye iki kez basın. Uygulama yeniden başlatılınca kendiliğinden kapanır.",
+        "set_back_beta_on": "Geri tuşu betası bu oturum için açık.",
+        "set_back_beta_off": "Geri tuşu betası kapalı — Android varsayılanı geri yüklendi."
+    },
+    "es": {
+        "set_hello_title": "Desbloquear con Windows Hello",
+        "set_hello_desc": "Pide tu PIN, huella o rostro al abrir QA Studio antes de volver a iniciar tu sesión. Cancela para entrar con tu contraseña.",
+        "set_hello_unavailable": "Windows Hello no está configurado en este PC (o su componente no está instalado), así que esta opción no está disponible.",
+        "set_hello_on": "Desbloqueo con Windows Hello activado: se aplica desde el próximo inicio.",
+        "set_hello_off": "Desbloqueo con Windows Hello desactivado.",
+        "set_hello_prompt": "Desbloquear QA Studio",
+        "main_hello_fallback": "Windows Hello no se completó: inicia sesión con tu correo y contraseña.",
+        "set_beta": "BETA",
+        "set_back_beta_title": "Navegación con el botón Atrás",
+        "set_back_beta_desc": "Atrás vuelve a la pantalla anterior; pulsa Atrás dos veces en la pantalla de inicio para cerrar la app. Se desactiva al reiniciar la app.",
+        "set_back_beta_on": "Botón Atrás beta activado para esta sesión.",
+        "set_back_beta_off": "Botón Atrás beta desactivado: se restauró el comportamiento de Android."
+    },
+    "de": {
+        "set_hello_title": "Mit Windows Hello entsperren",
+        "set_hello_desc": "Beim Öffnen von QA Studio PIN, Fingerabdruck oder Gesicht abfragen, bevor Sie wieder angemeldet werden. Abbrechen, um sich mit dem Passwort anzumelden.",
+        "set_hello_unavailable": "Windows Hello ist auf diesem PC nicht eingerichtet (oder die Komponente ist nicht installiert), daher ist diese Option nicht verfügbar.",
+        "set_hello_on": "Windows-Hello-Entsperrung ist an – gilt ab dem nächsten Start.",
+        "set_hello_off": "Windows-Hello-Entsperrung ist aus.",
+        "set_hello_prompt": "QA Studio entsperren",
+        "main_hello_fallback": "Windows Hello wurde nicht abgeschlossen – melden Sie sich mit E-Mail und Passwort an.",
+        "set_beta": "BETA",
+        "set_back_beta_title": "Navigation mit der Zurück-Taste",
+        "set_back_beta_desc": "Zurück öffnet den vorherigen Bildschirm; auf dem Startbildschirm zweimal Zurück drücken, um die App zu schließen. Schaltet sich beim Neustart der App aus.",
+        "set_back_beta_on": "Zurück-Taste (Beta) für diese Sitzung an.",
+        "set_back_beta_off": "Zurück-Taste (Beta) aus – Android-Standard wiederhergestellt."
+    },
+    "nl": {
+        "set_hello_title": "Ontgrendelen met Windows Hello",
+        "set_hello_desc": "Vraag bij het openen van QA Studio om je pincode, vingerafdruk of gezicht voordat je weer wordt aangemeld. Annuleer om met je wachtwoord in te loggen.",
+        "set_hello_unavailable": "Windows Hello is niet ingesteld op deze pc (of het onderdeel is niet geïnstalleerd), dus deze optie is niet beschikbaar.",
+        "set_hello_on": "Ontgrendelen met Windows Hello staat aan — geldt vanaf de volgende start.",
+        "set_hello_off": "Ontgrendelen met Windows Hello staat uit.",
+        "set_hello_prompt": "QA Studio ontgrendelen",
+        "main_hello_fallback": "Windows Hello is niet voltooid — log in met je e-mail en wachtwoord.",
+        "set_beta": "BÈTA",
+        "set_back_beta_title": "Navigatie met de terugknop",
+        "set_back_beta_desc": "Terug gaat naar het vorige scherm; druk op het startscherm twee keer op Terug om de app te sluiten. Gaat vanzelf uit als de app opnieuw start.",
+        "set_back_beta_on": "Terugknop-bèta aan voor deze sessie.",
+        "set_back_beta_off": "Terugknop-bèta uit — Android-standaard hersteld."
+    }
+}
+for _language, _values in _BACK_HELLO_I18N.items():
+    _STRINGS[_language].update(_values)
+
 def t(key, **kw):
     """Look up a UI string by key in the current UI language, falling back to
     English, then to the key itself. Optional kwargs are applied via str.format."""

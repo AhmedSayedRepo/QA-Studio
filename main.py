@@ -309,6 +309,14 @@ class QAStudio:
             pass
         self.connected = False
         self.active = "setup"          # setup | run | report
+        # Android Back (BETA, session-only — see _on_back_confirm): screens
+        # visited this session, newest last. Never persisted: the switch is
+        # off again after every restart, so a bad device build can't stick.
+        self._nav_history = []
+        self._nav_last = None
+        self._nav_popping = False
+        self._back_beta = False
+        self._back_exit_until = 0.0
         self.tool = "steps"            # steps | titles
         self.lang = "ar"               # DEFAULT output language (persisted via Settings)
         try:
@@ -524,7 +532,8 @@ class QAStudio:
         # that method's biometric-gate block and secure_store_mobile.py's
         # bio_required()/bio_gate_passed().
         try:
-            if auth.configured() and not self._biometric_login_gate_active():
+            if (auth.configured() and not self._biometric_login_gate_active()
+                    and not self._hello_gate_active()):
                 _u0 = auth.acquire_silent()
                 if _u0:
                     self.user = _u0
@@ -557,6 +566,8 @@ class QAStudio:
         # Resume a prior session in the background so a returning user skips the
         # gate without blocking startup on the network.
         self._restore_session_async()
+        # Desktop Windows Hello unlock (opt-in, Settings → Device security).
+        self._start_hello_gate()
         # Idle auto-logout: each signed-in user chooses their own timeout.
         self._last_activity = time.time()
         self._start_idle_watch()
@@ -719,7 +730,7 @@ class QAStudio:
         # which would silently sign the user back in (bypassing biometrics
         # entirely) moments after the sync path deliberately skipped it.
         # _on_secure_creds_ready() performs the actual gated restore instead.
-        if self._biometric_login_gate_active():
+        if self._biometric_login_gate_active() or self._hello_gate_active():
             return
         def work():
             try:
@@ -812,6 +823,56 @@ class QAStudio:
         except Exception:
             return False
 
+    def _hello_gate_active(self):
+        """Desktop twin of _biometric_login_gate_active: True while "Unlock
+        with Windows Hello" is on and this launch hasn't passed the check."""
+        if platform_caps.is_mobile() or getattr(self, "_hello_passed", False):
+            return False
+        try:
+            import desktop_hello
+            return desktop_hello.enabled()
+        except Exception:
+            return False
+
+    def _start_hello_gate(self):
+        """Ask Windows Hello once at launch; on success restore the cached
+        session exactly like the normal silent restore. Any other outcome
+        leaves the ordinary sign-in screen up (never a lock-out)."""
+        if platform_caps.is_mobile():
+            return
+        try:
+            import desktop_hello
+            desktop_hello.warm()
+        except Exception:
+            return
+        if not auth.configured() or not self._hello_gate_active():
+            return
+
+        def work():
+            ok, reason = desktop_hello.verify(strings.t("set_hello_prompt"))
+            self._hello_passed = True    # one attempt per launch, pass or not
+            if not ok:
+                if reason != "canceled":
+                    try:
+                        self.ui_safe(lambda: self._toast(
+                            strings.t("main_hello_fallback")))
+                    except Exception:
+                        pass
+                return
+            try:
+                if self.user is None and not getattr(self, "_user_signed_out", False):
+                    u = auth.acquire_silent()
+                    if u:
+                        self.user = u
+                        self._switch_user_creds()
+                        self.ui_safe(self.render)
+            except Exception:
+                pass
+        try:
+            self._bg(work)
+        except Exception:
+            threading.Thread(target=work, daemon=True).start()
+
     def can(self, capability):
         """True if the current user may use `capability`. When auth is unconfigured
         the app is un-gated, so everything is allowed."""
@@ -866,6 +927,35 @@ class QAStudio:
             return auth.org_id_of(getattr(self, "user", None))
         except Exception:
             return ""
+
+    _SENDER_KEYS = ("gmail", "gmail_sender", "gmail_sender_name")
+
+    def _viewing_other_org_sender(self):
+        """True while a SuperAdmin has picked an organization OTHER than their
+        own in Setup's "Sender organization". Its sender is then shown and
+        saved in a separate store (_org_view_creds) so it can never leak into
+        this user's own creds file or the engine's live sender (which every
+        report email uses)."""
+        if not self._is_super_admin_org_email_manager():
+            return False
+        target = str(getattr(self, "_org_email_target", "") or "").strip()
+        if not target:
+            return False
+        try:
+            own = str(auth.org_id_of(getattr(self, "user", None)) or "").strip()
+        except Exception:
+            own = ""
+        return target != own
+
+    def _sender_creds(self):
+        """Where Setup's sender fields read/write: the picked organization's
+        own view store, or this user's creds."""
+        if self._viewing_other_org_sender():
+            view = getattr(self, "_org_view_creds", None)
+            if view is None:
+                view = self._org_view_creds = {k: "" for k in self._SENDER_KEYS}
+            return view
+        return self.creds
 
     def _tenant_project_scope_org_id(self):
         """Effective organization displayed by Setup's project-scope card.
@@ -927,18 +1017,13 @@ class QAStudio:
         self._tenant_project_scope_error = ""
 
         # Do not leave a previously selected organization's sender visible while
-        # the new settings are loading; that could be accidentally saved into
-        # the new organization. These are in-memory values until the user saves.
-        for key in ("gmail_sender", "gmail_sender_name", "gmail"):
-            self.creds[key] = ""
-        try:
-            # engine.set_credentials intentionally ignores a blank sender during
-            # normal field edits; here we are switching security scopes, so it
-            # must be cleared before any new organization's response arrives.
-            E.set_credentials(gmail="", gmail_sender_name="")
-            E.GMAIL_SENDER = ""
-        except Exception:
-            pass
+        # the new settings are loading (it could be saved into the new one).
+        # Only the separate VIEW store is cleared: this user's own creds and the
+        # engine's live sender are never touched by browsing organizations —
+        # switching used to blank them, and loading another org put ITS sender
+        # into both (so reports went out as that org, and any later save of the
+        # creds file stored it as this user's default).
+        self._org_view_creds = {k: "" for k in self._SENDER_KEYS}
         self._sender_unlocked = self._sender_name_unlocked = self._gmail_unlocked = False
         if getattr(self, "active", "") == "setup":
             self._refresh_org_sender_scope()
@@ -962,21 +1047,24 @@ class QAStudio:
                 if ok and isinstance(result, dict):
                     email = (result.get("settings") or {}).get("email") or {}
                     if isinstance(email, dict):
-                        self.creds["gmail_sender"] = str(email.get("sender") or "")
-                        self.creds["gmail_sender_name"] = str(email.get("sender_name") or "")
-                        self.creds["gmail"] = str(email.get("app_password") or "")
+                        dest = self._sender_creds()
+                        dest["gmail_sender"] = str(email.get("sender") or "")
+                        dest["gmail_sender_name"] = str(email.get("sender_name") or "")
+                        dest["gmail"] = str(email.get("app_password") or "")
                         self._org_email_inherited_from = str(
                             email.get("inherited_from_org_id") or "")
                         self._org_email_audit = (result.get("audit")
                                                  if isinstance(result.get("audit"), list) else [])
                         self._org_email_sync_status = strings.t("org_sender_synced")
-                        try:
-                            E.set_credentials(
-                                gmail=self.creds["gmail"] or None,
-                                gmail_sender=self.creds["gmail_sender"] or None,
-                                gmail_sender_name=self.creds["gmail_sender_name"] or None)
-                        except Exception:
-                            pass
+                        if dest is self.creds:
+                            # Picked their OWN organization: that is the live sender.
+                            try:
+                                E.set_credentials(
+                                    gmail=dest["gmail"] or None,
+                                    gmail_sender=dest["gmail_sender"] or None,
+                                    gmail_sender_name=dest["gmail_sender_name"] or None)
+                            except Exception:
+                                pass
                 else:
                     self._org_email_target_error = str(result or "Unknown error")
                     self._org_email_sync_status = strings.t(
@@ -3635,6 +3723,8 @@ class QAStudio:
                 # renders. Do NOT reintroduce a views stack here without
                 # verifying it on a real device first.
                 self.page.add(_root)
+                self._track_nav()
+                self._apply_back_nav()
                 _u0 = _pt.perf_counter()
                 self.page.update()
                 _upd_ms = (_pt.perf_counter() - _u0) * 1000
@@ -4002,6 +4092,161 @@ class QAStudio:
                     self._toast(strings.t("main_welcome_back"))
                 except Exception:
                     pass
+
+    # ── Android Back button (BETA) ─────────────────────────────────────────
+    # Uses the ROOT view's PopScope (View.can_pop=False + on_confirm_pop), not
+    # a page.views stack — the stack is what launched to a blank grey screen.
+    # Off by default and session-only (Settings → Beta), so if a device build
+    # misbehaves a restart restores Android's default Back.
+    _NAV_HISTORY_MAX = 15
+
+    def _track_nav(self):
+        """Record the screen we just left (called on every full mount)."""
+        try:
+            cur = getattr(self, "active", None)
+            if getattr(self, "user", None) is None or cur in (None, "_locked"):
+                self._nav_history = []
+                self._nav_last = cur
+                self._nav_popping = False
+                return
+            prev = getattr(self, "_nav_last", None)
+            hist = self._nav_history
+            if self._nav_popping:
+                self._nav_popping = False
+            elif prev and prev != cur and prev != "_locked":
+                if prev in hist:                 # A→B→A→B must not grow
+                    del hist[hist.index(prev):]
+                hist.append(prev)
+                if cur in hist:
+                    del hist[hist.index(cur):]
+                del hist[:-self._NAV_HISTORY_MAX]
+            self._nav_last = cur
+        except Exception:
+            pass
+
+    def _root_view(self):
+        try:
+            views = getattr(self.page, "views", None)
+            return views[0] if views else None
+        except Exception:
+            return None
+
+    def _apply_back_nav(self, update=False):
+        """Point the root view's Back handling at the beta handler (or give
+        Android its default back when the beta is off). Untouched unless the
+        beta has been switched on at least once this session."""
+        if not platform_caps.is_mobile():
+            return
+        on = bool(getattr(self, "_back_beta", False))
+        if not on and not getattr(self, "_back_nav_applied", False):
+            return
+        v = self._root_view()
+        if v is None:
+            return
+        try:
+            import time as _t
+            armed = _t.time() < float(getattr(self, "_back_exit_until", 0.0) or 0.0)
+            v.can_pop = (not on) or armed
+            v.on_confirm_pop = self._on_back_confirm if on else None
+            self._back_nav_applied = True
+            if update:
+                v.update()
+        except Exception as ex:
+            try:
+                import diag_log
+                diag_log.log("back_nav_apply", ex)
+            except Exception:
+                pass
+
+    def set_back_beta(self, on):
+        self._back_beta = bool(on)
+        self._back_exit_until = 0.0
+        self._apply_back_nav(update=True)
+
+    def _home_screen(self):
+        try:
+            return "setup" if self.can_open_screen("setup") else (
+                self._first_allowed_screen() or "setup")
+        except Exception:
+            return "setup"
+
+    def _back_action(self):
+        """Decide what one Back press does. Returns (kind, ui_fn):
+        'dialog' closes the onboarding walkthrough, 'screen' returns to the
+        previous screen, 'arm_exit' shows the "press again" toast and opens a
+        2 s window where Android's own Back closes the app, 'exit' lets the
+        pop through (second press inside that window)."""
+        import time as _t
+        now = _t.time()
+        if getattr(self, "_onboarding_open", False):
+            def _close():
+                self._onboarding_open = False
+                self._close_dialog()
+            return "dialog", _close
+        if self.active == "remote_runs" and getattr(self, "_rr_view_id", None):
+            def _runs():
+                remote_runs_screen._close_run(self)
+            return "screen", _runs
+        hist = getattr(self, "_nav_history", [])
+        while hist:
+            prev = hist.pop()
+            if prev and prev != self.active and self.can_open_screen(prev):
+                def _go(prev=prev):
+                    self._nav_popping = True
+                    try:
+                        self.goto(prev)
+                    finally:
+                        self._nav_popping = False
+                return "screen", _go
+        home = self._home_screen()
+        if self.active != home:
+            def _home():
+                self._nav_popping = True
+                try:
+                    self.goto(home)
+                finally:
+                    self._nav_popping = False
+            return "screen", _home
+        if now < float(getattr(self, "_back_exit_until", 0.0) or 0.0):
+            return "exit", None
+        self._back_exit_until = now + 2.0
+
+        def _arm():
+            self._toast(strings.t("main_back_exit"))
+            self._apply_back_nav(update=True)       # can_pop=True for 2 s
+            import threading as _th
+
+            def _disarm():
+                try:
+                    self.ui_safe(lambda: self._apply_back_nav(update=True))
+                except Exception:
+                    pass
+            _tm = _th.Timer(2.1, _disarm)
+            _tm.daemon = True
+            _tm.start()
+        return "arm_exit", _arm
+
+    async def _on_back_confirm(self, e=None):
+        """View.on_confirm_pop handler. Never os._exit(): a real exit is
+        Android finishing the activity on its own (confirm_pop(True) or the
+        armed can_pop window) — a hard kill leaves ghost recents entries."""
+        try:
+            kind, fn = self._back_action()
+        except Exception:
+            kind, fn = "screen", None
+        if fn is not None:
+            try:
+                self.ui_safe(fn)
+            except Exception:
+                pass
+        try:
+            v = getattr(e, "control", None) or self._root_view()
+            r = v.confirm_pop(kind == "exit")
+            import inspect as _insp
+            if _insp.isawaitable(r):
+                await r
+        except Exception:
+            pass
 
     def _on_view_pop(self, e=None):
         """Android hardware BACK (mobile only; wired in _build). render() mounts
@@ -5080,7 +5325,9 @@ class QAStudio:
         }
         _sender_tip = (strings.t(_sender_tip_keys[kind])
                        if kind in _sender_tip_keys else None)
-        raw = self.creds.get(cfg["value_key"], "")
+        _src = (self._sender_creds() if cfg["value_key"] in self._SENDER_KEYS
+                else self.creds)
+        raw = _src.get(cfg["value_key"], "")
         val = raw or (getattr(E, cfg["env"], "") if cfg.get("env") else "")
         editable = (not bool(raw)) or getattr(self, f"_{kind}_unlocked", False)
         field = ft.TextField(
@@ -5807,7 +6054,10 @@ class QAStudio:
 
     def _save_gmail(self, e=None):
         val = (self.gmail_field.value or "").strip()
-        self.creds["gmail"] = val; store.save(self.creds)
+        if self._viewing_other_org_sender():
+            self._sender_creds()["gmail"] = val     # that org only (pushed below)
+        else:
+            self.creds["gmail"] = val; store.save(self.creds)
         self._gmail_unlocked = False
         self._toast(strings.t("main_gmail_saved")); self._refresh_cred_field("gmail")
         self._push_org_email()
@@ -5833,11 +6083,14 @@ class QAStudio:
 
     def _save_sender(self, e=None):
         val = (self.sender_field.value or "").strip()
-        self.creds["gmail_sender"] = val; store.save(self.creds)
-        try:
-            E.set_credentials(gmail_sender=val)
-        except Exception:
-            pass
+        if self._viewing_other_org_sender():
+            self._sender_creds()["gmail_sender"] = val   # that org only
+        else:
+            self.creds["gmail_sender"] = val; store.save(self.creds)
+            try:
+                E.set_credentials(gmail_sender=val)
+            except Exception:
+                pass
         self._sender_unlocked = False
         self._toast(strings.t("main_sender_saved")); self._refresh_cred_field("sender")
         self._push_org_email()
@@ -5850,15 +6103,18 @@ class QAStudio:
         e.control.value, since the event now comes from the BUTTON, not the
         TextField."""
         val = (self.sender_name_field.value or "").strip()
-        self.creds["gmail_sender_name"] = val
-        try:
-            store.save(self.creds)
-        except Exception:
-            pass
-        try:
-            E.set_credentials(gmail_sender_name=val)
-        except Exception:
-            pass
+        if self._viewing_other_org_sender():
+            self._sender_creds()["gmail_sender_name"] = val   # that org only
+        else:
+            self.creds["gmail_sender_name"] = val
+            try:
+                store.save(self.creds)
+            except Exception:
+                pass
+            try:
+                E.set_credentials(gmail_sender_name=val)
+            except Exception:
+                pass
         self._sender_name_unlocked = False
         self._toast(strings.t("main_sender_name_saved"))
         self._refresh_cred_field("sender_name")
@@ -5906,10 +6162,12 @@ class QAStudio:
         # Read the controls so the test can validate the values currently shown
         # in Setup. The button then persists that exact set atomically before
         # sending, rather than racing the three individual Save workers.
-        sender = self._field_or_saved("sender_field", self.creds.get("gmail_sender", ""))
+        _src = self._sender_creds()
+        _other = self._viewing_other_org_sender()
+        sender = self._field_or_saved("sender_field", _src.get("gmail_sender", ""))
         sender_name = self._field_or_saved(
-            "sender_name_field", self.creds.get("gmail_sender_name", ""))
-        app_password = self._field_or_saved("gmail_field", self.creds.get("gmail", ""))
+            "sender_name_field", _src.get("gmail_sender_name", ""))
+        app_password = self._field_or_saved("gmail_field", _src.get("gmail", ""))
         if not sender or not app_password:
             self._toast(strings.t("org_sender_test_save_first"))
             return
@@ -5939,6 +6197,15 @@ class QAStudio:
                 outcome = (True, "")
             except Exception as ex:
                 outcome = (False, str(ex))
+            if _other:
+                # The test borrowed the OTHER organization's sender for one
+                # message; put this user's own live sender back.
+                try:
+                    E.set_credentials(gmail=self.creds.get("gmail") or None,
+                                      gmail_sender=self.creds.get("gmail_sender") or None,
+                                      gmail_sender_name=self.creds.get("gmail_sender_name") or None)
+                except Exception:
+                    pass
 
             # The SMTP call runs on this device, so record its result explicitly
             # after it finishes. The server stores only success/failure and a
@@ -5998,10 +6265,11 @@ class QAStudio:
 
         def work():
             try:
+                _src = self._sender_creds()
                 ok, msg = auth.admin_set_org_email(
-                    self.creds.get("gmail_sender", ""),
-                    self.creds.get("gmail_sender_name", ""),
-                    self.creds.get("gmail", ""),
+                    _src.get("gmail_sender", ""),
+                    _src.get("gmail_sender_name", ""),
+                    _src.get("gmail", ""),
                     org_id=(target_org if self._is_super_admin_org_email_manager() else None))
             except Exception as ex:
                 ok, msg = False, str(ex)
@@ -6136,9 +6404,10 @@ class QAStudio:
             _caps = auth.caps_for(getattr(self, "user", None))
             if not any(str(_c).startswith("act.") for _c in _caps):
                 return
-            target_org = (self._org_email_target_id()
-                          if self._is_super_admin_org_email_manager() else None)
-            ok, data = auth.get_org_settings(org_id=target_org or None)
+            # Always THIS user's own organization (the server derives it from
+            # the token). It used to pass Setup's picked organization, so a
+            # SuperAdmin who had browsed another org sent reports as that org.
+            ok, data = auth.get_org_settings()
             if not ok or not isinstance(data, dict):
                 return
             em = data.get("email")
