@@ -162,7 +162,7 @@ jobs:
           # its exports degrade to a "desktop only" notice rather than failing
           # the whole build). et_xmlfile is openpyxl's runtime dep; lxml is
           # python-docx's; pillow is reportlab's image dep.
-          printf "flet==0.85.3\nrequests\nflet-secure-storage==0.85.3\nazure-core==1.41.0\nazure-devops==7.1.0b4\nmsrest==0.7.1\nopenpyxl==3.1.5\net_xmlfile==2.0.0\npython-docx==1.2.0\nlxml==6.1.1\nreportlab==5.0.0\npillow==12.2.0\n" > /tmp/mobile/requirements.txt
+          printf "flet==0.85.3\nrequests\nflet-secure-storage==0.85.3\nazure-core==1.41.0\nazure-devops==7.1.0b4\nmsrest==0.7.1\nopenpyxl==3.1.5\net_xmlfile==2.0.0\npython-docx==1.2.0\nlxml\nreportlab==5.0.0\npillow\n" > /tmp/mobile/requirements.txt
           # BIOMETRIC PROMPT PREREQUISITES (see BIOMETRICS_FIX_PLAN.md). The
           # biometric login gate (secure_store_mobile.py, enforce_biometrics=True)
           # could NEVER pop the OS prompt on any prior build because three Android
