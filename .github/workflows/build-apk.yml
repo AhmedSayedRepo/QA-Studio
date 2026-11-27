@@ -355,10 +355,10 @@ jobs:
           # NOTE: the FLUTTER CLI spells these --build-name / --build-number
           # (flet-cli spells the first one --build-version).
           APP_VER=$(cat VERSION 2>/dev/null | tr -d ' \r\n')
-          ( cd "$FLUTTER_DIR" && flutter build apk --release \
+          ( cd "$FLUTTER_DIR" && flutter build apk --release --split-per-abi --target-platform android-arm64 \
               ${APP_VER:+--build-name "$APP_VER"} \
               --build-number ${{ github.run_number }} )
-          PATCHED_APK=$(find "$FLUTTER_DIR" -path '*outputs*' -name '*release*.apk' | head -n1)
+          PATCHED_APK=$(find "$FLUTTER_DIR" -path '*outputs*' -name '*arm64-v8a*release*.apk' | head -n1)
           if [ -z "$PATCHED_APK" ]; then
             echo "::error::patched release APK not produced — check the flutter build output above."
             exit 1
