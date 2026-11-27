@@ -678,6 +678,31 @@ def _cp_facet_score(rec):
             + (2.0 if ambiguous else 0.0))
 
 
+_CP_THIN_WORDS = 8     # same bar as _fetch_cp_ai_complexity's title-only guard
+
+
+def _cp_unscored_reasons(texts, ai_scores):
+    """Why stories got no AI score, from their ACTUAL text:
+    "thin"  — under _CP_THIN_WORDS words of description + acceptance criteria;
+              the AI could only guess from the title, so its score is
+              discarded on purpose (fix: add acceptance criteria in Jira).
+    "other" — the AI returned nothing usable for them.
+    Both fall back to the size heuristic."""
+    thin, other = [], []
+    for sid, t in (texts or {}).items():
+        if sid in (ai_scores or {}):
+            continue
+        words = (len(((t or {}).get("crit") or "").split())
+                 + len(((t or {}).get("desc") or "").split()))
+        (thin if words < _CP_THIN_WORDS else other).append(sid)
+    return {"thin": sorted(thin), "other": sorted(other)}
+
+
+def _cp_keys_txt(keys, limit=6):
+    keys = list(keys or [])
+    return ", ".join(keys[:limit]) + (f" +{len(keys) - limit}" if len(keys) > limit else "")
+
+
 def _fetch_cp_ai_complexity(app, texts, progress=None):
     """Returns {story_id: ai_score} — missing ids simply mean 'no AI signal
     for this one,' handled by _cp_blend_complexity falling back to the
@@ -2504,7 +2529,7 @@ def _init(app):
                  ("_cp_iterations", []), ("_cp_iter_loading", False),
                  ("_cp_sprint_paths", []), ("_cp_sprint_name", ""),
                  ("_cp_stories_loading", False), ("_cp_enriching", False),
-                 ("_cp_ai_scored", None), ("_cp_ai_total", 0),
+                 ("_cp_ai_scored", None), ("_cp_ai_total", 0), ("_cp_ai_unscored", None),
                  ("_cp_rows", []), ("_cp_all_rows", []),
                  ("_cp_story_ids", []), ("_cp_story_open", False),
                  ("_cp_res_names", []),
@@ -4134,6 +4159,7 @@ def _cp_run_enrichment(app, gen):
             # actually contribute?" is answerable without guessing.
             app._cp_ai_scored = len(ai_scores or {})
             app._cp_ai_total = len(texts or {})
+            app._cp_ai_unscored = _cp_unscored_reasons(texts, ai_scores)
             try:
                 import diag_log as _dl2
                 _prov = getattr(E, "AI_PROVIDER", "") or "?"
@@ -4141,9 +4167,12 @@ def _cp_run_enrichment(app, gen):
                     _model = (E._ai_cfg() or {}).get("model", "?")
                 except Exception:
                     _model = "?"
+                _un = app._cp_ai_unscored or {}
                 _dl2.log_warn("regression.cp_ai_enrichment",
                               f"AI scored {app._cp_ai_scored}/{app._cp_ai_total} "
-                              f"stories (provider={_prov}, model={_model})")
+                              f"stories (provider={_prov}, model={_model})"
+                              + (f"; too little text: {_un.get('thin')}" if _un.get("thin") else "")
+                              + (f"; no usable AI score: {_un.get('other')}" if _un.get("other") else ""))
             except Exception:
                 pass
             comp = _cp_blend_complexity(comp, ai_scores)
@@ -5245,6 +5274,24 @@ def _create_screen(app):
                     strings.t("reg_ai_size_only"),
                     T.INK_2, ft.Icons.INFO_OUTLINE, T.CARD_2, T.BORDER_2)
 
+        def _unscored_lines():
+            """Why some stories weren't AI-scored (only when the AI did run)."""
+            if not getattr(app, "_cp_ai_scored", None):
+                return []
+            un = getattr(app, "_cp_ai_unscored", None) or {}
+            out = []
+            if un.get("thin"):
+                out.append(_txt(strings.t("reg_ai_unscored_thin", n=len(un["thin"]),
+                                          keys=_cp_keys_txt(un["thin"])),
+                                color=T.AMBER, size=11.5, weight=ft.FontWeight.W_500,
+                                no_wrap=False))
+            if un.get("other"):
+                out.append(_txt(strings.t("reg_ai_unscored_other", n=len(un["other"]),
+                                          keys=_cp_keys_txt(un["other"])),
+                                color=T.AMBER, size=11.5, weight=ft.FontWeight.W_500,
+                                no_wrap=False))
+            return ([ft.Container(height=4)] + out) if out else []
+
         def _ai_banner_row():
             title, sub, col, icon, _bg, _bd = _ai_style()
             return ft.Row([
@@ -5255,6 +5302,7 @@ def _create_screen(app):
                     _txt(title, color=col, size=13.5, weight=ft.FontWeight.BOLD),
                     _txt(sub, color=T.INK_2, size=11.5, weight=ft.FontWeight.W_500,
                          no_wrap=False),
+                    *_unscored_lines(),
                 ], spacing=1, tight=True, expand=True),
             ], spacing=11, vertical_alignment=ft.CrossAxisAlignment.CENTER)
 

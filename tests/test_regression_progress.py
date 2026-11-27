@@ -217,6 +217,20 @@ class SprintPlanAISpeed(unittest.TestCase):
             self.assertEqual(bar.value, 1.0)
             self.assertEqual(app._cp_ai_progress, (20, 20))
 
+    def test_unscored_reasons_from_real_text(self):
+        with mock.patch.dict(sys.modules, self._env()):
+            import regression
+            texts = {"SS-1": {"title": "t", "desc": "", "crit": "only five words here ok"},
+                     "SS-2": {"title": "t", "desc": "a " * 30, "crit": "b " * 30},
+                     "SS-3": {"title": "t", "desc": "a " * 30, "crit": ""}}
+            un = regression._cp_unscored_reasons(texts, {"SS-3": 4.0})
+            self.assertEqual(un, {"thin": ["SS-1"], "other": ["SS-2"]})
+            self.assertEqual(regression._cp_keys_txt(["A", "B", "C"], limit=2), "A, B +1")
+            import strings
+            for lang in ("en", "ar", "fr", "tr", "es", "de", "nl"):
+                for k in ("reg_ai_unscored_thin", "reg_ai_unscored_other"):
+                    strings._STRINGS[lang][k].format(n=1, keys="SS-1")
+
     def test_meta_and_text_share_one_fetch(self):
         import threading
         with mock.patch.dict(sys.modules, self._env()):

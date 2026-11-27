@@ -13799,6 +13799,40 @@ _CP_BANNER_I18N = {
 for _language, _values in _CP_BANNER_I18N.items():
     _STRINGS[_language].update(_values)
 
+# Sprint Plan AI banner: why some stories weren't AI-scored.
+_CP_UNSCORED_I18N = {
+    "en": {
+        "reg_ai_unscored_thin": "{n} not scored by AI — almost no description or acceptance criteria in Jira ({keys}), so they're sized by title. Add acceptance criteria in Jira and Regenerate to score them.",
+        "reg_ai_unscored_other": "{n} got no usable AI score ({keys}) — estimated from story size instead."
+    },
+    "ar": {
+        "reg_ai_unscored_thin": "{n} لم يقيّمها الذكاء الاصطناعي — لا يوجد تقريبًا وصف أو معايير قبول في Jira ({keys})، لذا قُدّرت حسب العنوان. أضف معايير القبول في Jira ثم أعد الإنشاء لتقييمها.",
+        "reg_ai_unscored_other": "{n} لم تحصل على تقييم صالح من الذكاء الاصطناعي ({keys}) — قُدّرت حسب حجم القصة بدلًا من ذلك."
+    },
+    "fr": {
+        "reg_ai_unscored_thin": "{n} non évaluées par l'IA — presque pas de description ni de critères d'acceptation dans Jira ({keys}), elles sont donc estimées d'après le titre. Ajoutez des critères d'acceptation dans Jira puis régénérez pour les évaluer.",
+        "reg_ai_unscored_other": "{n} sans score IA exploitable ({keys}) — estimées d'après la taille de la story."
+    },
+    "tr": {
+        "reg_ai_unscored_thin": "{n} hikâye yapay zekâ ile puanlanmadı — Jira'da neredeyse hiç açıklama veya kabul kriteri yok ({keys}), bu yüzden başlığa göre boyutlandırıldı. Puanlanmaları için Jira'ya kabul kriterleri ekleyip yeniden oluşturun.",
+        "reg_ai_unscored_other": "{n} hikâye kullanılabilir bir yapay zekâ puanı almadı ({keys}) — bunun yerine hikâye boyutuna göre tahmin edildi."
+    },
+    "es": {
+        "reg_ai_unscored_thin": "{n} sin puntuar por la IA — casi no tienen descripción ni criterios de aceptación en Jira ({keys}), así que se dimensionan por el título. Añade criterios de aceptación en Jira y regenera para puntuarlas.",
+        "reg_ai_unscored_other": "{n} sin una puntuación de IA utilizable ({keys}) — estimadas según el tamaño de la historia."
+    },
+    "de": {
+        "reg_ai_unscored_thin": "{n} nicht von der KI bewertet — kaum Beschreibung oder Akzeptanzkriterien in Jira ({keys}), daher nach dem Titel bemessen. Akzeptanzkriterien in Jira ergänzen und neu erstellen, um sie zu bewerten.",
+        "reg_ai_unscored_other": "{n} ohne verwertbare KI-Bewertung ({keys}) — stattdessen nach Story-Größe geschätzt."
+    },
+    "nl": {
+        "reg_ai_unscored_thin": "{n} niet door AI beoordeeld — bijna geen beschrijving of acceptatiecriteria in Jira ({keys}), dus geschat op de titel. Voeg acceptatiecriteria toe in Jira en genereer opnieuw om ze te beoordelen.",
+        "reg_ai_unscored_other": "{n} kregen geen bruikbare AI-score ({keys}) — in plaats daarvan geschat op storygrootte."
+    }
+}
+for _language, _values in _CP_UNSCORED_I18N.items():
+    _STRINGS[_language].update(_values)
+
 def t(key, **kw):
     """Look up a UI string by key in the current UI language, falling back to
     English, then to the key itself. Optional kwargs are applied via str.format."""
