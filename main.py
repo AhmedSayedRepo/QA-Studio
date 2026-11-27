@@ -10712,7 +10712,11 @@ class QAStudio:
                 # is gone. Handing this direct URL to the OS launcher opens it
                 # in the real browser (Chrome), whose download manager fetches
                 # the .apk straight to Downloads for the user to tap-install.
-                url = ("https://github.com/AhmedSayedRepo/QA-Studio/releases/"
+                # From the PUBLIC releases repo when the version marker came
+                # from there (engine.check_mobile_update sets apk_url), else the
+                # source repo's rolling release (before the switch-over).
+                url = (res.get("apk_url") or
+                       "https://github.com/AhmedSayedRepo/QA-Studio/releases/"
                        "download/android-apk/qa-studio.apk")
 
                 def _show():

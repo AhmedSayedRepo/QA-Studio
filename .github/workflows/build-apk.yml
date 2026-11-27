@@ -401,13 +401,13 @@ jobs:
       - name: Publish to rolling Android release
         working-directory: /tmp/mobile
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
         run: |
           APK=$(ls build/apk/*.apk | head -n1)
           cp "$APK" qa-studio.apk
-          if ! gh release view android-apk --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          if ! gh release view android-apk --repo "AhmedSayedRepo/QA-Studio-Releases" >/dev/null 2>&1; then
             gh release create android-apk \
-              --repo "$GITHUB_REPOSITORY" \
+              --repo "AhmedSayedRepo/QA-Studio-Releases" \
               --title "QA Studio — Android (rolling build)" \
               --notes "Always the most recent successful Android CI build. Not a versioned release — see the desktop vX.Y.Z releases for those. Re-published automatically on every build-apk.yml run." \
               --prerelease
@@ -423,4 +423,4 @@ jobs:
           printf '%s' "$APP_VER" > mobile-version.txt
           echo "Publishing APK for version $APP_VER (marker: mobile-version.txt)"
           gh release upload android-apk qa-studio.apk mobile-version.txt \
-            --repo "$GITHUB_REPOSITORY" --clobber
+            --repo "AhmedSayedRepo/QA-Studio-Releases" --clobber

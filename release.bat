@@ -255,17 +255,38 @@ if errorlevel 1 (
   exit /b 1
 )
 
+rem --- PUBLIC downloads: releases-only repo ---------------------------------
+rem The source repo can be private, so installs (install.bat), self-updates
+rem (engine._apply_update_zip / check_for_update) and the landing page all
+rem download from this PUBLIC repo. Each release carries the source zip of the
+rem exact commit just pushed, VERSION, install.bat and SHA256SUMS (the
+rem self-update verifies the zip against it and refuses a mismatch).
+set "DIST=AhmedSayedRepo/QA-Studio-Releases"
+call "%~dp0publish_dist.bat" "%VER%" "%MSG%"
+if errorlevel 1 goto dist_fail
+
 echo.
 echo [OK] Verified: v%VER% is live and matches VERSION.
 echo Share this link - users download install.bat and run it:
-echo   https://github.com/AhmedSayedRepo/QA-Studio/releases/latest
+echo   https://github.com/%DIST%/releases/latest
 echo Tag page:
-echo   https://github.com/AhmedSayedRepo/QA-Studio/releases/tag/v%VER%
+echo   https://github.com/%DIST%/releases/tag/v%VER%
 pause
 endlocal
 rem Explicit exit so the successful path never falls through into the helper
 rem label below.
 exit /b 0
+
+:dist_fail
+echo.
+echo [FAIL] The private-repo release v%VER% is done, but publishing the PUBLIC
+echo        download release to %DIST% failed - see the errors above. Users
+echo        won't see this version until it is published. Fix it ^(usually: the
+echo        repo doesn't exist yet, or gh lacks access^), then publish just the
+echo        download release again ^(safe to repeat - it re-uploads^):
+echo          publish_dist.bat %VER%
+pause
+exit /b 1
 
 :next_patch
 rem %1 = current version, %2 = variable to receive current-with-patch-bumped.

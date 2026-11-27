@@ -13,11 +13,14 @@ echo.
 
 rem ============================ QA Studio one-file bootstrapper ============================
 rem Download this single file, double-click it, and it installs everything:
-rem it pulls the project from GitHub, then runs the real installer (installer.py)
+rem it pulls the project from GitHub (public releases repo), then runs the real installer (installer.py)
 rem which installs dependencies, creates a Desktop shortcut, and launches the app.
 
 set "REPO=AhmedSayedRepo/QA-Studio"
 set "BRANCH=main"
+rem Public releases-only repo: the source repo may be private, so the app is
+rem downloaded from the latest public release's source zip first.
+set "DIST=AhmedSayedRepo/QA-Studio-Releases"
 set "DEST=%LOCALAPPDATA%\QA Studio"
 set "ZIP=%TEMP%\qastudio_src.zip"
 set "WORK=%TEMP%\qastudio_src"
@@ -67,7 +70,8 @@ echo Using Python: %PY%
 if not defined PYW set "PYW=%PY%"
 
 echo Downloading QA Studio...
-powershell -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; try { Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/%REPO%/archive/refs/heads/%BRANCH%.zip' -OutFile '%ZIP%' } catch { exit 1 }"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; try { Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/%DIST%/releases/latest/download/qa-studio-src.zip' -OutFile '%ZIP%' } catch { exit 1 }"
+if errorlevel 1 powershell -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; try { Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/%REPO%/archive/refs/heads/%BRANCH%.zip' -OutFile '%ZIP%' } catch { exit 1 }"
 if errorlevel 1 (
   echo.
   echo Download failed - check your internet connection and try again.
@@ -137,6 +141,7 @@ rem Only Python 3.12: on another version (3.13 / 3.14 ...) some pinned packages 
 rem no ready-made build and pip fails, so a missing 3.12 is installed instead.
 if not defined PY ( python -c "import sys; sys.exit(0 if sys.version_info[:2]==(3,12) else 1)" >nul 2>&1 && ( set "PY=python" & set "PYW=pythonw" ) )
 goto :eof
+
 
 
 

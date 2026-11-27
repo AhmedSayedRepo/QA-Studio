@@ -13261,6 +13261,45 @@ GITHUB_OWNER  = "AhmedSayedRepo"
 GITHUB_REPO   = "qa-studio"
 GITHUB_BRANCH = "main"
 
+# PUBLIC download channel. The source repo above can go private; installs,
+# self-updates, the APK and the landing page download from this public,
+# releases-only repo instead. release.bat publishes every vX.Y.Z there with:
+#   qa-studio-src.zip  (git archive of the release commit, one top folder)
+#   VERSION            (the version, for the update check)
+#   SHA256SUMS         (checksums — the self-update verifies, fails closed)
+#   install.bat
+# build-apk.yml publishes the rolling `android-apk` release there too.
+# Every reader falls back to the source repo when this channel isn't there,
+# so nothing breaks before the releases repo exists.
+DIST_OWNER = "AhmedSayedRepo"
+DIST_REPO = "QA-Studio-Releases"
+DIST_SRC_ASSET = "qa-studio-src.zip"
+DIST_VERSION_ASSET = "VERSION"
+DIST_SUMS_ASSET = "SHA256SUMS"
+
+
+def dist_download_url(asset, tag=None):
+    """Public download URL of a release asset in the releases repo
+    (`tag=None` → the latest release)."""
+    base = f"https://github.com/{DIST_OWNER}/{DIST_REPO}/releases/"
+    return base + (f"download/{tag}/{asset}" if tag else f"latest/download/{asset}")
+
+
+def dist_latest_tag(timeout=8):
+    """Tag of the latest public release (e.g. 'v4.0.10'), read from GitHub's
+    /releases/latest redirect — no API call, so no 60/hour rate limit.
+    None when the releases repo/release doesn't exist or isn't reachable."""
+    url = f"https://github.com/{DIST_OWNER}/{DIST_REPO}/releases/latest"
+    try:
+        r = requests.head(url, timeout=timeout, allow_redirects=False)
+        loc = r.headers.get("Location") or ""
+        if r.status_code in (301, 302, 303, 307, 308) and "/releases/tag/" in loc:
+            tag = loc.rsplit("/releases/tag/", 1)[1].split("?")[0].strip("/")
+            return tag or None
+    except Exception:
+        pass
+    return None
+
 def _github_token():
     """Optional token for private-repo update checks. Read from the env var
     QA_STUDIO_GH_TOKEN or GITHUB_TOKEN, or a 'gh_token.txt' file next to the app.
@@ -13454,8 +13493,21 @@ def check_mobile_update(timeout=6):
     """
     local = local_version()
     import time as _t
+    bust = int(_t.time())
+    try:
+        # Public releases repo first (works after the source repo goes private).
+        r = requests.get(dist_download_url(MOBILE_VERSION_ASSET, MOBILE_RELEASE_TAG)
+                         + f"?_={bust}", headers={"Cache-Control": "no-cache"},
+                         timeout=timeout, allow_redirects=True)
+        if r.status_code == 200 and _clean_ver(r.text or ""):
+            remote = _clean_ver(r.text or "")
+            return {"update": _ver_newer(remote, local), "local": local,
+                    "remote": remote, "error": None,
+                    "apk_url": dist_download_url("qa-studio.apk", MOBILE_RELEASE_TAG)}
+    except Exception:
+        pass
     url = (f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases/download/"
-           f"{MOBILE_RELEASE_TAG}/{MOBILE_VERSION_ASSET}?_={int(_t.time())}")
+           f"{MOBILE_RELEASE_TAG}/{MOBILE_VERSION_ASSET}?_={bust}")
     hdr = {"Cache-Control": "no-cache"}
     tok = _github_token()
     if tok:
@@ -13478,6 +13530,9 @@ def check_for_update(timeout=6):
     Network failures are swallowed (update=False) so startup is never blocked.
 
     Sources tried in order:
+      0) VERSION asset of the latest PUBLIC release (DIST_REPO) — the normal
+         path once the source repo is private; same release the updater
+         installs from, so check and install can never disagree
       1) GitHub API contents endpoint (works for private repos when a token is set)
       2) Cache-busted raw.githubusercontent.com URL (public repos)
     A token (see _github_token) is sent when available so PRIVATE repos work.
@@ -13526,9 +13581,17 @@ def check_for_update(timeout=6):
             raise RuntimeError(f"raw HTTP {r.status_code}")
         return _clean_ver(r.text or "")
 
+    def _via_dist():
+        r = requests.get(dist_download_url(DIST_VERSION_ASSET) + f"?cb={bust}",
+                         timeout=timeout, allow_redirects=True,
+                         headers={"Cache-Control": "no-cache"})
+        if r.status_code != 200:
+            raise RuntimeError(f"releases repo HTTP {r.status_code}")
+        return _clean_ver(r.text or "")
+
     remote = None
     err = None
-    for fetch in (_via_api, _via_raw):
+    for fetch in (_via_dist, _via_api, _via_raw):
         try:
             remote = fetch()
             if remote:
@@ -13750,6 +13813,33 @@ def _resolve_branch_sha(headers, timeout=15):
     return sha
 
 
+def _fetch_dist_source(zpath, cb, timeout=180):
+    """Download the latest public release's source zip into `zpath`.
+    Returns ("ok", tag) after its SHA-256 matched the release's SHA256SUMS,
+    ("abort", message) when the download is there but fails verification,
+    or None when the releases repo/asset isn't available (caller falls back)."""
+    tag = dist_latest_tag()
+    if not tag:
+        return None
+    try:
+        with requests.get(dist_download_url(DIST_SRC_ASSET, tag), stream=True,
+                          timeout=timeout, allow_redirects=True) as r:
+            if r.status_code != 200:
+                return None
+            with open(zpath, "wb") as f:
+                for chunk in r.iter_content(65536):
+                    if chunk:
+                        f.write(chunk)
+    except Exception:
+        return None
+    ok, msg = _verify_download(zpath, DIST_SRC_ASSET,
+                               (DIST_SUMS_ASSET, dist_download_url(DIST_SUMS_ASSET, tag)),
+                               {}, cb)
+    if not ok:
+        return ("abort", msg)
+    return ("ok", tag)
+
+
 def _validate_update_tree(src_root):
     """Sanity-check that an extracted update actually looks like a QA Studio
     source tree before we copy it over the live, running install. This is not
@@ -13785,35 +13875,45 @@ def _apply_update_zip(cb):
     of precisely what was installed and from where."""
     import sys, tempfile, zipfile, shutil, subprocess
     cb = cb or (lambda *a, **k: None)
-    headers = {"Accept": "application/vnd.github+json"}
-    token = _github_token()
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    try:
-        sha = _resolve_branch_sha(headers)
-    except Exception as e:
-        return (False, f"Couldn't resolve the update branch to a commit: "
-                       f"{str(e)[:140]}. Update aborted for your safety.")
-    # Pull the latest code from that PINNED COMMIT (not a mutable branch name) —
-    # still the same source check_for_update reads its VERSION from, and the
-    # same archive install.bat uses; pinning just removes the "which content
-    # did we actually get" ambiguity a plain branch-name URL has.
-    zb = (f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}"
-          f"/zipball/{sha}")
     tmp = tempfile.mkdtemp(prefix="qastudio_up_")
     zpath = os.path.join(tmp, "src.zip")
     cb("Downloading the latest version…", "dim")
-    try:
-        with requests.get(zb, headers=headers, stream=True, timeout=180,
-                          allow_redirects=True) as r:
-            r.raise_for_status()
-            with open(zpath, "wb") as f:
-                for chunk in r.iter_content(65536):
-                    if chunk:
-                        f.write(chunk)
-    except Exception as e:
+    # 1) PUBLIC releases repo: the release's own source zip, pinned to one
+    #    tag and verified against its published SHA256SUMS (fails CLOSED on a
+    #    mismatch — never falls back to another source after a bad checksum).
+    dist = _fetch_dist_source(zpath, cb)
+    if dist and dist[0] == "abort":
         shutil.rmtree(tmp, ignore_errors=True)
-        return (False, f"Download failed: {str(e)[:160]}")
+        return (False, dist[1])
+    if dist and dist[0] == "ok":
+        sha = f"release {dist[1]} ({DIST_OWNER}/{DIST_REPO})"
+    else:
+        # 2) Fallback while the releases repo doesn't exist yet: the source
+        #    repo's zipball, pinned to one commit (works while it is public,
+        #    or with a token).
+        headers = {"Accept": "application/vnd.github+json"}
+        token = _github_token()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        try:
+            sha = _resolve_branch_sha(headers)
+        except Exception as e:
+            shutil.rmtree(tmp, ignore_errors=True)
+            return (False, f"Couldn't resolve the update branch to a commit: "
+                           f"{str(e)[:140]}. Update aborted for your safety.")
+        zb = (f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}"
+              f"/zipball/{sha}")
+        try:
+            with requests.get(zb, headers=headers, stream=True, timeout=180,
+                              allow_redirects=True) as r:
+                r.raise_for_status()
+                with open(zpath, "wb") as f:
+                    for chunk in r.iter_content(65536):
+                        if chunk:
+                            f.write(chunk)
+        except Exception as e:
+            shutil.rmtree(tmp, ignore_errors=True)
+            return (False, f"Download failed: {str(e)[:160]}")
     try:
         zip_sha256 = _sha256_file(zpath)
     except Exception:
@@ -13878,7 +13978,8 @@ def _apply_update_zip(cb):
     try:
         import diag_log
         diag_log.log_warn("engine._apply_update_zip",
-                           f"applying commit {sha} — zip sha256={zip_sha256}")
+                           f"applying {sha if str(sha).startswith('release ') else 'commit ' + str(sha)}"
+                           f" — zip sha256={zip_sha256}")
     except Exception:
         pass
     try:

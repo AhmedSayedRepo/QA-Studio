@@ -239,7 +239,7 @@
     <img src="https://ahmedsayedrepo.github.io/QA-Studio/qa-logo.png" alt="QA Studio">
     <div><b>QA Studio</b> &nbsp;<span id="vernav">v3.3.0</span></div>
   </div>
-  <a class="nlink" href="https://github.com/AhmedSayedRepo/QA-Studio" target="_blank" rel="noopener">⭐ Star on GitHub</a>
+  <a class="nlink" href="https://github.com/AhmedSayedRepo/QA-Studio-Releases" target="_blank" rel="noopener">⭐ Star on GitHub</a>
 </div></nav>
 
 <div class="confirm-banner" id="confirm-banner" role="status" aria-live="polite">
@@ -260,15 +260,15 @@
     generates test-case titles or full steps in seven languages, plans your regression &amp; sprint
     coverage, and drives self-healing test automation — on Windows or Android, with your own AI key.</p>
   <div class="cta fade-up fade-up-4">
-    <a class="btn btn-primary" href="https://github.com/AhmedSayedRepo/QA-Studio/releases/latest/download/install.bat">↓ Download installer</a>
-    <a class="btn btn-ghost" href="https://github.com/AhmedSayedRepo/QA-Studio/releases/download/android-apk/qa-studio.apk">🤖 Android APK</a>
+    <a class="btn btn-primary" href="https://github.com/AhmedSayedRepo/QA-Studio-Releases/releases/latest/download/install.bat">↓ Download installer</a>
+    <a class="btn btn-ghost" href="https://github.com/AhmedSayedRepo/QA-Studio-Releases/releases/download/android-apk/qa-studio.apk">🤖 Android APK</a>
   </div>
   <div class="cta-note fade-up fade-up-4"><code>install.bat</code> for Windows · ~50 KB, sets up everything automatically &nbsp;·&nbsp; <code>qa-studio.apk</code> for Android — early build, sideload (no Play Store yet); updates install in-app after that</div>
 
   <div class="ps fade-up fade-up-4">
     <div class="lbl">— OR PASTE THIS IN POWERSHELL —</div>
     <div class="ps-box">
-      <code id="ps">powershell -c "irm https://github.com/AhmedSayedRepo/QA-Studio/releases/latest/download/install.bat -OutFile $env:TEMP\install.bat; &amp; $env:TEMP\install.bat"</code>
+      <code id="ps">powershell -c "irm https://github.com/AhmedSayedRepo/QA-Studio-Releases/releases/latest/download/install.bat -OutFile $env:TEMP\install.bat; &amp; $env:TEMP\install.bat"</code>
       <button class="copy" onclick="navigator.clipboard.writeText(document.getElementById('ps').innerText);this.innerText='Copied'">Copy</button>
     </div>
   </div>
@@ -494,8 +494,8 @@
   <div class="final">
     <h2>Ready to generate your first test plan?</h2>
     <div class="cta">
-      <a class="btn btn-primary" href="https://github.com/AhmedSayedRepo/QA-Studio/releases/latest/download/install.bat">↓ Download installer</a>
-      <a class="btn btn-ghost" href="https://github.com/AhmedSayedRepo/QA-Studio/releases/download/android-apk/qa-studio.apk">🤖 Android APK</a>
+      <a class="btn btn-primary" href="https://github.com/AhmedSayedRepo/QA-Studio-Releases/releases/latest/download/install.bat">↓ Download installer</a>
+      <a class="btn btn-ghost" href="https://github.com/AhmedSayedRepo/QA-Studio-Releases/releases/download/android-apk/qa-studio.apk">🤖 Android APK</a>
     </div>
   </div>
 </div></section>
@@ -538,7 +538,7 @@
     var closeBtn=document.getElementById('confirm-banner-close');
     if(!banner||!textEl){return;}
 
-    var downloadLink=' <a href="https://github.com/AhmedSayedRepo/QA-Studio/releases/latest/download/install.bat">' +
+    var downloadLink=' <a href="https://github.com/AhmedSayedRepo/QA-Studio-Releases/releases/latest/download/install.bat">' +
                       "Don't have it installed yet?</a>";
 
     function show(html, icon, warn){
@@ -602,7 +602,7 @@
       if(cached)paint(cached);
     }catch(e){}
     try{
-      fetch('https://api.github.com/repos/AhmedSayedRepo/QA-Studio/releases/latest',
+      fetch('https://api.github.com/repos/AhmedSayedRepo/QA-Studio-Releases/releases/latest',
             {headers:{'Accept':'application/vnd.github+json'}})
         .then(function(r){return r.ok?r.json():null;})
         .then(function(d){
