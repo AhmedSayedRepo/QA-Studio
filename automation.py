@@ -286,15 +286,24 @@ def screen(app):
             _refresh_auto_state(app)
         app._auto_refresh_gen_btn = _auto_refresh_gen_btn
 
+        # "What's missing" note. It lives INSIDE the Test-case source card,
+        # right under the controls it refers to — it used to float between
+        # cards A and B with a light-theme-only border that glared in dark mode.
         setup_hint = None
         if not ready:
+            # Same centred "locked" pill as Setup's Task card ("Connect to load
+            # projects, plans & stories"): lock icon + bold text in a rounded
+            # chip — no amber box.
             setup_hint = ft.Container(
-                ft.Row([ft.Icon(ft.Icons.INFO_OUTLINE, size=16, color=T.AMBER),
-                        ft.Text(strings.t("auto_file_setup_hint") if file_source else strings.t("auto_setup_hint"),
-                                size=12, color=T.AMBER, weight=ft.FontWeight.W_500, expand=True)],
-                       spacing=8),
-                padding=12, bgcolor=T.AMBER_SOFT, border_radius=T.R,
-                border=ft.Border.all(1, "#EAD9A8"), margin=ft.Margin.only(bottom=14))
+                ft.Container(
+                    ft.Row([ft.Icon(ft.Icons.LOCK_OUTLINE, size=14, color=T.INK_2),
+                            ft.Text(strings.t("auto_file_setup_hint") if file_source else strings.t("auto_setup_hint"),
+                                    size=12, color=T.INK_2, weight=ft.FontWeight.BOLD)],
+                           spacing=6, tight=True, wrap=True,
+                           vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    padding=ft.Padding.symmetric(vertical=12, horizontal=14),
+                    bgcolor=T.CARD, border_radius=20, border=ft.Border.all(1, T.BORDER)),
+                alignment=ft.Alignment.CENTER)
 
         def _picked_browsers():
             got = [b for b in ("chrome", "edge", "firefox") if b in (app.creds.get("auto_browsers") or [])]
@@ -460,6 +469,7 @@ def screen(app):
             ft.Container(height=12),
             source_details,
             *only_tagged,
+            *([ft.Container(height=12), setup_hint] if setup_hint else []),
         ], spacing=0))
 
         framework_card = card(ft.Column([
@@ -742,7 +752,6 @@ def screen(app):
 
         left = ft.Column([
             source_card,
-            *([setup_hint] if setup_hint else []),
             framework_card,
             site_card,
             inspection_card,

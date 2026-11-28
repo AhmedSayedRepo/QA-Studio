@@ -882,15 +882,15 @@ def screen(app, _fragment=False):
 
     def _mk_multiline(attr, hint_text, lines=3):
         tf = ft.TextField(
-            value=_get(app, attr, ""), multiline=True, min_lines=2, max_lines=lines,
+            value=_get(app, attr, ""), multiline=True, min_lines=3, max_lines=lines,
             hint_text=hint_text, border_color=T.BORDER, focused_border_color=T.VIOLET,
             border_radius=T.R, text_size=12,
             content_padding=ft.Padding.symmetric(vertical=10, horizontal=12))
         tf.on_change = lambda e, a=attr, ff=tf: setattr(app, a, ff.value)
         return tf
 
-    param_box = _mk_multiline("_perf_param", "SKU-123 => product")
-    corr_box = _mk_multiline("_perf_corr", "cartId = $.id @ /cart")
+    param_box = _mk_multiline("_perf_param", "SKU-123 => product", lines=6)
+    corr_box = _mk_multiline("_perf_corr", "cartId = $.id @ /cart", lines=6)
     login_box = _mk_multiline("_perf_login_curl",
                               "curl 'https://app/api/login' -H 'Content-Type: application/json' "
                               "--data-raw '{\"email\":\"{{email}}\",\"password\":\"{{password}}\"}'")
@@ -1229,78 +1229,162 @@ def screen(app, _fragment=False):
 
     src = _get(app, "_perf_source", "har")
 
-    # Full-width Source field so the option label isn't truncated.
-    source_row = [
-        ft.Container(dd_field(
-            strings.t("perf_lbl_source"),
-            "“Import HAR” replays a real browser capture; “Paste cURL” turns Copy-as-cURL "
-            "commands into requests. Both give exact requests — no guessing.",
-            source), expand=1),
-    ]
+    # ── Layout helpers (refined: same look as Setup) ─────────────────────────
+    # Every field = label (+ "optional" chip, + ⓘ for the long explanation),
+    # a short always-visible description of WHAT to enter, then the input
+    # (with its Browse button inline when it has one).
+    def _desc(text):
+        return ft.Container(
+            ft.Text(text, size=11, color=T.INK_3, weight=ft.FontWeight.W_500),
+            padding=ft.Padding.only(top=2, bottom=2))
 
-    # Shared per-user / dynamic-data controls for HAR + cURL: auth header,
-    # parameterize (literals -> {{vars}}), and correlation (extract from responses).
+    def _head(num, title, sub, right=None):
+        return ft.Column([sec_head(num, title, right=right),
+                          ft.Container(ft.Text(sub, size=11.5, color=T.INK_3,
+                                               weight=ft.FontWeight.W_500),
+                                       padding=ft.Padding.only(left=31, top=2))],
+                         spacing=0)
+
+    def _find_tf(ctrl, depth=0):
+        """The TextField inside an _auto_field column (bounded search)."""
+        if ctrl is None or depth > 6:
+            return None
+        try:
+            if isinstance(ctrl, ft.TextField):
+                return ctrl
+        except TypeError:
+            return None
+        for attr in ("content", "controls"):
+            sub = getattr(ctrl, attr, None)
+            items = sub if isinstance(sub, list) else ([sub] if sub is not None else [])
+            for c in items:
+                hit = _find_tf(c, depth + 1)
+                if hit is not None:
+                    return hit
+        return None
+
+    def _field(label, attr, placeholder, desc, info=None, optional=False,
+               trailing=None):
+        col = app._auto_field(label, attr, placeholder, info=info)
+        try:
+            col.controls[0] = field_label(
+                label, hint=(strings.t("pfx_optional") if optional else None), info=info)
+            col.controls.insert(1, _desc(desc))
+            if trailing is not None:
+                box = col.controls[2]
+                box.expand = True
+                col.controls[2] = ft.Row([box, ft.Container(trailing, padding=ft.Padding.only(top=4))],
+                                         spacing=8,
+                                         vertical_alignment=ft.CrossAxisAlignment.START)
+        except Exception:
+            pass
+        return col
+
+    def _area(label, box, desc, info=None, optional=True):
+        return ft.Column([
+            field_label(label, hint=(strings.t("pfx_optional") if optional else None),
+                        info=info),
+            _desc(desc),
+            ft.Container(box, padding=ft.Padding.only(top=4)),
+        ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
+
+    def _row(*cols):
+        return ft.Row([ft.Container(c, expand=1) for c in cols], spacing=12,
+                      vertical_alignment=ft.CrossAxisAlignment.START)
+
+    def _sub_head(title, sub):
+        return ft.Column([
+            ft.Text(title, size=12.5, weight=ft.FontWeight.BOLD, color=T.INK),
+            ft.Text(sub, size=11, color=T.INK_3, weight=ft.FontWeight.W_500),
+        ], spacing=1)
+
+    def _advanced(key, title, sub, controls, has_value):
+        """Collapsible advanced block. Its open/closed state survives the
+        screen's frequent partial refreshes (log lines rebuild the panels)."""
+        state_attr = "_perf_adv_open_" + key
+        opened = bool(_get(app, state_attr, False) or has_value)
+
+        def _changed(e):
+            try:
+                setattr(app, state_attr, str(e.data).lower() in ("true", "1"))
+            except Exception:
+                pass
+        return ft.Container(
+            ft.ExpansionTile(
+                title=ft.Text(title, size=12.5, weight=ft.FontWeight.BOLD, color=T.INK),
+                subtitle=ft.Text(sub, size=11, color=T.INK_3, weight=ft.FontWeight.W_500),
+                controls=[ft.Column(controls, spacing=0)],
+                expanded=opened, maintain_state=True, dense=True,
+                tile_padding=ft.Padding.symmetric(horizontal=12),
+                controls_padding=ft.Padding.only(left=12, right=12, bottom=12),
+                on_change=_changed),
+            bgcolor=T.CARD_2, border=ft.Border.all(1, T.BORDER), border_radius=T.R)
+
+    def _has(*attrs):
+        return any(str(_get(app, a_, "") or "").strip() for a_ in attrs)
+
+    # ── 1  Scenario source ───────────────────────────────────────────────────
+    source_row = [ft.Container(ft.Column([
+        field_label(strings.t("perf_lbl_source"), info=strings.t("au_pf_source_info")),
+        _desc(strings.t("pfx_d_source")),
+        ft.Container(source, padding=ft.Padding.only(top=4)),
+    ], spacing=0), expand=1)]
+
     def _advanced_fields():
-        return [
-            ft.Container(height=12),
-            app._auto_field(
-                strings.t("perf_lbl_auth"), "_perf_auth",
-                strings.t("perf_ph_auth"),
-                info=strings.t("au_pf_auth_info")),
+        adv = [
+            _area(strings.t("pfx_l_vars"), param_box, strings.t("pfx_d_vars"),
+                  info=strings.t("au_pf_param_info")),
             ft.Container(height=14),
-            field_label(strings.t("perf_lbl_variables"),
-                        info=strings.t("au_pf_param_info")),
-            ft.Container(param_box, padding=ft.Padding.only(top=4)),
+            _area(strings.t("pfx_l_corr"), corr_box, strings.t("pfx_d_corr"),
+                  info=strings.t("au_pf_corr_info")),
             ft.Container(height=14),
-            field_label(strings.t("perf_lbl_correlation"),
-                        info=strings.t("au_pf_corr_info")),
-            ft.Container(corr_box, padding=ft.Padding.only(top=4)),
-            ft.Container(height=14),
-            field_label(strings.t("perf_lbl_intest_login"),
-                        info=strings.t("au_pf_login_info")),
-            ft.Container(login_box, padding=ft.Padding.only(top=4)),
+            _area(strings.t("pfx_l_login"), login_box, strings.t("pfx_d_login"),
+                  info=strings.t("au_pf_login_info")),
             ft.Container(height=10),
-            ft.Row([
-                ft.Container(app._auto_field(
-                    strings.t("perf_lbl_token_jsonpath"), "_perf_login_tokenpath", "access_token",
-                    info=strings.t("au_pf_tokpath_info")), expand=1),
-                ft.Container(app._auto_field(
-                    strings.t("perf_lbl_token_var"), "_perf_login_var", "token",
-                    info=strings.t("au_pf_tokvar_info")), expand=1),
-            ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.START),
+            _row(_field(strings.t("perf_lbl_token_jsonpath"), "_perf_login_tokenpath",
+                        "access_token", strings.t("pfx_d_tokpath"),
+                        info=strings.t("au_pf_tokpath_info")),
+                 _field(strings.t("perf_lbl_token_var"), "_perf_login_var", "token",
+                        strings.t("pfx_d_tokvar"), info=strings.t("au_pf_tokvar_info"))),
+        ]
+        return [
+            ft.Container(height=14),
+            _field(strings.t("pfx_l_auth"), "_perf_auth", strings.t("perf_ph_auth"),
+                   strings.t("pfx_d_auth"), info=strings.t("au_pf_auth_info"),
+                   optional=True),
+            ft.Container(height=14),
+            _advanced("source", strings.t("pfx_adv"), strings.t("pfx_adv_sub"), adv,
+                      _has("_perf_param", "_perf_corr", "_perf_login_curl")),
         ]
 
     if src == "curl":
         source_body = [
-            ft.Container(curl_box, padding=ft.Padding.only(top=12)),
-            ft.Container(height=6),
-            hint("Each curl command becomes one exact request (method, URL, headers, "
-                 "body). Paste several to chain a flow. Tip: DevTools → Network → "
-                 "right-click a request → Copy → Copy as cURL (bash)."),
+            ft.Container(height=14),
+            _area(strings.t("perf_opt_curl"), curl_box, strings.t("pfx_d_curl"),
+                  optional=False),
         ] + _advanced_fields()
     else:  # har (default)
         source_body = [
+            ft.Container(height=14),
+            _field(strings.t("perf_lbl_har_file"), "_perf_har_path",
+                   strings.t("perf_ph_har_file"), strings.t("pfx_d_har"),
+                   info=strings.t("au_pf_har_info"),
+                   trailing=ghost_btn(strings.t("au_pf_browse_har"), icon=ft.Icons.UPLOAD_FILE,
+                                      on_click=do_browse_har, ignore_ro=True)),
             ft.Container(height=12),
-            app._auto_field(
-                strings.t("perf_lbl_har_file"), "_perf_har_path", strings.t("perf_ph_har_file"),
-                info=strings.t("au_pf_har_info")),
-            ft.Container(height=8),
-            ft.Row([ghost_btn(strings.t("au_pf_browse_har"), icon=ft.Icons.UPLOAD_FILE,
-                              on_click=do_browse_har, ignore_ro=True)], spacing=8),
-            ft.Container(height=12),
-            app._auto_field(
-                strings.t("perf_lbl_only_domains"), "_perf_har_domains",
-                "app.example.com, api.example.com",
-                info=strings.t("au_pf_domains_info")),
+            _field(strings.t("perf_lbl_only_domains"), "_perf_har_domains",
+                   "app.example.com, api.example.com", strings.t("pfx_d_domains"),
+                   info=strings.t("au_pf_domains_info"), optional=True),
         ] + _advanced_fields()
 
     cases_card = card(ft.Column([
-        sec_head("1", strings.t("perf_sec_scenario_source")),
-        ft.Container(height=10),
+        _head("1", strings.t("perf_sec_scenario_source"), strings.t("pfx_sub_source")),
+        ft.Container(height=14),
         ft.Row(source_row, spacing=12, vertical_alignment=ft.CrossAxisAlignment.START),
         *source_body,
     ], spacing=0))
 
+    # ── 2  Load profile ──────────────────────────────────────────────────────
     preset = ft.Dropdown(
         value=_get(app, "_perf_preset", "custom"), filled=True, bgcolor=T.CARD,
         border_color=T.BORDER, focused_border_color=T.VIOLET, expand=True,
@@ -1311,75 +1395,94 @@ def screen(app, _fragment=False):
         ],
         on_select=do_preset_changed)
 
+    def _summary_text():
+        def _v(attr, d):
+            return str(_get(app, attr, "") or "").strip() or d
+        return strings.t("pfx_summary", users=_v("_perf_users", "20"),
+                         ramp=_v("_perf_ramp", "15"), dur=_v("_perf_duration", "60"))
+
+    summary = ft.Text(_summary_text(), size=12, color=T.VIOLET_INK,
+                      weight=ft.FontWeight.W_600)
+
+    def _live(col):
+        # Keep the plain-language summary in step while the user types.
+        tf = _find_tf(col)
+        if tf is not None:
+            orig = getattr(tf, "on_change", None)
+
+            def _chg(e, orig=orig):
+                if orig:
+                    orig(e)
+                try:
+                    summary.value = _summary_text()
+                    summary.update()
+                except Exception:
+                    pass
+            tf.on_change = _chg
+        return col
+
     load_card = card(ft.Column([
-        sec_head("2", strings.t("perf_sec_load_profile")),
-        ft.Container(height=10),
+        _head("2", strings.t("perf_sec_load_profile"), strings.t("pfx_sub_load")),
+        ft.Container(height=14),
         ft.Row([
-            ft.Container(dd_field(strings.t("perf_lbl_preset"),
-                                  strings.t("perf_preset_hint"), preset), expand=2),
-            ft.Container(app._auto_field(
-                strings.t("perf_lbl_pacing"), "_perf_pacing", "0",
-                info=strings.t("perf_info_pacing")), expand=1),
+            ft.Container(ft.Column([
+                field_label(strings.t("perf_lbl_preset"), info=strings.t("perf_preset_hint")),
+                _desc(strings.t("pfx_d_preset")),
+                ft.Container(preset, padding=ft.Padding.only(top=4)),
+            ], spacing=0), expand=2),
+            ft.Container(_field(strings.t("perf_lbl_pacing"), "_perf_pacing", "0",
+                                strings.t("pfx_d_pacing"),
+                                info=strings.t("perf_info_pacing")), expand=1),
         ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.START),
         ft.Container(height=12),
-        ft.Row([
-            ft.Container(app._auto_field(
-                strings.t("perf_lbl_users"), "_perf_users", "20",
-                info=strings.t("perf_info_users")), expand=1),
-            ft.Container(app._auto_field(
-                strings.t("perf_lbl_ramp"), "_perf_ramp", "15",
-                info=strings.t("perf_info_ramp")), expand=1),
-            ft.Container(app._auto_field(
-                strings.t("perf_lbl_duration"), "_perf_duration", "60",
-                info=strings.t("perf_info_duration")), expand=1),
-        ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.START),
+        _row(_live(_field(strings.t("perf_lbl_users"), "_perf_users", "20",
+                          strings.t("pfx_d_users"), info=strings.t("perf_info_users"))),
+             _live(_field(strings.t("perf_lbl_ramp"), "_perf_ramp", "15",
+                          strings.t("pfx_d_ramp"), info=strings.t("perf_info_ramp"))),
+             _live(_field(strings.t("perf_lbl_duration"), "_perf_duration", "60",
+                          strings.t("pfx_d_duration"), info=strings.t("perf_info_duration")))),
+        ft.Container(
+            ft.Row([ft.Icon(ft.Icons.INSIGHTS_OUTLINED, size=15, color=T.VIOLET_INK),
+                    ft.Container(summary, expand=True)], spacing=8,
+                   vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            bgcolor=T.VIOLET_SOFT, border_radius=T.R,
+            padding=ft.Padding.symmetric(vertical=8, horizontal=12),
+            margin=ft.Margin.only(top=4)),
+        ft.Container(height=16),
+        _sub_head(strings.t("pfx_budgets"), strings.t("pfx_budgets_sub")),
+        ft.Container(height=8),
+        _row(_field(strings.t("perf_lbl_p95_budget"), "_perf_p95", "800",
+                    strings.t("pfx_d_p95"), info=strings.t("perf_info_p95_budget")),
+             _field(strings.t("perf_lbl_max_error"), "_perf_err", "1",
+                    strings.t("pfx_d_err"), info=strings.t("perf_info_max_error"))),
         ft.Container(height=12),
-        ft.Row([
-            ft.Container(app._auto_field(
-                strings.t("perf_lbl_p95_budget"), "_perf_p95", "800",
-                info=strings.t("perf_info_p95_budget")), expand=1),
-            ft.Container(app._auto_field(
-                strings.t("perf_lbl_max_error"), "_perf_err", "1",
-                info=strings.t("perf_info_max_error")), expand=1),
-        ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.START),
-        ft.Container(height=12),
-        ft.Row([
-            ft.Container(app._auto_field(
-                strings.t("perf_lbl_p99_budget"), "_perf_p99", "0",
-                info=strings.t("perf_info_p99_budget")), expand=1),
-            ft.Container(app._auto_field(
-                strings.t("perf_lbl_min_throughput"), "_perf_min_rps", "0",
-                info=strings.t("perf_info_min_throughput")), expand=1),
-        ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.START),
-        ft.Container(height=12),
-        app._auto_field(
-            strings.t("perf_lbl_distributed"), "_perf_remote_hosts",
-            "10.0.0.5, 10.0.0.6  (running jmeter-server)",
-            info=strings.t("au_pf_engines_info")),
-        ft.Container(height=6),
-        hint("The budgets decide the PASS / FAIL gate. For thousands of users, run "
-             "distributed engines — a single machine caps out at a few hundred threads."),
+        _row(_field(strings.t("pfx_l_p99"), "_perf_p99", "0", strings.t("pfx_d_p99"),
+                    info=strings.t("perf_info_p99_budget"), optional=True),
+             _field(strings.t("pfx_l_rps"), "_perf_min_rps", "0", strings.t("pfx_d_rps"),
+                    info=strings.t("perf_info_min_throughput"), optional=True)),
+        ft.Container(height=14),
+        _advanced("engines", strings.t("pfx_adv_engines"), strings.t("pfx_adv_engines_sub"), [
+            _field(strings.t("pfx_l_engines"), "_perf_remote_hosts",
+                   "10.0.0.5, 10.0.0.6", strings.t("pfx_d_engines"),
+                   info=strings.t("au_pf_engines_info"), optional=True),
+        ], _has("_perf_remote_hosts")),
     ], spacing=0))
 
+    # ── 3  Data & output ─────────────────────────────────────────────────────
     data_card = card(ft.Column([
-        sec_head("3", strings.t("perf_sec_data")),
-        ft.Container(height=10),
-        app._auto_field(
-            strings.t("perf_lbl_data_csv"), "_perf_data_path", strings.t("perf_ph_data_csv"),
-            info=strings.t("au_pf_datacsv_info")),
-        ft.Container(height=8),
-        ft.Row([ghost_btn(strings.t("perf_btn_browse"), icon=ft.Icons.FOLDER_OPEN, on_click=do_browse,
-                          ignore_ro=True)], spacing=8),
-        ft.Container(height=6),
-        hint("Leave blank to run without data-driving. With a CSV, each virtual user "
-             "pulls the next row per iteration."),
-        ft.Container(height=16),
-        app._auto_field(
-            strings.t("perf_lbl_output_folder"), "_perf_out_dir", strings.t("perf_ph_output_folder"),
-            info=strings.t("au_pf_output_info")),
-        ft.Container(height=8),
-        ft.Row([ghost_btn(strings.t("perf_btn_choose_folder"), icon=ft.Icons.FOLDER_OPEN,
-                          on_click=do_browse_out, ignore_ro=True)], spacing=8),
+        _head("3", strings.t("pfx_sec_data"), strings.t("pfx_sub_data")),
+        ft.Container(height=14),
+        _field(strings.t("perf_lbl_data_csv"), "_perf_data_path",
+               strings.t("perf_ph_data_csv"), strings.t("pfx_d_csv"),
+               info=strings.t("au_pf_datacsv_info"), optional=True,
+               trailing=ghost_btn(strings.t("perf_btn_browse"), icon=ft.Icons.FOLDER_OPEN,
+                                  on_click=do_browse, ignore_ro=True)),
+        ft.Container(height=14),
+        _field(strings.t("pfx_l_out"), "_perf_out_dir",
+               strings.t("perf_ph_output_folder"), strings.t("pfx_d_out"),
+               info=strings.t("au_pf_output_info"), optional=True,
+               trailing=ghost_btn(strings.t("perf_btn_choose_folder"), icon=ft.Icons.FOLDER_OPEN,
+                                  on_click=do_browse_out, ignore_ro=True)),
     ], spacing=0))
 
     # ---- Prepare auth tokens (optional): log a users CSV in, collect a per-user
@@ -1623,9 +1726,7 @@ def screen(app, _fragment=False):
         report_card = card(ft.Column([
             sec_head("6", strings.t("au_pf_report")),
             ft.Container(height=8),
-            hint("Two reports: QA Studio's plain-language one-pager, and JMeter's "
-                 "interactive dashboard. Open either, save the QA Studio one, or email "
-                 "both (email needs a Gmail App Password on Setup → Connection)."),
+            hint(strings.t("pfx_report_hint")),
             ft.Container(height=12),
             ft.Row(open_btns, spacing=10, wrap=True),
             ft.Container(height=16),
